@@ -61,15 +61,16 @@ def test_delayed_mkdir_and_share_snapshot() -> None:
         share_cfg = Path(tmp) / "share.json"
         scores.mkdir()
         original = ds_mod.DATA_DIR
+        original_share = share_mod.data_share
         ds_mod.DATA_DIR = scores
+        share_mod.data_share = DataShareManager(share_cfg)
         try:
             storage = DataStorageManager()
             # 只读不应创建目录
             _ = storage.list_snapshots(12345, limit=1)
             assert not (scores / "12345").exists()
 
-            mgr = DataShareManager(share_cfg)
-            assert mgr.is_sharing_enabled(12345)
+            assert share_mod.data_share.is_sharing_enabled(12345)
 
             records = [_R(i) for i in range(1, 40)]
             assert len(playinfo_to_score_records(records)) == 39
@@ -78,11 +79,12 @@ def test_delayed_mkdir_and_share_snapshot() -> None:
             assert (scores / "12345" / "index.json").exists()
 
             # opt-out 后不再写
-            mgr.opt_out(12345)
+            share_mod.data_share.opt_out(12345)
             ok2 = maybe_save_share_snapshot(12345, _U(), records, source="test2")
             assert ok2 is False
         finally:
             ds_mod.DATA_DIR = original
+            share_mod.data_share = original_share
 
 
 if __name__ == "__main__":

@@ -174,8 +174,8 @@ def ingest_from_caches(
     skipped_has = 0
     skipped_opt = 0
     skipped_thin = 0
+    merged: Dict[int, dict] = {}
     try:
-        merged: Dict[int, dict] = {}
         for db in cache_dbs:
             _log(f"scan cache {db}")
             part = _best_cache_rows(db)
@@ -185,7 +185,8 @@ def ingest_from_caches(
                     merged[qqid] = row
         _log(f"cache candidates={len(merged)}")
 
-        for qqid, row in merged.items():
+        total = len(merged)
+        for idx, (qqid, row) in enumerate(merged.items(), 1):
             qqid_s = str(qqid)
             if qqid_s in opted_out:
                 skipped_opt += 1
@@ -194,13 +195,21 @@ def ingest_from_caches(
                 skipped_has += 1
                 continue
             records: List[ScoreRecord] = []
+            bad_rows = 0
             for r in row["records"]:
                 if isinstance(r, dict):
                     sr = _record_from_dict(r)
                     if sr:
                         records.append(sr)
+                    else:
+                        bad_rows += 1
             if len(records) < min_records:
                 skipped_thin += 1
+                if skipped_thin <= 10:
+                    _log(
+                        f"cache thin skip qq={qqid_s} valid={len(records)} "
+                        f"raw={row['_n']} bad={bad_rows} min={min_records}"
+                    )
                 continue
             ui = row["userinfo"]
             rating = int(ui.get("rating") or 0)
@@ -221,20 +230,47 @@ def ingest_from_caches(
                 stored_at=dt.isoformat(timespec="seconds"),
                 source=f"cache:{row.get('source') or 'unknown'}",
             )
-            if storage.save_daily_snapshot(snap):
-                written += 1
-                if written % 50 == 0:
-                    _log(f"cache ingest written={written}")
+            try:
+                if storage.save_daily_snapshot(snap):
+                    written += 1
+                    if written <= 20 or written % 50 == 0:
+                        _log(
+                            f"cache written qq={qqid_s} rating={rating} "
+                            f"records={len(records)} total_written={written}"
+                        )
+                else:
+                    _log(f"cache save returned false qq={qqid_s}")
+            except Exception as e:
+                _log(f"cache save fail qq={qqid_s}: {type(e).__name__}: {e}")
+            if idx % 200 == 0:
+                _log(
+                    f"cache progress {idx}/{total} written={written} "
+                    f"skip_has={skipped_has} opt={skipped_opt} thin={skipped_thin}"
+                )
     finally:
         _ds_mod.DATA_DIR = original
 
-    return {
+    summary = {
         "written": written,
+        "candidates": len(merged),
         "skipped_has_snapshot": skipped_has,
         "skipped_opt_out": skipped_opt,
         "skipped_thin": skipped_thin,
         "cache_dbs": [str(p) for p in cache_dbs],
     }
+    _log(f"cache ingest done: {summary}")
+    return summary
+
+
+def _safe_replace_user_dir(src: Path, dest: Path) -> None:
+    """目标已存在（含空目录）时先删再复制，避免 copytree FileExistsError。"""
+    if dest.exists():
+        if dest.is_dir():
+            shutil.rmtree(dest)
+        else:
+            dest.unlink()
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(src, dest)
 
 
 def ingest_from_backup_scores(
@@ -243,15 +279,23 @@ def ingest_from_backup_scores(
     backup_scores_dirs: List[Path],
     opted_out: Set[str],
 ) -> dict:
-    """把备份里有 index 而当前没有的用户目录复制过来。"""
+    """把备份里有 index 而当前没有可用快照的用户目录复制过来。"""
     copied = 0
     skipped_has = 0
     skipped_opt = 0
+    skipped_no_index = 0
+    skipped_copy_fail = 0
+    replaced_empty_or_broken = 0
+    scanned_users = 0
+
     for backup in backup_scores_dirs:
         if not backup.exists():
+            _log(f"backup scores missing, skip: {backup}")
             continue
-        _log(f"scan backup scores {backup}")
-        for user_dir in sorted(p for p in backup.iterdir() if p.is_dir() and p.name.isdigit()):
+        user_dirs = sorted(p for p in backup.iterdir() if p.is_dir() and p.name.isdigit())
+        _log(f"scan backup scores {backup} users={len(user_dirs)}")
+        for user_dir in user_dirs:
+            scanned_users += 1
             qqid_s = user_dir.name
             if qqid_s in opted_out:
                 skipped_opt += 1
@@ -260,26 +304,52 @@ def ingest_from_backup_scores(
                 skipped_has += 1
                 continue
             if not (user_dir / "index.json").exists():
+                skipped_no_index += 1
                 continue
+
             dest = scores_dir / qqid_s
-            if dest.exists() and any(dest.iterdir()):
-                # 有空目录或残缺时覆盖为备份完整树
-                if _has_usable_snapshot(scores_dir, qqid_s):
-                    skipped_has += 1
-                    continue
-                shutil.rmtree(dest)
-            shutil.copytree(user_dir, dest)
+            dest_existed = dest.exists()
+            try:
+                if dest_existed:
+                    replaced_empty_or_broken += 1
+                    _log(
+                        f"backup replace broken/empty dest qq={qqid_s} "
+                        f"from={user_dir}"
+                    )
+                _safe_replace_user_dir(user_dir, dest)
+            except Exception as e:
+                skipped_copy_fail += 1
+                _log(f"backup copy fail qq={qqid_s}: {type(e).__name__}: {e}")
+                continue
+
             if _has_usable_snapshot(scores_dir, qqid_s):
                 copied += 1
+                if copied <= 20 or copied % 50 == 0:
+                    _log(f"backup copied ok qq={qqid_s} total={copied}")
             else:
-                # 复制了但不可用则丢掉
+                skipped_copy_fail += 1
+                _log(f"backup copied but still unusable, rollback qq={qqid_s}")
                 shutil.rmtree(dest, ignore_errors=True)
-    return {
+
+            if scanned_users % 200 == 0:
+                _log(
+                    f"backup progress scanned={scanned_users} copied={copied} "
+                    f"skip_has={skipped_has} skip_opt={skipped_opt} "
+                    f"no_index={skipped_no_index} fail={skipped_copy_fail}"
+                )
+
+    summary = {
         "copied": copied,
+        "scanned_users": scanned_users,
         "skipped_has_snapshot": skipped_has,
         "skipped_opt_out": skipped_opt,
+        "skipped_no_index": skipped_no_index,
+        "skipped_copy_fail": skipped_copy_fail,
+        "replaced_empty_or_broken": replaced_empty_or_broken,
         "backup_dirs": [str(p) for p in backup_scores_dirs],
     }
+    _log(f"backup ingest done: {summary}")
+    return summary
 
 
 async def api_backfill_enabled(
@@ -444,12 +514,23 @@ def main() -> int:
         action="store_true",
         help="不自动扫描 /www/bot 备份",
     )
+    parser.add_argument(
+        "--report",
+        type=Path,
+        default=None,
+        help="enrich 报告输出路径（默认 data/enrich_report_<时间戳>.json）",
+    )
     args = parser.parse_args()
 
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     scores_dir = Path(args.scores_dir)
     scores_dir.mkdir(parents=True, exist_ok=True)
     opted_out = set(DataShareManager(Path(args.share_config)).list_opted_out())
-    _log(f"scores_dir={scores_dir} opted_out={len(opted_out)}")
+    _log(f"stamp={stamp}")
+    _log(f"scores_dir={scores_dir}")
+    _log(f"share_config={args.share_config}")
+    _log(f"opted_out={len(opted_out)} ids_sample={sorted(opted_out)[:10]}")
+    _log(f"min_records={args.min_records} api_backfill={args.api_backfill}")
 
     cache_dbs = [Path(p) for p in args.cache_db]
     backup_dirs = [Path(p) for p in args.backup_scores]
@@ -506,10 +587,22 @@ def main() -> int:
     )
     report["after"] = after
     report["gained"] = after - before
-    out = scores_dir.parent / "enrich_report.json"
+    report["stamp"] = stamp
+    out = args.report or (scores_dir.parent / f"enrich_report_{stamp}.json")
+    out = Path(out)
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    # 同步一份 latest 方便查看
+    latest = out.parent / "enrich_report_latest.json"
+    try:
+        latest.write_text(out.read_text(encoding="utf-8"), encoding="utf-8")
+    except Exception:
+        pass
+    _log("===== enrich summary =====")
     _log(json.dumps(report, ensure_ascii=False, indent=2))
-    _log(f"usable snapshots after={after} (+{after - before}) report={out}")
+    _log(f"usable snapshots: {before} -> {after} (gained {after - before})")
+    _log(f"report={out}")
+    _log(f"report_latest={latest}")
     return 0
 
 
