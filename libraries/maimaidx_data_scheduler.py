@@ -18,7 +18,7 @@ from nonebot.adapters.onebot.v11 import Bot
 require("nonebot_plugin_apscheduler")
 from nonebot_plugin_apscheduler import scheduler
 
-from ..libraries.maimaidx_data_storage import data_storage, DailySnapshot, ScoreRecord
+from ..libraries.maimaidx_data_storage import data_storage, DailySnapshot
 from ..libraries.maimaidx_datasource import get_user_records
 
 
@@ -35,6 +35,8 @@ async def fetch_and_store_user_scores(
         是否成功
     """
     try:
+        from .maimaidx_share_snapshot import build_daily_snapshot
+
         # 强制刷新并写入玩家缓存，供其它指令复用
         userinfo, dev_records = await get_user_records(qqid=qqid, force_refresh=True)
         records = list(dev_records or [])
@@ -42,43 +44,36 @@ async def fetch_and_store_user_scores(
         if not records:
             log.warning(f"[DataScheduler] 用户 {qqid} 没有成绩数据")
             return False
-        
-        # 构建成绩记录列表
-        score_records = []
-        for r in records:
-            score_record = ScoreRecord(
-                song_id=r.song_id,
-                title=r.title,
-                level=r.level,
-                level_index=r.level_index,
-                ds=r.ds,
-                achievements=r.achievements,
-                rate=r.rate,
-                ra=r.ra,
-                fc=r.fc,
-                fs=r.fs,
-                dxScore=getattr(r, 'dxScore', 0),
-            )
-            score_records.append(score_record)
-        
-        # 创建每日快照
-        date_str = target_date or datetime.now().strftime("%Y-%m-%d")
-        snapshot = DailySnapshot(
-            date=date_str,
-            qqid=qqid,
-            nickname=userinfo.nickname or userinfo.username or str(qqid),
-            rating=userinfo.rating or 0,
-            records=score_records,
-            record_count=len(score_records),
+
+        snapshot = build_daily_snapshot(
+            qqid,
+            userinfo,
+            records,
             source=source,
+            target_date=target_date,
         )
-        
-        # 保存快照
+        if snapshot is None:
+            # 成绩过少时仍尽量落盘（个人开启存储场景）
+            from .maimaidx_share_snapshot import playinfo_to_score_records
+
+            score_records = playinfo_to_score_records(records)
+            if not score_records:
+                return False
+            snapshot = DailySnapshot(
+                date=target_date or datetime.now().strftime("%Y-%m-%d"),
+                qqid=qqid,
+                nickname=userinfo.nickname or userinfo.username or str(qqid),
+                rating=userinfo.rating or 0,
+                records=score_records,
+                record_count=len(score_records),
+                source=source,
+            )
+
         success = data_storage.save_daily_snapshot(snapshot)
         if success:
             log.info(
-                f"[DataScheduler] 成功存储用户 {qqid} 的 {date_str} 成绩快照，"
-                f"source={source}，共 {len(score_records)} 首，rating: {snapshot.rating}"
+                f"[DataScheduler] 成功存储用户 {qqid} 的 {snapshot.date} 成绩快照，"
+                f"source={source}，共 {snapshot.record_count} 首，rating: {snapshot.rating}"
             )
         return success
         
@@ -88,30 +83,61 @@ async def fetch_and_store_user_scores(
 
 
 async def daily_storage_task():
-    """每日存储任务：为所有开启存储的用户保存成绩"""
+    """每日存储：个人开启用户 API 落盘 + 近期缓存中的共享用户静默贡献。"""
     log.info("[DataScheduler] 开始执行每日成绩存储任务")
-    
-    enabled_users = data_storage.get_enabled_users()
-    if not enabled_users:
-        log.info("[DataScheduler] 没有用户开启数据存储，跳过")
+
+    from .maimaidx_data_share import data_share
+    from .maimaidx_player_cache import player_cache_db
+    from .maimaidx_share_snapshot import MIN_SHARE_RECORDS, maybe_save_share_snapshot
+
+    enabled_users = set(int(x) for x in data_storage.get_enabled_users())
+    # 近 7 天查过分且有厚 records 的缓存用户
+    since = (datetime.now() - timedelta(days=7)).timestamp()
+    try:
+        recent = player_cache_db.list_recent_full_records(
+            since_ts=since, min_records=MIN_SHARE_RECORDS, limit=2000
+        )
+    except Exception as e:
+        log.warning(f"[DataScheduler] 扫描 player_cache 失败: {e}")
+        recent = []
+
+    share_from_cache = 0
+    for item in recent:
+        qqid = int(item["qqid"])
+        if not data_share.is_sharing_enabled(qqid):
+            continue
+        if maybe_save_share_snapshot(
+            qqid,
+            item["userinfo"],
+            item["records"],
+            source="share_cache_daily",
+        ):
+            share_from_cache += 1
+
+    if not enabled_users and share_from_cache == 0:
+        log.info("[DataScheduler] 无需存储的用户，跳过")
         return
-    
-    log.info(f"[DataScheduler] 共有 {len(enabled_users)} 个用户需要存储数据")
-    
-    # 并发处理所有用户，限制并发数为 5
+
+    log.info(
+        f"[DataScheduler] 个人存储 {len(enabled_users)} 人；"
+        f"缓存贡献写入 {share_from_cache} 人"
+    )
+
     semaphore = asyncio.Semaphore(5)
-    
+
     async def store_one(qqid: int):
         async with semaphore:
             return await fetch_and_store_user_scores(qqid, source="auto")
-    
-    tasks = [store_one(qqid) for qqid in enabled_users]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    
+
+    results = await asyncio.gather(
+        *[store_one(qqid) for qqid in enabled_users], return_exceptions=True
+    )
     success_count = sum(1 for r in results if r is True)
     fail_count = len(results) - success_count
-    
-    log.info(f"[DataScheduler] 每日存储任务完成：成功 {success_count} 个，失败 {fail_count} 个")
+    log.info(
+        f"[DataScheduler] 每日存储完成：个人成功 {success_count} / 失败 {fail_count}；"
+        f"共享缓存贡献 {share_from_cache}"
+    )
 
 
 # 添加定时任务：每天凌晨 4:00 执行

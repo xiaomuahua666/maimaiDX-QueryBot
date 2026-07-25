@@ -108,7 +108,11 @@ class DataStorageManager:
         return self._load_config().get("enabled_users", [])
 
     def _user_dir(self, qqid: int) -> Path:
-        d = DATA_DIR / str(qqid)
+        # 只读路径不 mkdir，避免查询历史时留下空目录污染数据集扫描
+        return DATA_DIR / str(qqid)
+
+    def _ensure_user_dir(self, qqid: int) -> Path:
+        d = self._user_dir(qqid)
         d.mkdir(parents=True, exist_ok=True)
         return d
 
@@ -134,6 +138,7 @@ class DataStorageManager:
 
     def _save_index(self, qqid: int, index_data: Dict[str, Any]) -> bool:
         try:
+            self._ensure_user_dir(qqid)
             with open(self._index_file(qqid), "w", encoding="utf-8") as f:
                 json.dump(index_data, f, ensure_ascii=False, indent=2)
             return True
@@ -238,6 +243,7 @@ class DataStorageManager:
                     for r in snapshot.records
                 ],
             }
+            self._ensure_user_dir(snapshot.qqid)
             with open(self._snapshot_file(snapshot.qqid, snapshot.snapshot_id), "w", encoding="utf-8") as f:
                 json.dump(payload, f, ensure_ascii=False, indent=2)
 

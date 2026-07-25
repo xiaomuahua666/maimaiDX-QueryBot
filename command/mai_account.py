@@ -2058,8 +2058,26 @@ async def _post_upload_maintenance(
 ) -> None:
     """上传结算后的缓存刷新与存档；不阻塞用户收到最终结果。"""
     await _refresh_b50_cache_after_upload(user_key, fish=fish, lxns=lxns)
+    qqid = int(user_key)
     try:
-        await fetch_and_store_user_scores(int(user_key), source="upload")
+        from ..libraries.maimaidx_data_share import data_share
+        from ..libraries.maimaidx_data_storage import data_storage
+        from ..libraries.maimaidx_share_snapshot import maybe_save_share_snapshot
+        from ..libraries.maimaidx_player_cache import get_cached_player
+        from ..libraries.maimaidx_lxns_db import lxns_db
+
+        # 个人开启存储：完整 API 落盘；否则若未 opt-out，尽量用刚刷新的缓存贡献
+        if data_storage.is_enabled(qqid):
+            await fetch_and_store_user_scores(qqid, source="upload")
+        elif data_share.is_sharing_enabled(qqid):
+            source = lxns_db.get_source(qqid) or "divingfish"
+            hit = get_cached_player(qqid, None, source, force_refresh=False)
+            if hit is not None and hit.records:
+                maybe_save_share_snapshot(
+                    qqid, hit.userinfo, hit.records, source="share_upload"
+                )
+            else:
+                await fetch_and_store_user_scores(qqid, source="upload")
     except Exception as exc:
         log.warning(
             f"[DataStorage] 上传后后台自动存档失败 user={user_key}: "

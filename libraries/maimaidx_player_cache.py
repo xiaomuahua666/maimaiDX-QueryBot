@@ -330,6 +330,58 @@ class PlayerCacheDB:
         self._conn.commit()
         return cur.rowcount
 
+    def list_recent_full_records(
+        self,
+        *,
+        since_ts: float,
+        min_records: int = 30,
+        limit: int = 2000,
+    ) -> List[dict]:
+        """忽略 TTL，返回近期带厚全量成绩的缓存（供共享快照日任务）。"""
+        rows = self._conn.execute(
+            """
+            SELECT qqid, userinfo_json, records_json, fetched_at, source
+            FROM player_cache
+            WHERE qqid IS NOT NULL
+              AND fetched_at >= ?
+              AND records_json IS NOT NULL
+              AND length(records_json) > 20
+            ORDER BY fetched_at DESC
+            LIMIT ?
+            """,
+            (float(since_ts), int(limit) * 3),
+        ).fetchall()
+        best: dict[int, dict] = {}
+        for row in rows:
+            try:
+                qqid = int(row["qqid"])
+                raw_records = json.loads(row["records_json"])
+                if not isinstance(raw_records, list) or len(raw_records) < min_records:
+                    continue
+                userinfo = UserInfo.model_validate(json.loads(row["userinfo_json"]))
+                records = [PlayInfoDev.model_validate(r) for r in raw_records]
+                fetched_at = float(row["fetched_at"] or 0)
+            except Exception:
+                continue
+            prev = best.get(qqid)
+            if prev is None or (len(records), fetched_at) > (
+                len(prev["records"]),
+                prev["fetched_at"],
+            ):
+                best[qqid] = {
+                    "qqid": qqid,
+                    "userinfo": userinfo,
+                    "records": records,
+                    "fetched_at": fetched_at,
+                    "source": str(row["source"] or ""),
+                }
+        items = sorted(
+            best.values(),
+            key=lambda x: (len(x["records"]), x["fetched_at"]),
+            reverse=True,
+        )
+        return items[: max(0, int(limit))]
+
 
 class _LazyPlayerCacheDB:
     """延迟初始化 SQLite，避免插件 import 阶段阻塞启动。"""
@@ -502,6 +554,16 @@ async def resolve_player_records(
     userinfo, records = await fetch_fn()
     save_cached_player(qqid, username, source, userinfo, records)
     _set_fetch_meta(time.time(), "api", force_refresh=force_refresh)
+    # 全量成绩到手后静默写贡献快照（尊重 data_share opt-out；不强制开启个人存储）
+    if qqid and records:
+        try:
+            from .maimaidx_share_snapshot import maybe_save_share_snapshot
+
+            maybe_save_share_snapshot(
+                int(qqid), userinfo, records, source="share_query"
+            )
+        except Exception as e:
+            log.debug(f"[ShareSnapshot] query hook skip qq={qqid}: {e}")
     return userinfo, records
 
 
