@@ -57,6 +57,43 @@ def _stamp() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
 
 
+def _version_stamp() -> str:
+    """Version notes 用紧凑时间戳：20260725225027"""
+    return datetime.now().strftime("%Y%m%d%H%M%S")
+
+
+def _current_version_number(api, dataset_id: str) -> int:
+    """读取数据集当前 version number；失败则返回 0。"""
+    owner, _, slug = dataset_id.partition("/")
+    try:
+        rows = api.dataset_list(user=owner, search=slug)
+    except TypeError:
+        try:
+            rows = api.dataset_list(user=owner)
+        except Exception:
+            rows = []
+    except Exception:
+        rows = []
+    for r in rows or []:
+        ref = str(getattr(r, "ref", "") or "").lower()
+        if ref == dataset_id.lower() or ref.endswith("/" + slug.lower()):
+            n = getattr(r, "current_version_number", None)
+            if n is None:
+                n = getattr(r, "_current_version_number", None)
+            try:
+                return int(n or 0)
+            except (TypeError, ValueError):
+                return 0
+    return 0
+
+
+def _default_version_notes(api, dataset_id: str) -> str:
+    """格式：Version 2 - 20260725225027"""
+    cur = _current_version_number(api, dataset_id)
+    nxt = cur + 1 if cur >= 0 else 1
+    return f"Version {nxt} - {_version_stamp()}"
+
+
 def _load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -580,8 +617,8 @@ def main() -> int:
     )
     parser.add_argument(
         "--keywords",
-        default="games",
-        help="Kaggle 官方 keywords（逗号分隔；无效 tag 会被丢弃，默认 games）",
+        default="Game",
+        help="Kaggle tags/keywords，逗号分隔（默认 Game）",
     )
     parser.add_argument(
         "--mode",
@@ -597,7 +634,7 @@ def main() -> int:
     parser.add_argument(
         "--message",
         default="",
-        help="version notes；默认带时间戳与 player_count",
+        help="version notes；默认 Version N - YYYYMMDDHHMMSS",
     )
     parser.add_argument("--kaggle-json", type=Path, default=None)
     parser.add_argument(
@@ -689,10 +726,6 @@ def main() -> int:
 
         staging_info = _preflight_staging(work)
         meta = _load_json(work / "dataset_meta.json")
-        message = args.message.strip() or (
-            f"export {meta.get('generated_at') or stamp} "
-            f"players={meta.get('player_count')} stamp={stamp}"
-        )
         keywords = [k.strip() for k in args.keywords.split(",") if k.strip()]
         _write_dataset_metadata(
             work,
@@ -705,12 +738,25 @@ def main() -> int:
             staging_info=staging_info,
         )
 
+        # version notes 需要 API 读当前版本号；dry-run 无 API 时用 Version 1 - stamp
+        if args.message.strip():
+            message = args.message.strip()
+        else:
+            if api is None and not args.dry_run:
+                api = _import_kaggle_api()
+            if api is not None:
+                message = _default_version_notes(api, dataset_id)
+            else:
+                message = f"Version 1 - {_version_stamp()}"
+        _log(f"version_notes={message!r} tags={keywords}")
+
         report = {
             "stamp": stamp,
             "dataset_id": dataset_id,
             "mode": args.mode,
             "public": bool(args.public),
             "message": message,
+            "keywords": keywords,
             "work_dir": str(work),
             "staging": staging_info,
             "dry_run": bool(args.dry_run),
