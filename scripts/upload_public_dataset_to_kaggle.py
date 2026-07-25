@@ -33,10 +33,11 @@ from typing import Any, Dict, List, Optional, Tuple
 ROOT = Path(__file__).resolve().parents[1]
 
 # 常见本地 env 路径（绝不把真实 token 写进仓库）
+# 优先 .env.kaggle，避免被 Bot 主 .env 里空值占坑
 _DEFAULT_ENV_CANDIDATES = (
+    Path("/www/bot/awmc/.env.kaggle"),
     Path("/www/bot/awmc/.env"),
     Path("/www/bot/awmc/.env.prod"),
-    Path("/www/bot/awmc/.env.kaggle"),
     ROOT / ".env",
     ROOT / ".env.prod",
 )
