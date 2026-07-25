@@ -1,0 +1,598 @@
+#!/usr/bin/env python3
+"""从本地成绩快照导出脱敏公开数据集（排除「不同意共享」用户）。
+
+用途：
+- 生成 peer_stats（供锐评 ARPI / 同段样本）
+- 导出匿名玩家快照与 Rating 趋势（供提示词 / 可行性优化）
+- 生成 roast_training_samples.jsonl（锐评上下文骨架样本）
+
+用法示例：
+  python scripts/export_public_dataset.py \\
+    --output data/public_dataset \\
+    --scores-dir data/user_scores \\
+    --bucket-size 200 \\
+    --min-bucket-players 8
+
+输出目录主要文件：
+  README.md
+  dataset_meta.json
+  peer_stats.json / peer_stats.json.gz
+  players/{anon_id}.json
+  rating_trends.jsonl
+  roast_training_samples.jsonl
+"""
+
+from __future__ import annotations
+
+import argparse
+import gzip
+import hashlib
+import json
+import math
+import os
+import secrets
+import sys
+import time
+from collections import defaultdict
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _bootstrap_package() -> None:
+    import types
+
+    pkg_name = "nonebot_plugin_maimaidx"
+    if pkg_name in sys.modules:
+        return
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    pkg = types.ModuleType(pkg_name)
+    pkg.__path__ = [str(ROOT)]
+    sys.modules[pkg_name] = pkg
+    lib = types.ModuleType(f"{pkg_name}.libraries")
+    lib.__path__ = [str(ROOT / "libraries")]
+    sys.modules[f"{pkg_name}.libraries"] = lib
+
+
+_bootstrap_package()
+
+from nonebot_plugin_maimaidx.libraries.maimaidx_data_share import (  # noqa: E402
+    DataShareManager,
+)
+from nonebot_plugin_maimaidx.libraries.maimaidx_data_storage import (  # noqa: E402
+    DATA_DIR as DEFAULT_SCORES_DIR,
+    DataStorageManager,
+    ScoreRecord,
+)
+
+
+def _percentile(sorted_vals: Sequence[float], p: float) -> Optional[float]:
+    if not sorted_vals:
+        return None
+    if len(sorted_vals) == 1:
+        return float(sorted_vals[0])
+    k = (len(sorted_vals) - 1) * (p / 100.0)
+    f = math.floor(k)
+    c = math.ceil(k)
+    if f == c:
+        return float(sorted_vals[int(k)])
+    d0 = sorted_vals[f] * (c - k)
+    d1 = sorted_vals[c] * (k - f)
+    return float(d0 + d1)
+
+
+def _anon_id(qqid: str, salt: str) -> str:
+    digest = hashlib.sha256(f"maimaidx-share:{salt}:{qqid}".encode("utf-8")).hexdigest()
+    return digest[:16]
+
+
+def _load_opted_out(share_config: Path) -> set[str]:
+    mgr = DataShareManager(share_config)
+    return set(mgr.list_opted_out())
+
+
+def _try_is_new_song(song_id: Any) -> Optional[bool]:
+    """曲库可用且能解析曲目时返回是否新版本曲；否则 None。"""
+    try:
+        from nonebot_plugin_maimaidx.libraries.maimaidx_music import mai
+
+        total = getattr(mai, "total_list", None)
+        if not total:
+            return None
+        music = total.by_id(str(song_id))
+        if not music:
+            return None
+        from nonebot_plugin_maimaidx.libraries.maimaidx_best_50 import _song_is_new
+
+        return bool(_song_is_new(song_id))
+    except Exception:
+        return None
+
+
+def _build_b50(records: List[ScoreRecord]) -> Tuple[List[ScoreRecord], List[ScoreRecord]]:
+    """尽量按 B35/B15 划分；曲库不可用时回退为 ra 前 50。"""
+    if not records:
+        return [], []
+    flags = [_try_is_new_song(r.song_id) for r in records]
+    known = sum(1 for f in flags if f is not None)
+    # 曲库未加载或匹配率过低时，用 ra 前 50 作为 B50 近似
+    if known < max(10, len(records) // 2):
+        top = sorted(records, key=lambda x: int(x.ra), reverse=True)[:50]
+        return top, []
+    b15 = sorted(
+        [r for r, f in zip(records, flags) if f],
+        key=lambda x: int(x.ra),
+        reverse=True,
+    )[:15]
+    b35 = sorted(
+        [r for r, f in zip(records, flags) if not f],
+        key=lambda x: int(x.ra),
+        reverse=True,
+    )[:35]
+    return b35, b15
+
+
+def _bucket_key(rating: int, size: int) -> str:
+    lo = (int(rating) // size) * size
+    return f"{lo}-{lo + size - 1}"
+
+
+def _safe_float(v: Any, default: float = 0.0) -> float:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def _redact_record(r: ScoreRecord) -> dict:
+    return {
+        "song_id": int(r.song_id),
+        "title": str(r.title or ""),
+        "level": str(r.level or ""),
+        "level_index": int(r.level_index),
+        "ds": float(r.ds),
+        "achievements": float(r.achievements),
+        "rate": str(r.rate or ""),
+        "ra": int(r.ra),
+        "fc": r.fc or "",
+        "fs": r.fs or "",
+        "dxScore": int(r.dxScore or 0),
+    }
+
+
+def _iter_user_dirs(scores_dir: Path) -> Iterable[Path]:
+    if not scores_dir.exists():
+        return []
+    return sorted(p for p in scores_dir.iterdir() if p.is_dir() and p.name.isdigit())
+
+
+def _load_latest_snapshot(storage: DataStorageManager, qqid: int):
+    metas = storage.list_snapshots(qqid, limit=1)
+    if not metas:
+        return None
+    return storage.load_snapshot_by_id(qqid, str(metas[0].get("snapshot_id") or ""))
+
+
+def _rating_trend(storage: DataStorageManager, qqid: int, days: int = 90) -> List[dict]:
+    rows = storage.get_rating_history(qqid, days=days)
+    # get_rating_history 新到旧；趋势导出改为旧到新
+    out = []
+    for m in reversed(rows):
+        out.append(
+            {
+                "date": m.get("date"),
+                "stored_at": m.get("stored_at"),
+                "rating": int(m.get("rating") or 0),
+                "record_count": int(m.get("record_count") or 0),
+            }
+        )
+    return out
+
+
+def _player_arpi(
+    b50: Sequence[ScoreRecord],
+    chart_avgs: Dict[str, float],
+) -> Optional[float]:
+    gaps = []
+    for r in b50:
+        key = f"{int(r.song_id)}:{int(r.level_index)}"
+        avg = chart_avgs.get(key)
+        if avg is None:
+            continue
+        gaps.append(float(r.achievements) - float(avg))
+    if not gaps:
+        return None
+    return sum(gaps) / len(gaps)
+
+
+def export_dataset(
+    *,
+    scores_dir: Path,
+    share_config: Path,
+    output_dir: Path,
+    bucket_size: int = 200,
+    min_bucket_players: int = 8,
+    min_chart_samples: int = 3,
+    trend_days: int = 90,
+    salt: Optional[str] = None,
+    include_full_records: bool = False,
+) -> dict:
+    storage = DataStorageManager()
+    # 允许自定义成绩根目录
+    storage_scores = scores_dir
+
+    opted_out = _load_opted_out(share_config)
+    salt = salt or os.environ.get("MAIMAIDX_DATASET_SALT") or secrets.token_hex(16)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    players_dir = output_dir / "players"
+    players_dir.mkdir(parents=True, exist_ok=True)
+
+    # 第一遍：收集可共享用户最新 B50，累计 chart 达成与出现次数
+    bucket_charts: Dict[str, Dict[str, Dict[str, Any]]] = defaultdict(
+        lambda: defaultdict(lambda: {"sum_ach": 0.0, "n": 0, "b50_n": 0})
+    )
+    bucket_player_count: Dict[str, int] = defaultdict(int)
+    player_payloads: List[dict] = []
+    skipped_opt_out = 0
+    skipped_empty = 0
+
+    user_dirs = [p for p in _iter_user_dirs(storage_scores)]
+    # 临时 hack：DataStorageManager 固定用 DATA_DIR；此处直接读自定义路径
+    # 通过 monkey 读写 index/snapshot
+    from nonebot_plugin_maimaidx.libraries import maimaidx_data_storage as _ds_mod
+
+    original_dir = _ds_mod.DATA_DIR
+    _ds_mod.DATA_DIR = storage_scores
+    try:
+        for user_dir in user_dirs:
+            qqid_s = user_dir.name
+            if qqid_s in opted_out:
+                skipped_opt_out += 1
+                continue
+            qqid = int(qqid_s)
+            snap = _load_latest_snapshot(storage, qqid)
+            if not snap or not snap.records:
+                skipped_empty += 1
+                continue
+
+            b35, b15 = _build_b50(list(snap.records))
+            b50 = b35 + b15
+            if not b50:
+                skipped_empty += 1
+                continue
+
+            rating = int(snap.rating or 0)
+            bkey = _bucket_key(rating, bucket_size)
+            bucket_player_count[bkey] += 1
+            seen_keys = set()
+            for r in b50:
+                ckey = f"{int(r.song_id)}:{int(r.level_index)}"
+                if ckey in seen_keys:
+                    continue
+                seen_keys.add(ckey)
+                cell = bucket_charts[bkey][ckey]
+                cell["sum_ach"] += float(r.achievements)
+                cell["n"] += 1
+                cell["b50_n"] += 1
+
+            anon = _anon_id(qqid_s, salt)
+            trend = _rating_trend(storage, qqid, days=trend_days)
+            delta = None
+            if len(trend) >= 2:
+                delta = int(trend[-1]["rating"]) - int(trend[0]["rating"])
+
+            payload = {
+                "player_id": anon,
+                "latest": {
+                    "date": snap.date,
+                    "stored_at": snap.stored_at,
+                    "rating": rating,
+                    "record_count": int(snap.record_count or len(snap.records)),
+                    "b35": [_redact_record(r) for r in b35],
+                    "b15": [_redact_record(r) for r in b15],
+                },
+                "rating_trend": trend,
+                "rating_delta": delta,
+            }
+            if include_full_records:
+                payload["latest"]["records"] = [_redact_record(r) for r in snap.records]
+            player_payloads.append(payload)
+    finally:
+        _ds_mod.DATA_DIR = original_dir
+
+    # 第二遍：用已聚合均值算每位玩家 ARPI，写入桶分布
+    chart_avg_by_bucket: Dict[str, Dict[str, float]] = {}
+    for bkey, charts in bucket_charts.items():
+        chart_avg_by_bucket[bkey] = {
+            ckey: (cell["sum_ach"] / cell["n"]) if cell["n"] else 0.0
+            for ckey, cell in charts.items()
+        }
+
+    bucket_arpi_values: Dict[str, List[float]] = defaultdict(list)
+    for payload in player_payloads:
+        rating = int(payload["latest"]["rating"])
+        bkey = _bucket_key(rating, bucket_size)
+        b50_recs = []
+        for item in payload["latest"]["b35"] + payload["latest"]["b15"]:
+            b50_recs.append(
+                ScoreRecord(
+                    song_id=item["song_id"],
+                    title=item["title"],
+                    level=item["level"],
+                    level_index=item["level_index"],
+                    ds=item["ds"],
+                    achievements=item["achievements"],
+                    rate=item["rate"],
+                    ra=item["ra"],
+                    fc=item.get("fc") or None,
+                    fs=item.get("fs") or None,
+                    dxScore=int(item.get("dxScore") or 0),
+                )
+            )
+        arpi = _player_arpi(b50_recs, chart_avg_by_bucket.get(bkey, {}))
+        payload["latest"]["arpi"] = None if arpi is None else round(arpi, 4)
+        payload["latest"]["rating_bucket"] = bkey
+        if arpi is not None:
+            bucket_arpi_values[bkey].append(arpi)
+
+    # 组装 peer_stats
+    buckets_out: Dict[str, Any] = {}
+    for bkey, charts in bucket_charts.items():
+        player_n = bucket_player_count.get(bkey, 0)
+        if player_n < min_bucket_players:
+            continue
+        # 桶内人数很少时，谱面阈值降到不超过人数，避免小样本环境导出空 peer_stats
+        chart_threshold = max(1, min(int(min_chart_samples), player_n))
+        chart_stats = {}
+        for ckey, cell in charts.items():
+            if cell["n"] < chart_threshold:
+                continue
+            chart_stats[ckey] = {
+                "avg_achievement": round(cell["sum_ach"] / cell["n"], 4),
+                "sample_count": int(cell["n"]),
+                "b50_appear_rate": round(cell["b50_n"] / player_n, 4),
+            }
+        if not chart_stats:
+            continue
+        arpis = sorted(bucket_arpi_values.get(bkey) or [])
+        dist = {
+            "count": len(arpis),
+            "mean": round(sum(arpis) / len(arpis), 4) if arpis else None,
+            "median": None if not arpis else round(_percentile(arpis, 50) or 0.0, 4),
+            "p25": None if not arpis else round(_percentile(arpis, 25) or 0.0, 4),
+            "p75": None if not arpis else round(_percentile(arpis, 75) or 0.0, 4),
+        }
+        buckets_out[bkey] = {
+            "player_count": player_n,
+            "charts": chart_stats,
+            "arpi_distribution": dist,
+        }
+
+    peer_stats = {
+        "schema_version": 1,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "rating_bucket_size": bucket_size,
+        "min_bucket_players": min_bucket_players,
+        "min_chart_samples": min_chart_samples,
+        "source": "maimaidx-querybot-user-scores",
+        "buckets": buckets_out,
+    }
+
+    # 写玩家文件与 jsonl
+    trend_path = output_dir / "rating_trends.jsonl"
+    roast_path = output_dir / "roast_training_samples.jsonl"
+    with open(trend_path, "w", encoding="utf-8") as f_trend, open(
+        roast_path, "w", encoding="utf-8"
+    ) as f_roast:
+        for payload in player_payloads:
+            anon = payload["player_id"]
+            with open(players_dir / f"{anon}.json", "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+
+            trend_row = {
+                "player_id": anon,
+                "rating": payload["latest"]["rating"],
+                "rating_bucket": payload["latest"]["rating_bucket"],
+                "rating_delta": payload.get("rating_delta"),
+                "trend": payload.get("rating_trend") or [],
+                "arpi": payload["latest"].get("arpi"),
+            }
+            f_trend.write(json.dumps(trend_row, ensure_ascii=False) + "\n")
+
+            # 锐评提示词优化用的轻量样本（无身份、含同段与趋势）
+            sample = {
+                "player_id": anon,
+                "rating": payload["latest"]["rating"],
+                "rating_bucket": payload["latest"]["rating_bucket"],
+                "arpi": payload["latest"].get("arpi"),
+                "rating_delta": payload.get("rating_delta"),
+                "trend_points": len(payload.get("rating_trend") or []),
+                "b35_count": len(payload["latest"]["b35"]),
+                "b15_count": len(payload["latest"]["b15"]),
+                "b35_top": [
+                    {
+                        "title": r["title"],
+                        "ds": r["ds"],
+                        "achievements": r["achievements"],
+                        "ra": r["ra"],
+                    }
+                    for r in payload["latest"]["b35"][:5]
+                ],
+                "b15_top": [
+                    {
+                        "title": r["title"],
+                        "ds": r["ds"],
+                        "achievements": r["achievements"],
+                        "ra": r["ra"],
+                    }
+                    for r in payload["latest"]["b15"][:5]
+                ],
+                "push_feasibility_hint": _feasibility_hint(payload),
+            }
+            f_roast.write(json.dumps(sample, ensure_ascii=False) + "\n")
+
+    peer_json = output_dir / "peer_stats.json"
+    peer_json.write_text(
+        json.dumps(peer_stats, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    with gzip.open(output_dir / "peer_stats.json.gz", "wt", encoding="utf-8") as gz:
+        json.dump(peer_stats, gz, ensure_ascii=False)
+
+    meta = {
+        "schema_version": 1,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "player_count": len(player_payloads),
+        "skipped_opt_out": skipped_opt_out,
+        "skipped_empty": skipped_empty,
+        "bucket_size": bucket_size,
+        "min_bucket_players": min_bucket_players,
+        "min_chart_samples": min_chart_samples,
+        "trend_days": trend_days,
+        "include_full_records": include_full_records,
+        "bucket_count": len(buckets_out),
+        "salt_fingerprint": hashlib.sha256(salt.encode()).hexdigest()[:12],
+        "note": "player_id 为单向哈希，不可反查 QQ；opt-out 用户已排除。",
+    }
+    (output_dir / "dataset_meta.json").write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    (output_dir / "README.md").write_text(_readme_text(meta), encoding="utf-8")
+
+    # 可选：把 salt 写到本地私密文件（勿公开）
+    salt_path = output_dir / ".dataset_salt"
+    salt_path.write_text(salt + "\n", encoding="utf-8")
+    try:
+        os.chmod(salt_path, 0o600)
+    except OSError:
+        pass
+
+    return meta
+
+
+def _feasibility_hint(payload: dict) -> str:
+    delta = payload.get("rating_delta")
+    trend = payload.get("rating_trend") or []
+    if delta is None or len(trend) < 2:
+        return "趋势样本不足，推分建议偏保守"
+    days = max(1, len(trend) - 1)
+    daily = delta / days
+    if daily >= 3:
+        return "近期推分较快，可给更具进攻性的路线"
+    if daily >= 1:
+        return "稳步上升，推分候选以稳定吃分为主"
+    if daily >= 0:
+        return "几乎横盘，优先修地板与高收益寸止谱"
+    return "近期下滑或波动，锐评应强调止损与巩固基本盘"
+
+
+def _readme_text(meta: dict) -> str:
+    return f"""# maimaiDX 脱敏公开数据集
+
+生成时间：{meta.get("generated_at")}
+玩家样本：{meta.get("player_count")}（已排除不同意共享）
+同段桶数：{meta.get("bucket_count")}（bucket_size={meta.get("bucket_size")}）
+
+## 文件说明
+
+| 文件 | 用途 |
+|------|------|
+| `peer_stats.json` / `.json.gz` | 复制到 `B50_ASSETS_PATH`，供锐评 ARPI / 同段均值 |
+| `players/*.json` | 匿名玩家最新 B50 + Rating 趋势 |
+| `rating_trends.jsonl` | 推分趋势行式样本 |
+| `roast_training_samples.jsonl` | 锐评提示词 / 可行性优化轻量样本 |
+| `dataset_meta.json` | 导出元信息 |
+| `.dataset_salt` | **私密**匿名盐，勿随公开包发布 |
+
+## 脱敏规则
+
+- 去除 QQ、昵称等身份字段
+- `player_id` = SHA256 截断，单向不可反查
+- 已发送「不同意共享我的数据」的用户不会出现在本数据集
+
+## 接入锐评
+
+```bash
+cp peer_stats.json.gz /path/to/b50_assets/
+# 或 peer_stats.json / peer_stats.zip
+```
+
+重启 Bot 或重新加载 peer_stats 后，`锐评一下` 将使用新同段样本。
+
+## 重新导出
+
+```bash
+python scripts/export_public_dataset.py --output data/public_dataset
+```
+"""
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="导出脱敏公开成绩数据集")
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=ROOT / "data" / "public_dataset",
+        help="输出目录",
+    )
+    parser.add_argument(
+        "--scores-dir",
+        type=Path,
+        default=DEFAULT_SCORES_DIR,
+        help="user_scores 根目录",
+    )
+    parser.add_argument(
+        "--share-config",
+        type=Path,
+        default=ROOT / "data" / "data_share_config.json",
+        help="数据共享 opt-out 配置",
+    )
+    parser.add_argument("--bucket-size", type=int, default=200)
+    parser.add_argument("--min-bucket-players", type=int, default=8)
+    parser.add_argument(
+        "--min-chart-samples",
+        type=int,
+        default=3,
+        help="同段谱面最少样本数（不超过该桶玩家数）",
+    )
+    parser.add_argument("--trend-days", type=int, default=90)
+    parser.add_argument(
+        "--salt",
+        default=None,
+        help="匿名哈希盐；默认读 MAIMAIDX_DATASET_SALT 或随机生成",
+    )
+    parser.add_argument(
+        "--include-full-records",
+        action="store_true",
+        help="在 players/*.json 中附带全量成绩（体积更大）",
+    )
+    args = parser.parse_args()
+
+    print(f"[export] scores={args.scores_dir}")
+    print(f"[export] share_config={args.share_config}")
+    print(f"[export] output={args.output}")
+    t0 = time.time()
+    meta = export_dataset(
+        scores_dir=args.scores_dir,
+        share_config=args.share_config,
+        output_dir=args.output,
+        bucket_size=args.bucket_size,
+        min_bucket_players=args.min_bucket_players,
+        min_chart_samples=args.min_chart_samples,
+        trend_days=args.trend_days,
+        salt=args.salt,
+        include_full_records=args.include_full_records,
+    )
+    elapsed = time.time() - t0
+    print(json.dumps(meta, ensure_ascii=False, indent=2))
+    print(f"[export] done in {elapsed:.1f}s")
+    print(f"[export] peer_stats -> {args.output / 'peer_stats.json'}")
+    print("提醒：公开发布前请删除 .dataset_salt，并确认未包含不同意共享用户。")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

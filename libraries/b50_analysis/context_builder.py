@@ -450,6 +450,85 @@ def _load_assets_context(assets_path: str) -> dict:
     }
 
 
+def _arpi_bucket_stats(bucket: dict, player_arpi: float | None, *, min_samples: int = 20) -> dict:
+    """从 peer_stats 桶内 arpi_distribution 判断玩家同段分位。"""
+    dist = (bucket or {}).get("arpi_distribution") or {}
+    count = _i(dist.get("count"))
+    if player_arpi is None:
+        return {"sufficient": False, "count": count, "reason": "no_player_arpi"}
+    if count < min_samples or dist.get("median") is None:
+        return {"sufficient": False, "count": count, "reason": "sample_insufficient"}
+    p25 = _f(dist.get("p25"))
+    median = _f(dist.get("median"))
+    p75 = _f(dist.get("p75"))
+    mean = _f(dist.get("mean"))
+    if player_arpi >= p75:
+        position = "above_p75"
+    elif player_arpi <= p25:
+        position = "below_p25"
+    else:
+        position = "around_median"
+    return {
+        "sufficient": True,
+        "count": count,
+        "position": position,
+        "mean": round(mean, 4),
+        "median": round(median, 4),
+        "p25": round(p25, 4),
+        "p75": round(p75, 4),
+        "player_arpi": round(player_arpi, 4),
+    }
+
+
+def _normalize_rating_trend(raw: Any) -> dict:
+    """标准化推分趋势：points 旧→新，附 delta / 可行性提示。"""
+    if not raw:
+        return {}
+    if isinstance(raw, dict) and (raw.get("points") is not None or raw.get("delta") is not None):
+        points = list(raw.get("points") or [])
+        delta = raw.get("delta")
+    elif isinstance(raw, list):
+        points = list(raw)
+        delta = None
+    else:
+        return {}
+    cleaned = []
+    for p in points:
+        if not isinstance(p, dict):
+            continue
+        try:
+            cleaned.append(
+                {
+                    "date": str(p.get("date") or ""),
+                    "rating": _i(p.get("rating")),
+                }
+            )
+        except Exception:
+            continue
+    if len(cleaned) >= 2 and delta is None:
+        delta = cleaned[-1]["rating"] - cleaned[0]["rating"]
+    hint = ""
+    if delta is None or len(cleaned) < 2:
+        hint = "趋势样本不足，推分建议偏保守"
+    else:
+        span = max(1, len(cleaned) - 1)
+        daily = float(delta) / span
+        if daily >= 3:
+            hint = "近期推分较快，可给更具进攻性的路线"
+        elif daily >= 1:
+            hint = "稳步上升，推分候选以稳定吃分为主"
+        elif daily >= 0:
+            hint = "几乎横盘，优先修地板与高收益寸止谱"
+        else:
+            hint = "近期下滑或波动，锐评应强调止损与巩固基本盘"
+    return {
+        "points": cleaned[-14:],
+        "delta": delta,
+        "point_count": len(cleaned),
+        "feasibility_hint": hint,
+    }
+
+
 def build_context(b50_data: dict, peer_stats: dict | None = None) -> dict:
     player = {
         "nickname": b50_data.get("nickname") or b50_data.get("username") or "maimai player",
@@ -481,12 +560,16 @@ def build_context(b50_data: dict, peer_stats: dict | None = None) -> dict:
     b15_avg = sum(c["achievement"] for c in b15) / len(b15) if b15 else 0.0
 
     peer_data: dict = {}
+    arpi_bucket_stats: dict = {}
+    bucket_key = ""
+    raw_bucket: dict = {}
     if peer_stats:
         rating = player["rating"]
         sz = _i(peer_stats.get("rating_bucket_size"), 200)
         lo = (rating // sz) * sz
-        bucket = (peer_stats.get("buckets") or {}).get(f"{lo}-{lo + sz - 1}") or {}
-        chart_stats = bucket.get("charts") or {}
+        bucket_key = f"{lo}-{lo + sz - 1}"
+        raw_bucket = (peer_stats.get("buckets") or {}).get(bucket_key) or {}
+        chart_stats = raw_bucket.get("charts") or {}
         if chart_stats:
             gaps, overlaps = [], []
             for c in b50:
@@ -506,11 +589,12 @@ def build_context(b50_data: dict, peer_stats: dict | None = None) -> dict:
             if gaps:
                 peer_data = {
                     "available": True,
-                    "bucket": f"{lo}-{lo + sz - 1}",
+                    "bucket": bucket_key,
                     "matched": len(gaps),
                     "arpi": round(sum(gaps) / len(gaps), 4),
                     "b50_overlap": {"value": round(sum(overlaps) / len(overlaps), 2)},
                 }
+        arpi_bucket_stats = _arpi_bucket_stats(raw_bucket, peer_data.get("arpi"))
 
     with_gap = [c for c in b50 if c.get("gap") is not None]
     highlights = sorted(with_gap, key=lambda c: c.get("gap", 0), reverse=True)[:4]
@@ -546,10 +630,17 @@ def build_context(b50_data: dict, peer_stats: dict | None = None) -> dict:
         chart_summaries,
         all_charts,
     )
+    rating_trend = _normalize_rating_trend(
+        b50_data.get("rating_trend") or b50_data.get("_rating_trend")
+    )
 
     return {
         "player": player,
         "peer_stats": peer_data,
+        "arpi_bucket_stats": arpi_bucket_stats,
+        "b50_overlap": peer_data.get("b50_overlap") or {},
+        "config_profile": config_focus,
+        "rating_trend": rating_trend,
         "summary": summary,
         "evidence": {
             "highlights": highlights,

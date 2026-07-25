@@ -106,6 +106,29 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
         await matcher.finish(format_command_error(e), reply_message=True)
         return
 
+    # 有本地存档时附带真实 Rating 趋势，供推分可行性判断
+    try:
+        from ..libraries.maimaidx_data_storage import data_storage
+
+        if data_storage.is_enabled(int(legacy_qq)):
+            hist = data_storage.get_rating_history(int(legacy_qq), days=90)
+            if hist:
+                points = [
+                    {
+                        'date': m.get('date'),
+                        'rating': int(m.get('rating') or 0),
+                    }
+                    for m in reversed(hist)
+                    if m.get('date') is not None
+                ]
+                if len(points) >= 2:
+                    b50_data['rating_trend'] = {
+                        'points': points,
+                        'delta': int(points[-1]['rating']) - int(points[0]['rating']),
+                    }
+    except Exception as e:
+        log.debug(f'[b50_analysis] 读取推分趋势失败 qq={legacy_qq}: {e}')
+
     peer_stats = get_peer_stats()
     context = build_context(b50_data, peer_stats)
     context['player']['qq'] = str(legacy_qq)

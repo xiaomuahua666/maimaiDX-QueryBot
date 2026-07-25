@@ -1,4 +1,4 @@
-"""AWMC 用户协议：链接、动态确认词、版本化同意与撤回。"""
+"""AWMC 用户协议：链接、动态确认词、版本化同意与撤回；数据共享 opt-out。"""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from nonebot.params import CommandArg
 from nonebot.rule import Rule
 
 from ..libraries.maimaidx_admin_audit import admin_audit
+from ..libraries.maimaidx_data_share import data_share
 from ..libraries.maimaidx_platform import billing_user_id
 
 
@@ -21,6 +22,15 @@ DEFAULT_AGREEMENT_ACCEPT_TEXT = (
 DEFAULT_AGREEMENT_VERSION = "4"
 _LEGACY_DEFAULT_URL = "https://wiki.awmc.cc/guide/bot/terms"
 _LEGACY_DEFAULT_VERSION = "2.0.0"
+
+_DATA_SHARE_NOTE = (
+    "\n\n📊 数据共享（默认开启）：\n"
+    "玩家成绩、Rating、推分趋势等将脱敏后作为公开数据处理，"
+    "用于同段统计（ARPI）、锐评样本优化与模型/提示词训练。\n"
+    "若不想共享，请发送「不同意共享我的数据」；"
+    "可随时发送「同意共享我的数据」重新开启。\n"
+    "查询「数据共享状态」可查看当前开关。"
+)
 
 
 def agreement_policy() -> dict[str, str]:
@@ -54,6 +64,7 @@ def agreement_prompt() -> str:
         f"{policy['url']}\n\n"
         "阅读网页后，请完整复制并发送网页中的确认词。\n"
         "请认真阅读本网页内容和协议。"
+        + _DATA_SHARE_NOTE
     )
 
 
@@ -70,12 +81,24 @@ agreement_view = on_command("用户协议", aliases={"mai用户协议"})
 agreement_accept = on_command("同意用户协议")
 agreement_phrase = on_message(rule=Rule(_is_accept_phrase), priority=3, block=True)
 agreement_revoke = on_command("撤回用户协议")
+data_share_opt_out = on_command(
+    "不同意共享我的数据",
+    aliases={"拒绝共享数据", "关闭数据共享", "不同意共享数据"},
+)
+data_share_opt_in = on_command(
+    "同意共享我的数据",
+    aliases={"开启数据共享", "同意共享数据"},
+)
+data_share_status = on_command("数据共享状态", aliases={"共享数据状态", "我的数据共享"})
 
 for _debt_exempt_matcher in (
     agreement_view,
     agreement_accept,
     agreement_phrase,
     agreement_revoke,
+    data_share_opt_out,
+    data_share_opt_in,
+    data_share_status,
 ):
     setattr(_debt_exempt_matcher, "_maimaidx_debt_exempt", True)
 
@@ -85,7 +108,10 @@ async def _accept(event: Event) -> str:
     version = agreement_policy()["version"]
     admin_audit.accept_agreement(uid, version)
     admin_audit.add_step("agreement.accept", "success", {"version": version})
-    return f"已确认并同意用户协议 v{version}。"
+    return (
+        f"已确认并同意用户协议 v{version}。"
+        + _DATA_SHARE_NOTE
+    )
 
 
 @agreement_view.handle()
@@ -117,3 +143,38 @@ async def _(event: Event):
         "已撤回同意。已存储的绑定数据请另行使用 mai解绑处理。"
         if changed else "当前没有生效中的协议同意记录。"
     )
+
+
+@data_share_opt_out.handle()
+async def _(event: Event):
+    uid = str(billing_user_id(event))
+    changed = data_share.opt_out(uid)
+    admin_audit.add_step("data_share.opt_out", "success", {"changed": changed})
+    if changed:
+        await data_share_opt_out.finish(
+            "已关闭数据共享。\n"
+            "你的成绩、Rating、推分趋势将不再进入脱敏公开数据集与同段样本聚合；"
+            "个人查分、存档、周报等功能不受影响。\n"
+            "如需重新开启，请发送「同意共享我的数据」。"
+        )
+    await data_share_opt_out.finish("你已关闭数据共享，无需重复操作。")
+
+
+@data_share_opt_in.handle()
+async def _(event: Event):
+    uid = str(billing_user_id(event))
+    changed = data_share.opt_in(uid)
+    admin_audit.add_step("data_share.opt_in", "success", {"changed": changed})
+    if changed:
+        await data_share_opt_in.finish(
+            "已重新开启数据共享。\n"
+            "后续脱敏后的成绩数据可再次用于同段统计、锐评优化与公开数据集。"
+        )
+    await data_share_opt_in.finish("数据共享已是开启状态（默认）。")
+
+
+@data_share_status.handle()
+async def _(event: Event):
+    uid = str(billing_user_id(event))
+    admin_audit.add_step("data_share.status", "success", {})
+    await data_share_status.finish(data_share.status_text(uid))

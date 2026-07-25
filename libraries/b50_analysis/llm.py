@@ -384,6 +384,7 @@ rating 不到 15000 却出现 14+，尤其 15.0 理论值，和常规进度严�
 B50 重合度：低于 30%=选曲小众/口味独到/谱面含金量高（正面评价）；30-50% 正常；高于 50% 偏模板/跟风攻略。不能只报数字不解读。单曲重合度低的谱更值得夸「这张大家没几个打，你啃下来了」。
 ARPI 同段对比：sufficient=True 时按 position 判断（above_p75=同段上四分位/稳手，around_median=典型画风，below_p25=下四分位/靠选谱拉分）；sufficient=False 时说「同段样本还不够，先不硬下判断」。绝对禁止自己编同段 ARPI 数值。
 config_profile：strong 是达成率 ≥100.3 且出现 ≥2 次的擅长配置（必须点名表扬）；weak 是达成率 <100.0 且出现 ≥2 次的短板配置（必须温和指出）。每次锐评至少点 1 个 strong + 1 个 weak（数据存在时），不允许空泛说「配置均衡」。
+rating_trend：若上下文给出真实推分趋势与可行性提示，推分路线必须贴合涨分节奏（快推可进攻，横盘修地板，下滑先止损）；没有趋势时不要编造历史涨分。
 push_recommendations 必须从推分候选池里挑 3-4 首，每首标注 strategy_tag（练习特化谱/强项谱/弱项谱/综合推荐）和 reason（15-25 字推荐理由）。选曲策略：不要全选 gain 最高的，要兼顾不同定数段、B35/B15 兼顾、推鸟和推鸟加混合；优先选当前达成率偏低但收益合理的谱面。不要自己另编曲目，结尾必须落到具体谱名。
 将牌=98/99/100% 对应铜将/银将/金将；神牌=100.5%（银神）/101%（理论神/金神）。B50 里的 101 理论值谱可顺带说「这张是理论神」。
 
@@ -512,6 +513,23 @@ def _fmt(context: dict) -> str:
         lines.append(f"ARPI同段位置：{pos_label}  均值：{arpi_bucket.get('mean')}  中位：{arpi_bucket.get('median')}")
     elif arpi_bucket:
         lines.append("ARPI同段：样本不足，先不硬下判断")
+
+    # 真实推分趋势（来自本地存档，用于可行性判断）
+    trend = context.get("rating_trend") or {}
+    points = trend.get("points") or []
+    if points:
+        first = points[0]
+        last = points[-1]
+        delta = trend.get("delta")
+        delta_txt = f"{delta:+d}" if isinstance(delta, int) else "未知"
+        lines.append(
+            f"推分趋势：{first.get('date')}({first.get('rating')}) → "
+            f"{last.get('date')}({last.get('rating')})  窗口Δ={delta_txt}  "
+            f"样本点={trend.get('point_count')}"
+        )
+        if trend.get("feasibility_hint"):
+            lines.append(f"可行性提示：{trend.get('feasibility_hint')}")
+            lines.append("推分建议必须参考上述趋势，不要脱离真实涨分节奏空喊猛推。")
 
     # B50 overlap interpretation
     b50_overlap = context.get("b50_overlap") or {}
