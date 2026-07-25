@@ -28,22 +28,42 @@ if [[ ! -d "${DATA_ROOT}" ]]; then
   DATA_ROOT="${PLUGIN_DIR}/data"
 fi
 
-# 从本地 env 文件注入（不 echo 内容）
-load_env_file() {
+# 安全读取 KEY=VALUE（绝不 source Bot 的 .env：里面常有未加引号的特殊字符）
+# 只导出 KAGGLE_*；完整加载仍由 upload_public_dataset_to_kaggle.py 负责。
+load_kaggle_env_keys() {
   local f="$1"
   [[ -f "$f" ]] || return 0
-  echo "[run] sourcing env file=${f}"
-  set -a
-  # shellcheck disable=SC1090
-  source "$f"
-  set +a
+  echo "[run] load kaggle keys from=${f}"
+  local line key val
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    [[ -z "${line}" || "${line}" == \#* ]] && continue
+    [[ "${line}" == export\ * ]] && line="${line#export }"
+    [[ "${line}" == KAGGLE_* ]] || continue
+    key="${line%%=*}"
+    val="${line#*=}"
+    key="${key%"${key##*[![:space:]]}"}"
+    val="${val#"${val%%[![:space:]]*}"}"
+    val="${val%"${val##*[![:space:]]}"}"
+    if [[ "${val}" == \"*\" && "${val}" == *\" ]]; then
+      val="${val:1:${#val}-2}"
+    elif [[ "${val}" == \'*\' && "${val}" == *\' ]]; then
+      val="${val:1:${#val}-2}"
+    fi
+    # 已在外部环境显式设置的不覆盖
+    if [[ -n "${!key:-}" ]]; then
+      continue
+    fi
+    export "${key}=${val}"
+  done < "${f}"
 }
 if [[ -n "${KAGGLE_ENV_FILE:-}" ]]; then
-  load_env_file "${KAGGLE_ENV_FILE}"
+  load_kaggle_env_keys "${KAGGLE_ENV_FILE}"
 fi
-load_env_file "/www/bot/awmc/.env"
-load_env_file "/www/bot/awmc/.env.kaggle"
-load_env_file "${PLUGIN_DIR}/.env"
+# 优先专用文件，再扫 Bot .env（只取 KAGGLE_*）
+load_kaggle_env_keys "/www/bot/awmc/.env.kaggle"
+load_kaggle_env_keys "/www/bot/awmc/.env"
+load_kaggle_env_keys "${PLUGIN_DIR}/.env"
 
 if [[ -n "${VENV_PYTHON:-}" ]]; then
   PYTHON="${VENV_PYTHON}"
