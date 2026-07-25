@@ -143,20 +143,102 @@ def _anon_id(qqid: str, salt: str) -> str:
     return digest[:16]
 
 
+def _resolve_salt(output_dir: Path, salt: Optional[str]) -> str:
+    """优先：CLI/环境变量 → 已有 .dataset_salt（保证跨次导出 player_id 稳定）→ 新建。"""
+    if salt:
+        return salt.strip()
+    env = (os.environ.get("MAIMAIDX_DATASET_SALT") or "").strip()
+    if env:
+        return env
+    salt_file = Path(output_dir) / ".dataset_salt"
+    if salt_file.exists():
+        existing = salt_file.read_text(encoding="utf-8").strip()
+        if existing:
+            _log(f"reuse salt from {salt_file}")
+            return existing
+    return secrets.token_hex(16)
+
+
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def _load_opted_out(share_config: Path) -> set[str]:
     mgr = DataShareManager(share_config)
     return set(mgr.list_opted_out())
 
 
+# song_id(str) -> is_new；由 --music-data 填充，优先于运行时曲库
+_MUSIC_IS_NEW: Dict[str, bool] = {}
+
+
+def load_music_is_new_map(path: Optional[Path]) -> Dict[str, bool]:
+    """从 music_data / dxdata JSON 构建 is_new 映射，改善 B35/B15 划分。"""
+    global _MUSIC_IS_NEW
+    _MUSIC_IS_NEW = {}
+    if not path:
+        return _MUSIC_IS_NEW
+    path = Path(path)
+    if not path.exists():
+        _log(f"music-data not found: {path}")
+        return _MUSIC_IS_NEW
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        _log(f"music-data load failed: {e}")
+        return _MUSIC_IS_NEW
+
+    items: list = []
+    if isinstance(raw, list):
+        items = raw
+    elif isinstance(raw, dict):
+        for key in ("data", "songs", "music", "list"):
+            if isinstance(raw.get(key), list):
+                items = raw[key]
+                break
+        if not items and all(isinstance(v, dict) for v in raw.values()):
+            items = list(raw.values())
+
+    out: Dict[str, bool] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        sid = item.get("id") or item.get("song_id") or item.get("music_id")
+        if sid is None:
+            continue
+        basic = item.get("basic_info") or item.get("basicInfo") or {}
+        if not isinstance(basic, dict):
+            basic = {}
+        if "is_new" in item:
+            is_new = bool(item.get("is_new"))
+        elif "is_new" in basic:
+            is_new = bool(basic.get("is_new"))
+        elif "isNew" in item:
+            is_new = bool(item.get("isNew"))
+        else:
+            continue
+        out[str(sid)] = is_new
+    _MUSIC_IS_NEW = out
+    _log(f"music-data loaded: {len(out)} songs with is_new from {path}")
+    return out
+
+
 def _try_is_new_song(song_id: Any) -> Optional[bool]:
-    """曲库可用且能解析曲目时返回是否新版本曲；否则 None。"""
+    """优先外部 music-data；其次运行时曲库；否则 None。"""
+    sid = str(song_id)
+    if sid in _MUSIC_IS_NEW:
+        return _MUSIC_IS_NEW[sid]
     try:
         from nonebot_plugin_maimaidx.libraries.maimaidx_music import mai
 
         total = getattr(mai, "total_list", None)
         if not total:
             return None
-        music = total.by_id(str(song_id))
+        music = total.by_id(sid)
         if not music:
             return None
         from nonebot_plugin_maimaidx.libraries.maimaidx_best_50 import _song_is_new
@@ -166,16 +248,15 @@ def _try_is_new_song(song_id: Any) -> Optional[bool]:
         return None
 
 
-def _build_b50(records: List[ScoreRecord]) -> Tuple[List[ScoreRecord], List[ScoreRecord]]:
-    """尽量按 B35/B15 划分；曲库不可用时回退为 ra 前 50。"""
+def _build_b50(records: List[ScoreRecord]) -> Tuple[List[ScoreRecord], List[ScoreRecord], str]:
+    """返回 (b35, b15, mode)；mode=version_split|top50_fallback。"""
     if not records:
-        return [], []
+        return [], [], "empty"
     flags = [_try_is_new_song(r.song_id) for r in records]
     known = sum(1 for f in flags if f is not None)
-    # 曲库未加载或匹配率过低时，用 ra 前 50 作为 B50 近似
     if known < max(10, len(records) // 2):
         top = sorted(records, key=lambda x: int(x.ra), reverse=True)[:50]
-        return top, []
+        return top, [], "top50_fallback"
     b15 = sorted(
         [r for r, f in zip(records, flags) if f],
         key=lambda x: int(x.ra),
@@ -186,7 +267,57 @@ def _build_b50(records: List[ScoreRecord]) -> Tuple[List[ScoreRecord], List[Scor
         key=lambda x: int(x.ra),
         reverse=True,
     )[:35]
-    return b35, b15
+    return b35, b15, "version_split"
+
+
+def _sanitize_records(records: List[ScoreRecord]) -> Tuple[List[ScoreRecord], int]:
+    """清洗非法成绩；返回 (合法列表, 丢弃数)。"""
+    cleaned: List[ScoreRecord] = []
+    dropped = 0
+    seen: set[tuple[int, int]] = set()
+    for r in records:
+        try:
+            song_id = int(r.song_id)
+            level_index = int(r.level_index)
+            ach = float(r.achievements)
+            ds = float(r.ds)
+            ra = int(r.ra)
+        except (TypeError, ValueError):
+            dropped += 1
+            continue
+        if song_id <= 0 or level_index < 0 or level_index > 4:
+            dropped += 1
+            continue
+        if not (0.0 <= ach <= 101.0):
+            dropped += 1
+            continue
+        if ds < 0 or ds > 15.5:
+            dropped += 1
+            continue
+        if ra < 0 or ra > 5000:
+            dropped += 1
+            continue
+        key = (song_id, level_index)
+        if key in seen:
+            dropped += 1
+            continue
+        seen.add(key)
+        cleaned.append(
+            ScoreRecord(
+                song_id=song_id,
+                title=str(r.title or "")[:200],
+                level=str(r.level or "")[:16],
+                level_index=level_index,
+                ds=ds,
+                achievements=round(ach, 4),
+                rate=str(r.rate or "")[:16],
+                ra=ra,
+                fc=(str(r.fc) if r.fc else None),
+                fs=(str(r.fs) if r.fs else None),
+                dxScore=max(0, int(r.dxScore or 0)),
+            )
+        )
+    return cleaned, dropped
 
 
 def _bucket_key(rating: int, size: int) -> str:
@@ -275,16 +406,25 @@ def export_dataset(
     include_full_records: bool = True,
     pack_hf: bool = True,
     hf_zip_path: Optional[Path] = None,
+    music_data: Optional[Path] = None,
+    min_records: int = 30,
+    min_rating: int = 1000,
+    min_b50: int = 20,
+    min_trend_points: int = 0,
+    require_trend: bool = False,
 ) -> dict:
     storage = DataStorageManager()
-    # 允许自定义成绩根目录
     storage_scores = scores_dir
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     opted_out = _load_opted_out(share_config)
-    salt = salt or os.environ.get("MAIMAIDX_DATASET_SALT") or secrets.token_hex(16)
+    salt = _resolve_salt(output_dir, salt)
+    load_music_is_new_map(music_data)
 
-    output_dir.mkdir(parents=True, exist_ok=True)
     players_dir = output_dir / "players"
+    if players_dir.exists():
+        shutil.rmtree(players_dir)
     players_dir.mkdir(parents=True, exist_ok=True)
 
     # 第一遍：收集可共享用户最新 B50，累计 chart 达成与出现次数
@@ -293,17 +433,18 @@ def export_dataset(
     )
     bucket_player_count: Dict[str, int] = defaultdict(int)
     player_payloads: List[dict] = []
-    skipped_opt_out = 0
-    skipped_empty = 0
+    skip_reasons: Dict[str, int] = defaultdict(int)
+    b50_mode_counts: Dict[str, int] = defaultdict(int)
+    dropped_records_total = 0
 
     user_dirs = [p for p in _iter_user_dirs(storage_scores)]
     total_users = len(user_dirs)
     _log(
         f"phase1/scan users={total_users} opted_out={len(opted_out)} "
-        f"scores_dir={storage_scores}"
+        f"scores_dir={storage_scores} "
+        f"filters(min_records={min_records}, min_rating={min_rating}, "
+        f"min_b50={min_b50}, min_trend={min_trend_points}, require_trend={require_trend})"
     )
-    # 临时 hack：DataStorageManager 固定用 DATA_DIR；此处直接读自定义路径
-    # 通过 monkey 读写 index/snapshot
     from nonebot_plugin_maimaidx.libraries import maimaidx_data_storage as _ds_mod
 
     original_dir = _ds_mod.DATA_DIR
@@ -312,31 +453,58 @@ def export_dataset(
     try:
         for user_dir in user_dirs:
             qqid_s = user_dir.name
+            suffix = (
+                f" ok={len(player_payloads)} "
+                f"skip={sum(skip_reasons.values())}"
+            )
             if qqid_s in opted_out:
-                skipped_opt_out += 1
-                scan_prog.tick(
-                    suffix=f" ok={len(player_payloads)} skip_empty={skipped_empty} opt_out={skipped_opt_out}"
-                )
+                skip_reasons["opt_out"] += 1
+                scan_prog.tick(suffix=suffix)
                 continue
-            qqid = int(qqid_s)
-            snap = _load_latest_snapshot(storage, qqid)
-            if not snap or not snap.records:
-                skipped_empty += 1
-                scan_prog.tick(
-                    suffix=f" ok={len(player_payloads)} skip_empty={skipped_empty} opt_out={skipped_opt_out}"
-                )
+            if not any(user_dir.iterdir()):
+                skip_reasons["empty_dir"] += 1
+                scan_prog.tick(suffix=suffix)
                 continue
 
-            b35, b15 = _build_b50(list(snap.records))
-            b50 = b35 + b15
-            if not b50:
-                skipped_empty += 1
-                scan_prog.tick(
-                    suffix=f" ok={len(player_payloads)} skip_empty={skipped_empty} opt_out={skipped_opt_out}"
-                )
+            qqid = int(qqid_s)
+            try:
+                snap = _load_latest_snapshot(storage, qqid)
+            except Exception:
+                skip_reasons["load_error"] += 1
+                scan_prog.tick(suffix=suffix)
+                continue
+            if not snap or not snap.records:
+                skip_reasons["no_snapshot"] += 1
+                scan_prog.tick(suffix=suffix)
+                continue
+
+            records, dropped = _sanitize_records(list(snap.records))
+            dropped_records_total += dropped
+            if len(records) < min_records:
+                skip_reasons["low_records"] += 1
+                scan_prog.tick(suffix=suffix)
                 continue
 
             rating = int(snap.rating or 0)
+            if rating < min_rating:
+                skip_reasons["low_rating"] += 1
+                scan_prog.tick(suffix=suffix)
+                continue
+
+            b35, b15, b50_mode = _build_b50(records)
+            b50 = b35 + b15
+            if len(b50) < min_b50:
+                skip_reasons["thin_b50"] += 1
+                scan_prog.tick(suffix=suffix)
+                continue
+            b50_mode_counts[b50_mode] += 1
+
+            trend = _rating_trend(storage, qqid, days=trend_days)
+            if len(trend) < min_trend_points or (require_trend and len(trend) < 2):
+                skip_reasons["thin_trend"] += 1
+                scan_prog.tick(suffix=suffix)
+                continue
+
             bkey = _bucket_key(rating, bucket_size)
             bucket_player_count[bkey] += 1
             seen_keys = set()
@@ -351,38 +519,47 @@ def export_dataset(
                 cell["b50_n"] += 1
 
             anon = _anon_id(qqid_s, salt)
-            trend = _rating_trend(storage, qqid, days=trend_days)
             delta = None
             if len(trend) >= 2:
                 delta = int(trend[-1]["rating"]) - int(trend[0]["rating"])
 
+            b50_ra = sum(int(r.ra) for r in b50)
             payload = {
+                "schema_version": 2,
                 "player_id": anon,
                 "latest": {
                     "date": snap.date,
                     "stored_at": snap.stored_at,
                     "rating": rating,
-                    "record_count": int(snap.record_count or len(snap.records)),
+                    "record_count": len(records),
                     "b35": [_redact_record(r) for r in b35],
                     "b15": [_redact_record(r) for r in b15],
+                    "b50_mode": b50_mode,
+                    "b50_ra_sum": b50_ra,
+                    "rating_vs_b50_gap": rating - b50_ra,
                 },
                 "rating_trend": trend,
                 "rating_delta": delta,
+                "quality": {
+                    "dropped_records": dropped,
+                    "trend_points": len(trend),
+                },
             }
             if include_full_records:
-                payload["latest"]["records"] = [_redact_record(r) for r in snap.records]
+                payload["latest"]["records"] = [_redact_record(r) for r in records]
             player_payloads.append(payload)
             scan_prog.tick(
-                suffix=f" ok={len(player_payloads)} skip_empty={skipped_empty} opt_out={skipped_opt_out}"
+                suffix=f" ok={len(player_payloads)} skip={sum(skip_reasons.values())}"
             )
     finally:
         _ds_mod.DATA_DIR = original_dir
     scan_prog.finish(
-        suffix=f" ok={len(player_payloads)} skip_empty={skipped_empty} opt_out={skipped_opt_out}"
+        suffix=f" ok={len(player_payloads)} skip={sum(skip_reasons.values())}"
     )
     _log(
         f"phase1 done: usable={len(player_payloads)} "
-        f"skip_empty={skipped_empty} opt_out={skipped_opt_out}"
+        f"skips={dict(skip_reasons)} dropped_records={dropped_records_total} "
+        f"b50_modes={dict(b50_mode_counts)}"
     )
 
     # 第二遍：用已聚合均值算每位玩家 ARPI，写入桶分布
@@ -543,12 +720,35 @@ def export_dataset(
     with gzip.open(output_dir / "peer_stats.json.gz", "wt", encoding="utf-8") as gz:
         json.dump(peer_stats, gz, ensure_ascii=False)
 
+    quality = {
+        "scanned_user_dirs": total_users,
+        "usable_players": len(player_payloads),
+        "skip_reasons": dict(sorted(skip_reasons.items())),
+        "dropped_records_total": dropped_records_total,
+        "b50_mode_counts": dict(b50_mode_counts),
+        "music_is_new_map_size": len(_MUSIC_IS_NEW),
+        "filters": {
+            "min_records": min_records,
+            "min_rating": min_rating,
+            "min_b50": min_b50,
+            "min_trend_points": min_trend_points,
+            "require_trend": require_trend,
+        },
+        "rating_stats": _summarize_ratings(player_payloads),
+        "warnings": _quality_warnings(
+            player_payloads, skip_reasons, b50_mode_counts, len(_MUSIC_IS_NEW)
+        ),
+    }
+
     meta = {
-        "schema_version": 1,
+        "schema_version": 2,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "player_count": len(player_payloads),
-        "skipped_opt_out": skipped_opt_out,
-        "skipped_empty": skipped_empty,
+        "skipped_opt_out": int(skip_reasons.get("opt_out", 0)),
+        "skipped_empty": int(
+            skip_reasons.get("empty_dir", 0) + skip_reasons.get("no_snapshot", 0)
+        ),
+        "skip_reasons": dict(sorted(skip_reasons.items())),
         "bucket_size": bucket_size,
         "min_bucket_players": min_bucket_players,
         "min_chart_samples": min_chart_samples,
@@ -556,8 +756,12 @@ def export_dataset(
         "include_full_records": include_full_records,
         "bucket_count": len(buckets_out),
         "salt_fingerprint": hashlib.sha256(salt.encode()).hexdigest()[:12],
+        "music_data": str(music_data) if music_data else "",
         "note": "player_id 为单向哈希，不可反查 QQ；opt-out 用户已排除。",
     }
+    (output_dir / "quality_report.json").write_text(
+        json.dumps(quality, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     (output_dir / "dataset_meta.json").write_text(
         json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -579,17 +783,81 @@ def export_dataset(
         )
         meta["hf_upload_dir"] = str(output_dir / "hf_upload")
         meta["hf_upload_zip"] = str(zip_path)
-        (output_dir / "dataset_meta.json").write_text(
-            json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+
+    # 校验和（不含 salt / 私密文件）
+    checksums = {}
+    for rel in (
+        "dataset_meta.json",
+        "quality_report.json",
+        "peer_stats.json",
+        "peer_stats.json.gz",
+        "rating_trends.jsonl",
+        "roast_training_samples.jsonl",
+        "README.md",
+    ):
+        p = output_dir / rel
+        if p.exists():
+            checksums[rel] = _sha256_file(p)
+    if meta.get("hf_upload_zip") and Path(meta["hf_upload_zip"]).exists():
+        checksums["hf_upload.zip"] = _sha256_file(Path(meta["hf_upload_zip"]))
+    meta["checksums_sha256"] = checksums
+    (output_dir / "checksums.sha256").write_text(
+        "\n".join(f"{digest}  {name}" for name, digest in checksums.items()) + "\n",
+        encoding="utf-8",
+    )
+    (output_dir / "dataset_meta.json").write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
     _log(
         f"done players={meta['player_count']} buckets={meta['bucket_count']} "
         f"output={output_dir}"
     )
+    if quality.get("warnings"):
+        for w in quality["warnings"]:
+            _log(f"WARN: {w}")
     if meta.get("hf_upload_zip"):
         _log(f"hf_upload_zip={meta['hf_upload_zip']}")
     return meta
+
+
+def _summarize_ratings(payloads: List[dict]) -> dict:
+    ratings = [int((p.get("latest") or {}).get("rating") or 0) for p in payloads]
+    if not ratings:
+        return {}
+    ratings_sorted = sorted(ratings)
+    return {
+        "count": len(ratings),
+        "min": ratings_sorted[0],
+        "max": ratings_sorted[-1],
+        "mean": round(sum(ratings) / len(ratings), 2),
+        "median": ratings_sorted[len(ratings_sorted) // 2],
+    }
+
+
+def _quality_warnings(
+    payloads: List[dict],
+    skip_reasons: Dict[str, int],
+    b50_modes: Dict[str, int],
+    music_map_size: int,
+) -> List[str]:
+    warnings: List[str] = []
+    if not payloads:
+        warnings.append("没有可用玩家样本")
+    fallback = int(b50_modes.get("top50_fallback") or 0)
+    split = int(b50_modes.get("version_split") or 0)
+    if fallback and fallback >= max(1, split):
+        warnings.append(
+            "多数玩家使用 top50_fallback（未正确划分 B15）；建议提供 --music-data"
+        )
+    if music_map_size == 0:
+        warnings.append("未加载 music-data is_new 映射，B15 划分可能不准确")
+    empty = int(skip_reasons.get("empty_dir") or 0)
+    if empty > len(payloads) * 3:
+        warnings.append(
+            f"空目录很多（{empty}），多为 mkdir 残留，不影响导出但可定期清理"
+        )
+    return warnings
 
 
 def pack_hf_upload(
@@ -646,6 +914,9 @@ def pack_hf_upload(
     (staging / "dataset_meta.json").write_text(
         json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+    quality_src = output_dir / "quality_report.json"
+    if quality_src.exists():
+        shutil.copy2(quality_src, staging / "quality_report.json")
     (staging / "README.md").write_text(_hf_readme_text(meta), encoding="utf-8")
 
     if zip_path is None:
@@ -717,6 +988,7 @@ configs:
 | `data/roast_training_samples.jsonl` | 锐评/提示词轻量样本 |
 | `assets/arpi_peer_stats.json` | 同段 ARPI 统计（接入 Bot 时复制为 `peer_stats.json`） |
 | `dataset_meta.json` | 导出元信息 |
+| `quality_report.json` | 质检与跳过原因 |
 
 ## 脱敏
 
@@ -846,6 +1118,26 @@ def main() -> int:
         default=None,
         help="HF zip 输出路径（默认：<output 同级>/hf_upload.zip）",
     )
+    parser.add_argument(
+        "--music-data",
+        type=Path,
+        default=None,
+        help="曲库 JSON（含 is_new），用于正确划分 B35/B15",
+    )
+    parser.add_argument("--min-records", type=int, default=30, help="最少全量成绩条数")
+    parser.add_argument("--min-rating", type=int, default=1000, help="最低 rating")
+    parser.add_argument("--min-b50", type=int, default=20, help="最少 B50 谱面数")
+    parser.add_argument(
+        "--min-trend-points",
+        type=int,
+        default=0,
+        help="最少趋势点数（0=不限制）",
+    )
+    parser.add_argument(
+        "--require-trend",
+        action="store_true",
+        help="必须至少 2 个趋势点才导出该玩家",
+    )
     args = parser.parse_args()
 
     print(f"[export] scores={args.scores_dir}", flush=True)
@@ -853,6 +1145,7 @@ def main() -> int:
     print(f"[export] output={args.output}", flush=True)
     print(f"[export] include_full_records={args.include_full_records}", flush=True)
     print(f"[export] hf_zip={args.hf_zip}", flush=True)
+    print(f"[export] music_data={args.music_data}", flush=True)
     t0 = time.time()
     meta = export_dataset(
         scores_dir=args.scores_dir,
@@ -866,14 +1159,21 @@ def main() -> int:
         include_full_records=args.include_full_records,
         pack_hf=args.hf_zip,
         hf_zip_path=args.hf_zip_path,
+        music_data=args.music_data,
+        min_records=args.min_records,
+        min_rating=args.min_rating,
+        min_b50=args.min_b50,
+        min_trend_points=args.min_trend_points,
+        require_trend=args.require_trend,
     )
     elapsed = time.time() - t0
     print(json.dumps(meta, ensure_ascii=False, indent=2))
     print(f"[export] done in {elapsed:.1f}s")
     print(f"[export] peer_stats -> {args.output / 'peer_stats.json'}")
+    print(f"[export] quality_report -> {args.output / 'quality_report.json'}")
     if meta.get("hf_upload_zip"):
         print(f"[export] hf_upload_zip -> {meta['hf_upload_zip']}")
-    print("提醒：公开发布前请删除 .dataset_salt，并确认未包含不同意共享用户。")
+    print("提醒：公开发布用 hf_upload.zip；勿发布 .dataset_salt。")
     return 0
 
 
