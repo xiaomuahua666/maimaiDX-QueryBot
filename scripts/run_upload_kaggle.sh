@@ -80,6 +80,7 @@ SLUG="${SLUG:-dx-2026-awmcbot}"
 TITLE="${TITLE:-舞萌DX 2026 AWMCBOT 用户成绩数据集}"
 MODE="${MODE:-version}"
 MESSAGE="${MESSAGE:-}"
+KEYWORDS="${KEYWORDS:-games}"
 EXPORT_DIR="${EXPORT_DIR:-}"
 HF_ZIP="${HF_ZIP:-}"
 KAGGLE_PUBLIC="${KAGGLE_PUBLIC:-0}"
@@ -93,6 +94,7 @@ echo "[run] python=${PYTHON}"
 echo "[run] data_root=${DATA_ROOT}"
 echo "[run] slug=${SLUG}"
 echo "[run] mode=${MODE}"
+echo "[run] keywords=${KEYWORDS}"
 echo "[run] public=${KAGGLE_PUBLIC} dry_run=${KAGGLE_DRY_RUN}"
 echo "[run] has_api_token=$([ -n "${KAGGLE_API_TOKEN:-}" ] && echo yes || echo no)"
 echo "[run] has_legacy_key=$([ -n "${KAGGLE_KEY:-}" ] && echo yes || echo no)"
@@ -109,6 +111,7 @@ ARGS=(
   --slug "${SLUG}"
   --title "${TITLE}"
   --mode "${MODE}"
+  --keywords "${KEYWORDS}"
 )
 
 if [[ -n "${EXPORT_DIR}" ]]; then
