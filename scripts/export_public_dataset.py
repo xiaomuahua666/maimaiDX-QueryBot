@@ -41,6 +41,55 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 ROOT = Path(__file__).resolve().parents[1]
 
 
+class _Progress:
+    """简单终端进度：阶段名 + 百分比 + ETA，强制 flush 方便 SSH/nohup 实时看。"""
+
+    def __init__(self, total: int, label: str, *, every: int = 25) -> None:
+        self.total = max(0, int(total))
+        self.label = label
+        self.every = max(1, int(every))
+        self.done = 0
+        self.t0 = time.time()
+        self._last_print = -1
+        self._print(force=True)
+
+    def _bar(self, ratio: float, width: int = 28) -> str:
+        filled = int(width * ratio)
+        return "[" + "#" * filled + "-" * (width - filled) + "]"
+
+    def _print(self, *, force: bool = False, suffix: str = "") -> None:
+        if not force and self.done != self.total and (self.done - self._last_print) < self.every:
+            return
+        self._last_print = self.done
+        elapsed = max(0.001, time.time() - self.t0)
+        if self.total <= 0:
+            line = f"[progress] {self.label}: {self.done}  elapsed={elapsed:.1f}s{suffix}"
+        else:
+            ratio = min(1.0, self.done / self.total)
+            speed = self.done / elapsed
+            remain = (self.total - self.done) / speed if speed > 0 else 0.0
+            line = (
+                f"[progress] {self.label}: {self._bar(ratio)} "
+                f"{self.done}/{self.total} ({ratio * 100:5.1f}%) "
+                f"speed={speed:.1f}/s ETA={remain:.0f}s elapsed={elapsed:.1f}s"
+                f"{suffix}"
+            )
+        print(line, flush=True)
+
+    def tick(self, n: int = 1, *, suffix: str = "") -> None:
+        self.done += n
+        self._print(suffix=suffix)
+
+    def finish(self, *, suffix: str = "") -> None:
+        if self.total > 0:
+            self.done = self.total
+        self._print(force=True, suffix=suffix)
+
+
+def _log(msg: str) -> None:
+    print(f"[export] {msg}", flush=True)
+
+
 def _bootstrap_package() -> None:
     import types
 
@@ -241,28 +290,43 @@ def export_dataset(
     skipped_empty = 0
 
     user_dirs = [p for p in _iter_user_dirs(storage_scores)]
+    total_users = len(user_dirs)
+    _log(
+        f"phase1/scan users={total_users} opted_out={len(opted_out)} "
+        f"scores_dir={storage_scores}"
+    )
     # 临时 hack：DataStorageManager 固定用 DATA_DIR；此处直接读自定义路径
     # 通过 monkey 读写 index/snapshot
     from nonebot_plugin_maimaidx.libraries import maimaidx_data_storage as _ds_mod
 
     original_dir = _ds_mod.DATA_DIR
     _ds_mod.DATA_DIR = storage_scores
+    scan_prog = _Progress(total_users, "1/4 扫描存档", every=max(10, total_users // 50 or 1))
     try:
         for user_dir in user_dirs:
             qqid_s = user_dir.name
             if qqid_s in opted_out:
                 skipped_opt_out += 1
+                scan_prog.tick(
+                    suffix=f" ok={len(player_payloads)} skip_empty={skipped_empty} opt_out={skipped_opt_out}"
+                )
                 continue
             qqid = int(qqid_s)
             snap = _load_latest_snapshot(storage, qqid)
             if not snap or not snap.records:
                 skipped_empty += 1
+                scan_prog.tick(
+                    suffix=f" ok={len(player_payloads)} skip_empty={skipped_empty} opt_out={skipped_opt_out}"
+                )
                 continue
 
             b35, b15 = _build_b50(list(snap.records))
             b50 = b35 + b15
             if not b50:
                 skipped_empty += 1
+                scan_prog.tick(
+                    suffix=f" ok={len(player_payloads)} skip_empty={skipped_empty} opt_out={skipped_opt_out}"
+                )
                 continue
 
             rating = int(snap.rating or 0)
@@ -301,10 +365,21 @@ def export_dataset(
             if include_full_records:
                 payload["latest"]["records"] = [_redact_record(r) for r in snap.records]
             player_payloads.append(payload)
+            scan_prog.tick(
+                suffix=f" ok={len(player_payloads)} skip_empty={skipped_empty} opt_out={skipped_opt_out}"
+            )
     finally:
         _ds_mod.DATA_DIR = original_dir
+    scan_prog.finish(
+        suffix=f" ok={len(player_payloads)} skip_empty={skipped_empty} opt_out={skipped_opt_out}"
+    )
+    _log(
+        f"phase1 done: usable={len(player_payloads)} "
+        f"skip_empty={skipped_empty} opt_out={skipped_opt_out}"
+    )
 
     # 第二遍：用已聚合均值算每位玩家 ARPI，写入桶分布
+    _log("phase2/compute ARPI + peer averages")
     chart_avg_by_bucket: Dict[str, Dict[str, float]] = {}
     for bkey, charts in bucket_charts.items():
         chart_avg_by_bucket[bkey] = {
@@ -313,6 +388,9 @@ def export_dataset(
         }
 
     bucket_arpi_values: Dict[str, List[float]] = defaultdict(list)
+    arpi_prog = _Progress(
+        len(player_payloads), "2/4 计算 ARPI", every=max(10, len(player_payloads) // 40 or 1)
+    )
     for payload in player_payloads:
         rating = int(payload["latest"]["rating"])
         bkey = _bucket_key(rating, bucket_size)
@@ -338,12 +416,19 @@ def export_dataset(
         payload["latest"]["rating_bucket"] = bkey
         if arpi is not None:
             bucket_arpi_values[bkey].append(arpi)
+        arpi_prog.tick()
+    arpi_prog.finish()
 
     # 组装 peer_stats
+    _log("phase3/build peer_stats buckets")
     buckets_out: Dict[str, Any] = {}
-    for bkey, charts in bucket_charts.items():
+    bucket_keys = list(bucket_charts.keys())
+    bucket_prog = _Progress(len(bucket_keys), "3/4 组装同段桶", every=1)
+    for bkey in bucket_keys:
+        charts = bucket_charts[bkey]
         player_n = bucket_player_count.get(bkey, 0)
         if player_n < min_bucket_players:
+            bucket_prog.tick(suffix=f" kept={len(buckets_out)}")
             continue
         # 桶内人数很少时，谱面阈值降到不超过人数，避免小样本环境导出空 peer_stats
         chart_threshold = max(1, min(int(min_chart_samples), player_n))
@@ -357,6 +442,7 @@ def export_dataset(
                 "b50_appear_rate": round(cell["b50_n"] / player_n, 4),
             }
         if not chart_stats:
+            bucket_prog.tick(suffix=f" kept={len(buckets_out)}")
             continue
         arpis = sorted(bucket_arpi_values.get(bkey) or [])
         dist = {
@@ -371,6 +457,8 @@ def export_dataset(
             "charts": chart_stats,
             "arpi_distribution": dist,
         }
+        bucket_prog.tick(suffix=f" kept={len(buckets_out)}")
+    bucket_prog.finish(suffix=f" kept={len(buckets_out)}")
 
     peer_stats = {
         "schema_version": 1,
@@ -383,8 +471,12 @@ def export_dataset(
     }
 
     # 写玩家文件与 jsonl
+    _log(f"phase4/write files -> {output_dir}")
     trend_path = output_dir / "rating_trends.jsonl"
     roast_path = output_dir / "roast_training_samples.jsonl"
+    write_prog = _Progress(
+        len(player_payloads), "4/4 写出文件", every=max(10, len(player_payloads) // 40 or 1)
+    )
     with open(trend_path, "w", encoding="utf-8") as f_trend, open(
         roast_path, "w", encoding="utf-8"
     ) as f_roast:
@@ -434,6 +526,8 @@ def export_dataset(
                 "push_feasibility_hint": _feasibility_hint(payload),
             }
             f_roast.write(json.dumps(sample, ensure_ascii=False) + "\n")
+            write_prog.tick()
+    write_prog.finish()
 
     peer_json = output_dir / "peer_stats.json"
     peer_json.write_text(
@@ -470,6 +564,10 @@ def export_dataset(
     except OSError:
         pass
 
+    _log(
+        f"done players={meta['player_count']} buckets={meta['bucket_count']} "
+        f"output={output_dir}"
+    )
     return meta
 
 
