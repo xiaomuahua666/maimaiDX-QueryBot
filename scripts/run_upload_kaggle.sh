@@ -13,7 +13,7 @@
 #
 # 可选环境变量：
 #   SLUG / TITLE / MODE(auto|create|version) / MESSAGE
-#   KEYWORDS=Game          # Kaggle tags，默认 Game
+#   KEYWORDS=Games         # Kaggle tags，默认 Games（官方分类名；Game 会被拒）
 #   EXPORT_DIR / HF_ZIP / DATA_ROOT
 #   KAGGLE_PUBLIC=1  KAGGLE_DRY_RUN=1  KEEP_WORK=1
 #   KAGGLE_ENV_FILE=/path/to/.env
