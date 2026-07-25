@@ -5,6 +5,7 @@
 - 生成 peer_stats（供锐评 ARPI / 同段样本）
 - 导出匿名玩家快照与 Rating 趋势（供提示词 / 可行性优化）
 - 生成 roast_training_samples.jsonl（锐评上下文骨架样本）
+- 默认再打包 Hugging Face 合规 zip（无根目录 peer_stats 撞名）
 
 用法示例：
   python scripts/export_public_dataset.py \\
@@ -20,6 +21,8 @@
   players/{anon_id}.json
   rating_trends.jsonl
   roast_training_samples.jsonl
+  hf_upload/                 # HF 合规目录
+  ../hf_upload.zip           # 默认同级 zip，可直接上传
 """
 
 from __future__ import annotations
@@ -31,8 +34,10 @@ import json
 import math
 import os
 import secrets
+import shutil
 import sys
 import time
+import zipfile
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -268,6 +273,8 @@ def export_dataset(
     trend_days: int = 90,
     salt: Optional[str] = None,
     include_full_records: bool = True,
+    pack_hf: bool = True,
+    hf_zip_path: Optional[Path] = None,
 ) -> dict:
     storage = DataStorageManager()
     # 允许自定义成绩根目录
@@ -564,11 +571,164 @@ def export_dataset(
     except OSError:
         pass
 
+    if pack_hf:
+        zip_path = pack_hf_upload(
+            output_dir,
+            zip_path=hf_zip_path,
+            meta=meta,
+        )
+        meta["hf_upload_dir"] = str(output_dir / "hf_upload")
+        meta["hf_upload_zip"] = str(zip_path)
+        (output_dir / "dataset_meta.json").write_text(
+            json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
     _log(
         f"done players={meta['player_count']} buckets={meta['bucket_count']} "
         f"output={output_dir}"
     )
+    if meta.get("hf_upload_zip"):
+        _log(f"hf_upload_zip={meta['hf_upload_zip']}")
     return meta
+
+
+def pack_hf_upload(
+    output_dir: Path,
+    *,
+    zip_path: Optional[Path] = None,
+    meta: Optional[dict] = None,
+) -> Path:
+    """打包 Hugging Face 合规目录与 zip。
+
+    约束（避免 HF 建库失败）：
+    - 根目录不放 peer_stats.json / peer_stats.json.gz
+    - 只用 data/*.jsonl 作为 split；同段统计放 assets/arpi_peer_stats.json
+    - 不附带数百个 players/*.json（改为单一 players.jsonl）
+    - 不包含 .dataset_salt
+    """
+    output_dir = Path(output_dir)
+    staging = output_dir / "hf_upload"
+    if staging.exists():
+        shutil.rmtree(staging)
+    (staging / "data").mkdir(parents=True)
+    (staging / "assets").mkdir(parents=True)
+
+    if meta is None:
+        meta_path = output_dir / "dataset_meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+
+    # jsonl splits
+    for name in ("rating_trends.jsonl", "roast_training_samples.jsonl"):
+        src = output_dir / name
+        if src.exists():
+            shutil.copy2(src, staging / "data" / name)
+
+    players_dir = output_dir / "players"
+    players_jl = staging / "data" / "players.jsonl"
+    player_files = sorted(players_dir.glob("*.json")) if players_dir.exists() else []
+    pack_prog = _Progress(
+        len(player_files),
+        "HF 打包 players.jsonl",
+        every=max(10, len(player_files) // 40 or 1),
+    )
+    with open(players_jl, "w", encoding="utf-8") as w:
+        for p in player_files:
+            obj = json.loads(p.read_text(encoding="utf-8"))
+            w.write(json.dumps(obj, ensure_ascii=False) + "\n")
+            pack_prog.tick()
+    pack_prog.finish()
+
+    peer_src = output_dir / "peer_stats.json"
+    if peer_src.exists():
+        # 故意不用 peer_stats.json(.gz) 文件名，避免 HF 根路径/同名冲突
+        shutil.copy2(peer_src, staging / "assets" / "arpi_peer_stats.json")
+
+    (staging / "dataset_meta.json").write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    (staging / "README.md").write_text(_hf_readme_text(meta), encoding="utf-8")
+
+    if zip_path is None:
+        zip_path = output_dir.parent / "hf_upload.zip"
+    zip_path = Path(zip_path)
+    if zip_path.exists():
+        zip_path.unlink()
+
+    _log(f"writing HF zip -> {zip_path}")
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+        for p in sorted(staging.rglob("*")):
+            if not p.is_file():
+                continue
+            # 双保险：绝不打进 salt / 根级 peer_stats / gz
+            rel = p.relative_to(staging).as_posix()
+            if rel == ".dataset_salt" or rel.endswith(".gz"):
+                continue
+            if rel in {"peer_stats.json", "peer_stats.json.gz"}:
+                continue
+            zf.write(p, arcname=rel)
+
+    with zipfile.ZipFile(zip_path) as zf:
+        names = zf.namelist()
+    bad = [
+        n
+        for n in names
+        if n.endswith(".gz")
+        or Path(n).name in {"peer_stats.json", "peer_stats.json.gz", ".dataset_salt"}
+    ]
+    if bad:
+        raise RuntimeError(f"HF zip 含不合规文件: {bad}")
+    _log(f"HF zip members={len(names)} size_mb={zip_path.stat().st_size / 1024 / 1024:.2f}")
+    return zip_path
+
+
+def _hf_readme_text(meta: dict) -> str:
+    return f"""---
+license: other
+pretty_name: maimaiDX Desensitized Score Dataset
+tags:
+  - maimai-dx
+  - anonymized
+  - rhythm-game
+task_categories:
+  - other
+size_categories:
+  - n<1K
+configs:
+  - config_name: players
+    data_files: data/players.jsonl
+  - config_name: rating_trends
+    data_files: data/rating_trends.jsonl
+  - config_name: roast_training_samples
+    data_files: data/roast_training_samples.jsonl
+---
+
+# maimaiDX 脱敏成绩数据集
+
+- 玩家：{meta.get("player_count")}（已排除不同意共享）
+- 同段桶：{meta.get("bucket_count")}
+- 生成：{meta.get("generated_at")}
+
+## 文件
+
+| 路径 | 说明 |
+|------|------|
+| `data/players.jsonl` | 匿名玩家（B50 + 全量成绩 + Rating 趋势） |
+| `data/rating_trends.jsonl` | 推分趋势 |
+| `data/roast_training_samples.jsonl` | 锐评/提示词轻量样本 |
+| `assets/arpi_peer_stats.json` | 同段 ARPI 统计（接入 Bot 时复制为 `peer_stats.json`） |
+| `dataset_meta.json` | 导出元信息 |
+
+## 脱敏
+
+- 无 QQ / 昵称；`player_id` 为单向哈希
+- 发送「不同意共享我的数据」的用户已排除
+
+## 接入锐评
+
+```bash
+cp assets/arpi_peer_stats.json /path/to/b50_assets/peer_stats.json
+```
+"""
 
 
 def _feasibility_hint(payload: dict) -> str:
@@ -604,6 +764,7 @@ def _readme_text(meta: dict) -> str:
 | `roast_training_samples.jsonl` | 锐评提示词 / 可行性优化轻量样本 |
 | `dataset_meta.json` | 导出元信息 |
 | `.dataset_salt` | **私密**匿名盐，勿随公开包发布 |
+| `hf_upload/` + 同级 `hf_upload.zip` | Hugging Face 合规上传包（默认自动生成） |
 
 ## 脱敏规则
 
@@ -619,6 +780,11 @@ cp peer_stats.json.gz /path/to/b50_assets/
 ```
 
 重启 Bot 或重新加载 peer_stats 后，`锐评一下` 将使用新同段样本。
+
+## Hugging Face
+
+导出完成后默认生成 `hf_upload.zip`（根目录无 `peer_stats.json` / `.gz` 撞名）。
+上传该 zip 即可；可用 `--no-hf-zip` 关闭。
 
 ## 重新导出
 
@@ -668,12 +834,25 @@ def main() -> int:
         default=True,
         help="在 players/*.json 中附带全量成绩（默认开启；可用 --no-full-records 关闭）",
     )
+    parser.add_argument(
+        "--hf-zip",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="导出后自动打包 Hugging Face 合规 zip（默认开启；--no-hf-zip 关闭）",
+    )
+    parser.add_argument(
+        "--hf-zip-path",
+        type=Path,
+        default=None,
+        help="HF zip 输出路径（默认：<output 同级>/hf_upload.zip）",
+    )
     args = parser.parse_args()
 
     print(f"[export] scores={args.scores_dir}", flush=True)
     print(f"[export] share_config={args.share_config}", flush=True)
     print(f"[export] output={args.output}", flush=True)
     print(f"[export] include_full_records={args.include_full_records}", flush=True)
+    print(f"[export] hf_zip={args.hf_zip}", flush=True)
     t0 = time.time()
     meta = export_dataset(
         scores_dir=args.scores_dir,
@@ -685,11 +864,15 @@ def main() -> int:
         trend_days=args.trend_days,
         salt=args.salt,
         include_full_records=args.include_full_records,
+        pack_hf=args.hf_zip,
+        hf_zip_path=args.hf_zip_path,
     )
     elapsed = time.time() - t0
     print(json.dumps(meta, ensure_ascii=False, indent=2))
     print(f"[export] done in {elapsed:.1f}s")
     print(f"[export] peer_stats -> {args.output / 'peer_stats.json'}")
+    if meta.get("hf_upload_zip"):
+        print(f"[export] hf_upload_zip -> {meta['hf_upload_zip']}")
     print("提醒：公开发布前请删除 .dataset_salt，并确认未包含不同意共享用户。")
     return 0
 
