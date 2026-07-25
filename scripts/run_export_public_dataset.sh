@@ -12,6 +12,9 @@
 #   API_CONCURRENCY=3
 #   API_LIMIT=0
 #   STAMP=自定义时间戳   默认自动 YYYYMMDD_HHMMSS
+#   KAGGLE_UPLOAD=0     导出成功后自动上传 Kaggle（需凭证；默认 0）
+#   KAGGLE_PUBLIC=0     新建数据集时公开
+#   KAGGLE_SLUG=maimaidx-desensitized-scores
 
 set -euo pipefail
 
@@ -43,6 +46,9 @@ ENRICH="${ENRICH:-1}"
 API_BACKFILL="${API_BACKFILL:-0}"
 API_CONCURRENCY="${API_CONCURRENCY:-3}"
 API_LIMIT="${API_LIMIT:-0}"
+KAGGLE_UPLOAD="${KAGGLE_UPLOAD:-0}"
+KAGGLE_PUBLIC="${KAGGLE_PUBLIC:-0}"
+KAGGLE_SLUG="${KAGGLE_SLUG:-maimaidx-desensitized-scores}"
 
 # 自动探测曲库（改善 B15 划分）
 MUSIC_DATA="${MUSIC_DATA:-}"
@@ -224,6 +230,21 @@ from pathlib import Path
 p = Path(os.environ["OUTPUT_DIR"]) / "dataset_meta.json"
 print(json.dumps(json.loads(p.read_text(encoding="utf-8")), ensure_ascii=False, indent=2))
 PY
+  fi
+
+  if [[ "${KAGGLE_UPLOAD}" == "1" ]]; then
+    echo "[run] === upload to Kaggle ==="
+    export DATA_ROOT="$(dirname "${OUTPUT_DIR}")"
+    export EXPORT_DIR="${OUTPUT_DIR}"
+    export HF_ZIP="${HF_ZIP}"
+    export SLUG="${KAGGLE_SLUG}"
+    export MODE="${KAGGLE_MODE:-auto}"
+    export KAGGLE_PUBLIC
+    export STAMP
+    bash "${SCRIPT_DIR}/run_upload_kaggle.sh" || {
+      echo "[run] WARN: Kaggle upload failed (export itself succeeded)"
+      rc=2
+    }
   fi
 fi
 

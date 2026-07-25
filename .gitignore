@@ -132,12 +132,20 @@ celerybeat.pid
 
 # Environments
 .env
+.env.*
+!.env.example
 .venv
 env/
 venv/
 ENV/
 env.bak/
 venv.bak/
+
+# Kaggle credentials (never commit)
+.kaggle/
+**/kaggle.json
+**/access_token
+.env.kaggle
 
 # Spyder project settings
 .spyderproject
