@@ -15,6 +15,7 @@
 #   KAGGLE_UPLOAD=0     导出成功后自动上传 Kaggle（需凭证；默认 0）
 #   KAGGLE_PUBLIC=0     新建数据集时公开
 #   KAGGLE_SLUG=dx-2026-awmcbot
+#   WORKERS=12          phase1 并行扫描线程（默认 12；慢盘可降到 4）
 
 set -euo pipefail
 
@@ -49,6 +50,7 @@ API_LIMIT="${API_LIMIT:-0}"
 KAGGLE_UPLOAD="${KAGGLE_UPLOAD:-0}"
 KAGGLE_PUBLIC="${KAGGLE_PUBLIC:-0}"
 KAGGLE_SLUG="${KAGGLE_SLUG:-dx-2026-awmcbot}"
+WORKERS="${WORKERS:-12}"
 
 # 自动探测曲库（改善 B15 划分）
 MUSIC_DATA="${MUSIC_DATA:-}"
@@ -92,6 +94,7 @@ preflight() {
   echo "[run] enrich_report=${ENRICH_REPORT}"
   echo "[run] music_data=${MUSIC_DATA:-<none>}"
   echo "[run] enrich=${ENRICH} api_backfill=${API_BACKFILL}"
+  echo "[run] workers=${WORKERS}"
   echo "[run] log=${LOG_FILE}"
 
   local fail=0
@@ -192,6 +195,7 @@ cd "${PLUGIN_DIR}"
     --min-records 30
     --min-rating 1000
     --min-b50 20
+    --workers "${WORKERS}"
   )
 
   if [[ -n "${MUSIC_DATA}" ]]; then

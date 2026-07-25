@@ -39,9 +39,24 @@ import sys
 import time
 import zipfile
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+
+try:
+    import orjson as _orjson  # type: ignore
+except Exception:  # pragma: no cover
+    _orjson = None
+
+
+def _json_load_path(path: Path) -> Any:
+    """优先 orjson（C 层更快），否则 stdlib json。"""
+    if _orjson is not None:
+        return _orjson.loads(path.read_bytes())
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -227,11 +242,14 @@ def load_music_is_new_map(path: Optional[Path]) -> Dict[str, bool]:
     return out
 
 
-def _try_is_new_song(song_id: Any) -> Optional[bool]:
-    """优先外部 music-data；其次运行时曲库；否则 None。"""
-    sid = str(song_id)
+@lru_cache(maxsize=50000)
+def _try_is_new_song_cached(sid: str) -> Optional[bool]:
+    """优先外部 music-data；无映射时再回退运行时曲库。"""
     if sid in _MUSIC_IS_NEW:
         return _MUSIC_IS_NEW[sid]
+    # 已加载曲库文件但缺这条 → 当作未知，避免每条成绩都打 mai（极慢）
+    if _MUSIC_IS_NEW:
+        return None
     try:
         from nonebot_plugin_maimaidx.libraries.maimaidx_music import mai
 
@@ -243,9 +261,13 @@ def _try_is_new_song(song_id: Any) -> Optional[bool]:
             return None
         from nonebot_plugin_maimaidx.libraries.maimaidx_best_50 import _song_is_new
 
-        return bool(_song_is_new(song_id))
+        return bool(_song_is_new(sid))
     except Exception:
         return None
+
+
+def _try_is_new_song(song_id: Any) -> Optional[bool]:
+    return _try_is_new_song_cached(str(song_id))
 
 
 def _build_b50(records: List[ScoreRecord]) -> Tuple[List[ScoreRecord], List[ScoreRecord], str]:
@@ -354,6 +376,91 @@ def _iter_user_dirs(scores_dir: Path) -> Iterable[Path]:
     return sorted(p for p in scores_dir.iterdir() if p.is_dir() and p.name.isdigit())
 
 
+def _read_user_index(user_dir: Path) -> Dict[str, Any]:
+    idx = user_dir / "index.json"
+    if not idx.exists():
+        return {}
+    try:
+        data = _json_load_path(idx)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _trend_from_index(index_data: Dict[str, Any], limit: int = 90) -> List[dict]:
+    """与 get_rating_history 一致：取索引前 limit 条（新→旧），再反转为旧→新。"""
+    metas = list(index_data.get("snapshots") or [])[: max(0, int(limit))]
+    out = []
+    for m in reversed(metas):
+        if not isinstance(m, dict):
+            continue
+        out.append(
+            {
+                "date": m.get("date"),
+                "stored_at": m.get("stored_at"),
+                "rating": int(m.get("rating") or 0),
+                "record_count": int(m.get("record_count") or 0),
+            }
+        )
+    return out
+
+
+def _records_from_raw(raw_records: Any) -> List[ScoreRecord]:
+    out: List[ScoreRecord] = []
+    if not isinstance(raw_records, list):
+        return out
+    for r in raw_records:
+        if not isinstance(r, dict):
+            continue
+        try:
+            out.append(
+                ScoreRecord(
+                    song_id=r["song_id"],
+                    title=r.get("title") or "",
+                    level=r.get("level") or "",
+                    level_index=r["level_index"],
+                    ds=r["ds"],
+                    achievements=r["achievements"],
+                    rate=r.get("rate") or "",
+                    ra=r["ra"],
+                    fc=r.get("fc"),
+                    fs=r.get("fs"),
+                    dxScore=r.get("dxScore", 0),
+                )
+            )
+        except Exception:
+            continue
+    return out
+
+
+def _load_latest_snapshot_fast(user_dir: Path, index_data: Dict[str, Any]):
+    """只读最新快照文件；返回 (meta_fields, records) 或 None。"""
+    metas = index_data.get("snapshots") or []
+    if not metas:
+        return None
+    meta0 = metas[0] if isinstance(metas[0], dict) else {}
+    sid = str(meta0.get("snapshot_id") or "")
+    if not sid:
+        return None
+    path = user_dir / f"{sid}.json"
+    if not path.exists():
+        return None
+    try:
+        data = _json_load_path(path)
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    records = _records_from_raw(data.get("records"))
+    return {
+        "date": data.get("date") or meta0.get("date"),
+        "stored_at": data.get("stored_at") or meta0.get("stored_at") or "",
+        "rating": int(data.get("rating") or meta0.get("rating") or 0),
+        "records": records,
+        "record_count": int(data.get("record_count") or len(records)),
+    }
+
+
 def _load_latest_snapshot(storage: DataStorageManager, qqid: int):
     metas = storage.list_snapshots(qqid, limit=1)
     if not metas:
@@ -363,7 +470,6 @@ def _load_latest_snapshot(storage: DataStorageManager, qqid: int):
 
 def _rating_trend(storage: DataStorageManager, qqid: int, days: int = 90) -> List[dict]:
     rows = storage.get_rating_history(qqid, days=days)
-    # get_rating_history 新到旧；趋势导出改为旧到新
     out = []
     for m in reversed(rows):
         out.append(
@@ -375,6 +481,97 @@ def _rating_trend(storage: DataStorageManager, qqid: int, days: int = 90) -> Lis
             }
         )
     return out
+
+
+def _scan_one_user(
+    user_dir: Path,
+    *,
+    opted_out: set[str],
+    salt: str,
+    trend_days: int,
+    min_records: int,
+    min_rating: int,
+    min_b50: int,
+    min_trend_points: int,
+    require_trend: bool,
+    include_full_records: bool,
+) -> Tuple[Optional[dict], str, int]:
+    """扫描单用户。返回 (payload|None, skip_reason, dropped_records)。"""
+    qqid_s = user_dir.name
+    if qqid_s in opted_out:
+        return None, "opt_out", 0
+    try:
+        # 空目录：有 index 也算非空；仅当目录完全无文件
+        if not any(user_dir.iterdir()):
+            return None, "empty_dir", 0
+    except Exception:
+        return None, "empty_dir", 0
+
+    index_data = _read_user_index(user_dir)
+    metas = index_data.get("snapshots") or []
+    if not metas:
+        return None, "no_snapshot", 0
+
+    meta0 = metas[0] if isinstance(metas[0], dict) else {}
+    idx_rating = int(meta0.get("rating") or 0)
+    idx_records = int(meta0.get("record_count") or 0)
+    # 先用索引预筛，避免读几 MB 的全量成绩 JSON
+    if idx_rating and idx_rating < min_rating:
+        return None, "low_rating", 0
+    if idx_records and idx_records < min_records:
+        return None, "low_records", 0
+
+    trend = _trend_from_index(index_data, limit=trend_days)
+    if len(trend) < min_trend_points or (require_trend and len(trend) < 2):
+        return None, "thin_trend", 0
+
+    snap = _load_latest_snapshot_fast(user_dir, index_data)
+    if not snap or not snap.get("records"):
+        return None, "no_snapshot", 0
+
+    records, dropped = _sanitize_records(list(snap["records"]))
+    if len(records) < min_records:
+        return None, "low_records", dropped
+
+    rating = int(snap.get("rating") or 0)
+    if rating < min_rating:
+        return None, "low_rating", dropped
+
+    b35, b15, b50_mode = _build_b50(records)
+    b50 = b35 + b15
+    if len(b50) < min_b50:
+        return None, "thin_b50", dropped
+
+    anon = _anon_id(qqid_s, salt)
+    delta = None
+    if len(trend) >= 2:
+        delta = int(trend[-1]["rating"]) - int(trend[0]["rating"])
+    b50_ra = sum(int(r.ra) for r in b50)
+    payload = {
+        "schema_version": 2,
+        "player_id": anon,
+        "latest": {
+            "date": snap.get("date"),
+            "stored_at": snap.get("stored_at"),
+            "rating": rating,
+            "record_count": len(records),
+            "b35": [_redact_record(r) for r in b35],
+            "b15": [_redact_record(r) for r in b15],
+            "b50_mode": b50_mode,
+            "b50_ra_sum": b50_ra,
+            "rating_vs_b50_gap": rating - b50_ra,
+        },
+        "rating_trend": trend,
+        "rating_delta": delta,
+        "quality": {
+            "dropped_records": dropped,
+            "trend_points": len(trend),
+        },
+        "_b50_mode": b50_mode,
+    }
+    if include_full_records:
+        payload["latest"]["records"] = [_redact_record(r) for r in records]
+    return payload, "", dropped
 
 
 def _player_arpi(
@@ -412,8 +609,8 @@ def export_dataset(
     min_b50: int = 20,
     min_trend_points: int = 0,
     require_trend: bool = False,
+    workers: int = 8,
 ) -> dict:
-    storage = DataStorageManager()
     storage_scores = scores_dir
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -421,6 +618,8 @@ def export_dataset(
     opted_out = _load_opted_out(share_config)
     salt = _resolve_salt(output_dir, salt)
     load_music_is_new_map(music_data)
+    # music-data 变更后清缓存
+    _try_is_new_song_cached.cache_clear()
 
     players_dir = output_dir / "players"
     if players_dir.exists():
@@ -439,120 +638,77 @@ def export_dataset(
 
     user_dirs = [p for p in _iter_user_dirs(storage_scores)]
     total_users = len(user_dirs)
+    workers = max(1, int(workers or 1))
     _log(
         f"phase1/scan users={total_users} opted_out={len(opted_out)} "
-        f"scores_dir={storage_scores} "
+        f"scores_dir={storage_scores} workers={workers} "
+        f"json={'orjson' if _orjson else 'stdlib'} "
         f"filters(min_records={min_records}, min_rating={min_rating}, "
         f"min_b50={min_b50}, min_trend={min_trend_points}, require_trend={require_trend})"
     )
-    from nonebot_plugin_maimaidx.libraries import maimaidx_data_storage as _ds_mod
-
-    original_dir = _ds_mod.DATA_DIR
-    _ds_mod.DATA_DIR = storage_scores
     scan_prog = _Progress(total_users, "1/4 扫描存档", every=max(10, total_users // 50 or 1))
-    try:
-        for user_dir in user_dirs:
-            qqid_s = user_dir.name
-            suffix = (
-                f" ok={len(player_payloads)} "
-                f"skip={sum(skip_reasons.values())}"
-            )
-            if qqid_s in opted_out:
-                skip_reasons["opt_out"] += 1
-                scan_prog.tick(suffix=suffix)
-                continue
-            if not any(user_dir.iterdir()):
-                skip_reasons["empty_dir"] += 1
-                scan_prog.tick(suffix=suffix)
-                continue
 
-            qqid = int(qqid_s)
-            try:
-                snap = _load_latest_snapshot(storage, qqid)
-            except Exception:
-                skip_reasons["load_error"] += 1
-                scan_prog.tick(suffix=suffix)
-                continue
-            if not snap or not snap.records:
-                skip_reasons["no_snapshot"] += 1
-                scan_prog.tick(suffix=suffix)
-                continue
-
-            records, dropped = _sanitize_records(list(snap.records))
-            dropped_records_total += dropped
-            if len(records) < min_records:
-                skip_reasons["low_records"] += 1
-                scan_prog.tick(suffix=suffix)
-                continue
-
-            rating = int(snap.rating or 0)
-            if rating < min_rating:
-                skip_reasons["low_rating"] += 1
-                scan_prog.tick(suffix=suffix)
-                continue
-
-            b35, b15, b50_mode = _build_b50(records)
-            b50 = b35 + b15
-            if len(b50) < min_b50:
-                skip_reasons["thin_b50"] += 1
-                scan_prog.tick(suffix=suffix)
-                continue
-            b50_mode_counts[b50_mode] += 1
-
-            trend = _rating_trend(storage, qqid, days=trend_days)
-            if len(trend) < min_trend_points or (require_trend and len(trend) < 2):
-                skip_reasons["thin_trend"] += 1
-                scan_prog.tick(suffix=suffix)
-                continue
-
-            bkey = _bucket_key(rating, bucket_size)
-            bucket_player_count[bkey] += 1
-            seen_keys = set()
-            for r in b50:
-                ckey = f"{int(r.song_id)}:{int(r.level_index)}"
-                if ckey in seen_keys:
-                    continue
-                seen_keys.add(ckey)
-                cell = bucket_charts[bkey][ckey]
-                cell["sum_ach"] += float(r.achievements)
-                cell["n"] += 1
-                cell["b50_n"] += 1
-
-            anon = _anon_id(qqid_s, salt)
-            delta = None
-            if len(trend) >= 2:
-                delta = int(trend[-1]["rating"]) - int(trend[0]["rating"])
-
-            b50_ra = sum(int(r.ra) for r in b50)
-            payload = {
-                "schema_version": 2,
-                "player_id": anon,
-                "latest": {
-                    "date": snap.date,
-                    "stored_at": snap.stored_at,
-                    "rating": rating,
-                    "record_count": len(records),
-                    "b35": [_redact_record(r) for r in b35],
-                    "b15": [_redact_record(r) for r in b15],
-                    "b50_mode": b50_mode,
-                    "b50_ra_sum": b50_ra,
-                    "rating_vs_b50_gap": rating - b50_ra,
-                },
-                "rating_trend": trend,
-                "rating_delta": delta,
-                "quality": {
-                    "dropped_records": dropped,
-                    "trend_points": len(trend),
-                },
-            }
-            if include_full_records:
-                payload["latest"]["records"] = [_redact_record(r) for r in records]
-            player_payloads.append(payload)
+    def _handle_result(payload: Optional[dict], reason: str, dropped: int) -> None:
+        nonlocal dropped_records_total
+        dropped_records_total += int(dropped or 0)
+        if reason:
+            skip_reasons[reason] += 1
             scan_prog.tick(
                 suffix=f" ok={len(player_payloads)} skip={sum(skip_reasons.values())}"
             )
-    finally:
-        _ds_mod.DATA_DIR = original_dir
+            return
+        assert payload is not None
+        mode = payload.pop("_b50_mode", "unknown")
+        b50_mode_counts[str(mode)] += 1
+        rating = int(payload["latest"]["rating"])
+        bkey = _bucket_key(rating, bucket_size)
+        bucket_player_count[bkey] += 1
+        seen_keys = set()
+        for item in payload["latest"]["b35"] + payload["latest"]["b15"]:
+            ckey = f"{int(item['song_id'])}:{int(item['level_index'])}"
+            if ckey in seen_keys:
+                continue
+            seen_keys.add(ckey)
+            cell = bucket_charts[bkey][ckey]
+            cell["sum_ach"] += float(item["achievements"])
+            cell["n"] += 1
+            cell["b50_n"] += 1
+        player_payloads.append(payload)
+        scan_prog.tick(
+            suffix=f" ok={len(player_payloads)} skip={sum(skip_reasons.values())}"
+        )
+
+    scan_kwargs = dict(
+        opted_out=opted_out,
+        salt=salt,
+        trend_days=trend_days,
+        min_records=min_records,
+        min_rating=min_rating,
+        min_b50=min_b50,
+        min_trend_points=min_trend_points,
+        require_trend=require_trend,
+        include_full_records=include_full_records,
+    )
+    if workers == 1:
+        for user_dir in user_dirs:
+            try:
+                payload, reason, dropped = _scan_one_user(user_dir, **scan_kwargs)
+            except Exception:
+                payload, reason, dropped = None, "load_error", 0
+            _handle_result(payload, reason, dropped)
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = {
+                pool.submit(_scan_one_user, user_dir, **scan_kwargs): user_dir
+                for user_dir in user_dirs
+            }
+            for fut in as_completed(futs):
+                try:
+                    payload, reason, dropped = fut.result()
+                except Exception:
+                    payload, reason, dropped = None, "load_error", 0
+                _handle_result(payload, reason, dropped)
+
     scan_prog.finish(
         suffix=f" ok={len(player_payloads)} skip={sum(skip_reasons.values())}"
     )
@@ -1138,6 +1294,12 @@ def main() -> int:
         action="store_true",
         help="必须至少 2 个趋势点才导出该玩家",
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=max(4, min(16, (os.cpu_count() or 4) * 2)),
+        help="phase1 并行扫描线程数（I/O 密集，默认 CPU×2，上限 16）",
+    )
     args = parser.parse_args()
 
     print(f"[export] scores={args.scores_dir}", flush=True)
@@ -1146,6 +1308,7 @@ def main() -> int:
     print(f"[export] include_full_records={args.include_full_records}", flush=True)
     print(f"[export] hf_zip={args.hf_zip}", flush=True)
     print(f"[export] music_data={args.music_data}", flush=True)
+    print(f"[export] workers={args.workers}", flush=True)
     t0 = time.time()
     meta = export_dataset(
         scores_dir=args.scores_dir,
@@ -1165,6 +1328,7 @@ def main() -> int:
         min_b50=args.min_b50,
         min_trend_points=args.min_trend_points,
         require_trend=args.require_trend,
+        workers=args.workers,
     )
     elapsed = time.time() - t0
     print(json.dumps(meta, ensure_ascii=False, indent=2))
