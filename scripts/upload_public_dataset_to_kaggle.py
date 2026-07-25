@@ -14,7 +14,8 @@
   # 先把 token 放进 /www/bot/awmc/.env ，再：
   bash scripts/run_upload_kaggle.sh
 
-  python scripts/upload_public_dataset_to_kaggle.py --mode auto --public
+  # 默认更新已有 dx-2026-awmcbot（version）
+  python scripts/upload_public_dataset_to_kaggle.py
   python scripts/upload_public_dataset_to_kaggle.py --dry-run --keep-work
 """
 
@@ -579,8 +580,8 @@ def main() -> int:
     )
     parser.add_argument(
         "--keywords",
-        default="maimai,rhythm-game,anonymized,arpi",
-        help="逗号分隔 keywords",
+        default="games",
+        help="Kaggle 官方 keywords（逗号分隔；无效 tag 会被丢弃，默认 games）",
     )
     parser.add_argument(
         "--mode",
