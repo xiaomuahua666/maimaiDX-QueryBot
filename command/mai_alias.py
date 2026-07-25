@@ -23,13 +23,18 @@ from nonebot.permission import SUPERUSER
 from ..config import *
 from ..libraries.image import text_to_bytes_io
 from ..libraries.maimaidx_api_data import maiApi
+from ..libraries.maimaidx_bot_admin import GUESS_GROUP_MANAGER
 from ..libraries.maimaidx_error import ServerError
 from ..libraries.maimaidx_model import Alias, PushAliasStatus
 from ..libraries.maimaidx_music import alias, mai, update_local_alias
 from ..libraries.maimaidx_music_info import draw_music_info
 
 update_alias        = on_command('更新别名库', permission=SUPERUSER)
-alias_local_apply   = on_command('添加本地别名', aliases={'添加本地别称'})
+alias_local_apply   = on_command(
+    '添加本地别名',
+    aliases={'添加本地别称'},
+    permission=GUESS_GROUP_MANAGER,
+)
 alias_apply         = on_command('添加别名', aliases={'申请别名', '增加别名', '增添别名', '添加别称'})
 alias_agree         = on_command('同意别名', aliases={'同意别称'})
 alias_status        = on_command('当前投票', aliases={'当前别名投票', '当前别称投票'})
