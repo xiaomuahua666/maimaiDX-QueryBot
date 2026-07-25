@@ -14,7 +14,7 @@
 #   STAMP=自定义时间戳   默认自动 YYYYMMDD_HHMMSS
 #   KAGGLE_UPLOAD=0     导出成功后自动上传 Kaggle（需凭证；默认 0）
 #   KAGGLE_PUBLIC=0     新建数据集时公开
-#   KAGGLE_SLUG=maimaidx-desensitized-scores
+#   KAGGLE_SLUG=dx-2026-awmcbot
 
 set -euo pipefail
 
@@ -48,7 +48,7 @@ API_CONCURRENCY="${API_CONCURRENCY:-3}"
 API_LIMIT="${API_LIMIT:-0}"
 KAGGLE_UPLOAD="${KAGGLE_UPLOAD:-0}"
 KAGGLE_PUBLIC="${KAGGLE_PUBLIC:-0}"
-KAGGLE_SLUG="${KAGGLE_SLUG:-maimaidx-desensitized-scores}"
+KAGGLE_SLUG="${KAGGLE_SLUG:-dx-2026-awmcbot}"
 
 # 自动探测曲库（改善 B15 划分）
 MUSIC_DATA="${MUSIC_DATA:-}"

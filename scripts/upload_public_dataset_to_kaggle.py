@@ -422,31 +422,44 @@ def _write_dataset_metadata(
     return out
 
 
-def _dataset_exists(api, dataset_id: str) -> bool:
+def _dataset_exists(api, dataset_id: str) -> Optional[bool]:
+    """返回 True/False；查不清时返回 None（不要误当成缺失去 create）。"""
+    owner, _, slug = dataset_id.partition("/")
+    if not owner or not slug:
+        _die(f"非法 dataset id: {dataset_id}")
+
+    # 1) list 用户数据集（对 token 更稳；status 常 403）
     try:
-        # dataset_status 在不存在时会抛错
+        try:
+            rows = api.dataset_list(user=owner, search=slug)
+        except TypeError:
+            rows = api.dataset_list(user=owner)
+        for r in rows or []:
+            ref = str(getattr(r, "ref", "") or "").lower()
+            if ref == dataset_id.lower() or ref.endswith("/" + slug.lower()):
+                return True
+        # 再扫一页无 search 的列表，避免 search 漏检
+        try:
+            rows2 = api.dataset_list(user=owner)
+        except TypeError:
+            rows2 = []
+        for r in rows2 or []:
+            ref = str(getattr(r, "ref", "") or "").lower()
+            if ref == dataset_id.lower() or ref.endswith("/" + slug.lower()):
+                return True
+    except Exception as e:
+        _log(f"dataset_list check failed: {type(e).__name__}: {e}")
+
+    # 2) status 兜底
+    try:
         api.dataset_status(dataset_id)
         return True
     except Exception as e:
         msg = str(e).lower()
         if "404" in msg or "not found" in msg or "does not exist" in msg:
             return False
-        # 有的版本用 list 兜底
-        try:
-            owner, slug = dataset_id.split("/", 1)
-            rows = api.dataset_list(user=owner, search=slug)
-            for r in rows or []:
-                ref = getattr(r, "ref", None) or f"{getattr(r, 'ownerUser', owner)}/{getattr(r, 'title', '')}"
-                if str(getattr(r, "ref", "")).lower() == dataset_id.lower():
-                    return True
-                if getattr(r, "ownerUser", "") == owner and getattr(r, "subtitle", "") is not None:
-                    # slug 匹配
-                    if str(getattr(r, "ref", "")).endswith("/" + slug):
-                        return True
-        except Exception:
-            pass
-        _log(f"dataset_exists check inconclusive ({type(e).__name__}: {e}); treat as missing")
-        return False
+        _log(f"dataset_exists inconclusive ({type(e).__name__}: {e})")
+        return None
 
 
 def _upload(
@@ -473,11 +486,18 @@ def _upload(
     convert_to_csv = False
 
     if mode == "auto":
-        mode = "version" if exists else "create"
+        if exists is True:
+            mode = "version"
+        elif exists is False:
+            mode = "create"
+        else:
+            # 查不清时默认更新，避免误新建第二个 dataset
+            mode = "version"
+            _log("exists unknown -> prefer version (won't create)")
         _log(f"auto resolved mode={mode}")
 
     if mode == "create":
-        if exists:
+        if exists is True:
             _die(
                 f"数据集已存在: {dataset_id}。请用 --mode version，或换 --slug。"
             )
@@ -490,25 +510,20 @@ def _upload(
             dir_mode=dir_mode,
         )
     elif mode == "version":
-        if not exists:
-            _log("dataset missing; falling back to create")
-            result = api.dataset_create_new(
-                str(staging),
-                public=public,
-                quiet=False,
-                convert_to_csv=convert_to_csv,
-                dir_mode=dir_mode,
+        if exists is False:
+            _die(
+                f"数据集不存在，拒绝自动新建: {dataset_id}\n"
+                "若确需新建请显式 MODE=create；否则检查 --slug 是否指到已有数据集。"
             )
-        else:
-            _log(f"creating new version notes={message!r} ...")
-            result = api.dataset_create_version(
-                str(staging),
-                version_notes=message,
-                quiet=False,
-                convert_to_csv=convert_to_csv,
-                dir_mode=dir_mode,
-                delete_old_versions=False,
-            )
+        _log(f"creating new version notes={message!r} ...")
+        result = api.dataset_create_version(
+            str(staging),
+            version_notes=message,
+            quiet=False,
+            convert_to_csv=convert_to_csv,
+            dir_mode=dir_mode,
+            delete_old_versions=False,
+        )
     else:
         _die(f"未知 mode: {mode}")
 
@@ -544,14 +559,18 @@ def main() -> int:
         default=Path("/www/bot/awmc/data"),
         help="自动发现 public_dataset_latest 的根目录",
     )
-    parser.add_argument("--slug", default="maimaidx-desensitized-scores")
+    parser.add_argument(
+        "--slug",
+        default="dx-2026-awmcbot",
+        help="已有数据集 slug（默认更新 awmcteam/dx-2026-awmcbot）",
+    )
     parser.add_argument(
         "--title",
-        default="maimaiDX Desensitized Score Dataset",
+        default="舞萌DX 2026 AWMCBOT 用户成绩数据集",
     )
     parser.add_argument(
         "--subtitle",
-        default="Anonymized B50 / full scores / ARPI peer stats",
+        default="脱敏 B50 / 全量成绩 / Rating 趋势 / ARPI 同段统计",
     )
     parser.add_argument(
         "--license",
@@ -566,8 +585,8 @@ def main() -> int:
     parser.add_argument(
         "--mode",
         choices=("auto", "create", "version"),
-        default="auto",
-        help="auto=已存在则 version，否则 create",
+        default="version",
+        help="默认 version=更新已有数据集；create 仅新建；auto 查不清时也偏好 version",
     )
     parser.add_argument(
         "--public",

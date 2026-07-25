@@ -75,9 +75,10 @@ else
   PYTHON="$(command -v python3)"
 fi
 
-SLUG="${SLUG:-maimaidx-desensitized-scores}"
-TITLE="${TITLE:-maimaiDX Desensitized Score Dataset}"
-MODE="${MODE:-auto}"
+# 默认更新已有数据集 https://www.kaggle.com/datasets/awmcteam/dx-2026-awmcbot
+SLUG="${SLUG:-dx-2026-awmcbot}"
+TITLE="${TITLE:-舞萌DX 2026 AWMCBOT 用户成绩数据集}"
+MODE="${MODE:-version}"
 MESSAGE="${MESSAGE:-}"
 EXPORT_DIR="${EXPORT_DIR:-}"
 HF_ZIP="${HF_ZIP:-}"
