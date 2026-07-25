@@ -13,7 +13,7 @@
 #
 # 可选环境变量：
 #   SLUG / TITLE / MODE(auto|create|version) / MESSAGE
-#   KEYWORDS=Games         # Kaggle tags，默认 Games（官方分类名；Game 会被拒）
+#   KEYWORDS=games         # Kaggle tags，须小写官方名（games / video games）
 #   EXPORT_DIR / HF_ZIP / DATA_ROOT
 #   KAGGLE_PUBLIC=1  KAGGLE_DRY_RUN=1  KEEP_WORK=1
 #   KAGGLE_ENV_FILE=/path/to/.env
@@ -82,7 +82,7 @@ SLUG="${SLUG:-dx-2026-awmcbot}"
 TITLE="${TITLE:-舞萌DX 2026 AWMCBOT 用户成绩数据集}"
 MODE="${MODE:-version}"
 MESSAGE="${MESSAGE:-}"
-KEYWORDS="${KEYWORDS:-Games}"
+KEYWORDS="${KEYWORDS:-games}"
 EXPORT_DIR="${EXPORT_DIR:-}"
 HF_ZIP="${HF_ZIP:-}"
 KAGGLE_PUBLIC="${KAGGLE_PUBLIC:-0}"

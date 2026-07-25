@@ -617,8 +617,8 @@ def main() -> int:
     )
     parser.add_argument(
         "--keywords",
-        default="Games",
-        help="Kaggle tags/keywords，逗号分隔（默认 Games；Kaggle 不认 Game）",
+        default="games",
+        help="Kaggle tags/keywords，逗号分隔（默认 games；须小写官方 tag 名）",
     )
     parser.add_argument(
         "--mode",
