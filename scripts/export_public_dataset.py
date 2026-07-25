@@ -267,7 +267,7 @@ def export_dataset(
     min_chart_samples: int = 3,
     trend_days: int = 90,
     salt: Optional[str] = None,
-    include_full_records: bool = False,
+    include_full_records: bool = True,
 ) -> dict:
     storage = DataStorageManager()
     # 允许自定义成绩根目录
@@ -599,7 +599,7 @@ def _readme_text(meta: dict) -> str:
 | 文件 | 用途 |
 |------|------|
 | `peer_stats.json` / `.json.gz` | 复制到 `B50_ASSETS_PATH`，供锐评 ARPI / 同段均值 |
-| `players/*.json` | 匿名玩家最新 B50 + Rating 趋势 |
+| `players/*.json` | 匿名玩家最新 B50 + 全量成绩 + Rating 趋势（可用 `--no-full-records` 关掉全量） |
 | `rating_trends.jsonl` | 推分趋势行式样本 |
 | `roast_training_samples.jsonl` | 锐评提示词 / 可行性优化轻量样本 |
 | `dataset_meta.json` | 导出元信息 |
@@ -664,14 +664,16 @@ def main() -> int:
     )
     parser.add_argument(
         "--include-full-records",
-        action="store_true",
-        help="在 players/*.json 中附带全量成绩（体积更大）",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="在 players/*.json 中附带全量成绩（默认开启；可用 --no-full-records 关闭）",
     )
     args = parser.parse_args()
 
-    print(f"[export] scores={args.scores_dir}")
-    print(f"[export] share_config={args.share_config}")
-    print(f"[export] output={args.output}")
+    print(f"[export] scores={args.scores_dir}", flush=True)
+    print(f"[export] share_config={args.share_config}", flush=True)
+    print(f"[export] output={args.output}", flush=True)
+    print(f"[export] include_full_records={args.include_full_records}", flush=True)
     t0 = time.time()
     meta = export_dataset(
         scores_dir=args.scores_dir,
