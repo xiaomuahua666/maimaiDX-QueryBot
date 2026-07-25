@@ -16,6 +16,9 @@
 #   KAGGLE_PUBLIC=0     新建数据集时公开
 #   KAGGLE_SLUG=dx-2026-awmcbot
 #   WORKERS=12          phase1 并行扫描线程（默认 12；慢盘可降到 4）
+#   CLEANUP=1           成功后清理旧导出/日志/中断产物（默认 1）
+#   KEEP_N=1            保留最近 N 份完整导出（含对应 zip/log/enrich）
+#   CLEANUP_INCOMPLETE=1  启动时先清中断的不完整目录/空 zip（默认 1）
 
 set -euo pipefail
 
@@ -51,6 +54,9 @@ KAGGLE_UPLOAD="${KAGGLE_UPLOAD:-0}"
 KAGGLE_PUBLIC="${KAGGLE_PUBLIC:-0}"
 KAGGLE_SLUG="${KAGGLE_SLUG:-dx-2026-awmcbot}"
 WORKERS="${WORKERS:-12}"
+CLEANUP="${CLEANUP:-1}"
+KEEP_N="${KEEP_N:-1}"
+CLEANUP_INCOMPLETE="${CLEANUP_INCOMPLETE:-1}"
 
 # 自动探测曲库（改善 B15 划分）
 MUSIC_DATA="${MUSIC_DATA:-}"
@@ -95,6 +101,7 @@ preflight() {
   echo "[run] music_data=${MUSIC_DATA:-<none>}"
   echo "[run] enrich=${ENRICH} api_backfill=${API_BACKFILL}"
   echo "[run] workers=${WORKERS}"
+  echo "[run] cleanup=${CLEANUP} keep_n=${KEEP_N} cleanup_incomplete=${CLEANUP_INCOMPLETE}"
   echo "[run] log=${LOG_FILE}"
 
   local fail=0
@@ -153,9 +160,212 @@ link_latest() {
   echo "[run] latest symlinks updated under ${root}"
 }
 
+# 清理中断产物：无 dataset_meta 的目录、0 字节/残缺 zip、旧 launcher 输出
+cleanup_incomplete_artifacts() {
+  local root="$1"
+  local removed=0
+  echo "[cleanup] scan incomplete under ${root}"
+
+  local d
+  for d in "${root}"/public_dataset_*; do
+    [[ -e "$d" ]] || continue
+    [[ -L "$d" ]] && continue
+    [[ -d "$d" ]] || continue
+    if [[ ! -f "${d}/dataset_meta.json" ]]; then
+      echo "[cleanup] rm incomplete dir: ${d}"
+      rm -rf -- "${d}"
+      removed=$((removed + 1))
+    fi
+  done
+
+  # 未带时间戳的旧目录（早期导出）
+  if [[ -d "${root}/public_dataset" && ! -f "${root}/public_dataset/dataset_meta.json" ]]; then
+    echo "[cleanup] rm legacy incomplete: ${root}/public_dataset"
+    rm -rf -- "${root}/public_dataset"
+    removed=$((removed + 1))
+  fi
+
+  local z
+  for z in "${root}"/hf_upload_*.zip "${root}"/public_dataset_share*.tar.gz "${root}"/hf_upload.zip; do
+    [[ -e "$z" ]] || continue
+    [[ -L "$z" ]] && continue
+    if [[ ! -s "$z" ]]; then
+      echo "[cleanup] rm empty archive: ${z}"
+      rm -f -- "${z}"
+      removed=$((removed + 1))
+    fi
+  done
+
+  # 启动器残留
+  local f
+  for f in "${root}"/run_export_launcher_*.out "${root}"/public_dataset_export.nohup.out; do
+    [[ -e "$f" ]] || continue
+    echo "[cleanup] rm launcher out: ${f}"
+    rm -f -- "${f}"
+    removed=$((removed + 1))
+  done
+
+  echo "[cleanup] incomplete removed=${removed}"
+}
+
+# 成功导出后：只保留最近 KEEP_N 份完整导出及其配套 zip/log/enrich
+cleanup_old_export_artifacts() {
+  local root="$1"
+  local keep_n="${2:-1}"
+  local keep_current="${3:-}"
+  keep_n="$(printf '%s' "${keep_n}" | tr -cd '0-9')"
+  [[ -n "${keep_n}" ]] || keep_n=1
+  (( keep_n < 1 )) && keep_n=1
+
+  echo "[cleanup] rotate exports keep_n=${keep_n} current=${keep_current:-none}"
+
+  local -a complete=()
+  local d base stamp
+  # 按时间戳名倒序（YYYYMMDD_HHMMSS）
+  while IFS= read -r d; do
+    [[ -n "$d" ]] || continue
+    complete+=("$d")
+  done < <(
+    for d in "${root}"/public_dataset_*; do
+      [[ -d "$d" && ! -L "$d" ]] || continue
+      [[ -f "${d}/dataset_meta.json" ]] || continue
+      echo "$(basename "$d")"
+    done | sort -r
+  )
+
+  local -a keep_stamps=()
+  if [[ -n "${keep_current}" ]]; then
+    keep_stamps+=("${keep_current}")
+  fi
+  for base in "${complete[@]:-}"; do
+    stamp="${base#public_dataset_}"
+    already=0
+    for x in "${keep_stamps[@]:-}"; do
+      if [[ "${x}" == "${stamp}" ]]; then already=1; break; fi
+    done
+    (( already )) && continue
+    if (( ${#keep_stamps[@]} < keep_n )); then
+      keep_stamps+=("${stamp}")
+    fi
+  done
+
+  _should_keep_stamp() {
+    local s="$1" x
+    for x in "${keep_stamps[@]:-}"; do
+      [[ "${x}" == "${s}" ]] && return 0
+    done
+    return 1
+  }
+
+  echo "[cleanup] keep stamps: ${keep_stamps[*]:-<none>}"
+
+  for d in "${root}"/public_dataset_*; do
+    [[ -d "$d" && ! -L "$d" ]] || continue
+    base="$(basename "$d")"
+    stamp="${base#public_dataset_}"
+    if _should_keep_stamp "${stamp}"; then
+      continue
+    fi
+    echo "[cleanup] rm old dataset: ${d}"
+    rm -rf -- "${d}"
+  done
+
+  # 旧无时间戳目录（完整也删，已有 stamped 版本）
+  if [[ -d "${root}/public_dataset" && ! -L "${root}/public_dataset" ]]; then
+    echo "[cleanup] rm legacy dataset dir: ${root}/public_dataset"
+    rm -rf -- "${root}/public_dataset"
+  fi
+
+  for z in "${root}"/hf_upload_*.zip; do
+    [[ -e "$z" && ! -L "$z" ]] || continue
+    base="$(basename "$z")"
+    stamp="${base#hf_upload_}"
+    stamp="${stamp%.zip}"
+    if _should_keep_stamp "${stamp}"; then
+      continue
+    fi
+    echo "[cleanup] rm old zip: ${z}"
+    rm -f -- "${z}"
+  done
+  for z in "${root}"/public_dataset_share*.tar.gz "${root}"/hf_upload.zip; do
+    [[ -e "$z" && ! -L "$z" ]] || continue
+    echo "[cleanup] rm share/legacy archive: ${z}"
+    rm -f -- "${z}"
+  done
+
+  for f in \
+    "${root}"/public_dataset_export_*.log \
+    "${root}"/enrich_report_*.json \
+    "${root}"/run_export_launcher_*.out \
+    "${root}"/public_dataset_export.log \
+    "${root}"/public_dataset_export.nohup.out
+  do
+    [[ -e "$f" && ! -L "$f" ]] || continue
+    base="$(basename "$f")"
+    stamp="__drop__"
+    case "${base}" in
+      public_dataset_export_*.log)
+        stamp="${base#public_dataset_export_}"; stamp="${stamp%.log}" ;;
+      enrich_report_*.json)
+        stamp="${base#enrich_report_}"; stamp="${stamp%.json}" ;;
+      run_export_launcher_*.out)
+        stamp="${base#run_export_launcher_}"; stamp="${stamp%.out}" ;;
+    esac
+    if [[ "${stamp}" != "__drop__" ]] && _should_keep_stamp "${stamp}"; then
+      continue
+    fi
+    echo "[cleanup] rm old log/report: ${f}"
+    rm -f -- "${f}"
+  done
+
+  # 刷新 latest 软链（指向仍存在的当前产物）
+  if [[ -n "${keep_current}" ]]; then
+    [[ -d "${root}/public_dataset_${keep_current}" ]] && \
+      ln -sfn "public_dataset_${keep_current}" "${root}/public_dataset_latest" || true
+    [[ -f "${root}/hf_upload_${keep_current}.zip" ]] && \
+      ln -sfn "hf_upload_${keep_current}.zip" "${root}/hf_upload_latest.zip" || true
+    [[ -f "${root}/public_dataset_export_${keep_current}.log" ]] && \
+      ln -sfn "public_dataset_export_${keep_current}.log" "${root}/public_dataset_export_latest.log" || true
+    [[ -f "${root}/enrich_report_${keep_current}.json" ]] && \
+      ln -sfn "enrich_report_${keep_current}.json" "${root}/enrich_report_latest.json" || true
+  fi
+
+  echo "[cleanup] export rotate done; disk:"
+  du -sh "${root}" 2>/dev/null || true
+}
+
+# 仅清理：CLEANUP_ONLY=1 bash .../run_export_public_dataset.sh
+# 或：bash .../run_export_public_dataset.sh --cleanup-only
+if [[ "${1:-}" == "--cleanup-only" || "${CLEANUP_ONLY:-0}" == "1" ]]; then
+  echo "[run] cleanup-only mode data_root=${DATA_ROOT} keep_n=${KEEP_N}"
+  cleanup_incomplete_artifacts "${DATA_ROOT}"
+  latest_stamp=""
+  while IFS= read -r base; do
+    latest_stamp="${base#public_dataset_}"
+    break
+  done < <(
+    for d in "${DATA_ROOT}"/public_dataset_*; do
+      [[ -d "$d" && ! -L "$d" && -f "${d}/dataset_meta.json" ]] || continue
+      echo "$(basename "$d")"
+    done | sort -r
+  )
+  cleanup_old_export_artifacts "${DATA_ROOT}" "${KEEP_N}" "${latest_stamp}"
+  # kaggle 侧旧日志
+  CLEANUP_ONLY=1 KEEP_N="${KEEP_N}" CLEANUP_UPLOADED_ZIP=0 DATA_ROOT="${DATA_ROOT}" \
+    bash "${SCRIPT_DIR}/run_upload_kaggle.sh" --cleanup-only || true
+  echo "[run] cleanup-only done"
+  du -sh "${DATA_ROOT}" 2>/dev/null || true
+  ls -lah "${DATA_ROOT}" | head -60 || true
+  exit 0
+fi
+
 preflight
 
 cd "${PLUGIN_DIR}"
+
+if [[ "${CLEANUP_INCOMPLETE}" == "1" ]]; then
+  cleanup_incomplete_artifacts "${DATA_ROOT}"
+fi
 
 {
   echo "[run] ===== job start stamp=${STAMP} ====="
@@ -236,6 +446,10 @@ print(json.dumps(json.loads(p.read_text(encoding="utf-8")), ensure_ascii=False, 
 PY
   fi
 
+  if [[ "${CLEANUP}" == "1" ]]; then
+    cleanup_old_export_artifacts "$(dirname "${OUTPUT_DIR}")" "${KEEP_N}" "${STAMP}"
+  fi
+
   if [[ "${KAGGLE_UPLOAD}" == "1" ]]; then
     echo "[run] === upload to Kaggle ==="
     export DATA_ROOT="$(dirname "${OUTPUT_DIR}")"
@@ -245,6 +459,8 @@ PY
     export MODE="${KAGGLE_MODE:-auto}"
     export KAGGLE_PUBLIC
     export STAMP
+    export CLEANUP
+    export KEEP_N
     bash "${SCRIPT_DIR}/run_upload_kaggle.sh" || {
       echo "[run] WARN: Kaggle upload failed (export itself succeeded)"
       rc=2
