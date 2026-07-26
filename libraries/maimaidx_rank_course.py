@@ -571,34 +571,18 @@ def draw_rank_course(
         anchor="la",
     )
 
-    # ── Course dani plate (left area) ────────────────────────────────
+    # ── Course name (left area) ────────────────────────────────
     plate_asset, dani_asset, course_dani = _player_visual_assets(
         player_plate, player_additional_rating, course.name
     )
 
-    # Target display rect for the course dani plate: x=34, y=55, max 340×150
-    COURSE_DANI_W, COURSE_DANI_H = 340, 150
-    COURSE_DANI_X, COURSE_DANI_Y = 34, 58
-    if course_dani is not None:
-        # Scale proportionally to fit within the target box
-        orig_w, orig_h = course_dani.size
-        scale = min(COURSE_DANI_W / orig_w, COURSE_DANI_H / orig_h)
-        new_w = int(orig_w * scale)
-        new_h = int(orig_h * scale)
-        course_dani_resized = course_dani.resize((new_w, new_h), Image.Resampling.LANCZOS)
-        # Vertically center within the box
-        paste_x = COURSE_DANI_X
-        paste_y = COURSE_DANI_Y + (COURSE_DANI_H - new_h) // 2
-        image.alpha_composite(course_dani_resized, (paste_x, paste_y))
-    else:
-        # Fallback: draw course name as large text if image unavailable
-        draw.text(
-            (40, 110),
-            course.name,
-            font=_font(62),
-            fill=(22, 39, 55),
-            anchor="la",
-        )
+    draw.text(
+        (40, 110),
+        course.name,
+        font=_font(62),
+        fill=(22, 39, 55),
+        anchor="la",
+    )
 
     # ── Player panel (right side of header) ─────────────────────────
     # Occupies right portion: x=400..1046, y=48..210
@@ -644,17 +628,22 @@ def draw_rank_course(
             anchor="ra",
         )
 
-    # Player's personal dani badge (their own rank), placed below the name plate
-    if dani_asset is not None:
-        orig_w, orig_h = dani_asset.size
-        dani_scale = min((PLAYER_W - 12) / orig_w, 72 / orig_h)
+    # Course badge (replacing player's personal rank badge on the right)
+    badge_to_draw = course_dani
+    if badge_to_draw is not None:
+        orig_w, orig_h = badge_to_draw.size
+        if has_player:
+            dani_scale = min((PLAYER_W - 12) / orig_w, 72 / orig_h)
+            dani_y_base = PLAYER_Y + (96 if plate_asset is not None else 56)
+            dani_y = dani_y_base + (PLAYER_H - 96 - int(orig_h * dani_scale)) // 2 + 4
+        else:
+            dani_scale = min((PLAYER_W - 12) / orig_w, 100 / orig_h)
+            dani_y = PLAYER_Y + (PLAYER_H - int(orig_h * dani_scale)) // 2
+        
         dani_w = int(orig_w * dani_scale)
         dani_h = int(orig_h * dani_scale)
-        dani_resized = dani_asset.resize((dani_w, dani_h), Image.Resampling.LANCZOS)
+        dani_resized = badge_to_draw.resize((dani_w, dani_h), Image.Resampling.LANCZOS)
         dani_x = PLAYER_X + PLAYER_W - dani_w - 4
-        # Place below name plate; if no plate image push up a bit
-        dani_y_base = PLAYER_Y + (96 if plate_asset is not None else 56)
-        dani_y = dani_y_base + (PLAYER_H - 96 - dani_h) // 2 + 4
         image.alpha_composite(dani_resized, (dani_x, dani_y))
 
     # ── Summary bar ──────────────────────────────────────────────────
@@ -690,9 +679,9 @@ def draw_rank_course(
     rule = course.life
     rules = (
         ("START",   str(rule.initial), (24, 137, 145)),
-        ("GREAT",   f"-{rule.great}",  (217, 148, 24)),
-        ("GOOD",    f"-{rule.good}",   (226, 91, 45)),
-        ("MISS",    f"-{rule.miss}",   (218, 57, 67)),
+        ("GREAT",   f"-{rule.great}",  (235, 115, 170)), # Pink
+        ("GOOD",    f"-{rule.good}",   (91, 190, 100)),  # Green
+        ("MISS",    f"-{rule.miss}",   (150, 150, 150)), # Gray
         ("RECOVER", f"+{rule.heal}",   (54, 139, 91)),
     )
     # Subtle separator line
