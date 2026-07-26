@@ -698,6 +698,37 @@ async def _process_auto_qrcode_for_account(
         processing_time_estimator.record(
             actual_workflow_key, time.perf_counter() - t0
         )
+        # 拓展数据集：扫码后后台落盘（已上传则 maintenance 也会写；此处覆盖仅 PC/未上传）
+        try:
+            from ..libraries.maimaidx_dataset_archive import (
+                collect_archive_qqids,
+                schedule_dataset_archive,
+            )
+            from ..libraries.maimaidx_platform import resolve_score_qqid
+
+            score_qq = None
+            try:
+                score_qq = int(resolve_score_qqid(event))
+            except Exception:
+                score_qq = None
+            archive_ids = collect_archive_qqids(qqid, score_qq)
+            uploaded_ok = bool(
+                upload_result and str(upload_result).startswith('上传完成')
+            )
+            # 上传成功由 _post_upload_maintenance 落盘；此处覆盖仅扫码/PC 同步
+            if archive_ids and not uploaded_ok:
+                schedule_dataset_archive(
+                    archive_ids,
+                    fish=bool(fish),
+                    lxns=bool(lxns),
+                    source='share_qrcode',
+                    delay=1.0,
+                )
+        except Exception as exc:
+            log.warning(
+                f'[QrcodeAuto] 调度数据集落盘失败 qq={qqid}: '
+                f'{type(exc).__name__}: {exc}'
+            )
         prefix = (
             MessageSegment.at(event.user_id) + MessageSegment.text('\n')
             if isinstance(event, GroupMessageEvent)

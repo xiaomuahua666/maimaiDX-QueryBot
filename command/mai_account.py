@@ -49,8 +49,6 @@ from ..libraries.maimaidx_reaction import react_processing
 from ..libraries.maimaidx_status_api import build_live_status_payload
 from ..libraries.maimaidx_sw_api import format_user_region_block, sw_api
 from .mai_agreement import agreement_prompt, has_user_agreed
-from ..libraries.maimaidx_data_scheduler import fetch_and_store_user_scores
-
 
 account_help = on_command("mai账号", aliases={"账号帮助", "mai账户"})
 account_bind = on_command("mai绑定", aliases={"绑定舞萌", "舞萌绑定", "maibind"})
@@ -1703,7 +1701,12 @@ async def _upload(
                     int(key), billing_service, cost,
                     meta={"operation": operation, "fish": False, "lxns": True, "source": "pc"},
                 )
-                _schedule_post_upload_maintenance(key, fish=False, lxns=True)
+                _schedule_post_upload_maintenance(
+                    key,
+                    fish=False,
+                    lxns=True,
+                    archive_qqids=_archive_qqids_for_event(event, key),
+                )
                 ref = _log(
                     key, operation, "success",
                     f"charged={charge.charged},free={charge.free},source=pc,count={len(pc_scores)}",
@@ -1835,7 +1838,12 @@ async def _upload(
             int(key), billing_service, cost,
             meta={"operation": operation, "fish": fish, "lxns": lxns},
         )
-        _schedule_post_upload_maintenance(key, fish=fish, lxns=lxns)
+        _schedule_post_upload_maintenance(
+            key,
+            fish=fish,
+            lxns=lxns,
+            archive_qqids=_archive_qqids_for_event(event, key),
+        )
         ref = _log(key, operation, "success", f"charged={charge.charged},free={charge.free}")
         return "上传完成\n" + "\n".join(results) + f"\n{_charge_text(charge)}\nRef_ID: {ref}"
     except Exception as exc:
@@ -2054,30 +2062,31 @@ async def _refresh_b50_cache_after_upload(
 
 
 async def _post_upload_maintenance(
-    user_key: str, *, fish: bool, lxns: bool
+    user_key: str,
+    *,
+    fish: bool,
+    lxns: bool,
+    archive_qqids: Optional[list[int]] = None,
 ) -> None:
     """上传结算后的缓存刷新与存档；不阻塞用户收到最终结果。"""
     await _refresh_b50_cache_after_upload(user_key, fish=fish, lxns=lxns)
-    qqid = int(user_key)
     try:
-        from ..libraries.maimaidx_data_share import data_share
-        from ..libraries.maimaidx_data_storage import data_storage
-        from ..libraries.maimaidx_share_snapshot import maybe_save_share_snapshot
-        from ..libraries.maimaidx_player_cache import get_cached_player
-        from ..libraries.maimaidx_lxns_db import lxns_db
+        from ..libraries.maimaidx_dataset_archive import (
+            archive_user_scores_for_dataset,
+            collect_archive_qqids,
+        )
 
-        # 个人开启存储：完整 API 落盘；否则若未 opt-out，尽量用刚刷新的缓存贡献
-        if data_storage.is_enabled(qqid):
-            await fetch_and_store_user_scores(qqid, source="upload")
-        elif data_share.is_sharing_enabled(qqid):
-            source = lxns_db.get_source(qqid) or "divingfish"
-            hit = get_cached_player(qqid, None, source, force_refresh=False)
-            if hit is not None and hit.records:
-                maybe_save_share_snapshot(
-                    qqid, hit.userinfo, hit.records, source="share_upload"
-                )
-            else:
-                await fetch_and_store_user_scores(qqid, source="upload")
+        qqids = collect_archive_qqids(user_key, *(archive_qqids or []))
+        # 上传后稍等查分器同步，再强制落盘（含 PC 兜底），拓展数据集
+        await archive_user_scores_for_dataset(
+            qqids,
+            fish=fish,
+            lxns=lxns,
+            source="share_upload",
+            retries=3,
+            retry_delay=5.0,
+            allow_playcount_fallback=True,
+        )
     except Exception as exc:
         log.warning(
             f"[DataStorage] 上传后后台自动存档失败 user={user_key}: "
@@ -2085,11 +2094,31 @@ async def _post_upload_maintenance(
         )
 
 
+def _archive_qqids_for_event(event: MessageEvent, user_key: str) -> list[int]:
+    from ..libraries.maimaidx_dataset_archive import collect_archive_qqids
+
+    score_qq: Optional[int] = None
+    try:
+        score_qq = int(resolve_score_qqid(event))
+    except Exception:
+        score_qq = None
+    return collect_archive_qqids(user_key, score_qq, billing_user_id(event))
+
+
 def _schedule_post_upload_maintenance(
-    user_key: str, *, fish: bool, lxns: bool
+    user_key: str,
+    *,
+    fish: bool,
+    lxns: bool,
+    archive_qqids: Optional[list[int]] = None,
 ) -> None:
     task = asyncio.create_task(
-        _post_upload_maintenance(user_key, fish=fish, lxns=lxns),
+        _post_upload_maintenance(
+            user_key,
+            fish=fish,
+            lxns=lxns,
+            archive_qqids=archive_qqids,
+        ),
         name=f"maimaidx-post-upload-{user_key}",
     )
     _post_upload_tasks.add(task)

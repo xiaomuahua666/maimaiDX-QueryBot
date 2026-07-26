@@ -54,7 +54,9 @@ qq_bind = (ROOT / "command" / "mai_qq_bind.py").read_text(encoding="utf-8")
 assert "await asyncio.to_thread(record_from_event, event)" in qq_bind
 
 account = (ROOT / "command" / "mai_account.py").read_text(encoding="utf-8")
-assert account.count("_schedule_post_upload_maintenance(key,") == 2
+assert account.count("_schedule_post_upload_maintenance(") >= 3  # 2 call sites + def
+assert "archive_user_scores_for_dataset" in account
+assert "_archive_qqids_for_event" in account
 assert "async def _post_upload_maintenance(" in account
 assert "asyncio.create_task(" in account
 assert "task.add_done_callback(_post_upload_tasks.discard)" in account
