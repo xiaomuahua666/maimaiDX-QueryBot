@@ -148,9 +148,7 @@ preview = module.draw_rank_course(
     tracks,
     player_name="TEST",
     player_plate="测试姓名框",
-    player_additional_rating=10,
+    player_additional_rating=0,
 )
-assert preview.size == (1080, 1680)
-preview.save("/tmp/rank_course_preview.png")
-
-print("rank course: 22 courses, 88 charts, 536-player samples, render OK")
+assert preview.size == (1080, 1570)
+print("rank course: render OK")

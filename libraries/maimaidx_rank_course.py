@@ -42,6 +42,68 @@ class LifeRule:
     heal: int
 
 
+from dataclasses import dataclass
+
+@dataclass
+class ThemeColors:
+    body_bg: tuple[int, int, int, int]
+    card_bg: tuple[int, int, int, int]
+    stat_bg: tuple[int, int, int, int]
+    text_main: tuple[int, int, int]
+    text_sub: tuple[int, int, int]
+    line_color: tuple[int, int, int, int]
+    summary_icon_bg: tuple[int, int, int, int]
+    summary_text: tuple[int, int, int]
+    badge_fill: tuple[int, int, int, int]
+    badge_text: tuple[int, int, int]
+
+THEME_NORMAL = ThemeColors(
+    body_bg=(242, 245, 249, 255),
+    card_bg=(255, 255, 255, 255),
+    stat_bg=(205, 242, 240, 255),
+    text_main=(22, 39, 55),
+    text_sub=(91, 105, 117),
+    line_color=(210, 230, 230, 255),
+    summary_icon_bg=(27, 169, 166, 255),
+    summary_text=(39, 83, 88),
+    badge_fill=(235, 245, 255, 255),
+    badge_text=(40, 70, 95)
+)
+
+THEME_SHIN = ThemeColors(
+    body_bg=(248, 242, 249, 255),
+    card_bg=(255, 255, 255, 255),
+    stat_bg=(238, 225, 245, 255),
+    text_main=(45, 25, 55),
+    text_sub=(105, 90, 115),
+    line_color=(230, 215, 240, 255),
+    summary_icon_bg=(145, 95, 180, 255),
+    summary_text=(80, 40, 90),
+    badge_fill=(245, 235, 250, 255),
+    badge_text=(70, 40, 90)
+)
+
+THEME_URA = ThemeColors(
+    body_bg=(250, 245, 245, 255),
+    card_bg=(255, 255, 255, 255),
+    stat_bg=(250, 230, 230, 255),
+    text_main=(80, 20, 20),
+    text_sub=(140, 80, 80),
+    line_color=(240, 210, 210, 255),
+    summary_icon_bg=(200, 40, 50, 255),
+    summary_text=(120, 30, 40),
+    badge_fill=(250, 235, 240, 255),
+    badge_text=(180, 50, 70)
+)
+
+def _get_theme(course_name: str) -> ThemeColors:
+    if "里" in course_name:
+        return THEME_URA
+    if "真" in course_name:
+        return THEME_SHIN
+    return THEME_NORMAL
+
+
 @dataclass(frozen=True)
 class RankCourse:
     name: str
@@ -498,6 +560,7 @@ def _draw_sample_distribution(
     track: CourseTrack,
     box: tuple[int, int, int, int],
     color: tuple[int, int, int],
+    theme: ThemeColors,
 ) -> None:
     sample = track.sample or {}
     if not sample.get("sample_count"):
@@ -512,7 +575,7 @@ def _draw_sample_distribution(
         return round(left + ratio * (right - left))
 
     center = (top + bottom) // 2
-    draw.line((left, center, right, center), fill=(213, 220, 231), width=6)
+    draw.line((left, center, right, center), fill=theme.line_color, width=6)
     p25 = x_for(float(sample.get("p25") or scale_min))
     median = x_for(float(sample.get("median") or scale_min))
     p75 = x_for(float(sample.get("p75") or scale_max))
@@ -569,94 +632,55 @@ def draw_rank_course(
     score_note: Optional[str] = None,
 ) -> Image.Image:
     # ── Layout constants ─────────────────────────────────────────────
-    # Header band height grows slightly to fit the bigger course dani plate.
-    HEADER_H = 370
-    HEADER_BG = (228, 250, 249, 255)
-    CARD_BG  = (255, 255, 255, 255)
-    STAT_BG  = (205, 242, 240, 255)
-    BODY_BG  = (242, 245, 249, 255)
-    width, height = 1080, 1680
-    image = Image.new("RGBA", (width, height), BODY_BG)
+    theme = _get_theme(course.name)
+    HEADER_H = 260
+    width, height = 1080, 1570
+    image = Image.new("RGBA", (width, height), theme.body_bg)
     draw  = ImageDraw.Draw(image)
 
-    # ── Header background ────────────────────────────────────────────
-    draw.rectangle((0, 0, width, HEADER_H), fill=HEADER_BG)
     # ── Assets ────────────────────────────────
-    plate_asset, dani_asset, course_dani, logo_asset, icon_asset, name_asset = _player_visual_assets(
+    _, _, course_dani, _, _, _ = _player_visual_assets(
         player_plate, player_additional_rating, course.name
     )
 
     # ── Header ───────────────────────────────────────────────────────
-    # B50 style: no accent stripe, light theme background
-    draw.rectangle((0, 0, width, HEADER_H), fill=BODY_BG)
+    draw.rectangle((0, 0, width, HEADER_H), fill=theme.body_bg)
     
-    # Top left: Logo
-    LOGO_X, LOGO_Y = 14, 20
-    if logo_asset:
-        image.alpha_composite(logo_asset, (LOGO_X, LOGO_Y))
-    else:
-        draw.text((LOGO_X + 26, LOGO_Y + 10), "舞萌2026", font=_font(22), fill=(100, 100, 100), anchor="la")
-
-    # Left: Course Name (below logo)
+    # Subtitle: game title
     draw.text(
-        (40, 150),
-        course.name,
-        font=_font(62),
-        fill=(22, 39, 55),
+        (40, 28),
+        "舞萌2026  /  PRiSM PLUS",
+        font=_font(19),
+        fill=theme.text_sub,
         anchor="la",
     )
 
-    # ── Player panel (right side of header) ─────────────────────────
-    has_player = player_name is not None
-    PLAYER_X = 260
-    PLAYER_Y = 20
+    # Course Name
+    text_w = draw.textlength(course.name, font=_font(62))
+    draw.text(
+        (40, 64),
+        course.name,
+        font=_font(62),
+        fill=theme.text_main,
+        anchor="la",
+    )
 
-    if has_player and plate_asset is not None:
-        # B50 style plate composite
-        image.alpha_composite(plate_asset, (PLAYER_X, PLAYER_Y))
-        
-        # Icon
-        if icon_asset:
-            image.alpha_composite(icon_asset, (PLAYER_X + 5, PLAYER_Y + 5))
-            
-        # Name background
-        if name_asset:
-            image.alpha_composite(name_asset, (PLAYER_X + 135, PLAYER_Y + 55))
-            
-        # Player name
-        draw.text(
-            (PLAYER_X + 145, PLAYER_Y + 75),
-            player_name,
-            font=_fit_font(player_name, 300, 25, 17),
-            fill=(0, 0, 0),
-            anchor="lm",
-        )
-    elif has_player:
-        # Fallback text if no plate
-        draw.text(
-            (PLAYER_X + 600, PLAYER_Y + 60),
-            player_name,
-            font=_fit_font(player_name, 500, 26, 18),
-            fill=(31, 75, 88),
-            anchor="ra",
-        )
-
-    # Course badge (replacing player's personal rank badge on the right)
-    badge_to_draw = course_dani
-    if badge_to_draw is not None:
-        orig_w, orig_h = badge_to_draw.size
-        # MatchLevel offset from B50 is around 325, but 360 gives better spacing
-        dani_x = PLAYER_X + 360
-        dani_y = PLAYER_Y + 60
-        
-        dani_scale = min(140 / orig_w, 75 / orig_h)
+    # Course badge
+    if course_dani is not None:
+        orig_w, orig_h = course_dani.size
+        # Scale to match height ~60 (text is font size 62)
+        dani_scale = min(140 / orig_w, 60 / orig_h)
         dani_w = int(orig_w * dani_scale)
         dani_h = int(orig_h * dani_scale)
-        dani_resized = badge_to_draw.resize((dani_w, dani_h), Image.Resampling.LANCZOS)
+        dani_resized = course_dani.resize((dani_w, dani_h), Image.Resampling.LANCZOS)
+        
+        # Place it right next to the text
+        dani_x = 40 + int(text_w) + 20
+        dani_y = 66
         image.alpha_composite(dani_resized, (dani_x, dani_y))
 
     # ── Summary bar ──────────────────────────────────────────────────
-    SUMMARY_Y = HEADER_H - 130
+    SUMMARY_Y = HEADER_H - 120
     life = estimate_life(course, tracks)
     if life is not None:
         summary = f"个人历史成绩推算  ·  乐观 LIFE {life}"
@@ -668,23 +692,23 @@ def draw_rank_course(
         summary = "课题配置与服务器匿名样本"
         summary_kind = "stats"
     draw.rounded_rectangle(
-        (34, SUMMARY_Y, 1046, SUMMARY_Y + 50), radius=8, fill=STAT_BG
+        (34, SUMMARY_Y, 1046, SUMMARY_Y + 50), radius=8, fill=theme.stat_bg
     )
     draw.rounded_rectangle(
-        (34, SUMMARY_Y, 84, SUMMARY_Y + 50), radius=8, fill=(27, 169, 166, 255)
+        (34, SUMMARY_Y, 84, SUMMARY_Y + 50), radius=8, fill=theme.summary_icon_bg
     )
-    draw.rectangle((76, SUMMARY_Y, 84, SUMMARY_Y + 50), fill=(27, 169, 166, 255))
+    draw.rectangle((76, SUMMARY_Y, 84, SUMMARY_Y + 50), fill=theme.summary_icon_bg)
     _draw_summary_icon(draw, (59, SUMMARY_Y + 25), summary_kind)
     draw.text(
         (104, SUMMARY_Y + 25),
         summary,
         font=_fit_font(summary, 910, 21, 15),
-        fill=(39, 83, 88),
+        fill=theme.summary_text,
         anchor="lm",
     )
 
     # ── LIFE rules row ───────────────────────────────────────────────
-    RULE_Y = HEADER_H - 50
+    RULE_Y = HEADER_H - 40
     rule = course.life
     rules = [("START", str(rule.initial), (24, 137, 145))]
     if rule.great > 0:
@@ -697,7 +721,7 @@ def draw_rank_course(
         rules.append(("RECOVER", f"+{rule.heal}", (54, 139, 91)))
 
     # Subtle separator line
-    draw.line((34, RULE_Y - 14, 1046, RULE_Y - 14), fill=(210, 230, 230, 255), width=1)
+    draw.line((34, RULE_Y - 14, 1046, RULE_Y - 14), fill=theme.line_color, width=1)
     
     num_rules = len(rules)
     rule_gap = (1012 - 34) // num_rules if num_rules > 1 else 0
@@ -711,7 +735,7 @@ def draw_rank_course(
             (rx + 15, RULE_Y - 2),
             label,
             font=_font(13),
-            fill=(91, 105, 117),
+            fill=theme.text_sub,
             anchor="la",
         )
         draw.text(
@@ -740,7 +764,7 @@ def draw_rank_course(
         draw.rounded_rectangle(
             (32, y, 1048, y + TRACK_H),
             radius=10,
-            fill=CARD_BG,
+            fill=theme.card_bg,
         )
         # Left difficulty color bar
         draw.rounded_rectangle((32, y, 43, y + TRACK_H), radius=8, fill=(*color, 255))
@@ -756,7 +780,7 @@ def draw_rank_course(
             (100, y + 22),
             DIFFICULTY_NAMES[track.level_index],
             font=_font(16),
-            fill=(99, 110, 124),
+            fill=theme.text_sub,
             anchor="la",
         )
 
@@ -766,7 +790,7 @@ def draw_rank_course(
         # Song info
         title_font = _fit_font(track.title, 600, 29, 18)
         draw.text(
-            (240, y + 52), track.title, font=title_font, fill=(22, 33, 50), anchor="la"
+            (240, y + 52), track.title, font=title_font, fill=theme.text_main, anchor="la"
         )
         ds_text = (
             f"LEVEL {track.level}    DS {track.ds:.1f}"
@@ -776,6 +800,7 @@ def draw_rank_course(
         draw.text(
             (240, y + 97), ds_text, font=_font(19), fill=(*color, 255), anchor="la"
         )
+
         score = (
             "未游玩"
             if track.achievement is None
@@ -790,13 +815,13 @@ def draw_rank_course(
         position = _position_label(track)
         badge_fill = (232, 244, 255, 255) if track.achievement is not None else (238, 242, 247, 255)
         draw.rounded_rectangle(
-            (848, y + 52, 1032, y + 95), radius=8, fill=badge_fill
+            (848, y + 52, 1032, y + 95), radius=8, fill=theme.badge_fill
         )
         draw.text(
             (940, y + 74),
             position,
             font=_fit_font(position, 168, 16, 13),
-            fill=(60, 80, 115),
+            fill=theme.text_main,
             anchor="mm",
         )
 
@@ -806,19 +831,19 @@ def draw_rank_course(
             (240, y + 176),
             sample_txt,
             font=_fit_font(sample_txt, 785, 16, 12),
-            fill=(103, 112, 132),
+            fill=theme.text_sub,
             anchor="la",
         )
 
         # Distribution bar
         _draw_sample_distribution(
-            draw, track, (240, y + 218, 1032, y + 230), color
+            draw, track, (240, y + 218, 1032, y + 230), color, theme
         )
         draw.text(
-            (240, y + 240), "97%", font=_font(11), fill=(139, 148, 161), anchor="ma"
+            (240, y + 240), "97%", font=_font(11), fill=theme.text_sub, anchor="ma"
         )
         draw.text(
-            (1032, y + 240), "101%", font=_font(11), fill=(139, 148, 161), anchor="ma"
+            (1032, y + 240), "101%", font=_font(11), fill=theme.text_sub, anchor="ma"
         )
         y += TRACK_H + TRACK_GAP
 
@@ -829,17 +854,14 @@ def draw_rank_course(
         (540, footer_y),
         footer,
         font=_fit_font(footer, 980, 15, 12),
-        fill=(105, 115, 134),
+        fill=theme.text_sub,
         anchor="mm",
     )
     draw.text(
         (540, footer_y + 30),
         "LIFE 为达成率反推的最有利判定组合，仅供练习参考，以机台结果为准",
-        font=_fit_font(
-            "LIFE 为达成率反推的最有利判定组合，仅供练习参考，以机台结果为准",
-            980, 14, 12,
-        ),
-        fill=(125, 91, 104),
+        font=_font(12),
+        fill=theme.text_sub,
         anchor="mm",
     )
     try:
@@ -851,7 +873,7 @@ def draw_rank_course(
         (540, footer_y + 58),
         project_footer,
         font=_fit_font(project_footer, 980, 13, 11),
-        fill=(134, 143, 155),
+        fill=theme.text_sub,
         anchor="mm",
     )
     return image.convert("RGB")
