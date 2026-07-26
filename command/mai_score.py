@@ -1037,6 +1037,7 @@ async def _ideal_ab50(
 async def _enable_data_storage(event: MessageEvent):
     """开启数据存储：每天自动存储成绩；首次开启立即拉取一次全量存档"""
     qqid = resolve_score_qqid(event)
+    was_enabled = data_storage.is_enabled(qqid)
     success = data_storage.enable_user(qqid)
     if success:
         await enable_data_storage.send(
@@ -1049,11 +1050,65 @@ async def _enable_data_storage(event: MessageEvent):
             if store_ok
             else '\n首次同步未成功（查分器 Token、绑定或网络问题），可稍后发送「立即存储数据」重试。'
         )
+        bonus_tip = ''
+        if not was_enabled:
+            # 今日已签到可补发差额；防刷：7 天内关过/领过则不补，需保持开启跨天再享受
+            from ..libraries.maimaidx_break import break_db
+
+            cooldown = break_db._storage_bonus_cooldown_days()
+            ok, reason = data_storage.storage_bonus_eligible_for_retroactive(
+                qqid, cooldown_days=cooldown
+            )
+            bonus_lines = []
+            if ok and not break_db.has_recent_storage_checkin_bonus(
+                int(billing_user_id(event))
+            ) and not break_db.has_recent_storage_checkin_bonus(int(qqid)):
+                seen: set[int] = set()
+                for candidate in (
+                    int(qqid),
+                    int(billing_user_id(event)),
+                    int(event.get_user_id()),
+                ):
+                    if not candidate or candidate in seen:
+                        continue
+                    seen.add(candidate)
+                    try:
+                        granted = break_db.try_grant_checkin_storage_bonus(candidate)
+                    except Exception as exc:
+                        log.warning(
+                            f'[storage] 签到存储加成补发失败 qqid={candidate}: '
+                            f'{type(exc).__name__}: {exc}'
+                        )
+                        continue
+                    if granted and granted.awarded and granted.amount > 0:
+                        bonus_lines.append(
+                            f'🎁 签到数据存储加成 +{granted.amount} BREAK'
+                            f'（余额 {granted.balance}）'
+                        )
+                        break
+            if bonus_lines:
+                bonus_tip = '\n' + '\n'.join(bonus_lines)
+            elif reason == 'toggle_spam' or not ok:
+                bonus_tip = (
+                    '\n⏳ 开启补发仅限首次开启；关了再开不再补发。'
+                    '\n请保持开启至明日签到，即可享受基础 +50% BREAK。'
+                )
+            elif reason == 'cooldown_after_disable':
+                bonus_tip = (
+                    f'\n⏳ 近期关闭过存储：{cooldown} 天内不发放开启补发。'
+                    '\n保持开启至明日签到即可正常享受 +50%。'
+                )
+            else:
+                bonus_tip = (
+                    '\n✨ 已解锁签到加成：请保持开启，明日起签到基础 +50% BREAK'
+                    '（当天开关不计入；关了再开不重复发，防刷）'
+                )
         await enable_data_storage.finish(
             '已开启数据存储功能！\n'
             '每天凌晨 4:00 会自动存储你的全量成绩与 Rating。\n'
             '你也可以使用「立即存储数据」手动触发存储。'
-            + sync_tip,
+            + sync_tip
+            + bonus_tip,
             reply_message=True,
         )
     else:

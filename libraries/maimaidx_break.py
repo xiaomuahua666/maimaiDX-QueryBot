@@ -46,6 +46,10 @@ DEFAULT_CONFIG: Dict[str, str] = {
     'bonus_group_1072033605': '0.25',
     'bonus_thursday': '0.5',
     'bonus_group_first': '0.5',
+    # 开启个人数据存储后，签到基础部分加算 +50%
+    'bonus_data_storage': '0.5',
+    # 存储签到加成防刷：关闭后再开 / 补发冷却天数
+    'storage_bonus_cooldown_days': '7',
     # 猜对每次固定奖励，不设每日上限，避免被分数倍率放大。
     'guess_break_per_correct': '1',
     # 上传/发票仅在外部操作成功后结算；上传每日首次免费，发票每次扣费。
@@ -237,6 +241,8 @@ class CheckinResult:
     base_max: int = 2
     bonus_labels: List[str] = field(default_factory=list)
     already_checked: bool = False
+    storage_enabled: bool = False
+    prompt_enable_storage: bool = False
 
 
 @dataclass
@@ -1400,10 +1406,33 @@ class BreakDatabase:
         ).fetchone()
         return row is None
 
-    def checkin(self, qqid: int, group_id: Optional[int] = None) -> CheckinResult:
+    def _storage_bonus_rate(self) -> float:
+        return max(
+            0.0,
+            float(
+                self.get_config(
+                    'bonus_data_storage', DEFAULT_CONFIG['bonus_data_storage']
+                )
+            ),
+        )
+
+    def checkin(
+        self,
+        qqid: int,
+        group_id: Optional[int] = None,
+        *,
+        storage_enabled: bool = False,
+        storage_bonus_eligible: Optional[bool] = None,
+    ) -> CheckinResult:
+        """storage_enabled：当前是否开启；storage_bonus_eligible：是否可拿 +50%（需跨天保持）。"""
         self._ensure_user(qqid)
         today = self._today()
         user = self.get_user_row(qqid)
+        bonus_ok = (
+            bool(storage_enabled)
+            if storage_bonus_eligible is None
+            else bool(storage_bonus_eligible)
+        )
         if user.get('last_checkin_date') == today:
             return CheckinResult(
                 qqid=qqid,
@@ -1414,6 +1443,8 @@ class BreakDatabase:
                 base=0,
                 multiplier_sum=0,
                 already_checked=True,
+                storage_enabled=bool(storage_enabled),
+                prompt_enable_storage=not bool(storage_enabled),
             )
 
         base, base_min, base_max = self._roll_checkin_base()
@@ -1457,6 +1488,21 @@ class BreakDatabase:
             base, multiplier_sum, streak_bonus, reward_multiplier
         )
 
+        # 数据存储加成单独加算到基础：extra = round(base × rate × 群倍数)
+        # （避免并入 multiplier 后因四舍五入出现「+50% 却多 0」）
+        storage_bonus_applied = False
+        storage_rate = self._storage_bonus_rate()
+        storage_extra = 0
+        if bonus_ok and storage_rate > 0 and base > 0:
+            storage_extra = int(round(base * storage_rate * reward_multiplier))
+            if storage_extra > 0:
+                reward += storage_extra
+                bonus_labels.append(
+                    f'数据存储 +{int(round(storage_rate * 100))}%（+{storage_extra}）'
+                )
+                storage_bonus_applied = True
+                multiplier_sum += storage_rate
+
         now = time.time()
         self._conn.execute(
             """UPDATE break_users SET
@@ -1489,8 +1535,21 @@ class BreakDatabase:
                 'base': base,
                 'base_range': [base_min, base_max],
                 'reward_multiplier': reward_multiplier,
+                'storage_bonus': storage_bonus_applied,
+                'storage_bonus_rate': storage_rate if storage_bonus_applied else 0,
             },
         )
+        # 已在签到时计入存储加成时，占住当日幂等键，避免「开启存储」再补发
+        if storage_bonus_applied and storage_extra > 0:
+            try:
+                self._conn.execute(
+                    """INSERT OR IGNORE INTO break_daily_reward
+                       (qqid, date, reward_key, amount, created_at)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (qqid, today, 'checkin_storage_bonus', storage_extra, now),
+                )
+            except Exception:
+                pass
         self._conn.commit()
 
         return CheckinResult(
@@ -1504,7 +1563,103 @@ class BreakDatabase:
             base_min=base_min,
             base_max=base_max,
             bonus_labels=bonus_labels,
+            storage_enabled=bool(storage_enabled),
+            prompt_enable_storage=not bool(storage_enabled),
         )
+
+    def format_storage_pending_tip(self) -> str:
+        return (
+            '\n⏳ 数据存储已开启：保持开启至明日签到即可享受基础 +50% BREAK'
+            '（当天开关不计入，防刷）'
+        )
+
+    def _storage_bonus_cooldown_days(self) -> int:
+        return max(
+            1,
+            _parse_config_int(
+                self.get_config(
+                    'storage_bonus_cooldown_days',
+                    DEFAULT_CONFIG['storage_bonus_cooldown_days'],
+                ),
+                7,
+            ),
+        )
+
+    def has_recent_storage_checkin_bonus(self, qqid: int, *, days: Optional[int] = None) -> bool:
+        """冷却期内是否已领过签到·数据存储加成（含签到当场计入）。"""
+        window = self._storage_bonus_cooldown_days() if days is None else max(1, int(days))
+        cutoff = date.today().toordinal() - (window - 1)
+        cutoff_text = date.fromordinal(cutoff).isoformat()
+        row = self._conn.execute(
+            """SELECT 1 FROM break_daily_reward
+               WHERE qqid = ? AND reward_key = 'checkin_storage_bonus'
+                 AND date >= ? AND amount > 0
+               LIMIT 1""",
+            (int(qqid), cutoff_text),
+        ).fetchone()
+        return row is not None
+
+    def try_grant_checkin_storage_bonus(
+        self,
+        qqid: int,
+        *,
+        allow_retroactive: bool = True,
+        deny_reason: Optional[str] = None,
+    ) -> Optional[DailyRewardResult]:
+        """今日已签到且签到时未含数据存储加成时，补发 base × 存储加成 × 群倍数。
+
+        防刷：冷却期内已领过 / 外部判定不允许补发时直接拒绝。
+        """
+        if deny_reason:
+            return None
+        if not allow_retroactive:
+            return None
+        self._ensure_user(qqid)
+        today = self._today()
+        user = self.get_user_row(qqid)
+        if user.get('last_checkin_date') != today:
+            return None
+
+        if self.has_recent_storage_checkin_bonus(qqid):
+            return None
+
+        row = self._conn.execute(
+            """SELECT meta FROM break_log
+               WHERE qqid = ? AND reason = 'checkin'
+               ORDER BY id DESC LIMIT 1""",
+            (qqid,),
+        ).fetchone()
+        if not row:
+            return None
+        try:
+            meta = json.loads(row['meta'] or '{}')
+        except Exception:
+            meta = {}
+        if not isinstance(meta, dict):
+            meta = {}
+        if meta.get('storage_bonus'):
+            return None
+
+        base = int(meta.get('base') or 0)
+        reward_multiplier = max(1, int(meta.get('reward_multiplier') or 1))
+        rate = self._storage_bonus_rate()
+        extra = int(round(base * rate * reward_multiplier))
+        if extra <= 0:
+            return None
+
+        result = self.claim_daily_reward(
+            qqid,
+            'checkin_storage_bonus',
+            extra,
+            reason='checkin_storage_bonus',
+            meta={
+                'base': base,
+                'reward_multiplier': reward_multiplier,
+                'storage_bonus_rate': rate,
+                'from_checkin_meta': True,
+            },
+        )
+        return result
 
     def _makeup_checkin_costs(self) -> tuple[int, ...]:
         return parse_makeup_checkin_costs(
@@ -2034,6 +2189,7 @@ def format_account_profile_sections(
             'query': '查分',
             'checkin': '签到',
             'checkin_makeup': '补签',
+            'checkin_storage_bonus': '签到·数据存储加成',
             'today_luck': '今日舞萌',
             'b50_analysis': '分析b50',
             'busy_request_surcharge': '高负载请求附加费',
@@ -2054,7 +2210,13 @@ def format_account_profile_sections(
 
 def format_checkin_result(result: CheckinResult) -> str:
     if result.already_checked:
-        return f'今天已经签到过啦~ 当前 BREAK：{result.balance}'
+        text = f'今天已经签到过啦~ 当前 BREAK：{result.balance}'
+        if result.prompt_enable_storage:
+            text += (
+                '\n💡 还未开启数据存储：发送「开启存储数据」'
+                '并保持开启，明日签到可享基础 +50% BREAK'
+            )
+        return text
     bonus = ' · '.join(result.bonus_labels) if result.bonus_labels else '无额外加成'
     streak_extra = f'（+{result.streak_bonus} BREAK）' if result.streak_bonus else ''
     range_hint = (
@@ -2062,7 +2224,7 @@ def format_checkin_result(result: CheckinResult) -> str:
         if result.base_min != result.base_max
         else f'{result.base} BREAK'
     )
-    return (
+    text = (
         '✅ AWMC 签到成功！\n'
         '━━━━━━━━━━━━━━\n'
         f'📅 连续签到：{result.streak} 天{streak_extra}\n'
@@ -2071,6 +2233,13 @@ def format_checkin_result(result: CheckinResult) -> str:
         f'💰 获得：{result.reward} BREAK\n'
         f'💳 当前余额：{result.balance} BREAK'
     )
+    if result.prompt_enable_storage:
+        text += (
+            '\n━━━━━━━━━━━━━━\n'
+            '💡 发送「开启存储数据」可享签到基础 +50% BREAK\n'
+            '（保持开启至明日签到生效；频繁开关不重复发放，防刷）'
+        )
+    return text
 
 
 def format_makeup_checkin_result(result: MakeupCheckinResult) -> str:

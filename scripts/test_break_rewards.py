@@ -59,9 +59,16 @@ assert {
 
 assert checkin_reward(2, 0.25, 5, 1) == 8
 assert checkin_reward(2, 0.25, 5, 2) == 15
+# 数据存储 +50%：额外 = round(base × 0.5 × 群倍数)，与签到主公式分开加算
+assert round(2 * 0.5 * 1) == 1
+assert round(2 * 0.5 * 2) == 2
+assert checkin_reward(2, 0.25, 5, 1) + 1 == 9
+assert checkin_reward(2, 0.25, 5, 2) + 2 == 17
 
 source = SOURCE.read_text(encoding="utf-8")
 assert "BONUS_GROUP_IDS = {int(BOT_QQ_GROUP), 993795066}" in source
 assert "DOUBLE_CHECKIN_GROUP_IDS = {669800745}" in source
+assert "bonus_data_storage" in source
+assert "try_grant_checkin_storage_bonus" in source
 
 print("BREAK reward formula tests: ok")

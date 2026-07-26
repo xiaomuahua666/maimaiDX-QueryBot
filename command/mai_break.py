@@ -122,6 +122,7 @@ async def _():
         '· 指定群 669800745 签到总奖励 ×2\n'
         '· 周四 +50%\n'
         '· 群内当日首签 +50%\n'
+        '· 开启数据存储 +50%（发送「开启存储数据」；需保持开启跨天，频繁开关不重复发）\n'
         '· 连续签到额外奖励'
     )
     await awmc_help.finish(text, reply_message=True)
@@ -395,12 +396,59 @@ async def _try_guess_stats_for_awmc(
         return None
 
 
+def _storage_qqids_for_event(event: MessageEvent) -> list[int]:
+    from ..libraries.maimaidx_platform import resolve_score_qqid
+
+    seen: set[int] = set()
+    out: list[int] = []
+    for raw in (
+        event.get_user_id(),
+        billing_user_id(event),
+        resolve_score_qqid(event),
+    ):
+        try:
+            qid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if not qid or qid in seen:
+            continue
+        seen.add(qid)
+        out.append(qid)
+    return out
+
+
+def _storage_status_for_event(event: MessageEvent) -> tuple[bool, bool]:
+    """返回 (当前已开启, 签到是否可享存储加成)。
+
+    加成需「开启并保持到跨天」，防止当天开关刷奖励。
+    """
+    from ..libraries.maimaidx_data_storage import data_storage
+
+    enabled = False
+    eligible = False
+    for qid in _storage_qqids_for_event(event):
+        if data_storage.is_enabled(qid):
+            enabled = True
+        if data_storage.storage_bonus_eligible_for_checkin(qid):
+            eligible = True
+    return enabled, eligible
+
+
 @awmc_checkin.handle()
 async def _(event: MessageEvent):
     group_id = event.group_id if isinstance(event, GroupMessageEvent) else None
     qqid = int(event.get_user_id())
-    result = break_db.checkin(qqid, group_id)
-    await awmc_checkin.finish(format_checkin_result(result), reply_message=True)
+    storage_on, storage_eligible = _storage_status_for_event(event)
+    result = break_db.checkin(
+        qqid,
+        group_id,
+        storage_enabled=storage_on,
+        storage_bonus_eligible=storage_eligible,
+    )
+    text = format_checkin_result(result)
+    if storage_on and not storage_eligible:
+        text += break_db.format_storage_pending_tip()
+    await awmc_checkin.finish(text, reply_message=True)
 
 
 @awmc_makeup_checkin.handle()

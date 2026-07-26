@@ -8,7 +8,7 @@
 """
 
 import json
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass
@@ -74,17 +74,51 @@ class DataStorageManager:
             log.error(f"[DataStorage] 保存配置失败: {e}")
 
     def is_enabled(self, qqid: int) -> bool:
-        return qqid in self._load_config().get("enabled_users", [])
+        return int(qqid) in [int(x) for x in self._load_config().get("enabled_users", [])]
+
+    def _user_meta_map(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        meta = config.get("user_meta")
+        if not isinstance(meta, dict):
+            meta = {}
+            config["user_meta"] = meta
+        return meta
+
+    def get_user_meta(self, qqid: int) -> Dict[str, Any]:
+        config = self._load_config()
+        meta = self._user_meta_map(config).get(str(int(qqid)))
+        return dict(meta) if isinstance(meta, dict) else {}
+
+    def _set_user_meta(self, config: Dict[str, Any], qqid: int, **fields: Any) -> None:
+        meta_map = self._user_meta_map(config)
+        key = str(int(qqid))
+        cur = meta_map.get(key)
+        if not isinstance(cur, dict):
+            cur = {}
+        cur.update(fields)
+        meta_map[key] = cur
 
     def enable_user(self, qqid: int) -> bool:
+        """开启存储。返回是否成功；重复开启也返回 True。"""
         try:
+            qqid = int(qqid)
             config = self._load_config()
-            enabled = config.get("enabled_users", [])
+            enabled = [int(x) for x in config.get("enabled_users", [])]
+            now_iso = datetime.now().isoformat(timespec="seconds")
             if qqid not in enabled:
                 enabled.append(qqid)
                 config["enabled_users"] = enabled
+                prev = self.get_user_meta(qqid)
+                enable_count = int(prev.get("enable_count") or 0) + 1
+                self._set_user_meta(
+                    config,
+                    qqid,
+                    enabled_at=now_iso,
+                    disabled_at=None,
+                    enable_count=enable_count,
+                    last_enabled_at=now_iso,
+                )
                 self._save_config(config)
-                log.info(f"[DataStorage] 用户 {qqid} 已开启数据存储")
+                log.info(f"[DataStorage] 用户 {qqid} 已开启数据存储 (enable_count={enable_count})")
             return True
         except Exception as e:
             log.error(f"[DataStorage] 开启用户 {qqid} 数据存储失败: {e}")
@@ -92,11 +126,22 @@ class DataStorageManager:
 
     def disable_user(self, qqid: int) -> bool:
         try:
+            qqid = int(qqid)
             config = self._load_config()
-            enabled = config.get("enabled_users", [])
+            enabled = [int(x) for x in config.get("enabled_users", [])]
             if qqid in enabled:
                 enabled.remove(qqid)
                 config["enabled_users"] = enabled
+                now_iso = datetime.now().isoformat(timespec="seconds")
+                prev = self.get_user_meta(qqid)
+                disable_count = int(prev.get("disable_count") or 0) + 1
+                self._set_user_meta(
+                    config,
+                    qqid,
+                    disabled_at=now_iso,
+                    last_disabled_at=now_iso,
+                    disable_count=disable_count,
+                )
                 self._save_config(config)
                 log.info(f"[DataStorage] 用户 {qqid} 已关闭数据存储")
             return True
@@ -105,7 +150,65 @@ class DataStorageManager:
             return False
 
     def get_enabled_users(self) -> List[int]:
-        return self._load_config().get("enabled_users", [])
+        return [int(x) for x in self._load_config().get("enabled_users", [])]
+
+    def storage_bonus_eligible_for_checkin(
+        self, qqid: int, *, cooldown_days: int = 7
+    ) -> bool:
+        """
+        签到时能否享受存储 +50%：
+        - 必须当前已开启
+        - 且 enabled_at 早于今天（昨天及更早开启并保持开启）
+        防刷：当天刚开关/重开的不给，需保持开启跨天。
+        无 meta 的老用户视为已长期开启（兼容）。
+        """
+        qqid = int(qqid)
+        if not self.is_enabled(qqid):
+            return False
+        meta = self.get_user_meta(qqid)
+        enabled_at = str(meta.get("enabled_at") or "").strip()
+        if not enabled_at:
+            # 老数据：已在 enabled_users 但无时间戳 → 视为合格
+            return True
+        try:
+            enabled_dt = datetime.fromisoformat(enabled_at)
+        except Exception:
+            return True
+        return enabled_dt.date() < date.today()
+
+    def storage_bonus_eligible_for_retroactive(
+        self, qqid: int, *, cooldown_days: int = 7
+    ) -> Tuple[bool, str]:
+        """
+        开启存储时能否补发当日签到差额。
+        防刷规则（严格）：
+        - 仅「生涯首次开启」可补发一次
+        - 关了再开：永不补发（只能靠保持开启跨天后，在签到时拿 +50%）
+        - 冷却期内关过 / 已领过加成：也不补发
+        返回 (ok, reason_code)。
+        """
+        qqid = int(qqid)
+        meta = self.get_user_meta(qqid)
+        cooldown_days = max(1, int(cooldown_days))
+        now = datetime.now()
+
+        enable_count = int(meta.get("enable_count") or 0)
+        # 非首次开启：一律不补发，杜绝开关刷
+        if enable_count > 1:
+            return False, "toggle_spam"
+
+        last_disabled = str(meta.get("last_disabled_at") or "").strip()
+        if last_disabled:
+            try:
+                ddt = datetime.fromisoformat(last_disabled)
+                if (now - ddt).total_seconds() < cooldown_days * 86400:
+                    return False, "cooldown_after_disable"
+            except Exception:
+                pass
+            # 有过关闭记录即非纯首次
+            return False, "toggle_spam"
+
+        return True, "ok"
 
     def _user_dir(self, qqid: int) -> Path:
         # 只读路径不 mkdir，避免查询历史时留下空目录污染数据集扫描
