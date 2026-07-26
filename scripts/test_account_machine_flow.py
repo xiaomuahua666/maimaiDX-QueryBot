@@ -233,7 +233,8 @@ assert "convert_pc_records_to_lxns_scores" in upload_src
 assert "PC缓存" in upload_src
 assert "binding, _ = await _read_verified_preview(" in upload_src
 assert "before_charge = await sw_api.get_user_charge(binding.qrcode)" in upload_src
-assert "verified_stock = await _await_ticket_delivery(" in upload_src
+assert "return await _await_ticket_delivery(" in upload_src
+assert "verified_stock, attempts = await _run_ticket_with_retries(" in upload_src
 assert "raise UnusedTicketPenaltyError(unused_stocks)" in upload_src
 assert '"ticket_unused_penalty"' in upload_src
 assert "你智商可好？发一堆票和意为？已吃掉" in upload_src

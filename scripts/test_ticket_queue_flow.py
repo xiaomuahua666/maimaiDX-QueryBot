@@ -5,7 +5,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -26,15 +26,23 @@ names = {
     "_ticket_wait_message",
     "_ticket_task_state",
     "_await_ticket_delivery",
+    "_run_ticket_with_retries",
     "_exception_detail",
 }
 selected = [
     node
     for node in tree.body
-    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    and node.name in names
+    if (
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name in names
+    )
+    or (isinstance(node, ast.ClassDef) and node.name == "TicketRetryableError")
 ]
-assert {node.name for node in selected} == names
+assert {
+    node.name
+    for node in selected
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+} == names
 
 
 class FakeLog:
@@ -90,10 +98,13 @@ class FakeEstimator:
 estimator = FakeEstimator()
 namespace = {
     "Any": Any,
+    "Awaitable": Awaitable,
+    "Callable": Callable,
     "Optional": Optional,
     "maiconfig": config,
     "processing_time_estimator": estimator,
     "_TICKET_QUEUE_UNIT_TIMING_KEY": "ticket_queue:seconds_per_request",
+    "_TICKET_AUTO_RETRIES": 2,
     "json": __import__("json"),
     "re": __import__("re"),
     "asyncio": SimpleNamespace(sleep=no_sleep, TimeoutError=asyncio.TimeoutError),
@@ -112,6 +123,73 @@ exec(
     compile(ast.Module(body=selected, type_ignores=[]), str(ACCOUNT_PATH), "exec"),
     namespace,
 )
+
+
+retry_calls = []
+retry_notices = []
+
+
+async def succeeds_on_third(attempt):
+    retry_calls.append(attempt)
+    if attempt < 3:
+        raise namespace["TicketRetryableError"]("explicit failure")
+    return 7
+
+
+async def retry_notify(message):
+    retry_notices.append(message)
+
+
+retry_result = asyncio.run(
+    namespace["_run_ticket_with_retries"](
+        succeeds_on_third, notify=retry_notify, max_retries=2
+    )
+)
+assert retry_result == (7, 3)
+assert retry_calls == [1, 2, 3]
+assert len(retry_notices) == 2
+
+
+failed_calls = []
+
+
+async def always_explicit_failure(attempt):
+    failed_calls.append(attempt)
+    raise namespace["TicketRetryableError"]("explicit failure")
+
+
+try:
+    asyncio.run(
+        namespace["_run_ticket_with_retries"](
+            always_explicit_failure, max_retries=2
+        )
+    )
+except namespace["TicketRetryableError"] as exc:
+    assert "已自动重试 2 次" in str(exc)
+else:
+    raise AssertionError("连续三次明确失败后应返回失败")
+assert failed_calls == [1, 2, 3]
+
+
+ambiguous_calls = []
+
+
+async def ambiguous_failure(attempt):
+    ambiguous_calls.append(attempt)
+    raise RuntimeError("timeout with unknown result")
+
+
+try:
+    asyncio.run(
+        namespace["_run_ticket_with_retries"](
+            ambiguous_failure, max_retries=2
+        )
+    )
+except RuntimeError as exc:
+    assert "unknown result" in str(exc)
+else:
+    raise AssertionError("结果不确定的失败不应盲目重试")
+assert ambiguous_calls == [1]
 
 assert namespace["_ticket_submission_task_id"](
     {"code": 0, "data": {"taskId": "task-1"}}
@@ -282,6 +360,8 @@ assert await_source.index("last_task_status == \"success\"") < await_source.inde
 )
 assert "processing_time_estimator.record(" in source
 assert "timing_started_at=queue_started_at" in source
+assert "_TICKET_AUTO_RETRIES = 2" in source
+assert "verified_stock, attempts = await _run_ticket_with_retries(" in source
 assert "UID {current_uid}" not in await_source
 assert "UID {mai_uid}" not in await_source
 public_detail = namespace["_exception_detail"](

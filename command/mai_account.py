@@ -103,6 +103,7 @@ _RECALL_FAILED_NOTICE = "⚠️ Bot 无法撤回该凭据消息，请立即手�
 _QRCODE_RECALL_TIMEOUT_SECONDS = 3.0
 _TICKET_QRCODE_RETRY_SECONDS = 180
 _TICKET_QUEUE_UNIT_TIMING_KEY = "ticket_queue:seconds_per_request"
+_TICKET_AUTO_RETRIES = 2
 _pending_ticket_retries: dict[str, tuple[int, float]] = {}
 _DIVING_FISH_PROBER_URL = "https://www.diving-fish.com/maimaidx/prober/"
 _FISH_TOKEN_MIN_LENGTH = 127
@@ -276,6 +277,46 @@ class UnusedTicketPenaltyError(RuntimeError):
 
 class TicketQrcodeError(RuntimeError):
     """发票使用的二维码不可用；调用方可登记一次限时重试。"""
+
+
+class TicketRetryableError(RuntimeError):
+    """上游已明确本次未发票，可以安全重新提交。"""
+
+
+async def _run_ticket_with_retries(
+    operation: Callable[[int], Awaitable[int]],
+    *,
+    notify: Optional[Callable[[str], Awaitable[Any]]] = None,
+    max_retries: int = _TICKET_AUTO_RETRIES,
+) -> tuple[int, int]:
+    """执行发票，明确失败时最多额外重试 ``max_retries`` 次。"""
+    retries = max(0, int(max_retries))
+    total_attempts = retries + 1
+    for attempt in range(1, total_attempts + 1):
+        try:
+            return await operation(attempt), attempt
+        except TicketRetryableError as exc:
+            if attempt >= total_attempts:
+                raise TicketRetryableError(
+                    f"{_exception_detail(exc)}；已自动重试 {retries} 次，仍失败"
+                ) from exc
+            log.warning(
+                f"[ticket] 第 {attempt} 次明确失败，准备自动重试 "
+                f"({attempt}/{retries})：{_exception_detail(exc)}"
+            )
+            if notify is not None:
+                try:
+                    await notify(
+                        f"⚠️ 第 {attempt} 次发票失败，正在自动重试"
+                        f"（{attempt}/{retries}）……"
+                    )
+                except Exception as notify_exc:
+                    log.warning(
+                        "[ticket] 发送自动重试通知失败，继续重试："
+                        f"{_exception_detail(notify_exc)}"
+                    )
+            await asyncio.sleep(min(2.0, float(attempt)))
+    raise AssertionError("unreachable")
 
 
 def remember_pending_ticket_retry(
@@ -615,7 +656,9 @@ async def _await_ticket_delivery(
                         if result_code is not None
                         else str(task.get("msg") or "队列任务失败")
                     )
-                    raise RuntimeError(f"发票队列任务执行失败（{detail}）；本次不扣 BREAK")
+                    raise TicketRetryableError(
+                        f"发票队列任务执行失败（{detail}）；本次不扣 BREAK"
+                    )
                 if last_task_status == "success":
                     record_terminal_timing()
                     completed_result_code = _ticket_task_result_code(task)
@@ -1286,7 +1329,8 @@ async def _():
         f"当前上传价格：水鱼 {fish_cost} / 落雪 {lx_cost} / 同时 {all_cost} BREAK\n"
         f"发票价格：倍率 × {ticket_unit} BREAK（例：2倍=20，3倍=30，5倍=50）\n"
         "已有 2/3/5 倍票未使用时重复发票，将拦截并扣除 20 BREAK。\n"
-        "成绩上传每日首次成功免费；发票每次按价扣费，失败不扣费。\n"
+        "成绩上传每日首次成功免费；发票每次按价扣费，失败不扣费；"
+        "明确失败会自动重试 2 次。\n"
         "发送“用户协议”阅读和确认服务条款。"
     )
 
@@ -2274,45 +2318,61 @@ async def _execute_ticket(
         if unused_stocks:
             raise UnusedTicketPenaltyError(unused_stocks)
         baseline_stock = _ticket_stock(before_rows + before_free_rows, multiple)
+    async def execute_attempt(attempt: int) -> int:
         previous_task_ts: Optional[str] = ""
-        try:
-            before_queue = await sw_api.get_charge_queue()
-            previous_task = _matching_charge_task(
-                before_queue, multiple, binding.mai_uid
-            )
-            if previous_task is not None:
-                previous_task_ts = str(previous_task.get("ts") or "")
-        except Exception as exc:
-            previous_task_ts = None
-            log.warning(
-                f"[ticket] 提交前队列快照失败，将仅依赖库存确认："
-                f"{_exception_detail(exc)}"
-            )
-        result = await sw_api.charge_ticket(binding.qrcode, multiple)
-        _ensure_business_success(result)
-        task_id = _ticket_submission_task_id(result)
-        queue_ahead = _ticket_queue_ahead(result)
-    estimated, poll_timeout, timing_samples = _ticket_wait_plan(queue_ahead)
-    queue_started_at = time.perf_counter()
-    if notify is not None:
-        try:
-            await notify(
-                _ticket_wait_message(
-                    queue_ahead, estimated, poll_timeout, timing_samples
+        async with machine_session():
+            try:
+                before_queue = await sw_api.get_charge_queue()
+                previous_task = _matching_charge_task(
+                    before_queue, multiple, binding.mai_uid
                 )
-            )
-        except Exception as exc:
-            log.warning(f"[ticket] 发送排队预计消息失败，继续确认任务：{_exception_detail(exc)}")
-    verified_stock = await _await_ticket_delivery(
-        binding.qrcode,
-        multiple,
-        binding.mai_uid,
-        baseline_stock,
-        previous_task_ts,
-        task_id=task_id,
-        timeout=poll_timeout,
-        timing_started_at=queue_started_at,
-        timing_units=_ticket_queue_units(queue_ahead),
+                if previous_task is not None:
+                    previous_task_ts = str(previous_task.get("ts") or "")
+            except Exception as exc:
+                previous_task_ts = None
+                log.warning(
+                    f"[ticket] 第 {attempt} 次提交前队列快照失败，"
+                    f"将依赖任务 ID 与库存确认：{_exception_detail(exc)}"
+                )
+            result = await sw_api.charge_ticket(binding.qrcode, multiple)
+            try:
+                _ensure_business_success(result)
+            except Exception as exc:
+                raise TicketRetryableError(
+                    f"发票入队被上游明确拒绝：{_exception_detail(exc)}"
+                ) from exc
+            task_id = _ticket_submission_task_id(result)
+            queue_ahead = _ticket_queue_ahead(result)
+
+        estimated, poll_timeout, timing_samples = _ticket_wait_plan(queue_ahead)
+        queue_started_at = time.perf_counter()
+        if notify is not None:
+            try:
+                await notify(
+                    _ticket_wait_message(
+                        queue_ahead, estimated, poll_timeout, timing_samples
+                    )
+                )
+            except Exception as exc:
+                log.warning(
+                    f"[ticket] 发送第 {attempt} 次排队预计消息失败，"
+                    f"继续确认任务：{_exception_detail(exc)}"
+                )
+        return await _await_ticket_delivery(
+            binding.qrcode,
+            multiple,
+            binding.mai_uid,
+            baseline_stock,
+            previous_task_ts,
+            task_id=task_id,
+            timeout=poll_timeout,
+            timing_started_at=queue_started_at,
+            timing_units=_ticket_queue_units(queue_ahead),
+        )
+
+    verified_stock, attempts = await _run_ticket_with_retries(
+        execute_attempt,
+        notify=notify,
     )
     charge = break_db.settle_service_success(
         int(key),
@@ -2322,19 +2382,21 @@ async def _execute_ticket(
             "multiple": multiple,
             "baseline_stock": baseline_stock,
             "verified_stock": verified_stock,
+            "attempts": attempts,
         },
     )
     ref = _log(
         key,
         "ticket",
         "success",
-        f"multiple={multiple},stock={verified_stock},"
+        f"multiple={multiple},stock={verified_stock},attempts={attempts},"
         f"charged={charge.charged},free={charge.free}",
     )
     clear_pending_ticket_retry(key)
     return (
         f"{multiple} 倍票已发放并确认到账（当前库存 {verified_stock} 张）。\n"
-        f"{_charge_text(charge)}\nRef_ID: {ref}"
+        + (f"自动重试 {attempts - 1} 次后成功。\n" if attempts > 1 else "")
+        + f"{_charge_text(charge)}\nRef_ID: {ref}"
     )
 
 
