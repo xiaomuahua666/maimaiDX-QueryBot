@@ -60,6 +60,7 @@ _RESERVED_PREFIXES = (
     "开字母时间榜",
     "开字母文字模式",
     "开字母图片模式",
+    "开字母自动模式",
     "文字模式",
     "图片模式",
     "纯文字模式",
@@ -67,6 +68,9 @@ _RESERVED_PREFIXES = (
     "图文模式",
     "切换文字模式",
     "切换图片模式",
+    "自动模式",
+    "自适应模式",
+    "恢复自动",
     "重置猜歌",
     "猜歌",
     "猜曲绘",
@@ -114,6 +118,9 @@ letter_text_mode_cmd = on_command(
 letter_image_mode_cmd = on_command(
     "开字母图片模式", aliases={"图片模式", "图文模式", "切换图片模式"}, rule=GROUP_MESSAGE, priority=4, block=True
 )
+letter_auto_mode_cmd = on_command(
+    "开字母自动模式", aliases={"自动模式", "自适应模式", "恢复自动"}, rule=GROUP_MESSAGE, priority=4, block=True
+)
 # 对局中可直接发字母 / 别名，无需命令前缀
 letter_quick = on_message(rule=LETTER_PLAYING, priority=9, block=False)
 
@@ -128,6 +135,7 @@ for _letter_matcher in (
     letter_time_cmd,
     letter_text_mode_cmd,
     letter_image_mode_cmd,
+    letter_auto_mode_cmd,
     letter_quick,
 ):
     setattr(_letter_matcher, "_maimaidx_busy_surcharge_exempt", True)
@@ -141,7 +149,7 @@ _HELP = (
     "· 星级阈值自适应：默认 ≤30/45/60/90/180 秒；群通关变快后五星上限可降至最低 15 秒\n"
     "· 贡献：有效开字母×1、补齐曲×3、开歌×4；无贡献不得分\n"
     "· 开字母排行 / 开字母贡献榜 / 开字母时间榜 — 查看本群榜单图\n"
-    "· 开字母图片模式 / 开字母文字模式 — 切换局内看板样式\n"
+    "· 开字母图片模式 / 开字母文字模式 / 开字母自动模式 — 设置本群看板样式(持久生效)\n"
     "· 不玩了 — 结束并揭晓剩余（不发奖）\n"
     "与猜歌等模式同群互斥；需先「开启mai猜歌」。"
 )
@@ -428,7 +436,10 @@ async def _(matcher, event: MessageEvent, args: Message = CommandArg()):
         )
     try:
         board = letter_guess.start(
-            gid, starter=get_sender_display_name(event), count=BOARD_SIZE
+            gid,
+            starter=get_sender_display_name(event),
+            count=BOARD_SIZE,
+            display_mode=letter_stats.get_display_mode(gid),
         )
     except Exception as exc:
         log.warning(f"[LetterGuess] 开局失败：{type(exc).__name__}: {exc}")
@@ -564,19 +575,15 @@ async def _(event: MessageEvent):
     gid = get_event_group_id(event)
     if gid is None:
         return
+    await letter_stats.set_display_mode(gid, "text")
     board = letter_guess.get(gid)
-    if board is None:
-        await letter_text_mode_cmd.finish(
-            "当前没有开字母对局。发「舞萌开字母」开局后再切换模式。",
-            reply_message=True,
-        )
-    board.display_mode = "text"
-    await _send_board(
-        letter_text_mode_cmd,
-        event,
-        board,
-        text="已切换为纯文字模式。\n",
-    )
+    if board is not None:
+        board.display_mode = "text"
+        await _send_board(letter_text_mode_cmd, event, board,
+                          text="已将本群开字母设为「纯文字模式」（持久生效）。\n")
+    else:
+        await _send_plain(letter_text_mode_cmd, event,
+                          "已将本群开字母设为「纯文字模式」，下局游戏生效。")
     await letter_text_mode_cmd.finish()
 
 
@@ -585,20 +592,33 @@ async def _(event: MessageEvent):
     gid = get_event_group_id(event)
     if gid is None:
         return
+    await letter_stats.set_display_mode(gid, "image")
     board = letter_guess.get(gid)
-    if board is None:
-        await letter_image_mode_cmd.finish(
-            "当前没有开字母对局。发「舞萌开字母」开局后再切换模式。",
-            reply_message=True,
-        )
-    board.display_mode = "image"
-    await _send_board(
-        letter_image_mode_cmd,
-        event,
-        board,
-        text="已切换为图片模式。\n",
-    )
+    if board is not None:
+        board.display_mode = "image"
+        await _send_board(letter_image_mode_cmd, event, board,
+                          text="已将本群开字母设为「图片模式」（持久生效）。\n")
+    else:
+        await _send_plain(letter_image_mode_cmd, event,
+                          "已将本群开字母设为「图片模式」，下局游戏生效。")
     await letter_image_mode_cmd.finish()
+
+
+@letter_auto_mode_cmd.handle()
+async def _(event: MessageEvent):
+    gid = get_event_group_id(event)
+    if gid is None:
+        return
+    await letter_stats.set_display_mode(gid, "auto")
+    board = letter_guess.get(gid)
+    if board is not None:
+        board.display_mode = "auto"
+        await _send_board(letter_auto_mode_cmd, event, board,
+                          text="已将本群开字母设为「自动模式」（人多/突发时自动切文字，持久生效）。\n")
+    else:
+        await _send_plain(letter_auto_mode_cmd, event,
+                          "已将本群开字母设为「自动模式」，下局游戏生效。")
+    await letter_auto_mode_cmd.finish()
 
 
 @letter_quick.handle()

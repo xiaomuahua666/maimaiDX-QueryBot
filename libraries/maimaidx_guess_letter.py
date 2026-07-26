@@ -665,7 +665,14 @@ class LetterGuessManager:
                     break
         return picked[:count]
 
-    def start(self, gid: GroupId, *, starter: str = "", count: int = BOARD_SIZE) -> LetterBoard:
+    def start(
+        self,
+        gid: GroupId,
+        *,
+        starter: str = "",
+        count: int = BOARD_SIZE,
+        display_mode: str = "auto",
+    ) -> LetterBoard:
         musics = self._pick_songs(count)
         if len(musics) < 3:
             raise RuntimeError("可用曲目不足，暂时无法开局")
@@ -677,7 +684,8 @@ class LetterGuessManager:
             )
             for m in musics
         ]
-        board = LetterBoard(songs=songs, starter=starter, started_at=time.time())
+        board = LetterBoard(songs=songs, starter=starter, started_at=time.time(),
+                            display_mode=display_mode)
         # 开局不预开任何字母
         self.Group[gid] = board
         titles = " / ".join(s.title for s in songs)

@@ -271,6 +271,7 @@ class LetterGroupStats(BaseModel):
     members: Dict[str, LetterMemberStats] = Field(default_factory=dict)
     records: LetterGroupRecords = Field(default_factory=LetterGroupRecords)
     daily: LetterDayState = Field(default_factory=LetterDayState)
+    display_mode: str = "auto"  # 群级持久展示模式：auto / text / image
 
 
 class LetterStatsStore(BaseModel):
@@ -582,6 +583,20 @@ class LetterStatsManager:
         rows = [m for m in self._members_with_uid(gid) if m.best_elapsed is not None]
         rows.sort(key=lambda m: (float(m.best_elapsed), -m.games, m.name))  # type: ignore[arg-type]
         return rows[:top_n]
+
+    # ---- 群级展示模式设置（持久化） ----
+
+    def get_display_mode(self, gid: GroupId) -> str:
+        """Returns the persisted display mode for the group: 'auto', 'text', or 'image'."""
+        group = self.store.groups.get(self._gid(gid))
+        if group is None:
+            return "auto"
+        return group.display_mode
+
+    async def set_display_mode(self, gid: GroupId, mode: str) -> None:
+        """Persist the display mode for the group and save to disk."""
+        self._group(gid).display_mode = mode
+        await self._save()
 
 
 letter_stats = LetterStatsManager()
