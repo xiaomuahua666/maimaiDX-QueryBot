@@ -135,9 +135,10 @@ assert module.estimate_life(course, tracks) is not None
 module._rounded_cover = lambda _song_id, size=154: Image.new(
     "RGBA", (size, size), (225, 232, 243, 255)
 )
-module._player_visual_assets = lambda _plate, _rating: (
+module._player_visual_assets = lambda _plate, _rating, _course=None: (
     Image.new("RGBA", (620, 101), (214, 240, 245, 255)),
-    Image.new("RGBA", (140, 56), (255, 210, 83, 255)),
+    Image.new("RGBA", (380, 168), (255, 210, 83, 255)),
+    Image.new("RGBA", (380, 168), (100, 180, 220, 255)),
 )
 preview = module.draw_rank_course(
     course,
@@ -146,7 +147,7 @@ preview = module.draw_rank_course(
     player_plate="测试姓名框",
     player_additional_rating=10,
 )
-assert preview.size == (1080, 1660)
+assert preview.size == (1080, 1680)
 preview.save("/tmp/rank_course_preview.png")
 
 print("rank course: 22 courses, 88 charts, 536-player samples, render OK")

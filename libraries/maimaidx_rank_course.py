@@ -407,9 +407,11 @@ def _position_label(track: CourseTrack) -> str:
 
 
 def _player_visual_assets(
-    plate_name: Optional[str], additional_rating: Optional[int]
-) -> tuple[Optional[Image.Image], Optional[Image.Image]]:
-    """复用 B50 的姓名框与 UI_DNM_DaniPlate 段位资源。"""
+    plate_name: Optional[str],
+    additional_rating: Optional[int],
+    course_name: Optional[str] = None,
+) -> tuple[Optional[Image.Image], Optional[Image.Image], Optional[Image.Image]]:
+    """加载姓名框、玩家段位贴图、课题段位贴图三项资源。"""
     try:
         from ..config import maimaidir
         from .maimaidx_table_image import plate_version_path
@@ -428,16 +430,44 @@ def _player_visual_assets(
                 maimaidir, theme, _dani_plate_filename(additional_rating)
             )
             if dani_path.exists():
-                dani_plate = Image.open(dani_path).convert("RGBA").resize((140, 56))
-        return player_plate, dani_plate
+                dani_plate = Image.open(dani_path).convert("RGBA")
+
+        course_dani_plate = None
+        if course_name:
+            fname = _course_dani_plate_filename(course_name)
+            if fname:
+                cdp_path = resolve_theme_path(maimaidir, theme, fname)
+                if cdp_path.exists():
+                    course_dani_plate = Image.open(cdp_path).convert("RGBA")
+
+        return player_plate, dani_plate, course_dani_plate
     except (ImportError, OSError, ValueError):
-        return None, None
+        return None, None, None
+
+
+# Maps course name → UI_DNM_DaniPlate_XX index.
+# 初段-十段 → 01-10; 真初段-真十段 → 12-21; 真皆传 → 22; 里皆传 → 23.
+_COURSE_DANI_INDEX: dict[str, int] = {
+    "初段": 1, "二段": 2, "三段": 3, "四段": 4, "五段": 5,
+    "六段": 6, "七段": 7, "八段": 8, "九段": 9, "十段": 10,
+    "真初段": 12, "真二段": 13, "真三段": 14, "真四段": 15, "真五段": 16,
+    "真六段": 17, "真七段": 18, "真八段": 19, "真九段": 20, "真十段": 21,
+    "真皆传": 22, "里皆传": 23,
+}
 
 
 def _dani_plate_filename(additional_rating: int) -> str:
     dani = max(0, int(additional_rating))
     index = dani if dani <= 10 else dani + 1
     return f"UI_DNM_DaniPlate_{index:02d}.png"
+
+
+def _course_dani_plate_filename(course_name: str) -> Optional[str]:
+    """根据段位课题名称返回对应的 UI_DNM_DaniPlate 文件名，找不到则返回 None。"""
+    idx = _COURSE_DANI_INDEX.get(course_name)
+    if idx is None:
+        return None
+    return f"UI_DNM_DaniPlate_{idx:02d}.png"
 
 
 def _draw_sample_distribution(
@@ -515,49 +545,120 @@ def draw_rank_course(
     player_additional_rating: Optional[int] = None,
     score_note: Optional[str] = None,
 ) -> Image.Image:
-    width, height = 1080, 1660
-    image = Image.new("RGBA", (width, height), (242, 245, 249, 255))
-    draw = ImageDraw.Draw(image)
+    # ── Layout constants ─────────────────────────────────────────────
+    # Header band height grows slightly to fit the bigger course dani plate.
+    HEADER_H = 340
+    ACCENT   = (32, 185, 182, 255)        # teal stripe
+    HEADER_BG = (228, 250, 249, 255)
+    CARD_BG  = (255, 255, 255, 255)
+    STAT_BG  = (205, 242, 240, 255)
+    BODY_BG  = (242, 245, 249, 255)
+    width, height = 1080, 1680
+    image = Image.new("RGBA", (width, height), BODY_BG)
+    draw  = ImageDraw.Draw(image)
 
-    # Header: course identity on the left, actual player plate and dani badge on the right.
-    draw.rectangle((0, 0, width, 326), fill=(228, 250, 249, 255))
-    draw.rectangle((0, 0, 16, 326), fill=(32, 185, 182, 255))
+    # ── Header background ────────────────────────────────────────────
+    draw.rectangle((0, 0, width, HEADER_H), fill=HEADER_BG)
+    # Left teal accent stripe
+    draw.rectangle((0, 0, 14, HEADER_H), fill=ACCENT)
+
+    # Subtitle: game title
     draw.text(
-        (50, 38),
+        (40, 28),
         "MAIMAI DX 2026  /  PRiSM PLUS",
-        font=_font(20),
+        font=_font(19),
         fill=(31, 104, 111),
         anchor="la",
     )
-    draw.text((50, 83), course.name, font=_font(58), fill=(22, 39, 55), anchor="la")
 
-    plate_asset, dani_asset = _player_visual_assets(
-        player_plate, player_additional_rating
+    # ── Course dani plate (left area) ────────────────────────────────
+    plate_asset, dani_asset, course_dani = _player_visual_assets(
+        player_plate, player_additional_rating, course.name
     )
+
+    # Target display rect for the course dani plate: x=34, y=55, max 340×150
+    COURSE_DANI_W, COURSE_DANI_H = 340, 150
+    COURSE_DANI_X, COURSE_DANI_Y = 34, 58
+    if course_dani is not None:
+        # Scale proportionally to fit within the target box
+        orig_w, orig_h = course_dani.size
+        scale = min(COURSE_DANI_W / orig_w, COURSE_DANI_H / orig_h)
+        new_w = int(orig_w * scale)
+        new_h = int(orig_h * scale)
+        course_dani_resized = course_dani.resize((new_w, new_h), Image.Resampling.LANCZOS)
+        # Vertically center within the box
+        paste_x = COURSE_DANI_X
+        paste_y = COURSE_DANI_Y + (COURSE_DANI_H - new_h) // 2
+        image.alpha_composite(course_dani_resized, (paste_x, paste_y))
+    else:
+        # Fallback: draw course name as large text if image unavailable
+        draw.text(
+            (40, 110),
+            course.name,
+            font=_font(62),
+            fill=(22, 39, 55),
+            anchor="la",
+        )
+
+    # ── Player panel (right side of header) ─────────────────────────
+    # Occupies right portion: x=400..1046, y=48..210
+    PLAYER_X = 400
+    PLAYER_Y = 52
+    PLAYER_W = 646   # 1046 - 400
+    PLAYER_H = 200
+    has_player = player_name is not None
+
+    if has_player:
+        # Subtle player panel background
+        draw.rounded_rectangle(
+            (PLAYER_X, PLAYER_Y, PLAYER_X + PLAYER_W, PLAYER_Y + PLAYER_H),
+            radius=12,
+            fill=(210, 245, 244, 200),
+        )
+
+    # Player name plate
     if plate_asset is not None:
-        plate_asset.thumbnail((550, 90), Image.Resampling.LANCZOS)
-        image.alpha_composite(plate_asset, (474, 45))
+        # Scale plate to fit panel width
+        plate_asset.thumbnail((PLAYER_W - 8, 90), Image.Resampling.LANCZOS)
+        pw, ph = plate_asset.size
+        px = PLAYER_X + 4
+        py = PLAYER_Y + 6
+        image.alpha_composite(plate_asset, (px, py))
         if player_name:
             draw.text(
-                (515, 91),
+                (px + 60, py + ph // 2),
                 player_name,
-                font=_fit_font(player_name, 330, 25, 18),
+                font=_fit_font(player_name, PLAYER_W - 120, 25, 17),
                 fill=(28, 38, 52),
                 stroke_width=2,
                 stroke_fill=(255, 255, 255),
                 anchor="lm",
             )
     elif player_name:
+        # No plate image: just draw the name
         draw.text(
-            (1000, 60),
+            (PLAYER_X + PLAYER_W - 8, PLAYER_Y + 36),
             player_name,
-            font=_fit_font(player_name, 380, 24, 17),
-            fill=(47, 70, 82),
+            font=_fit_font(player_name, PLAYER_W - 12, 26, 18),
+            fill=(31, 75, 88),
             anchor="ra",
         )
-    if dani_asset is not None:
-        image.alpha_composite(dani_asset, (854, 104))
 
+    # Player's personal dani badge (their own rank), placed below the name plate
+    if dani_asset is not None:
+        orig_w, orig_h = dani_asset.size
+        dani_scale = min((PLAYER_W - 12) / orig_w, 72 / orig_h)
+        dani_w = int(orig_w * dani_scale)
+        dani_h = int(orig_h * dani_scale)
+        dani_resized = dani_asset.resize((dani_w, dani_h), Image.Resampling.LANCZOS)
+        dani_x = PLAYER_X + PLAYER_W - dani_w - 4
+        # Place below name plate; if no plate image push up a bit
+        dani_y_base = PLAYER_Y + (96 if plate_asset is not None else 56)
+        dani_y = dani_y_base + (PLAYER_H - 96 - dani_h) // 2 + 4
+        image.alpha_composite(dani_resized, (dani_x, dani_y))
+
+    # ── Summary bar ──────────────────────────────────────────────────
+    SUMMARY_Y = HEADER_H - 110
     life = estimate_life(course, tracks)
     if life is not None:
         summary = f"个人历史成绩推算  ·  乐观 LIFE {life}"
@@ -568,64 +669,101 @@ def draw_rank_course(
     else:
         summary = "课题配置与服务器匿名样本"
         summary_kind = "stats"
-    draw.rounded_rectangle((50, 155, 1018, 207), radius=8, fill=(205, 242, 240, 255))
-    draw.rounded_rectangle((50, 155, 102, 207), radius=8, fill=(27, 169, 166, 255))
-    draw.rectangle((94, 155, 102, 207), fill=(27, 169, 166, 255))
-    _draw_summary_icon(draw, (76, 181), summary_kind)
+    draw.rounded_rectangle(
+        (34, SUMMARY_Y, 1046, SUMMARY_Y + 50), radius=8, fill=STAT_BG
+    )
+    draw.rounded_rectangle(
+        (34, SUMMARY_Y, 84, SUMMARY_Y + 50), radius=8, fill=(27, 169, 166, 255)
+    )
+    draw.rectangle((76, SUMMARY_Y, 84, SUMMARY_Y + 50), fill=(27, 169, 166, 255))
+    _draw_summary_icon(draw, (59, SUMMARY_Y + 25), summary_kind)
     draw.text(
-        (122, 181),
+        (104, SUMMARY_Y + 25),
         summary,
-        font=_fit_font(summary, 870, 21, 16),
+        font=_fit_font(summary, 910, 21, 15),
         fill=(39, 83, 88),
         anchor="lm",
     )
 
+    # ── LIFE rules row ───────────────────────────────────────────────
+    RULE_Y = HEADER_H - 50
     rule = course.life
     rules = (
-        ("START", str(rule.initial), (24, 137, 145)),
-        ("GREAT", f"-{rule.great}", (217, 148, 24)),
-        ("GOOD", f"-{rule.good}", (226, 91, 45)),
-        ("MISS", f"-{rule.miss}", (218, 57, 67)),
-        ("RECOVER", f"+{rule.heal}", (54, 139, 91)),
+        ("START",   str(rule.initial), (24, 137, 145)),
+        ("GREAT",   f"-{rule.great}",  (217, 148, 24)),
+        ("GOOD",    f"-{rule.good}",   (226, 91, 45)),
+        ("MISS",    f"-{rule.miss}",   (218, 57, 67)),
+        ("RECOVER", f"+{rule.heal}",   (54, 139, 91)),
     )
-    x = 50
+    # Subtle separator line
+    draw.line((34, RULE_Y - 8, 1046, RULE_Y - 8), fill=(190, 230, 228, 255), width=1)
+    rule_gap = (1012 - 34) // 5
+    rx = 34
     for label, value, color in rules:
-        draw.line((x, 222, x, 292), fill=(*color, 255), width=5)
-        draw.text(
-            (x + 16, 225), label, font=_font(15), fill=(91, 105, 117), anchor="la"
+        # Colored left tick
+        draw.rounded_rectangle(
+            (rx, RULE_Y - 4, rx + 5, RULE_Y + 46), radius=3, fill=(*color, 255)
         )
-        draw.text((x + 16, 251), value, font=_font(29), fill=(*color, 255), anchor="la")
-        x += 202
+        draw.text(
+            (rx + 15, RULE_Y - 2),
+            label,
+            font=_font(13),
+            fill=(91, 105, 117),
+            anchor="la",
+        )
+        draw.text(
+            (rx + 15, RULE_Y + 16),
+            value,
+            font=_font(26),
+            fill=(*color, 255),
+            anchor="la",
+        )
+        rx += rule_gap
 
-    y = 344
+    # ── Track cards ──────────────────────────────────────────────────
+    TRACK_START_Y = HEADER_H + 18
+    TRACK_H = 276
+    TRACK_GAP = 10
+
+    y = TRACK_START_Y
     for index, track in enumerate(tracks, 1):
         color = DIFFICULTY_COLORS[track.level_index]
-        # Full-width track bands avoid nested cards and keep the four-course scan path stable.
+        # Card shadow / depth: draw a slightly larger rounded rect behind
         draw.rounded_rectangle(
-            (34, y, 1046, y + 276),
-            radius=8,
-            fill=(255, 255, 255, 255),
+            (32, y + 3, 1048, y + TRACK_H + 3),
+            radius=10,
+            fill=(210, 218, 228, 120),
         )
-        draw.rounded_rectangle((34, y, 44, y + 276), radius=5, fill=(*color, 255))
+        draw.rounded_rectangle(
+            (32, y, 1048, y + TRACK_H),
+            radius=10,
+            fill=CARD_BG,
+        )
+        # Left difficulty color bar
+        draw.rounded_rectangle((32, y, 43, y + TRACK_H), radius=8, fill=(*color, 255))
+        # Track index + difficulty
         draw.text(
-            (68, y + 29),
+            (58, y + 22),
             f"{index:02d}",
-            font=_font(18),
+            font=_font(17),
             fill=(*color, 255),
             anchor="la",
         )
         draw.text(
-            (112, y + 29),
+            (100, y + 22),
             DIFFICULTY_NAMES[track.level_index],
-            font=_font(17),
+            font=_font(16),
             fill=(99, 110, 124),
             anchor="la",
         )
 
-        image.alpha_composite(_rounded_cover(track.song_id), (68, y + 62))
-        title_font = _fit_font(track.title, 560, 30, 19)
+        # Album art
+        image.alpha_composite(_rounded_cover(track.song_id, 165), (56, y + 56))
+
+        # Song info
+        title_font = _fit_font(track.title, 600, 29, 18)
         draw.text(
-            (264, y + 58), track.title, font=title_font, fill=(27, 36, 51), anchor="la"
+            (240, y + 52), track.title, font=title_font, fill=(22, 33, 50), anchor="la"
         )
         ds_text = (
             f"LEVEL {track.level}    DS {track.ds:.1f}"
@@ -633,71 +771,83 @@ def draw_rank_course(
             else f"LEVEL {track.level}"
         )
         draw.text(
-            (264, y + 103), ds_text, font=_font(20), fill=(*color, 255), anchor="la"
+            (240, y + 97), ds_text, font=_font(19), fill=(*color, 255), anchor="la"
         )
         score = (
             "未游玩"
             if track.achievement is None
-            else f"个人最佳 {track.achievement:.4f}%"
+            else f"个人最佳  {track.achievement:.4f}%"
         )
-        draw.text((264, y + 144), score, font=_font(24), fill=(37, 48, 65), anchor="la")
+        score_color = (37, 48, 65) if track.achievement is not None else (130, 140, 158)
+        draw.text(
+            (240, y + 134), score, font=_font(23), fill=score_color, anchor="la"
+        )
+
+        # Position badge (top-right of card)
         position = _position_label(track)
+        badge_fill = (232, 244, 255, 255) if track.achievement is not None else (238, 242, 247, 255)
         draw.rounded_rectangle(
-            (827, y + 58, 1016, y + 101), radius=8, fill=(238, 242, 247, 255)
+            (848, y + 52, 1032, y + 95), radius=8, fill=badge_fill
         )
         draw.text(
-            (922, y + 80),
+            (940, y + 74),
             position,
-            font=_fit_font(position, 165, 17, 14),
-            fill=(76, 87, 108),
+            font=_fit_font(position, 168, 16, 13),
+            fill=(60, 80, 115),
             anchor="mm",
         )
+
+        # Sample label
+        sample_txt = _sample_label(track)
         draw.text(
-            (264, y + 184),
-            _sample_label(track),
-            font=_fit_font(_sample_label(track), 745, 17, 13),
+            (240, y + 176),
+            sample_txt,
+            font=_fit_font(sample_txt, 785, 16, 12),
             fill=(103, 112, 132),
             anchor="la",
         )
-        _draw_sample_distribution(draw, track, (264, y + 225, 1016, y + 237), color)
-        draw.text(
-            (264, y + 247), "97", font=_font(12), fill=(139, 148, 161), anchor="ma"
-        )
-        draw.text(
-            (1016, y + 247), "101%", font=_font(12), fill=(139, 148, 161), anchor="ma"
-        )
-        y += 294
 
+        # Distribution bar
+        _draw_sample_distribution(
+            draw, track, (240, y + 218, 1032, y + 230), color
+        )
+        draw.text(
+            (240, y + 240), "97%", font=_font(11), fill=(139, 148, 161), anchor="ma"
+        )
+        draw.text(
+            (1032, y + 240), "101%", font=_font(11), fill=(139, 148, 161), anchor="ma"
+        )
+        y += TRACK_H + TRACK_GAP
+
+    # ── Footer ───────────────────────────────────────────────────────
+    footer_y = y + 18
     footer = "数据：ChiffonMai 段位表 / Diving-Fish 曲库 / 服务器近期脱敏成绩（低样本使用内置数据）"
     draw.text(
-        (540, 1544),
+        (540, footer_y),
         footer,
-        font=_fit_font(footer, 960, 16, 13),
+        font=_fit_font(footer, 980, 15, 12),
         fill=(105, 115, 134),
         anchor="mm",
     )
     draw.text(
-        (540, 1580),
+        (540, footer_y + 30),
         "LIFE 为达成率反推的最有利判定组合，仅供练习参考，以机台结果为准",
         font=_fit_font(
             "LIFE 为达成率反推的最有利判定组合，仅供练习参考，以机台结果为准",
-            960,
-            15,
-            13,
+            980, 14, 12,
         ),
         fill=(125, 91, 104),
         anchor="mm",
     )
     try:
         from ..config import footer_generated
-
         project_footer = footer_generated()
     except (ImportError, ValueError):
         project_footer = "Generated by maimaiDX QueryBot"
     draw.text(
-        (540, 1620),
+        (540, footer_y + 58),
         project_footer,
-        font=_fit_font(project_footer, 960, 14, 12),
+        font=_fit_font(project_footer, 980, 13, 11),
         fill=(134, 143, 155),
         anchor="mm",
     )
