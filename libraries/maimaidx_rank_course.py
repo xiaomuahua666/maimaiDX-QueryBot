@@ -570,8 +570,7 @@ def draw_rank_course(
 ) -> Image.Image:
     # ── Layout constants ─────────────────────────────────────────────
     # Header band height grows slightly to fit the bigger course dani plate.
-    HEADER_H = 340
-    ACCENT   = (32, 185, 182, 255)        # teal stripe
+    HEADER_H = 370
     HEADER_BG = (228, 250, 249, 255)
     CARD_BG  = (255, 255, 255, 255)
     STAT_BG  = (205, 242, 240, 255)
@@ -660,7 +659,7 @@ def draw_rank_course(
         image.alpha_composite(dani_resized, (dani_x, dani_y))
 
     # ── Summary bar ──────────────────────────────────────────────────
-    SUMMARY_Y = HEADER_H - 110
+    SUMMARY_Y = HEADER_H - 130
     life = estimate_life(course, tracks)
     if life is not None:
         summary = f"个人历史成绩推算  ·  乐观 LIFE {life}"
@@ -690,16 +689,21 @@ def draw_rank_course(
     # ── LIFE rules row ───────────────────────────────────────────────
     RULE_Y = HEADER_H - 50
     rule = course.life
-    rules = (
-        ("START",   str(rule.initial), (24, 137, 145)),
-        ("GREAT",   f"-{rule.great}",  (235, 115, 170)), # Pink
-        ("GOOD",    f"-{rule.good}",   (91, 190, 100)),  # Green
-        ("MISS",    f"-{rule.miss}",   (150, 150, 150)), # Gray
-        ("RECOVER", f"+{rule.heal}",   (54, 139, 91)),
-    )
+    rules = [("START", str(rule.initial), (24, 137, 145))]
+    if rule.great > 0:
+        rules.append(("GREAT", f"-{rule.great}", (235, 115, 170)))
+    if rule.good > 0:
+        rules.append(("GOOD", f"-{rule.good}", (91, 190, 100)))
+    if rule.miss > 0:
+        rules.append(("MISS", f"-{rule.miss}", (150, 150, 150)))
+    if rule.heal > 0:
+        rules.append(("RECOVER", f"+{rule.heal}", (54, 139, 91)))
+
     # Subtle separator line
-    draw.line((34, RULE_Y - 8, 1046, RULE_Y - 8), fill=(190, 230, 228, 255), width=1)
-    rule_gap = (1012 - 34) // 5
+    draw.line((34, RULE_Y - 14, 1046, RULE_Y - 14), fill=(210, 230, 230, 255), width=1)
+    
+    num_rules = len(rules)
+    rule_gap = (1012 - 34) // num_rules if num_rules > 1 else 0
     rx = 34
     for label, value, color in rules:
         # Colored left tick
