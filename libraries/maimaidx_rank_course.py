@@ -590,18 +590,16 @@ def draw_rank_course(
     # B50 style: no accent stripe, light theme background
     draw.rectangle((0, 0, width, HEADER_H), fill=BODY_BG)
     
-    # Subtitle: game title
-    draw.text(
-        (40, 28),
-        "舞萌2026  /  PRiSM PLUS",
-        font=_font(19),
-        fill=(100, 100, 100),
-        anchor="la",
-    )
+    # Top left: Logo
+    LOGO_X, LOGO_Y = 14, 20
+    if logo_asset:
+        image.alpha_composite(logo_asset, (LOGO_X, LOGO_Y))
+    else:
+        draw.text((LOGO_X + 26, LOGO_Y + 10), "舞萌2026", font=_font(22), fill=(100, 100, 100), anchor="la")
 
-    # Left: Course Name
+    # Left: Course Name (below logo)
     draw.text(
-        (40, 100),
+        (40, 150),
         course.name,
         font=_font(62),
         fill=(22, 39, 55),
@@ -611,7 +609,7 @@ def draw_rank_course(
     # ── Player panel (right side of header) ─────────────────────────
     has_player = player_name is not None
     PLAYER_X = 260
-    PLAYER_Y = 60
+    PLAYER_Y = 20
 
     if has_player and plate_asset is not None:
         # B50 style plate composite
@@ -647,10 +645,9 @@ def draw_rank_course(
     badge_to_draw = course_dani
     if badge_to_draw is not None:
         orig_w, orig_h = badge_to_draw.size
-        # B50 places ClassLevel/MatchLevel near the right side of the plate
-        # We'll put it at (625, 120) relative to plate
-        dani_x = PLAYER_X + 600
-        dani_y = PLAYER_Y + 50
+        # MatchLevel offset from B50 is around 325, but 360 gives better spacing
+        dani_x = PLAYER_X + 360
+        dani_y = PLAYER_Y + 60
         
         dani_scale = min(140 / orig_w, 75 / orig_h)
         dani_w = int(orig_w * dani_scale)
