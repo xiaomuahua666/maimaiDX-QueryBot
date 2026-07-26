@@ -136,9 +136,12 @@ module._rounded_cover = lambda _song_id, size=154: Image.new(
     "RGBA", (size, size), (225, 232, 243, 255)
 )
 module._player_visual_assets = lambda _plate, _rating, _course=None: (
-    Image.new("RGBA", (620, 101), (214, 240, 245, 255)),
-    Image.new("RGBA", (380, 168), (255, 210, 83, 255)),
-    Image.new("RGBA", (380, 168), (100, 180, 220, 255)),
+    Image.new("RGBA", (800, 130), (214, 240, 245, 255)),  # plate
+    Image.new("RGBA", (380, 168), (255, 210, 83, 255)),   # dani_plate
+    Image.new("RGBA", (380, 168), (100, 180, 220, 255)),  # course_dani
+    Image.new("RGBA", (249, 120), (200, 200, 200, 255)),  # logo
+    Image.new("RGBA", (120, 120), (100, 100, 100, 255)),  # icon
+    Image.new("RGBA", (200, 40),  (255, 255, 255, 255)),  # name_img
 )
 preview = module.draw_rank_course(
     course,

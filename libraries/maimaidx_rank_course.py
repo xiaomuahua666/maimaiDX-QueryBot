@@ -410,7 +410,10 @@ def _player_visual_assets(
     plate_name: Optional[str],
     additional_rating: Optional[int],
     course_name: Optional[str] = None,
-) -> tuple[Optional[Image.Image], Optional[Image.Image], Optional[Image.Image]]:
+) -> tuple[
+    Optional[Image.Image], Optional[Image.Image], Optional[Image.Image],
+    Optional[Image.Image], Optional[Image.Image], Optional[Image.Image]
+]:
     """加载姓名框、玩家段位贴图、课题段位贴图三项资源。"""
     try:
         from ..config import maimaidir
@@ -420,9 +423,14 @@ def _player_visual_assets(
         theme = Theme.get_default().value
         player_plate = None
         if plate_name:
-            path = plate_version_path(plate_name)
-            if path.exists():
-                player_plate = Image.open(path).convert("RGBA").resize((620, 101))
+            from .maimaidx_table_image import open_plate_image
+            _plate = open_plate_image(plate_name, resolve_theme_path(maimaidir, theme, 'UI_Plate_550101.png'))
+            if _plate:
+                player_plate = _plate.resize((800, 130)).convert("RGBA")
+        if not player_plate:
+            p = resolve_theme_path(maimaidir, theme, 'UI_Plate_550101.png')
+            if p.exists():
+                player_plate = Image.open(p).convert("RGBA").resize((800, 130))
 
         dani_plate = None
         if additional_rating is not None:
@@ -440,9 +448,24 @@ def _player_visual_assets(
                 if cdp_path.exists():
                     course_dani_plate = Image.open(cdp_path).convert("RGBA")
 
-        return player_plate, dani_plate, course_dani_plate
+        logo_img = None
+        p_logo = resolve_theme_path(maimaidir, theme, 'logo.png')
+        if p_logo.exists():
+            logo_img = Image.open(p_logo).convert("RGBA").resize((249, 120))
+            
+        icon_img = None
+        p_icon = resolve_theme_path(maimaidir, theme, 'UI_Icon_509506.png')
+        if p_icon.exists():
+            icon_img = Image.open(p_icon).convert("RGBA").resize((120, 120))
+            
+        name_img = None
+        p_name = resolve_theme_path(maimaidir, theme, 'Name.png')
+        if p_name.exists():
+            name_img = Image.open(p_name).convert("RGBA")
+
+        return player_plate, dani_plate, course_dani_plate, logo_img, icon_img, name_img
     except (ImportError, OSError, ValueError):
-        return None, None, None
+        return None, None, None, None, None, None
 
 
 # Maps course name → UI_DNM_DaniPlate_XX index.
@@ -559,25 +582,27 @@ def draw_rank_course(
 
     # ── Header background ────────────────────────────────────────────
     draw.rectangle((0, 0, width, HEADER_H), fill=HEADER_BG)
-    # Left teal accent stripe
-    draw.rectangle((0, 0, 14, HEADER_H), fill=ACCENT)
-
-    # Subtitle: game title
-    draw.text(
-        (40, 28),
-        "MAIMAI DX 2026  /  PRiSM PLUS",
-        font=_font(19),
-        fill=(31, 104, 111),
-        anchor="la",
-    )
-
-    # ── Course name (left area) ────────────────────────────────
-    plate_asset, dani_asset, course_dani = _player_visual_assets(
+    # ── Assets ────────────────────────────────
+    plate_asset, dani_asset, course_dani, logo_asset, icon_asset, name_asset = _player_visual_assets(
         player_plate, player_additional_rating, course.name
     )
 
+    # ── Header ───────────────────────────────────────────────────────
+    # B50 style: no accent stripe, light theme background
+    draw.rectangle((0, 0, width, HEADER_H), fill=BODY_BG)
+    
+    # Subtitle: game title
     draw.text(
-        (40, 110),
+        (40, 28),
+        "舞萌2026  /  PRiSM PLUS",
+        font=_font(19),
+        fill=(100, 100, 100),
+        anchor="la",
+    )
+
+    # Left: Course Name
+    draw.text(
+        (40, 100),
         course.name,
         font=_font(62),
         fill=(22, 39, 55),
@@ -585,45 +610,36 @@ def draw_rank_course(
     )
 
     # ── Player panel (right side of header) ─────────────────────────
-    # Occupies right portion: x=400..1046, y=48..210
-    PLAYER_X = 400
-    PLAYER_Y = 52
-    PLAYER_W = 646   # 1046 - 400
-    PLAYER_H = 200
     has_player = player_name is not None
+    PLAYER_X = 260
+    PLAYER_Y = 60
 
-    if has_player:
-        # Subtle player panel background
-        draw.rounded_rectangle(
-            (PLAYER_X, PLAYER_Y, PLAYER_X + PLAYER_W, PLAYER_Y + PLAYER_H),
-            radius=12,
-            fill=(210, 245, 244, 200),
-        )
-
-    # Player name plate
-    if plate_asset is not None:
-        # Scale plate to fit panel width
-        plate_asset.thumbnail((PLAYER_W - 8, 90), Image.Resampling.LANCZOS)
-        pw, ph = plate_asset.size
-        px = PLAYER_X + 4
-        py = PLAYER_Y + 6
-        image.alpha_composite(plate_asset, (px, py))
-        if player_name:
-            draw.text(
-                (px + 60, py + ph // 2),
-                player_name,
-                font=_fit_font(player_name, PLAYER_W - 120, 25, 17),
-                fill=(28, 38, 52),
-                stroke_width=2,
-                stroke_fill=(255, 255, 255),
-                anchor="lm",
-            )
-    elif player_name:
-        # No plate image: just draw the name
+    if has_player and plate_asset is not None:
+        # B50 style plate composite
+        image.alpha_composite(plate_asset, (PLAYER_X, PLAYER_Y))
+        
+        # Icon
+        if icon_asset:
+            image.alpha_composite(icon_asset, (PLAYER_X + 5, PLAYER_Y + 5))
+            
+        # Name background
+        if name_asset:
+            image.alpha_composite(name_asset, (PLAYER_X + 135, PLAYER_Y + 55))
+            
+        # Player name
         draw.text(
-            (PLAYER_X + PLAYER_W - 8, PLAYER_Y + 36),
+            (PLAYER_X + 145, PLAYER_Y + 75),
             player_name,
-            font=_fit_font(player_name, PLAYER_W - 12, 26, 18),
+            font=_fit_font(player_name, 300, 25, 17),
+            fill=(0, 0, 0),
+            anchor="lm",
+        )
+    elif has_player:
+        # Fallback text if no plate
+        draw.text(
+            (PLAYER_X + 600, PLAYER_Y + 60),
+            player_name,
+            font=_fit_font(player_name, 500, 26, 18),
             fill=(31, 75, 88),
             anchor="ra",
         )
@@ -632,18 +648,15 @@ def draw_rank_course(
     badge_to_draw = course_dani
     if badge_to_draw is not None:
         orig_w, orig_h = badge_to_draw.size
-        if has_player:
-            dani_scale = min((PLAYER_W - 12) / orig_w, 72 / orig_h)
-            dani_y_base = PLAYER_Y + (96 if plate_asset is not None else 56)
-            dani_y = dani_y_base + (PLAYER_H - 96 - int(orig_h * dani_scale)) // 2 + 4
-        else:
-            dani_scale = min((PLAYER_W - 12) / orig_w, 100 / orig_h)
-            dani_y = PLAYER_Y + (PLAYER_H - int(orig_h * dani_scale)) // 2
+        # B50 places ClassLevel/MatchLevel near the right side of the plate
+        # We'll put it at (625, 120) relative to plate
+        dani_x = PLAYER_X + 600
+        dani_y = PLAYER_Y + 50
         
+        dani_scale = min(140 / orig_w, 75 / orig_h)
         dani_w = int(orig_w * dani_scale)
         dani_h = int(orig_h * dani_scale)
         dani_resized = badge_to_draw.resize((dani_w, dani_h), Image.Resampling.LANCZOS)
-        dani_x = PLAYER_X + PLAYER_W - dani_w - 4
         image.alpha_composite(dani_resized, (dani_x, dani_y))
 
     # ── Summary bar ──────────────────────────────────────────────────
