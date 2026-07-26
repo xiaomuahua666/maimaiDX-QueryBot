@@ -51,7 +51,7 @@ PENDING_TTL_SECONDS = 10 * 60
 class PendingSync:
     gid: int
     uid: str
-    stage: str  # choose | confirm_yes | confirm_no
+    stage: str  # choose | confirm_yes | confirm_no | confirm_import
     created_at: float = field(default_factory=time.time)
 
 
@@ -167,18 +167,32 @@ class GuessSyncManager:
         pref['last_action'] = 'keep_local_backup_main'
         await self._save_prefs()
 
-    async def reconcile_play_group(
+    async def prepare_group_entry(
+        self, gid: GroupId, uid: UserId
+    ) -> Tuple[str, Optional[str]]:
+        """开局入口：仅主群导流，不做任何自动同步/覆盖。"""
+        if self.is_main_group(gid):
+            return 'redirect', MAIN_GROUP_REDIRECT
+        return 'ok', None
+
+    async def start_manual_migrate(
         self, gid: GroupId, uid: UserId
     ) -> Tuple[str, Optional[str]]:
         """
-        猜歌群入口对账。
+        用户主动发送「迁移数据」。
         返回 (status, message)：
-          - ok / auto_imported / auto_mirrored：可继续
-          - need_prompt：需用户确认，message 为提示文案
-          - pending：已有进行中的确认
+          - done：已完成（一致 / 单向导入），直接回复
+          - need_prompt / pending：进入确认流程
+          - reject：群不对等
+        不会在开字母/猜歌得分时自动调用，避免异常覆盖。
         """
+        if self.is_main_group(gid):
+            return (
+                'reject',
+                MAIN_GROUP_REDIRECT + '\n如需迁移猜歌数据，请到猜歌群发送「迁移数据」。',
+            )
         if not self.is_play_group(gid):
-            return 'ok', None
+            return 'reject', '猜歌数据迁移仅支持在猜歌群 993795066 使用。'
 
         if self.get_pending(gid, uid):
             p = self.get_pending(gid, uid)
@@ -189,71 +203,40 @@ class GuessSyncManager:
                 return 'pending', CONFIRM_YES_PROMPT + '\n（请先完成二次确认）'
             return 'pending', CONFIRM_NO_PROMPT + '\n（请先完成二次确认）'
 
-        if self.is_dismissed(uid):
-            return 'ok', None
-
         from .maimaidx_guess_score import guess_score
 
         main_has = guess_score.user_has_guess_data(MAIN_GUESS_GROUP_ID, uid)
         play_has = guess_score.user_has_guess_data(PLAY_GUESS_GROUP_ID, uid)
 
+        if not main_has and not play_has:
+            return 'done', '主群与本群都还没有猜歌数据，无需迁移。'
+
         if main_has and not play_has:
-            await guess_score.copy_user_guess_data(
-                MAIN_GUESS_GROUP_ID, PLAY_GUESS_GROUP_ID, uid
+            # 单向导入也不静默：走二次确认（是=导入）
+            self.set_pending(gid, uid, 'confirm_import')
+            return (
+                'need_prompt',
+                '检测到主群有猜歌数据，本群为空。\n'
+                '是否将主群数据导入本群？\n'
+                '回复「确认」导入，回复「取消」放弃。',
             )
-            log.info(f'[GuessSync] 自动导入主群数据 → 猜歌群 uid={uid}')
-            return 'auto_imported', '已自动同步您在主群的猜歌数据到本群。'
 
         if play_has and not main_has:
-            await guess_score.copy_user_guess_data(
-                PLAY_GUESS_GROUP_ID, MAIN_GUESS_GROUP_ID, uid
+            return (
+                'done',
+                '本群已有猜歌数据，主群暂无对应数据。\n'
+                '为避免误覆盖，不会自动改写主群；若只需在本群游玩可直接继续。',
             )
-            log.info(f'[GuessSync] 自动镜像猜歌群数据 → 主群 uid={uid}')
-            return 'auto_mirrored', None
 
-        if main_has and play_has:
-            if guess_score.user_data_fingerprint(
-                MAIN_GUESS_GROUP_ID, uid
-            ) != guess_score.user_data_fingerprint(PLAY_GUESS_GROUP_ID, uid):
-                self.set_pending(gid, uid, 'choose')
-                return 'need_prompt', CONFLICT_PROMPT
+        # 两侧都有
+        if guess_score.user_data_fingerprint(
+            MAIN_GUESS_GROUP_ID, uid
+        ) == guess_score.user_data_fingerprint(PLAY_GUESS_GROUP_ID, uid):
+            return 'done', '主群与本群猜歌数据已一致，无需迁移。'
 
-        return 'ok', None
-
-    async def prepare_group_entry(
-        self, gid: GroupId, uid: UserId
-    ) -> Tuple[str, Optional[str]]:
-        """
-        统一入口：
-          redirect / block → 应 finish(message)
-          tip → 可先 send(message) 再继续
-          ok → 继续
-        """
-        if self.is_main_group(gid):
-            return 'redirect', MAIN_GROUP_REDIRECT
-        status, message = await self.reconcile_play_group(gid, uid)
-        if status in {'need_prompt', 'pending'}:
-            return 'block', message
-        if status == 'auto_imported' and message:
-            return 'tip', message
-        return 'ok', None
-
-    async def mirror_peer_if_needed(self, gid: GroupId, uid: UserId) -> None:
-        """得分后保持两群一致（用户未选择「不再询问」时）。"""
-        peer = self.peer_group(gid)
-        if peer is None:
-            return
-        if self.is_dismissed(uid):
-            return
-        from .maimaidx_guess_score import guess_score
-
-        try:
-            await guess_score.copy_user_guess_data(gid, peer, uid)
-        except Exception as exc:
-            log.warning(
-                f'[GuessSync] 镜像失败 gid={gid}→{peer} uid={uid}: '
-                f'{type(exc).__name__}: {exc}'
-            )
+        # 手动迁移时即使曾选「不再询问」也允许再次确认
+        self.set_pending(gid, uid, 'choose')
+        return 'need_prompt', CONFLICT_PROMPT
 
     async def handle_reply(
         self, gid: GroupId, uid: UserId, text: str
@@ -271,6 +254,17 @@ class GuessSyncManager:
         if low in {'取消', 'cancel', 'q', '退出'}:
             self.clear_pending(gid, uid)
             return True, '已取消猜歌数据同步确认。'
+
+        if pending.stage == 'confirm_import':
+            if raw not in {'确认', '确定'}:
+                return True, (
+                    '请回复「确认」将主群数据导入本群，或「取消」放弃。'
+                )
+            self.clear_pending(gid, uid)
+            ok = await self.apply_overwrite_from_main(uid)
+            if ok:
+                return True, '已将主群猜歌数据导入本群。可以继续游玩啦~'
+            return True, '导入失败：主群似乎没有可导入的猜歌数据。'
 
         if pending.stage == 'choose':
             if raw in {'是', '覆盖', 'yes', 'y', 'Y'}:
@@ -299,10 +293,11 @@ class GuessSyncManager:
             await self.apply_keep_local(uid)
             return True, (
                 '已保留本群数据，并保存主群备份；以后不再询问是否覆盖。'
+                '\n若以后仍要迁移，可主动发送「迁移数据」。'
             )
 
         self.clear_pending(gid, uid)
-        return True, '同步会话已失效，请重新发送猜歌指令。'
+        return True, '同步会话已失效，请重新发送「迁移数据」。'
 
 
 guess_sync = GuessSyncManager()

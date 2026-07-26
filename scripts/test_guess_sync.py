@@ -1,4 +1,4 @@
-"""主群↔猜歌群同步：源码挂载检查 + 偏好/确认状态机（轻量，无 NoneBot）。"""
+"""主群↔猜歌群同步：源码挂载检查 + 手动迁移确认状态机。"""
 
 from __future__ import annotations
 
@@ -30,7 +30,6 @@ def _bootstrap_sync_only() -> None:
     cfg.guess_sync_prefs_file = ROOT / "static" / "group_guess_sync_prefs.json"
     sys.modules[f"{pkg}.config"] = cfg
 
-    # stub tool.writefile
     tool = types.ModuleType(f"{pkg}.libraries.tool")
 
     async def writefile(file: Path, data):
@@ -40,7 +39,6 @@ def _bootstrap_sync_only() -> None:
     tool.writefile = writefile
     sys.modules[f"{pkg}.libraries.tool"] = tool
 
-    # stub platform types
     plat = types.ModuleType(f"{pkg}.libraries.maimaidx_platform")
     plat.GroupId = object
     plat.UserId = object
@@ -49,7 +47,6 @@ def _bootstrap_sync_only() -> None:
 
 async def _run_state_machine() -> None:
     _bootstrap_sync_only()
-    # import after stubs
     from nonebot_plugin_maimaidx.libraries.maimaidx_guess_sync import (
         CONFLICT_PROMPT,
         MAIN_GROUP_REDIRECT,
@@ -62,53 +59,45 @@ async def _run_state_machine() -> None:
         prefs = Path(tmp) / "prefs.json"
         sync = GuessSyncManager(prefs)
 
-        assert sync.is_main_group(MAIN_GUESS_GROUP_ID)
-        assert sync.is_play_group(PLAY_GUESS_GROUP_ID)
         action, msg = await sync.prepare_group_entry(MAIN_GUESS_GROUP_ID, "1")
-        # prepare_group_entry for main does not need score module
         assert action == "redirect" and msg == MAIN_GROUP_REDIRECT
+        action, msg = await sync.prepare_group_entry(PLAY_GUESS_GROUP_ID, "1")
+        assert action == "ok" and msg is None
 
-        # pending choose → yes → confirm
+        # 手动迁移：冲突确认
         sync.set_pending(PLAY_GUESS_GROUP_ID, "42", "choose")
         handled, reply = await sync.handle_reply(PLAY_GUESS_GROUP_ID, "42", "是")
-        assert handled and "二次确认" in reply and "覆盖" in reply
+        assert handled and "二次确认" in reply
 
-        # fake overwrite
         async def _ow(_uid):
             return True
 
         sync.apply_overwrite_from_main = _ow  # type: ignore[method-assign]
         handled, reply = await sync.handle_reply(PLAY_GUESS_GROUP_ID, "42", "确认")
         assert handled and "覆盖" in reply
-        assert sync.get_pending(PLAY_GUESS_GROUP_ID, "42") is None
 
-        sync.set_pending(PLAY_GUESS_GROUP_ID, "42", "choose")
-        await sync.handle_reply(PLAY_GUESS_GROUP_ID, "42", "否")
-
-        async def _keep(_uid):
-            pref = sync._user_pref(_uid)
-            pref["dismiss_overwrite_prompt"] = True
-            await sync._save_prefs()
-
-        sync.apply_keep_local = _keep  # type: ignore[method-assign]
+        # 空本群导入确认
+        sync.set_pending(PLAY_GUESS_GROUP_ID, "42", "confirm_import")
         handled, reply = await sync.handle_reply(PLAY_GUESS_GROUP_ID, "42", "确认")
-        assert handled and "不再询问" in reply
-        assert sync.is_dismissed("42")
+        assert handled and ("导入" in reply or "覆盖" in reply)
+
         assert CONFLICT_PROMPT.startswith("感谢游玩AWMC猜歌")
 
 
 def _run_source_checks() -> None:
     guess_src = (ROOT / "command" / "mai_guess.py").read_text(encoding="utf-8")
-    assert "_gate_guess_group_entry" in guess_src
-    assert "guess_sync_reply" in guess_src
-    assert "prepare_group_entry" in guess_src
+    assert "guess_migrate_data" in guess_src
+    assert "迁移数据" in guess_src
+    assert "start_manual_migrate" in guess_src
+    assert "mirror_peer_if_needed" not in (
+        ROOT / "libraries" / "maimaidx_guess_score.py"
+    ).read_text(encoding="utf-8")
     letter_src = (ROOT / "command" / "mai_letter.py").read_text(encoding="utf-8")
+    assert "start_manual_migrate" not in letter_src
     assert "prepare_group_entry" in letter_src
-    score_src = (ROOT / "libraries" / "maimaidx_guess_score.py").read_text(encoding="utf-8")
-    assert "copy_user_guess_data" in score_src
-    assert "mirror_peer_if_needed" in score_src
-    cfg = (ROOT / "config.py").read_text(encoding="utf-8")
-    assert "guess_sync_prefs_file" in cfg
+    sync_src = (ROOT / "libraries" / "maimaidx_guess_sync.py").read_text(encoding="utf-8")
+    assert "start_manual_migrate" in sync_src
+    assert "async def mirror_peer_if_needed" not in sync_src
 
 
 if __name__ == "__main__":

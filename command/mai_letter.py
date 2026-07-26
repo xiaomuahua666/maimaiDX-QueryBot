@@ -28,7 +28,6 @@ from ..libraries.maimaidx_guess_letter import (
 )
 from ..libraries.maimaidx_guess_score import guess_score
 from ..libraries.maimaidx_guess_sync import MAIN_GROUP_REDIRECT, guess_sync
-from ..libraries.maimaidx_pending_session import finish_pending, session_key, track_event
 from ..libraries.maimaidx_letter_rank_draw import (
     image_b64,
     render_contrib_board,
@@ -366,19 +365,11 @@ async def _(matcher, event: MessageEvent, args: Message = CommandArg()):
         ("排行", "积分榜", "贡献榜", "时间榜")
     ):
         matcher.skip()
-    uid = platform_user_id(event)
-    pending_key = session_key('guess_sync', event)
-    action, sync_msg = await guess_sync.prepare_group_entry(gid, uid)
-    if action in {'redirect', 'block'}:
-        if action == 'block':
-            track_event(pending_key, event)
+    action, sync_msg = await guess_sync.prepare_group_entry(
+        gid, platform_user_id(event)
+    )
+    if action == 'redirect':
         await matcher.finish(sync_msg or MAIN_GROUP_REDIRECT, reply_message=True)
-    if action == 'tip' and sync_msg:
-        try:
-            await matcher.send(sync_msg, reply_message=True)
-        except Exception:
-            pass
-    finish_pending(pending_key)
     enabled_err = _ensure_enabled(gid)
     if enabled_err:
         await letter_open.finish(enabled_err, reply_message=True)

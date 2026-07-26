@@ -141,6 +141,13 @@ guess_sync_reply = on_message(
     priority=1,
     block=True,
 )
+guess_migrate_data = on_command(
+    '迁移数据',
+    aliases={'迁移猜歌数据', '同步猜歌数据'},
+    rule=GROUP_MESSAGE,
+    priority=5,
+    block=True,
+)
 
 # 猜歌玩法不参与高峰期「额外 1 BREAK」附加费（含局内答题 on_message）。
 for _guess_matcher in (
@@ -169,28 +176,21 @@ for _guess_matcher in (
     guess_score_hist_season,
     guess_my_stats,
     guess_sync_reply,
+    guess_migrate_data,
 ):
     setattr(_guess_matcher, '_maimaidx_busy_surcharge_exempt', True)
 
 
 async def _gate_guess_group_entry(matcher: Matcher, event: MessageEvent) -> None:
-    """主群导流；猜歌群自动同步 / 冲突确认。冲突时 finish 阻断开局。"""
+    """仅主群导流；不在开局/开字母时自动同步，避免异常覆盖。"""
     gid = get_event_group_id(event)
     if gid is None:
         return
-    uid = platform_user_id(event)
-    pending_key = session_key('guess_sync', event)
-    action, message = await guess_sync.prepare_group_entry(gid, uid)
-    if action in {'redirect', 'block'}:
-        if action == 'block':
-            track_event(pending_key, event)
+    action, message = await guess_sync.prepare_group_entry(
+        gid, platform_user_id(event)
+    )
+    if action == 'redirect':
         await matcher.finish(message or MAIN_GROUP_REDIRECT, reply_message=True)
-    if action == 'tip' and message:
-        try:
-            await matcher.send(message, reply_message=True)
-        except Exception:
-            pass
-    finish_pending(pending_key)
 
 
 def _sender_name(event: MessageEvent) -> str:
@@ -772,6 +772,21 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
             reply_message=True,
         )
     await guess_boost_query.finish(msg, reply_message=True)
+
+
+@guess_migrate_data.handle()
+async def _(event: MessageEvent):
+    gid = get_event_group_id(event)
+    if gid is None:
+        await guess_migrate_data.finish('请在群内使用。', reply_message=True)
+    uid = platform_user_id(event)
+    pending_key = session_key('guess_sync', event)
+    status, message = await guess_sync.start_manual_migrate(gid, uid)
+    if status in {'need_prompt', 'pending'}:
+        track_event(pending_key, event)
+        await guess_migrate_data.finish(message or '', reply_message=True)
+    finish_pending(pending_key)
+    await guess_migrate_data.finish(message or '处理完成。', reply_message=True)
 
 
 @guess_sync_reply.handle()

@@ -818,15 +818,6 @@ class GuessScoreManager:
         await self._save()
         if mode:
             await self._save_events()
-        try:
-            from .maimaidx_guess_sync import guess_sync
-
-            await guess_sync.mirror_peer_if_needed(gid, uid)
-        except Exception as exc:
-            log.warning(
-                f'[GuessScore] 跨群镜像失败 gid={gid} uid={uid}: '
-                f'{type(exc).__name__}: {exc}'
-            )
         period_snapshot = self.get_period_snapshot(gid, uid)
         return (
             total_added,
@@ -866,15 +857,6 @@ class GuessScoreManager:
         await self._save()
         if mode:
             await self._save_events()
-        try:
-            from .maimaidx_guess_sync import guess_sync
-
-            await guess_sync.mirror_peer_if_needed(gid, uid)
-        except Exception as exc:
-            log.warning(
-                f'[GuessScore] 跨群镜像失败 gid={gid} uid={uid}: '
-                f'{type(exc).__name__}: {exc}'
-            )
         return added, winner.score, self.get_rank(gid, uid)
 
     @staticmethod
