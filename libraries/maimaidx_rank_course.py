@@ -351,7 +351,7 @@ def _fit_font(text: str, max_width: int, start: int, minimum: int = 18):
     return _font(minimum)
 
 
-def _rounded_cover(song_id: int, size: int = 154) -> Image.Image:
+def _rounded_cover(song_id: int, size: int = 168) -> Image.Image:
     from .image import music_picture
 
     path = music_picture(song_id)
@@ -370,7 +370,7 @@ def _rounded_cover(song_id: int, size: int = 154) -> Image.Image:
         )
     mask = Image.new("L", (size, size), 0)
     ImageDraw.Draw(mask).rounded_rectangle(
-        (0, 0, size - 1, size - 1), radius=12, fill=255
+        (0, 0, size - 1, size - 1), radius=8, fill=255
     )
     cover.putalpha(mask)
     return cover
@@ -406,129 +406,299 @@ def _position_label(track: CourseTrack) -> str:
     return "样本后 25%"
 
 
+def _player_visual_assets(
+    plate_name: Optional[str], additional_rating: Optional[int]
+) -> tuple[Optional[Image.Image], Optional[Image.Image]]:
+    """复用 B50 的姓名框与 UI_DNM_DaniPlate 段位资源。"""
+    try:
+        from ..config import maimaidir
+        from .maimaidx_table_image import plate_version_path
+        from .maimaidx_theme import Theme, resolve_theme_path
+
+        theme = Theme.get_default().value
+        player_plate = None
+        if plate_name:
+            path = plate_version_path(plate_name)
+            if path.exists():
+                player_plate = Image.open(path).convert("RGBA").resize((620, 101))
+
+        dani_plate = None
+        if additional_rating is not None:
+            dani_path = resolve_theme_path(
+                maimaidir, theme, _dani_plate_filename(additional_rating)
+            )
+            if dani_path.exists():
+                dani_plate = Image.open(dani_path).convert("RGBA").resize((140, 56))
+        return player_plate, dani_plate
+    except (ImportError, OSError, ValueError):
+        return None, None
+
+
+def _dani_plate_filename(additional_rating: int) -> str:
+    dani = max(0, int(additional_rating))
+    index = dani if dani <= 10 else dani + 1
+    return f"UI_DNM_DaniPlate_{index:02d}.png"
+
+
+def _draw_sample_distribution(
+    draw: ImageDraw.ImageDraw,
+    track: CourseTrack,
+    box: tuple[int, int, int, int],
+    color: tuple[int, int, int],
+) -> None:
+    sample = track.sample or {}
+    if not sample.get("sample_count"):
+        return
+    left, top, right, bottom = box
+    scale_min, scale_max = 97.0, 101.0
+
+    def x_for(value: float) -> int:
+        ratio = (max(scale_min, min(scale_max, value)) - scale_min) / (
+            scale_max - scale_min
+        )
+        return round(left + ratio * (right - left))
+
+    center = (top + bottom) // 2
+    draw.line((left, center, right, center), fill=(213, 220, 231), width=6)
+    p25 = x_for(float(sample.get("p25") or scale_min))
+    median = x_for(float(sample.get("median") or scale_min))
+    p75 = x_for(float(sample.get("p75") or scale_max))
+    draw.rounded_rectangle(
+        (p25, top, max(p25 + 4, p75), bottom), radius=4, fill=(*color, 95)
+    )
+    draw.line((median, top - 2, median, bottom + 2), fill=(*color, 255), width=4)
+    if track.achievement is not None:
+        player_x = x_for(track.achievement)
+        draw.ellipse(
+            (player_x - 7, center - 7, player_x + 7, center + 7),
+            fill=(29, 39, 57),
+            outline=(255, 255, 255),
+            width=2,
+        )
+
+
+def _draw_summary_icon(
+    draw: ImageDraw.ImageDraw, center: tuple[int, int], kind: str
+) -> None:
+    cx, cy = center
+    if kind == "life":
+        # Compact heart silhouette; drawn as raster primitives to match the report style.
+        draw.ellipse((cx - 11, cy - 9, cx + 1, cy + 3), fill=(255, 255, 255))
+        draw.ellipse((cx - 1, cy - 9, cx + 11, cy + 3), fill=(255, 255, 255))
+        draw.polygon(
+            ((cx - 11, cy - 2), (cx + 11, cy - 2), (cx, cy + 13)),
+            fill=(255, 255, 255),
+        )
+    elif kind == "warning":
+        draw.ellipse(
+            (cx - 12, cy - 12, cx + 12, cy + 12),
+            outline=(255, 255, 255),
+            width=3,
+        )
+        draw.line((cx, cy - 7, cx, cy + 3), fill=(255, 255, 255), width=3)
+        draw.ellipse((cx - 2, cy + 7, cx + 2, cy + 11), fill=(255, 255, 255))
+    else:
+        for offset, bar_height in ((-10, 11), (-2, 19), (6, 26)):
+            draw.rounded_rectangle(
+                (cx + offset, cy + 13 - bar_height, cx + offset + 6, cy + 13),
+                radius=2,
+                fill=(255, 255, 255),
+            )
+
+
 def draw_rank_course(
     course: RankCourse,
     tracks: list[CourseTrack],
     *,
     player_name: Optional[str] = None,
+    player_plate: Optional[str] = None,
+    player_additional_rating: Optional[int] = None,
     score_note: Optional[str] = None,
 ) -> Image.Image:
-    width, height = 1080, 1760
-    image = Image.new("RGBA", (width, height), (246, 249, 255, 255))
+    width, height = 1080, 1660
+    image = Image.new("RGBA", (width, height), (242, 245, 249, 255))
     draw = ImageDraw.Draw(image)
 
-    draw.rectangle((0, 0, width, 330), fill=(104, 221, 218, 255))
-    draw.rectangle((0, 260, width, 330), fill=(112, 177, 242, 255))
+    # Header: course identity on the left, actual player plate and dani badge on the right.
+    draw.rectangle((0, 0, width, 326), fill=(228, 250, 249, 255))
+    draw.rectangle((0, 0, 16, 326), fill=(32, 185, 182, 255))
     draw.text(
-        (54, 42),
-        "PRiSM PLUS · 段位认定",
-        font=_font(25),
-        fill=(34, 77, 95),
+        (50, 38),
+        "MAIMAI DX 2026  /  PRiSM PLUS",
+        font=_font(20),
+        fill=(31, 104, 111),
         anchor="la",
     )
-    draw.text((54, 118), course.name, font=_font(62), fill=(25, 44, 61), anchor="la")
-    rule = course.life
-    draw.text(
-        (54, 215),
-        f"LIFE {rule.initial}   GREAT -{rule.great}   GOOD -{rule.good}   MISS -{rule.miss}   曲间恢复 +{rule.heal}",
-        font=_font(25),
-        fill=(28, 62, 82),
-        anchor="la",
+    draw.text((50, 83), course.name, font=_font(58), fill=(22, 39, 55), anchor="la")
+
+    plate_asset, dani_asset = _player_visual_assets(
+        player_plate, player_additional_rating
     )
+    if plate_asset is not None:
+        plate_asset.thumbnail((550, 90), Image.Resampling.LANCZOS)
+        image.alpha_composite(plate_asset, (474, 45))
+        if player_name:
+            draw.text(
+                (515, 91),
+                player_name,
+                font=_fit_font(player_name, 330, 25, 18),
+                fill=(28, 38, 52),
+                stroke_width=2,
+                stroke_fill=(255, 255, 255),
+                anchor="lm",
+            )
+    elif player_name:
+        draw.text(
+            (1000, 60),
+            player_name,
+            font=_fit_font(player_name, 380, 24, 17),
+            fill=(47, 70, 82),
+            anchor="ra",
+        )
+    if dani_asset is not None:
+        image.alpha_composite(dani_asset, (854, 104))
 
     life = estimate_life(course, tracks)
     if life is not None:
-        summary = f"{player_name or '玩家'} · 乐观 LIFE 估算 {life}"
+        summary = f"个人历史成绩推算  ·  乐观 LIFE {life}"
+        summary_kind = "life"
     elif score_note:
         summary = score_note
+        summary_kind = "warning"
     else:
-        summary = "未取得完整个人成绩，仅展示课题与公开样本"
-    draw.rounded_rectangle((54, 282, 1026, 348), radius=20, fill=(255, 255, 255, 235))
+        summary = "课题配置与服务器匿名样本"
+        summary_kind = "stats"
+    draw.rounded_rectangle((50, 155, 1018, 207), radius=8, fill=(205, 242, 240, 255))
+    draw.rounded_rectangle((50, 155, 102, 207), radius=8, fill=(27, 169, 166, 255))
+    draw.rectangle((94, 155, 102, 207), fill=(27, 169, 166, 255))
+    _draw_summary_icon(draw, (76, 181), summary_kind)
     draw.text(
-        (540, 315),
+        (122, 181),
         summary,
-        font=_fit_font(summary, 900, 23),
-        fill=(63, 74, 95),
-        anchor="mm",
+        font=_fit_font(summary, 870, 21, 16),
+        fill=(39, 83, 88),
+        anchor="lm",
     )
 
-    y = 380
+    rule = course.life
+    rules = (
+        ("START", str(rule.initial), (24, 137, 145)),
+        ("GREAT", f"-{rule.great}", (217, 148, 24)),
+        ("GOOD", f"-{rule.good}", (226, 91, 45)),
+        ("MISS", f"-{rule.miss}", (218, 57, 67)),
+        ("RECOVER", f"+{rule.heal}", (54, 139, 91)),
+    )
+    x = 50
+    for label, value, color in rules:
+        draw.line((x, 222, x, 292), fill=(*color, 255), width=5)
+        draw.text(
+            (x + 16, 225), label, font=_font(15), fill=(91, 105, 117), anchor="la"
+        )
+        draw.text((x + 16, 251), value, font=_font(29), fill=(*color, 255), anchor="la")
+        x += 202
+
+    y = 344
     for index, track in enumerate(tracks, 1):
         color = DIFFICULTY_COLORS[track.level_index]
+        # Full-width track bands avoid nested cards and keep the four-course scan path stable.
         draw.rounded_rectangle(
-            (42, y, 1038, y + 300),
-            radius=18,
+            (34, y, 1046, y + 276),
+            radius=8,
             fill=(255, 255, 255, 255),
-            outline=(*color, 255),
-            width=3,
         )
-        draw.rounded_rectangle((42, y, 1038, y + 52), radius=18, fill=(*color, 255))
-        draw.rectangle((42, y + 30, 1038, y + 52), fill=(*color, 255))
+        draw.rounded_rectangle((34, y, 44, y + 276), radius=5, fill=(*color, 255))
         draw.text(
-            (68, y + 26),
-            f"TRACK {index:02d}  ·  {DIFFICULTY_NAMES[track.level_index]}",
-            font=_font(23),
-            fill=(255, 255, 255),
-            anchor="lm",
+            (68, y + 29),
+            f"{index:02d}",
+            font=_font(18),
+            fill=(*color, 255),
+            anchor="la",
+        )
+        draw.text(
+            (112, y + 29),
+            DIFFICULTY_NAMES[track.level_index],
+            font=_font(17),
+            fill=(99, 110, 124),
+            anchor="la",
         )
 
-        image.alpha_composite(_rounded_cover(track.song_id), (68, y + 78))
-        title_font = _fit_font(track.title, 710, 31, 20)
+        image.alpha_composite(_rounded_cover(track.song_id), (68, y + 62))
+        title_font = _fit_font(track.title, 560, 30, 19)
         draw.text(
-            (248, y + 92), track.title, font=title_font, fill=(37, 45, 62), anchor="la"
+            (264, y + 58), track.title, font=title_font, fill=(27, 36, 51), anchor="la"
         )
         ds_text = (
-            f"等级 {track.level}  ·  定数 {track.ds:.1f}"
+            f"LEVEL {track.level}    DS {track.ds:.1f}"
             if track.ds is not None
-            else f"等级 {track.level}"
+            else f"LEVEL {track.level}"
         )
         draw.text(
-            (248, y + 142), ds_text, font=_font(23), fill=(*color, 255), anchor="la"
+            (264, y + 103), ds_text, font=_font(20), fill=(*color, 255), anchor="la"
         )
         score = (
             "未游玩"
             if track.achievement is None
             else f"个人最佳 {track.achievement:.4f}%"
         )
-        draw.text((248, y + 188), score, font=_font(26), fill=(44, 54, 74), anchor="la")
+        draw.text((264, y + 144), score, font=_font(24), fill=(37, 48, 65), anchor="la")
         position = _position_label(track)
         draw.rounded_rectangle(
-            (760, y + 169, 1006, y + 214), radius=14, fill=(239, 243, 250, 255)
+            (827, y + 58, 1016, y + 101), radius=8, fill=(238, 242, 247, 255)
         )
         draw.text(
-            (883, y + 192),
+            (922, y + 80),
             position,
-            font=_fit_font(position, 220, 19, 15),
+            font=_fit_font(position, 165, 17, 14),
             fill=(76, 87, 108),
             anchor="mm",
         )
         draw.text(
-            (248, y + 246),
+            (264, y + 184),
             _sample_label(track),
-            font=_fit_font(_sample_label(track), 750, 19, 14),
+            font=_fit_font(_sample_label(track), 745, 17, 13),
             fill=(103, 112, 132),
             anchor="la",
         )
-        y += 326
+        _draw_sample_distribution(draw, track, (264, y + 225, 1016, y + 237), color)
+        draw.text(
+            (264, y + 247), "97", font=_font(12), fill=(139, 148, 161), anchor="ma"
+        )
+        draw.text(
+            (1016, y + 247), "101%", font=_font(12), fill=(139, 148, 161), anchor="ma"
+        )
+        y += 294
 
     footer = "数据：ChiffonMai 段位表 / Diving-Fish 曲库 / 服务器近期脱敏成绩（低样本使用内置数据）"
     draw.text(
-        (540, 1710),
+        (540, 1544),
         footer,
-        font=_fit_font(footer, 960, 18, 14),
+        font=_fit_font(footer, 960, 16, 13),
         fill=(105, 115, 134),
         anchor="mm",
     )
     draw.text(
-        (540, 1740),
+        (540, 1580),
         "LIFE 为达成率反推的最有利判定组合，仅供练习参考，以机台结果为准",
         font=_fit_font(
             "LIFE 为达成率反推的最有利判定组合，仅供练习参考，以机台结果为准",
             960,
-            17,
+            15,
             13,
         ),
         fill=(125, 91, 104),
+        anchor="mm",
+    )
+    try:
+        from ..config import footer_generated
+
+        project_footer = footer_generated()
+    except (ImportError, ValueError):
+        project_footer = "Generated by maimaiDX QueryBot"
+    draw.text(
+        (540, 1620),
+        project_footer,
+        font=_fit_font(project_footer, 960, 14, 12),
+        fill=(134, 143, 155),
         anchor="mm",
     )
     return image.convert("RGB")
@@ -548,6 +718,8 @@ async def generate_rank_course_image(
 
     records = []
     player_name = None
+    player_plate = None
+    player_additional_rating = None
     score_note = None
     if qqid or username:
         try:
@@ -555,6 +727,8 @@ async def generate_rank_course_image(
 
             userinfo, records = await get_user_records(qqid=qqid, username=username)
             player_name = getattr(userinfo, "nickname", None) or username
+            player_plate = getattr(userinfo, "plate", None)
+            player_additional_rating = getattr(userinfo, "additional_rating", None)
         except Exception as exc:
             from .maimaidx_error import (
                 LxnsDataError,
@@ -583,5 +757,7 @@ async def generate_rank_course_image(
         course,
         tracks,
         player_name=player_name,
+        player_plate=player_plate,
+        player_additional_rating=player_additional_rating,
         score_note=score_note,
     )

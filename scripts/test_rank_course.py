@@ -68,6 +68,9 @@ private_stats = module.build_course_stats_from_players(
     sample_players[:2], min_samples=3, fallback=stats
 )
 assert private_stats["charts"][sample_key]["sample_source"] == "bundled"
+assert module._dani_plate_filename(0) == "UI_DNM_DaniPlate_00.png"
+assert module._dani_plate_filename(10) == "UI_DNM_DaniPlate_10.png"
+assert module._dani_plate_filename(11) == "UI_DNM_DaniPlate_12.png"
 
 
 def make_music(item: dict):
@@ -132,8 +135,18 @@ assert module.estimate_life(course, tracks) is not None
 module._rounded_cover = lambda _song_id, size=154: Image.new(
     "RGBA", (size, size), (225, 232, 243, 255)
 )
-preview = module.draw_rank_course(course, tracks, player_name="TEST")
-assert preview.size == (1080, 1760)
+module._player_visual_assets = lambda _plate, _rating: (
+    Image.new("RGBA", (620, 101), (214, 240, 245, 255)),
+    Image.new("RGBA", (140, 56), (255, 210, 83, 255)),
+)
+preview = module.draw_rank_course(
+    course,
+    tracks,
+    player_name="TEST",
+    player_plate="测试姓名框",
+    player_additional_rating=10,
+)
+assert preview.size == (1080, 1660)
 preview.save("/tmp/rank_course_preview.png")
 
 print("rank course: 22 courses, 88 charts, 536-player samples, render OK")
