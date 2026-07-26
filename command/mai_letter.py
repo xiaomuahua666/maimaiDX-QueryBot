@@ -60,6 +60,13 @@ _RESERVED_PREFIXES = (
     "开字母时间榜",
     "开字母文字模式",
     "开字母图片模式",
+    "文字模式",
+    "图片模式",
+    "纯文字模式",
+    "文本模式",
+    "图文模式",
+    "切换文字模式",
+    "切换图片模式",
     "重置猜歌",
     "猜歌",
     "猜曲绘",
@@ -100,10 +107,10 @@ letter_time_cmd = on_command(
     "开字母时间榜", rule=GROUP_MESSAGE, priority=4, block=True
 )
 letter_text_mode_cmd = on_command(
-    "开字母文字模式", rule=LETTER_PLAYING, priority=4, block=True
+    "开字母文字模式", aliases={"文字模式", "纯文字模式", "文本模式", "切换文字模式"}, rule=LETTER_PLAYING, priority=4, block=True
 )
 letter_image_mode_cmd = on_command(
-    "开字母图片模式", rule=LETTER_PLAYING, priority=4, block=True
+    "开字母图片模式", aliases={"图片模式", "图文模式", "切换图片模式"}, rule=LETTER_PLAYING, priority=4, block=True
 )
 # 对局中可直接发字母 / 别名，无需命令前缀
 letter_quick = on_message(rule=LETTER_PLAYING, priority=9, block=False)
@@ -386,6 +393,17 @@ async def _(matcher, event: MessageEvent, args: Message = CommandArg()):
         await letter_open.finish(enabled_err, reply_message=True)
 
     if letter_guess.is_playing(gid):
+        if raw in {"文字模式", "纯文字模式", "文本模式", "切换文字模式"}:
+            board = letter_guess.get(gid)
+            board.display_mode = "text"
+            await _send_board(letter_open, event, board, text="已切换为纯文字模式。\n")
+            await letter_open.finish()
+        if raw in {"图片模式", "图文模式", "切换图片模式"}:
+            board = letter_guess.get(gid)
+            board.display_mode = "image"
+            await _send_board(letter_open, event, board, text="已切换为图片模式。\n")
+            await letter_open.finish()
+            
         if not raw:
             board = letter_guess.get(gid)
             await _send_board(
