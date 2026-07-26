@@ -2237,7 +2237,7 @@ def format_checkin_result(result: CheckinResult) -> str:
         text += (
             '\n━━━━━━━━━━━━━━\n'
             '💡 发送「开启存储数据」可享签到基础 +50% BREAK\n'
-            '（保持开启至明日签到生效；频繁开关不重复发放，防刷）'
+            '（保持开启至明日签到生效）'
         )
     return text
 
