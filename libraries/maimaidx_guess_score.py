@@ -719,6 +719,67 @@ class GuessScoreManager:
             group.members[uk] = GuessMemberScore()
         return group.members[uk]
 
+    def get_member_or_none(
+        self, gid: GroupId, uid: UserId
+    ) -> Optional[GuessMemberScore]:
+        group = self.store.groups.get(self._gid_key(gid))
+        if not group:
+            return None
+        return group.members.get(self._uid_key(uid))
+
+    def user_has_guess_data(self, gid: GroupId, uid: UserId) -> bool:
+        """是否有可展示的猜歌数据（积分或明细）。"""
+        member = self.get_member_or_none(gid, uid)
+        if member is not None:
+            if int(member.score or 0) > 0:
+                return True
+            if any(
+                int(getattr(member, spec.score_attr) or 0) > 0
+                for spec in self.PERIODS.values()
+            ):
+                return True
+        return bool(self.list_user_events(gid, uid))
+
+    def user_data_fingerprint(self, gid: GroupId, uid: UserId) -> str:
+        """用于判断两群数据是否一致。"""
+        member = self.get_member_or_none(gid, uid)
+        events = [
+            e.model_dump() for e in self.list_user_events(gid, uid)
+        ]
+        payload = {
+            'member': member.model_dump() if member else None,
+            'events': events,
+        }
+        raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+        return raw
+
+    async def copy_user_guess_data(
+        self, src_gid: GroupId, dst_gid: GroupId, uid: UserId
+    ) -> bool:
+        """将用户猜歌积分与明细从 src 覆盖到 dst。"""
+        uk = self._uid_key(uid)
+        src_member = self.get_member_or_none(src_gid, uid)
+        src_events = self.list_user_events(src_gid, uid)
+        if src_member is None and not src_events:
+            return False
+
+        dst_group = self._get_group(dst_gid)
+        if src_member is not None:
+            dst_group.members[uk] = GuessMemberScore(**src_member.model_dump())
+        else:
+            dst_group.members.pop(uk, None)
+
+        dst_eg = self._get_event_group(dst_gid)
+        kept = [e for e in dst_eg.events if e.uid != uk]
+        kept.extend(GuessScoreEvent(**e.model_dump()) for e in src_events)
+        if len(kept) > self.MAX_EVENTS_PER_GROUP:
+            kept = kept[-self.MAX_EVENTS_PER_GROUP :]
+        dst_eg.events = kept
+
+        await self._save()
+        await self._save_events()
+        return True
+
     async def reset_all_streaks(self, gid: GroupId) -> None:
         group = self.store.groups.get(self._gid_key(gid))
         if not group:
@@ -757,6 +818,15 @@ class GuessScoreManager:
         await self._save()
         if mode:
             await self._save_events()
+        try:
+            from .maimaidx_guess_sync import guess_sync
+
+            await guess_sync.mirror_peer_if_needed(gid, uid)
+        except Exception as exc:
+            log.warning(
+                f'[GuessScore] 跨群镜像失败 gid={gid} uid={uid}: '
+                f'{type(exc).__name__}: {exc}'
+            )
         period_snapshot = self.get_period_snapshot(gid, uid)
         return (
             total_added,
@@ -796,6 +866,15 @@ class GuessScoreManager:
         await self._save()
         if mode:
             await self._save_events()
+        try:
+            from .maimaidx_guess_sync import guess_sync
+
+            await guess_sync.mirror_peer_if_needed(gid, uid)
+        except Exception as exc:
+            log.warning(
+                f'[GuessScore] 跨群镜像失败 gid={gid} uid={uid}: '
+                f'{type(exc).__name__}: {exc}'
+            )
         return added, winner.score, self.get_rank(gid, uid)
 
     @staticmethod

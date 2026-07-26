@@ -23,6 +23,11 @@ from ..libraries.maimaidx_guess_rate_limit import consume_guess_answer_slot
 from ..libraries.maimaidx_group_rating import build_forward_node
 from ..libraries.maimaidx_guess_score import guess_score
 from ..libraries.maimaidx_guess_stats_draw import personal_guess_stats_image_b64
+from ..libraries.maimaidx_guess_sync import (
+    MAIN_GROUP_REDIRECT,
+    guess_sync,
+)
+from ..libraries.maimaidx_pending_session import finish_pending, session_key, track_event
 from ..libraries.maimaidx_guess_audio import (
     STAGE_FINAL_GRACE,
     STAGE_INTERVAL,
@@ -75,7 +80,15 @@ def _is_group_message(event) -> bool:
     return is_group_message_event(event)
 
 
+def _has_guess_sync_pending(event) -> bool:
+    gid = get_event_group_id(event)
+    if gid is None:
+        return False
+    return guess_sync.get_pending(gid, platform_user_id(event)) is not None
+
+
 GROUP_MESSAGE = Rule(_is_group_message)
+GUESS_SYNC_PENDING = Rule(_has_guess_sync_pending)
 
 
 def is_now_playing_guess_music(event) -> bool:
@@ -123,6 +136,11 @@ guess_my_stats = on_command(
     priority=5,
     block=True,
 )
+guess_sync_reply = on_message(
+    rule=GROUP_MESSAGE & GUESS_SYNC_PENDING,
+    priority=1,
+    block=True,
+)
 
 # 猜歌玩法不参与高峰期「额外 1 BREAK」附加费（含局内答题 on_message）。
 for _guess_matcher in (
@@ -150,8 +168,29 @@ for _guess_matcher in (
     guess_score_hist_yearly,
     guess_score_hist_season,
     guess_my_stats,
+    guess_sync_reply,
 ):
     setattr(_guess_matcher, '_maimaidx_busy_surcharge_exempt', True)
+
+
+async def _gate_guess_group_entry(matcher: Matcher, event: MessageEvent) -> None:
+    """主群导流；猜歌群自动同步 / 冲突确认。冲突时 finish 阻断开局。"""
+    gid = get_event_group_id(event)
+    if gid is None:
+        return
+    uid = platform_user_id(event)
+    pending_key = session_key('guess_sync', event)
+    action, message = await guess_sync.prepare_group_entry(gid, uid)
+    if action in {'redirect', 'block'}:
+        if action == 'block':
+            track_event(pending_key, event)
+        await matcher.finish(message or MAIN_GROUP_REDIRECT, reply_message=True)
+    if action == 'tip' and message:
+        try:
+            await matcher.send(message, reply_message=True)
+        except Exception:
+            pass
+    finish_pending(pending_key)
 
 
 def _sender_name(event: MessageEvent) -> str:
@@ -735,8 +774,27 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
     await guess_boost_query.finish(msg, reply_message=True)
 
 
+@guess_sync_reply.handle()
+async def _(event: MessageEvent):
+    gid = get_event_group_id(event)
+    if gid is None:
+        await guess_sync_reply.finish()
+    uid = platform_user_id(event)
+    pending_key = session_key('guess_sync', event)
+    text = event.get_plaintext().strip()
+    handled, reply = await guess_sync.handle_reply(gid, uid, text)
+    if not handled:
+        await guess_sync_reply.finish()
+    if guess_sync.get_pending(gid, uid):
+        track_event(pending_key, event)
+    else:
+        finish_pending(pending_key)
+    await guess_sync_reply.finish(reply, reply_message=True)
+
+
 @guess_music_start.handle()
 async def _(event: MessageEvent):
+    await _gate_guess_group_entry(guess_music_start, event)
     gid = get_event_group_id(event)
     if gid not in guess.switch.enable:
         await guess_music_start.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌')
@@ -797,6 +855,7 @@ async def _(event: MessageEvent):
 
 @guess_music_pic.handle()
 async def _(event: MessageEvent, matched=RegexMatched()):
+    await _gate_guess_group_entry(guess_music_pic, event)
     gid = get_event_group_id(event)
     if gid not in guess.switch.enable:
         await guess_music_pic.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True)
@@ -896,6 +955,7 @@ async def _(event: MessageEvent, matched=RegexMatched()):
 
 @guess_music_audio.handle()
 async def _(event: MessageEvent):
+    await _gate_guess_group_entry(guess_music_audio, event)
     gid = get_event_group_id(event)
     if gid not in guess.switch.enable:
         await guess_music_audio.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True)
@@ -1005,6 +1065,7 @@ async def _(event: MessageEvent):
 
 @guess_music_chart.handle()
 async def _(event: MessageEvent):
+    await _gate_guess_group_entry(guess_music_chart, event)
     gid = get_event_group_id(event)
     if gid not in guess.switch.enable:
         await guess_music_chart.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True)
@@ -1349,6 +1410,11 @@ async def _(event: MessageEvent):
     gid = get_event_group_id(event)
     if gid is None:
         await guess_my_stats.finish('请在群内使用。', reply_message=True)
+    # 查自己时做主群导流 / 数据同步；查别人不打断
+    at_uid = parse_at_target_id(event)
+    self_uid = str(platform_user_id(event))
+    if not at_uid or at_uid == self_uid:
+        await _gate_guess_group_entry(guess_my_stats, event)
     if gid not in guess.switch.enable:
         await guess_my_stats.finish(
             '该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True,

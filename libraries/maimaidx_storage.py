@@ -30,6 +30,7 @@ STATIC_STATE_FILES = {
     "group_guess_score_history.json",
     "group_guess_score_events.json",
     "group_guess_boost_cards.json",
+    "group_guess_sync_prefs.json",
     "group_letter_stats.json",
     "group_alias_switch.json",
     "group_feature_switch.json",

@@ -262,6 +262,7 @@ guess_score_file: Path = static / 'group_guess_score.json'     # 猜歌积分群
 guess_score_history_file: Path = static / 'group_guess_score_history.json'  # 猜歌积分历史榜
 guess_score_events_file: Path = static / 'group_guess_score_events.json'  # 猜歌猜对明细（按模式）
 guess_boost_card_file: Path = static / 'group_guess_boost_cards.json'  # 猜歌限时加倍卡
+guess_sync_prefs_file: Path = static / 'group_guess_sync_prefs.json'  # 主群↔猜歌群同步偏好
 letter_stats_file: Path = static / 'group_letter_stats.json'    # 开字母通关历史与榜单
 group_alias_file: Path = static / 'group_alias_switch.json'     # 别名推送开关群文件
 group_feature_switch_file: Path = static / 'group_feature_switch.json'  # 功能开关群文件
