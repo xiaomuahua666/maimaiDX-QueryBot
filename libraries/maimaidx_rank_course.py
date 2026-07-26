@@ -1,0 +1,587 @@
+"""舞萌 DX 段位认定课题、个人成绩与匿名样本统计。"""
+
+from __future__ import annotations
+
+import json
+import math
+import statistics
+import time
+from collections import defaultdict
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from functools import lru_cache
+from pathlib import Path
+from threading import RLock
+from typing import Any, Iterable, Optional
+
+from PIL import Image, ImageDraw, ImageFont, ImageOps
+
+
+ROOT = Path(__file__).resolve().parent.parent
+COURSE_FILE = ROOT / "libraries" / "assets" / "rank_courses.json"
+STATS_FILE = ROOT / "libraries" / "assets" / "rank_course_chart_stats.json"
+DIFFICULTY_NAMES = ("BASIC", "ADVANCED", "EXPERT", "MASTER", "Re:MASTER")
+DIFFICULTY_COLORS = (
+    (91, 190, 100),
+    (239, 190, 45),
+    (237, 81, 75),
+    (164, 82, 210),
+    (217, 101, 180),
+)
+_stats_lock = RLock()
+_live_stats: Optional[dict[str, Any]] = None
+_live_stats_loaded_at = 0.0
+
+
+@dataclass(frozen=True)
+class LifeRule:
+    initial: int
+    great: int
+    good: int
+    miss: int
+    heal: int
+
+
+@dataclass(frozen=True)
+class RankCourse:
+    name: str
+    song_ids: tuple[int, ...]
+    level_indexes: tuple[int, ...]
+    life: LifeRule
+
+
+@dataclass
+class CourseTrack:
+    song_id: int
+    level_index: int
+    title: str
+    level: str
+    ds: Optional[float]
+    notes: tuple[int, ...]
+    achievement: Optional[float] = None
+    sample: Optional[dict[str, Any]] = None
+
+
+def _normalize_rank_name(value: str) -> str:
+    return (
+        value.strip()
+        .replace("裏", "里")
+        .replace("傳", "传")
+        .replace("伝", "传")
+        .replace("皆傳", "皆传")
+        .replace("段位表", "")
+        .replace("段位", "")
+        .strip()
+    )
+
+
+@lru_cache(maxsize=1)
+def load_rank_courses() -> tuple[dict[str, Any], dict[str, RankCourse]]:
+    raw = json.loads(COURSE_FILE.read_text(encoding="utf-8"))
+    courses: dict[str, RankCourse] = {}
+    for item in raw["courses"]:
+        life = LifeRule(**item["life"])
+        course = RankCourse(
+            name=item["name"],
+            song_ids=tuple(int(x) for x in item["song_ids"]),
+            level_indexes=tuple(int(x) for x in item["level_indexes"]),
+            life=life,
+        )
+        courses[course.name] = course
+    return raw, courses
+
+
+def get_rank_course(name: str) -> Optional[RankCourse]:
+    normalized = _normalize_rank_name(name)
+    return load_rank_courses()[1].get(normalized)
+
+
+def rank_course_help() -> str:
+    meta, courses = load_rank_courses()
+    names = list(courses)
+    return (
+        f"舞萌DX 段位表（{meta['region']} / 默认 {meta['version']}）\n"
+        f"普通：{' · '.join(names[:10])}\n"
+        f"真段：{' · '.join(names[10:20])}\n"
+        f"皆传：{' · '.join(names[20:])}\n"
+        "查询：段位表 真二段（可在消息中 @ 玩家）"
+    )
+
+
+@lru_cache(maxsize=1)
+def _load_bundled_course_stats() -> dict[str, Any]:
+    if not STATS_FILE.exists():
+        return {"player_count": 0, "charts": {}}
+    return json.loads(STATS_FILE.read_text(encoding="utf-8"))
+
+
+def _percentile(values: list[float], fraction: float) -> float:
+    pos = (len(values) - 1) * fraction
+    lower = int(pos)
+    upper = min(lower + 1, len(values) - 1)
+    return values[lower] + (values[upper] - values[lower]) * (pos - lower)
+
+
+def build_course_stats_from_players(
+    players: Iterable[dict[str, Any]],
+    *,
+    min_samples: int = 3,
+    fallback: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """将已同意共享的全量成绩聚合为不可反查个人的谱面统计。"""
+    wanted = {
+        f"{song_id}:{level_index}"
+        for course in load_rank_courses()[1].values()
+        for song_id, level_index in zip(course.song_ids, course.level_indexes)
+    }
+    values: dict[str, list[float]] = defaultdict(list)
+    player_count = 0
+    freshest_record_at = 0.0
+    for player in players:
+        records = player.get("records") or []
+        if not records:
+            continue
+        player_count += 1
+        freshest_record_at = max(
+            freshest_record_at, float(player.get("fetched_at") or 0)
+        )
+        seen: set[str] = set()
+        for record in records:
+            song_id = int(getattr(record, "song_id", 0) or 0)
+            level_index = int(getattr(record, "level_index", 0) or 0)
+            key = f"{song_id}:{level_index}"
+            if key not in wanted or key in seen:
+                continue
+            seen.add(key)
+            values[key].append(float(getattr(record, "achievements", 0.0) or 0.0))
+
+    bundled_charts = (fallback or {}).get("charts") or {}
+    charts: dict[str, dict[str, Any]] = {}
+    live_chart_count = 0
+    for key in sorted(wanted, key=lambda item: tuple(map(int, item.split(":")))):
+        samples = sorted(values.get(key, []))
+        if len(samples) < max(1, min_samples):
+            if key in bundled_charts:
+                charts[key] = dict(bundled_charts[key], sample_source="bundled")
+            continue
+        n = len(samples)
+        live_chart_count += 1
+        charts[key] = {
+            "sample_count": n,
+            "avg_achievement": round(statistics.fmean(samples), 4),
+            "p25": round(_percentile(samples, 0.25), 4),
+            "median": round(_percentile(samples, 0.5), 4),
+            "p75": round(_percentile(samples, 0.75), 4),
+            "clear_rate": round(sum(value >= 97.0 for value in samples) / n, 4),
+            "sss_rate": round(sum(value >= 100.0 for value in samples) / n, 4),
+            "sample_source": "live",
+        }
+    return {
+        "schema_version": 1,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": "server player cache (opt-out excluded)",
+        "player_count": player_count,
+        "freshest_record_at": freshest_record_at or None,
+        "live_chart_count": live_chart_count,
+        "charts": charts,
+    }
+
+
+def invalidate_course_stats() -> None:
+    global _live_stats, _live_stats_loaded_at
+    with _stats_lock:
+        _live_stats = None
+        _live_stats_loaded_at = 0.0
+
+
+def load_course_stats() -> dict[str, Any]:
+    """读取服务器近期全量成绩并聚合；冷启动或低样本谱面使用随包统计。"""
+    global _live_stats, _live_stats_loaded_at
+    try:
+        from ..config import log, maiconfig
+        from .maimaidx_data_share import data_share
+        from .maimaidx_player_cache import player_cache_db
+    except (ImportError, ValueError):
+        return _load_bundled_course_stats()
+
+    ttl = max(0, int(maiconfig.maimaidx_rank_course_stats_cache_seconds))
+    now = time.time()
+    with _stats_lock:
+        if _live_stats is not None and now - _live_stats_loaded_at < ttl:
+            return _live_stats
+        max_age_days = max(1, int(maiconfig.maimaidx_rank_course_sample_max_age_days))
+        max_players = max(1, int(maiconfig.maimaidx_rank_course_sample_max_players))
+        try:
+            players = player_cache_db.list_recent_full_records(
+                since_ts=now - max_age_days * 86400,
+                min_records=30,
+                limit=max_players,
+            )
+            opted_out = set(data_share.list_opted_out())
+            shared = [
+                player for player in players if str(player["qqid"]) not in opted_out
+            ]
+        except Exception as exc:
+            log.warning(f"[RankCourse] 实时样本聚合失败，使用内置样本: {exc}")
+            return _load_bundled_course_stats()
+        if not shared:
+            return _load_bundled_course_stats()
+        _live_stats = build_course_stats_from_players(
+            shared,
+            min_samples=max(1, int(maiconfig.maimaidx_rank_course_min_samples)),
+            fallback=_load_bundled_course_stats(),
+        )
+        _live_stats_loaded_at = now
+        return _live_stats
+
+
+def _record_map(records: Iterable[Any]) -> dict[tuple[int, int], Any]:
+    result = {}
+    for record in records:
+        song_id = int(getattr(record, "song_id", 0) or 0)
+        level_index = int(getattr(record, "level_index", 0) or 0)
+        result[(song_id, level_index)] = record
+    return result
+
+
+def build_course_tracks(
+    course: RankCourse,
+    music_list: Iterable[Any],
+    records: Iterable[Any] = (),
+    course_stats: Optional[dict[str, Any]] = None,
+) -> list[CourseTrack]:
+    music_by_id = {int(music.id): music for music in music_list}
+    scores = _record_map(records)
+    stats = (course_stats or load_course_stats()).get("charts") or {}
+    tracks: list[CourseTrack] = []
+    for song_id, level_index in zip(course.song_ids, course.level_indexes):
+        music = music_by_id.get(song_id)
+        if music is None:
+            raise LookupError(f"段位课题曲 ID {song_id} 不在当前曲库中")
+        level = music.level[level_index] if level_index < len(music.level) else "?"
+        ds = float(music.ds[level_index]) if level_index < len(music.ds) else None
+        chart = music.charts[level_index] if level_index < len(music.charts) else None
+        notes = tuple(chart.notes) if chart is not None and chart.notes else ()
+        record = scores.get((song_id, level_index))
+        achievement = (
+            float(getattr(record, "achievements", 0.0)) if record is not None else None
+        )
+        tracks.append(
+            CourseTrack(
+                song_id=song_id,
+                level_index=level_index,
+                title=music.title,
+                level=level,
+                ds=ds,
+                notes=notes,
+                achievement=achievement,
+                sample=stats.get(f"{song_id}:{level_index}"),
+            )
+        )
+    return tracks
+
+
+def _weighted_note_count(notes: tuple[int, ...]) -> int:
+    if len(notes) >= 5:
+        tap, hold, slide, touch, brk = notes[:5]
+    elif len(notes) >= 4:
+        tap, hold, slide, brk = notes[:4]
+        touch = 0
+    else:
+        return 0
+    return tap + touch + 2 * hold + 3 * slide + 5 * brk
+
+
+def optimistic_damage(track: CourseTrack, rule: LifeRule) -> int:
+    """仅由达成率反推最有利判定组合，不能替代机台判定明细。"""
+    if track.achievement is None:
+        return 0
+    weighted = _weighted_note_count(track.notes)
+    if weighted <= 0:
+        return 0
+    loss_units = max(0.0, (101.0 - track.achievement) * weighted / 10.0)
+    candidates = (
+        math.floor(loss_units / 2) * rule.great,
+        math.floor(loss_units / 5) * rule.good,
+        math.floor(loss_units / 10) * rule.miss,
+    )
+    return min(candidates)
+
+
+def estimate_life(course: RankCourse, tracks: list[CourseTrack]) -> Optional[int]:
+    if len(tracks) != 4 or any(track.achievement is None for track in tracks):
+        return None
+    life = course.life.initial
+    for index, track in enumerate(tracks):
+        life = max(0, life - optimistic_damage(track, course.life))
+        if life == 0:
+            return 0
+        if index < 3:
+            life = min(course.life.initial, life + course.life.heal)
+    return life
+
+
+def _font_path() -> Path:
+    configured: list[Path] = []
+    try:
+        from ..config import SHANGGUMONO, SIYUAN
+
+        configured.extend((Path(SIYUAN), Path(SHANGGUMONO)))
+    except (ImportError, ValueError):
+        pass
+    candidates = (
+        *configured,
+        ROOT / "GenSenMaruGothicTW-Regular.ttf",
+        ROOT / "static" / "font" / "ResourceHanRoundedCN-Bold.ttf",
+        Path("/System/Library/Fonts/PingFang.ttc"),
+        Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+    )
+    return next((path for path in candidates if path.exists()), candidates[0])
+
+
+def _font(size: int) -> ImageFont.FreeTypeFont:
+    return ImageFont.truetype(str(_font_path()), size)
+
+
+def _fit_font(text: str, max_width: int, start: int, minimum: int = 18):
+    for size in range(start, minimum - 1, -1):
+        font = _font(size)
+        if font.getlength(text) <= max_width:
+            return font
+    return _font(minimum)
+
+
+def _rounded_cover(song_id: int, size: int = 154) -> Image.Image:
+    from .image import music_picture
+
+    path = music_picture(song_id)
+    if path.exists():
+        cover = Image.open(path).convert("RGB")
+        cover = ImageOps.fit(cover, (size, size), Image.Resampling.LANCZOS)
+    else:
+        cover = Image.new("RGB", (size, size), (232, 237, 246))
+        placeholder = ImageDraw.Draw(cover)
+        placeholder.text(
+            (size // 2, size // 2),
+            "NO COVER",
+            font=_font(18),
+            fill=(120, 130, 150),
+            anchor="mm",
+        )
+    mask = Image.new("L", (size, size), 0)
+    ImageDraw.Draw(mask).rounded_rectangle(
+        (0, 0, size - 1, size - 1), radius=12, fill=255
+    )
+    cover.putalpha(mask)
+    return cover
+
+
+def _sample_label(track: CourseTrack) -> str:
+    sample = track.sample or {}
+    n = int(sample.get("sample_count") or 0)
+    avg = sample.get("avg_achievement")
+    if not n or avg is None:
+        return "暂无公开样本"
+    source = "实时匿名样本" if sample.get("sample_source") == "live" else "内置匿名样本"
+    return (
+        f"{source} n={n}  均值 {float(avg):.4f}%  "
+        f"中位 {float(sample.get('median') or 0):.4f}%  "
+        f"SSS率 {float(sample.get('sss_rate') or 0) * 100:.1f}%"
+    )
+
+
+def _position_label(track: CourseTrack) -> str:
+    if track.achievement is None:
+        return "未游玩"
+    sample = track.sample or {}
+    if not sample.get("sample_count"):
+        return "已有成绩"
+    value = track.achievement
+    if value >= float(sample.get("p75") or 999):
+        return "样本前 25%"
+    if value >= float(sample.get("median") or 999):
+        return "高于样本中位"
+    if value >= float(sample.get("p25") or 999):
+        return "接近样本中位"
+    return "样本后 25%"
+
+
+def draw_rank_course(
+    course: RankCourse,
+    tracks: list[CourseTrack],
+    *,
+    player_name: Optional[str] = None,
+    score_note: Optional[str] = None,
+) -> Image.Image:
+    width, height = 1080, 1760
+    image = Image.new("RGBA", (width, height), (246, 249, 255, 255))
+    draw = ImageDraw.Draw(image)
+
+    draw.rectangle((0, 0, width, 330), fill=(104, 221, 218, 255))
+    draw.rectangle((0, 260, width, 330), fill=(112, 177, 242, 255))
+    draw.text(
+        (54, 42),
+        "PRiSM PLUS · 段位认定",
+        font=_font(25),
+        fill=(34, 77, 95),
+        anchor="la",
+    )
+    draw.text((54, 118), course.name, font=_font(62), fill=(25, 44, 61), anchor="la")
+    rule = course.life
+    draw.text(
+        (54, 215),
+        f"LIFE {rule.initial}   GREAT -{rule.great}   GOOD -{rule.good}   MISS -{rule.miss}   曲间恢复 +{rule.heal}",
+        font=_font(25),
+        fill=(28, 62, 82),
+        anchor="la",
+    )
+
+    life = estimate_life(course, tracks)
+    if life is not None:
+        summary = f"{player_name or '玩家'} · 乐观 LIFE 估算 {life}"
+    elif score_note:
+        summary = score_note
+    else:
+        summary = "未取得完整个人成绩，仅展示课题与公开样本"
+    draw.rounded_rectangle((54, 282, 1026, 348), radius=20, fill=(255, 255, 255, 235))
+    draw.text(
+        (540, 315),
+        summary,
+        font=_fit_font(summary, 900, 23),
+        fill=(63, 74, 95),
+        anchor="mm",
+    )
+
+    y = 380
+    for index, track in enumerate(tracks, 1):
+        color = DIFFICULTY_COLORS[track.level_index]
+        draw.rounded_rectangle(
+            (42, y, 1038, y + 300),
+            radius=18,
+            fill=(255, 255, 255, 255),
+            outline=(*color, 255),
+            width=3,
+        )
+        draw.rounded_rectangle((42, y, 1038, y + 52), radius=18, fill=(*color, 255))
+        draw.rectangle((42, y + 30, 1038, y + 52), fill=(*color, 255))
+        draw.text(
+            (68, y + 26),
+            f"TRACK {index:02d}  ·  {DIFFICULTY_NAMES[track.level_index]}",
+            font=_font(23),
+            fill=(255, 255, 255),
+            anchor="lm",
+        )
+
+        image.alpha_composite(_rounded_cover(track.song_id), (68, y + 78))
+        title_font = _fit_font(track.title, 710, 31, 20)
+        draw.text(
+            (248, y + 92), track.title, font=title_font, fill=(37, 45, 62), anchor="la"
+        )
+        ds_text = (
+            f"等级 {track.level}  ·  定数 {track.ds:.1f}"
+            if track.ds is not None
+            else f"等级 {track.level}"
+        )
+        draw.text(
+            (248, y + 142), ds_text, font=_font(23), fill=(*color, 255), anchor="la"
+        )
+        score = (
+            "未游玩"
+            if track.achievement is None
+            else f"个人最佳 {track.achievement:.4f}%"
+        )
+        draw.text((248, y + 188), score, font=_font(26), fill=(44, 54, 74), anchor="la")
+        position = _position_label(track)
+        draw.rounded_rectangle(
+            (760, y + 169, 1006, y + 214), radius=14, fill=(239, 243, 250, 255)
+        )
+        draw.text(
+            (883, y + 192),
+            position,
+            font=_fit_font(position, 220, 19, 15),
+            fill=(76, 87, 108),
+            anchor="mm",
+        )
+        draw.text(
+            (248, y + 246),
+            _sample_label(track),
+            font=_fit_font(_sample_label(track), 750, 19, 14),
+            fill=(103, 112, 132),
+            anchor="la",
+        )
+        y += 326
+
+    footer = "数据：ChiffonMai 段位表 / Diving-Fish 曲库 / 服务器近期脱敏成绩（低样本使用内置数据）"
+    draw.text(
+        (540, 1710),
+        footer,
+        font=_fit_font(footer, 960, 18, 14),
+        fill=(105, 115, 134),
+        anchor="mm",
+    )
+    draw.text(
+        (540, 1740),
+        "LIFE 为达成率反推的最有利判定组合，仅供练习参考，以机台结果为准",
+        font=_fit_font(
+            "LIFE 为达成率反推的最有利判定组合，仅供练习参考，以机台结果为准",
+            960,
+            17,
+            13,
+        ),
+        fill=(125, 91, 104),
+        anchor="mm",
+    )
+    return image.convert("RGB")
+
+
+async def generate_rank_course_image(
+    rank_name: str,
+    *,
+    qqid: Optional[int] = None,
+    username: Optional[str] = None,
+) -> Image.Image:
+    course = get_rank_course(rank_name)
+    if course is None:
+        raise ValueError(f"无法识别段位「{rank_name}」")
+
+    from .maimaidx_music import mai
+
+    records = []
+    player_name = None
+    score_note = None
+    if qqid or username:
+        try:
+            from .maimaidx_datasource import get_user_records
+
+            userinfo, records = await get_user_records(qqid=qqid, username=username)
+            player_name = getattr(userinfo, "nickname", None) or username
+        except Exception as exc:
+            from .maimaidx_error import (
+                LxnsDataError,
+                UserDisabledQueryError,
+                UserNotExistsError,
+                UserNotFoundError,
+            )
+
+            if isinstance(
+                exc,
+                (
+                    LxnsDataError,
+                    UserDisabledQueryError,
+                    UserNotExistsError,
+                    UserNotFoundError,
+                ),
+            ):
+                score_note = "个人成绩不可用，仅展示课题与公开样本"
+            else:
+                raise
+    import asyncio
+
+    course_stats = await asyncio.to_thread(load_course_stats)
+    tracks = build_course_tracks(course, mai.total_list, records, course_stats)
+    return draw_rank_course(
+        course,
+        tracks,
+        player_name=player_name,
+        score_note=score_note,
+    )

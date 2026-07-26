@@ -1,0 +1,801 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-07-26T07:27:05.400716+00:00",
+  "dataset_generated_at": "2026-07-25T12:03:37.498732+00:00",
+  "source": "data/public_dataset/players/* latest.records (opt-out excluded)",
+  "player_count": 536,
+  "charts": {
+    "24:4": {
+      "sample_count": 237,
+      "avg_achievement": 96.7468,
+      "p25": 97.0092,
+      "median": 98.8031,
+      "p75": 100.0296,
+      "clear_rate": 0.7637,
+      "sss_rate": 0.2869
+    },
+    "136:2": {
+      "sample_count": 240,
+      "avg_achievement": 96.5333,
+      "p25": 97.6701,
+      "median": 99.6976,
+      "p75": 100.2735,
+      "clear_rate": 0.8083,
+      "sss_rate": 0.4083
+    },
+    "191:2": {
+      "sample_count": 361,
+      "avg_achievement": 97.8186,
+      "p25": 97.245,
+      "median": 99.0288,
+      "p75": 100.188,
+      "clear_rate": 0.7812,
+      "sss_rate": 0.3019
+    },
+    "204:3": {
+      "sample_count": 393,
+      "avg_achievement": 98.0852,
+      "p25": 98.045,
+      "median": 99.8002,
+      "p75": 100.5137,
+      "clear_rate": 0.8117,
+      "sss_rate": 0.4656
+    },
+    "227:3": {
+      "sample_count": 330,
+      "avg_achievement": 97.3588,
+      "p25": 97.7022,
+      "median": 99.0661,
+      "p75": 100.0506,
+      "clear_rate": 0.8212,
+      "sss_rate": 0.2879
+    },
+    "239:2": {
+      "sample_count": 228,
+      "avg_achievement": 94.0152,
+      "p25": 94.4011,
+      "median": 97.7583,
+      "p75": 100.2078,
+      "clear_rate": 0.5833,
+      "sss_rate": 0.3421
+    },
+    "417:2": {
+      "sample_count": 404,
+      "avg_achievement": 98.7817,
+      "p25": 98.9189,
+      "median": 100.23,
+      "p75": 100.7165,
+      "clear_rate": 0.8762,
+      "sss_rate": 0.5941
+    },
+    "432:2": {
+      "sample_count": 484,
+      "avg_achievement": 99.9129,
+      "p25": 99.7125,
+      "median": 100.2515,
+      "p75": 100.6,
+      "clear_rate": 0.969,
+      "sss_rate": 0.6963
+    },
+    "439:2": {
+      "sample_count": 241,
+      "avg_achievement": 98.1113,
+      "p25": 97.3141,
+      "median": 99.2964,
+      "p75": 100.3461,
+      "clear_rate": 0.8008,
+      "sss_rate": 0.3568
+    },
+    "448:3": {
+      "sample_count": 268,
+      "avg_achievement": 97.7802,
+      "p25": 97.8554,
+      "median": 99.7194,
+      "p75": 100.5,
+      "clear_rate": 0.8172,
+      "sss_rate": 0.4701
+    },
+    "451:3": {
+      "sample_count": 287,
+      "avg_achievement": 98.0917,
+      "p25": 98.1663,
+      "median": 99.7679,
+      "p75": 100.4437,
+      "clear_rate": 0.8397,
+      "sss_rate": 0.4425
+    },
+    "453:3": {
+      "sample_count": 165,
+      "avg_achievement": 97.2017,
+      "p25": 97.9826,
+      "median": 100.0196,
+      "p75": 100.4785,
+      "clear_rate": 0.8061,
+      "sss_rate": 0.5273
+    },
+    "556:3": {
+      "sample_count": 225,
+      "avg_achievement": 98.2941,
+      "p25": 97.6662,
+      "median": 99.1878,
+      "p75": 100.1534,
+      "clear_rate": 0.8311,
+      "sss_rate": 0.32
+    },
+    "579:2": {
+      "sample_count": 56,
+      "avg_achievement": 99.4133,
+      "p25": 99.7266,
+      "median": 100.2945,
+      "p75": 100.6944,
+      "clear_rate": 0.9286,
+      "sss_rate": 0.7321
+    },
+    "581:2": {
+      "sample_count": 313,
+      "avg_achievement": 96.1102,
+      "p25": 95.8188,
+      "median": 98.8464,
+      "p75": 100.247,
+      "clear_rate": 0.7093,
+      "sss_rate": 0.3195
+    },
+    "589:4": {
+      "sample_count": 193,
+      "avg_achievement": 95.8892,
+      "p25": 94.3777,
+      "median": 98.2522,
+      "p75": 100.039,
+      "clear_rate": 0.6269,
+      "sss_rate": 0.2746
+    },
+    "617:0": {
+      "sample_count": 53,
+      "avg_achievement": 100.0142,
+      "p25": 100.429,
+      "median": 100.7271,
+      "p75": 100.9281,
+      "clear_rate": 0.9434,
+      "sss_rate": 0.9434
+    },
+    "634:3": {
+      "sample_count": 150,
+      "avg_achievement": 99.727,
+      "p25": 99.4241,
+      "median": 100.2021,
+      "p75": 100.5706,
+      "clear_rate": 0.9667,
+      "sss_rate": 0.62
+    },
+    "673:3": {
+      "sample_count": 216,
+      "avg_achievement": 96.8614,
+      "p25": 97.9436,
+      "median": 99.9807,
+      "p75": 100.6044,
+      "clear_rate": 0.8102,
+      "sss_rate": 0.4954
+    },
+    "700:3": {
+      "sample_count": 212,
+      "avg_achievement": 98.1632,
+      "p25": 98.271,
+      "median": 100.028,
+      "p75": 100.5232,
+      "clear_rate": 0.8396,
+      "sss_rate": 0.5142
+    },
+    "709:3": {
+      "sample_count": 189,
+      "avg_achievement": 97.1529,
+      "p25": 97.4112,
+      "median": 99.6174,
+      "p75": 100.481,
+      "clear_rate": 0.7937,
+      "sss_rate": 0.4762
+    },
+    "759:3": {
+      "sample_count": 227,
+      "avg_achievement": 98.8846,
+      "p25": 98.4517,
+      "median": 100.0894,
+      "p75": 100.6277,
+      "clear_rate": 0.8767,
+      "sss_rate": 0.5551
+    },
+    "766:3": {
+      "sample_count": 228,
+      "avg_achievement": 95.0331,
+      "p25": 95.5591,
+      "median": 98.3928,
+      "p75": 100.1201,
+      "clear_rate": 0.6842,
+      "sss_rate": 0.3202
+    },
+    "791:3": {
+      "sample_count": 304,
+      "avg_achievement": 99.3543,
+      "p25": 99.6859,
+      "median": 100.4903,
+      "p75": 100.7609,
+      "clear_rate": 0.9178,
+      "sss_rate": 0.7072
+    },
+    "794:3": {
+      "sample_count": 197,
+      "avg_achievement": 98.8896,
+      "p25": 99.5,
+      "median": 100.4339,
+      "p75": 100.7115,
+      "clear_rate": 0.9188,
+      "sss_rate": 0.6751
+    },
+    "798:3": {
+      "sample_count": 257,
+      "avg_achievement": 97.3531,
+      "p25": 97.5577,
+      "median": 99.07,
+      "p75": 100.1075,
+      "clear_rate": 0.7938,
+      "sss_rate": 0.3113
+    },
+    "834:4": {
+      "sample_count": 338,
+      "avg_achievement": 83.9193,
+      "p25": 80.9734,
+      "median": 86.9,
+      "p75": 94.065,
+      "clear_rate": 0.1686,
+      "sss_rate": 0.0473
+    },
+    "840:3": {
+      "sample_count": 359,
+      "avg_achievement": 98.2445,
+      "p25": 98.0,
+      "median": 99.552,
+      "p75": 100.309,
+      "clear_rate": 0.8496,
+      "sss_rate": 0.3928
+    },
+    "10185:1": {
+      "sample_count": 23,
+      "avg_achievement": 99.809,
+      "p25": 100.1933,
+      "median": 100.875,
+      "p75": 100.9919,
+      "clear_rate": 0.913,
+      "sss_rate": 0.8261
+    },
+    "10256:0": {
+      "sample_count": 35,
+      "avg_achievement": 100.4921,
+      "p25": 100.4273,
+      "median": 100.875,
+      "p75": 100.981,
+      "clear_rate": 0.9714,
+      "sss_rate": 0.9429
+    },
+    "10319:0": {
+      "sample_count": 30,
+      "avg_achievement": 99.3893,
+      "p25": 100.1672,
+      "median": 100.6651,
+      "p75": 100.9276,
+      "clear_rate": 0.9,
+      "sss_rate": 0.8667
+    },
+    "10535:2": {
+      "sample_count": 96,
+      "avg_achievement": 98.6297,
+      "p25": 97.5332,
+      "median": 100.5409,
+      "p75": 100.8974,
+      "clear_rate": 0.7812,
+      "sss_rate": 0.5938
+    },
+    "11003:2": {
+      "sample_count": 256,
+      "avg_achievement": 98.69,
+      "p25": 98.523,
+      "median": 99.6038,
+      "p75": 100.3475,
+      "clear_rate": 0.8945,
+      "sss_rate": 0.3984
+    },
+    "11010:3": {
+      "sample_count": 302,
+      "avg_achievement": 99.6806,
+      "p25": 100.1922,
+      "median": 100.7282,
+      "p75": 100.9194,
+      "clear_rate": 0.9437,
+      "sss_rate": 0.7748
+    },
+    "11017:3": {
+      "sample_count": 159,
+      "avg_achievement": 97.8489,
+      "p25": 97.7753,
+      "median": 99.113,
+      "p75": 100.2459,
+      "clear_rate": 0.8365,
+      "sss_rate": 0.3585
+    },
+    "11048:3": {
+      "sample_count": 337,
+      "avg_achievement": 98.8619,
+      "p25": 98.7729,
+      "median": 100.0,
+      "p75": 100.5669,
+      "clear_rate": 0.8932,
+      "sss_rate": 0.5223
+    },
+    "11052:0": {
+      "sample_count": 31,
+      "avg_achievement": 96.6637,
+      "p25": 100.3029,
+      "median": 100.7534,
+      "p75": 100.9051,
+      "clear_rate": 0.871,
+      "sss_rate": 0.8387
+    },
+    "11133:3": {
+      "sample_count": 172,
+      "avg_achievement": 98.8465,
+      "p25": 99.5678,
+      "median": 100.5117,
+      "p75": 100.749,
+      "clear_rate": 0.8895,
+      "sss_rate": 0.7151
+    },
+    "11136:1": {
+      "sample_count": 27,
+      "avg_achievement": 98.631,
+      "p25": 100.0829,
+      "median": 100.4856,
+      "p75": 100.7435,
+      "clear_rate": 0.8519,
+      "sss_rate": 0.7778
+    },
+    "11141:3": {
+      "sample_count": 241,
+      "avg_achievement": 98.0217,
+      "p25": 97.9268,
+      "median": 99.3314,
+      "p75": 100.4651,
+      "clear_rate": 0.8382,
+      "sss_rate": 0.39
+    },
+    "11177:3": {
+      "sample_count": 134,
+      "avg_achievement": 96.3902,
+      "p25": 97.3527,
+      "median": 99.4882,
+      "p75": 100.576,
+      "clear_rate": 0.7836,
+      "sss_rate": 0.4701
+    },
+    "11199:3": {
+      "sample_count": 161,
+      "avg_achievement": 98.2192,
+      "p25": 98.135,
+      "median": 100.2527,
+      "p75": 100.6594,
+      "clear_rate": 0.8323,
+      "sss_rate": 0.6025
+    },
+    "11207:3": {
+      "sample_count": 358,
+      "avg_achievement": 97.7166,
+      "p25": 98.1116,
+      "median": 99.3832,
+      "p75": 100.2536,
+      "clear_rate": 0.8492,
+      "sss_rate": 0.3575
+    },
+    "11208:3": {
+      "sample_count": 342,
+      "avg_achievement": 98.137,
+      "p25": 98.2975,
+      "median": 100.005,
+      "p75": 100.5023,
+      "clear_rate": 0.8216,
+      "sss_rate": 0.5175
+    },
+    "11213:3": {
+      "sample_count": 312,
+      "avg_achievement": 99.0011,
+      "p25": 98.7195,
+      "median": 99.8708,
+      "p75": 100.5,
+      "clear_rate": 0.8782,
+      "sss_rate": 0.4679
+    },
+    "11223:3": {
+      "sample_count": 211,
+      "avg_achievement": 96.6258,
+      "p25": 95.5249,
+      "median": 98.1442,
+      "p75": 100.0375,
+      "clear_rate": 0.6066,
+      "sss_rate": 0.2796
+    },
+    "11265:1": {
+      "sample_count": 52,
+      "avg_achievement": 99.7784,
+      "p25": 100.0923,
+      "median": 100.7382,
+      "p75": 100.9583,
+      "clear_rate": 0.9231,
+      "sss_rate": 0.8462
+    },
+    "11271:3": {
+      "sample_count": 395,
+      "avg_achievement": 99.2544,
+      "p25": 99.0818,
+      "median": 100.1516,
+      "p75": 100.7205,
+      "clear_rate": 0.9342,
+      "sss_rate": 0.5595
+    },
+    "11272:3": {
+      "sample_count": 382,
+      "avg_achievement": 98.3716,
+      "p25": 96.6534,
+      "median": 99.779,
+      "p75": 100.5844,
+      "clear_rate": 0.7356,
+      "sss_rate": 0.4843
+    },
+    "11276:2": {
+      "sample_count": 112,
+      "avg_achievement": 99.2186,
+      "p25": 98.9707,
+      "median": 100.2191,
+      "p75": 100.8574,
+      "clear_rate": 0.875,
+      "sss_rate": 0.5804
+    },
+    "11295:3": {
+      "sample_count": 225,
+      "avg_achievement": 96.9768,
+      "p25": 96.3752,
+      "median": 98.8476,
+      "p75": 100.2272,
+      "clear_rate": 0.7111,
+      "sss_rate": 0.3689
+    },
+    "11311:3": {
+      "sample_count": 288,
+      "avg_achievement": 94.3825,
+      "p25": 94.7283,
+      "median": 97.4402,
+      "p75": 99.0687,
+      "clear_rate": 0.5556,
+      "sss_rate": 0.1528
+    },
+    "11316:3": {
+      "sample_count": 181,
+      "avg_achievement": 97.2581,
+      "p25": 97.5321,
+      "median": 99.359,
+      "p75": 100.5357,
+      "clear_rate": 0.8066,
+      "sss_rate": 0.4199
+    },
+    "11333:2": {
+      "sample_count": 382,
+      "avg_achievement": 98.1028,
+      "p25": 97.8681,
+      "median": 99.4331,
+      "p75": 100.4101,
+      "clear_rate": 0.8613,
+      "sss_rate": 0.3691
+    },
+    "11358:1": {
+      "sample_count": 162,
+      "avg_achievement": 97.9058,
+      "p25": 96.7361,
+      "median": 98.8619,
+      "p75": 100.3616,
+      "clear_rate": 0.7407,
+      "sss_rate": 0.3951
+    },
+    "11405:2": {
+      "sample_count": 411,
+      "avg_achievement": 99.8885,
+      "p25": 99.531,
+      "median": 100.1228,
+      "p75": 100.5751,
+      "clear_rate": 0.9732,
+      "sss_rate": 0.6204
+    },
+    "11411:1": {
+      "sample_count": 44,
+      "avg_achievement": 98.8772,
+      "p25": 98.0395,
+      "median": 100.0935,
+      "p75": 100.9249,
+      "clear_rate": 0.7955,
+      "sss_rate": 0.5909
+    },
+    "11412:3": {
+      "sample_count": 327,
+      "avg_achievement": 97.0619,
+      "p25": 96.9478,
+      "median": 98.6666,
+      "p75": 99.9855,
+      "clear_rate": 0.7401,
+      "sss_rate": 0.2508
+    },
+    "11413:3": {
+      "sample_count": 250,
+      "avg_achievement": 98.135,
+      "p25": 97.8626,
+      "median": 99.5952,
+      "p75": 100.3152,
+      "clear_rate": 0.804,
+      "sss_rate": 0.42
+    },
+    "11460:3": {
+      "sample_count": 282,
+      "avg_achievement": 98.631,
+      "p25": 97.9165,
+      "median": 99.4244,
+      "p75": 100.5,
+      "clear_rate": 0.8227,
+      "sss_rate": 0.383
+    },
+    "11470:3": {
+      "sample_count": 230,
+      "avg_achievement": 95.6018,
+      "p25": 95.2921,
+      "median": 97.62,
+      "p75": 99.3157,
+      "clear_rate": 0.613,
+      "sss_rate": 0.1783
+    },
+    "11496:3": {
+      "sample_count": 260,
+      "avg_achievement": 96.9516,
+      "p25": 97.2339,
+      "median": 99.455,
+      "p75": 100.3987,
+      "clear_rate": 0.7962,
+      "sss_rate": 0.4077
+    },
+    "11512:3": {
+      "sample_count": 470,
+      "avg_achievement": 99.7472,
+      "p25": 100.0176,
+      "median": 100.5583,
+      "p75": 100.745,
+      "clear_rate": 0.9532,
+      "sss_rate": 0.7553
+    },
+    "11532:3": {
+      "sample_count": 268,
+      "avg_achievement": 98.2643,
+      "p25": 98.523,
+      "median": 100.0679,
+      "p75": 100.6909,
+      "clear_rate": 0.8769,
+      "sss_rate": 0.5261
+    },
+    "11580:3": {
+      "sample_count": 126,
+      "avg_achievement": 99.2548,
+      "p25": 98.3787,
+      "median": 99.8909,
+      "p75": 100.6431,
+      "clear_rate": 0.881,
+      "sss_rate": 0.4683
+    },
+    "11583:3": {
+      "sample_count": 315,
+      "avg_achievement": 98.6764,
+      "p25": 99.0188,
+      "median": 100.194,
+      "p75": 100.6841,
+      "clear_rate": 0.8794,
+      "sss_rate": 0.5714
+    },
+    "11612:3": {
+      "sample_count": 270,
+      "avg_achievement": 94.2876,
+      "p25": 93.1687,
+      "median": 96.4759,
+      "p75": 98.3224,
+      "clear_rate": 0.4333,
+      "sss_rate": 0.1
+    },
+    "11615:3": {
+      "sample_count": 333,
+      "avg_achievement": 98.3097,
+      "p25": 98.1686,
+      "median": 99.457,
+      "p75": 100.3357,
+      "clear_rate": 0.8679,
+      "sss_rate": 0.3604
+    },
+    "11618:3": {
+      "sample_count": 272,
+      "avg_achievement": 98.4562,
+      "p25": 98.0985,
+      "median": 99.7253,
+      "p75": 100.5423,
+      "clear_rate": 0.8419,
+      "sss_rate": 0.4338
+    },
+    "11619:3": {
+      "sample_count": 221,
+      "avg_achievement": 93.1214,
+      "p25": 94.1005,
+      "median": 97.1752,
+      "p75": 99.1248,
+      "clear_rate": 0.5294,
+      "sss_rate": 0.1629
+    },
+    "11638:1": {
+      "sample_count": 121,
+      "avg_achievement": 97.8675,
+      "p25": 97.5,
+      "median": 99.1306,
+      "p75": 100.1391,
+      "clear_rate": 0.7686,
+      "sss_rate": 0.314
+    },
+    "11653:3": {
+      "sample_count": 166,
+      "avg_achievement": 97.6656,
+      "p25": 97.3397,
+      "median": 98.9886,
+      "p75": 100.4263,
+      "clear_rate": 0.7771,
+      "sss_rate": 0.3976
+    },
+    "11662:3": {
+      "sample_count": 257,
+      "avg_achievement": 92.9729,
+      "p25": 91.9167,
+      "median": 95.4967,
+      "p75": 97.8289,
+      "clear_rate": 0.3658,
+      "sss_rate": 0.0856
+    },
+    "11663:4": {
+      "sample_count": 314,
+      "avg_achievement": 83.6529,
+      "p25": 79.1299,
+      "median": 86.656,
+      "p75": 93.8128,
+      "clear_rate": 0.1369,
+      "sss_rate": 0.0382
+    },
+    "11675:3": {
+      "sample_count": 297,
+      "avg_achievement": 98.238,
+      "p25": 97.5888,
+      "median": 99.7986,
+      "p75": 100.5583,
+      "clear_rate": 0.7845,
+      "sss_rate": 0.4613
+    },
+    "11687:3": {
+      "sample_count": 278,
+      "avg_achievement": 98.1125,
+      "p25": 97.7048,
+      "median": 99.6072,
+      "p75": 100.3531,
+      "clear_rate": 0.8165,
+      "sss_rate": 0.4137
+    },
+    "11698:2": {
+      "sample_count": 177,
+      "avg_achievement": 98.6744,
+      "p25": 99.5,
+      "median": 100.429,
+      "p75": 100.8387,
+      "clear_rate": 0.9322,
+      "sss_rate": 0.6667
+    },
+    "11699:3": {
+      "sample_count": 328,
+      "avg_achievement": 99.5757,
+      "p25": 99.2003,
+      "median": 100.2904,
+      "p75": 100.6087,
+      "clear_rate": 0.9421,
+      "sss_rate": 0.6098
+    },
+    "11701:1": {
+      "sample_count": 37,
+      "avg_achievement": 99.8044,
+      "p25": 100.0025,
+      "median": 100.7467,
+      "p75": 100.9583,
+      "clear_rate": 0.8919,
+      "sss_rate": 0.7838
+    },
+    "11710:3": {
+      "sample_count": 252,
+      "avg_achievement": 98.3825,
+      "p25": 98.7032,
+      "median": 100.028,
+      "p75": 100.5797,
+      "clear_rate": 0.8889,
+      "sss_rate": 0.5238
+    },
+    "11715:3": {
+      "sample_count": 382,
+      "avg_achievement": 98.9594,
+      "p25": 99.5027,
+      "median": 100.3979,
+      "p75": 100.6998,
+      "clear_rate": 0.9162,
+      "sss_rate": 0.6623
+    },
+    "11720:3": {
+      "sample_count": 285,
+      "avg_achievement": 97.5633,
+      "p25": 97.279,
+      "median": 98.523,
+      "p75": 99.623,
+      "clear_rate": 0.7895,
+      "sss_rate": 0.193
+    },
+    "11735:3": {
+      "sample_count": 389,
+      "avg_achievement": 99.8357,
+      "p25": 100.0,
+      "median": 100.514,
+      "p75": 100.7575,
+      "clear_rate": 0.9486,
+      "sss_rate": 0.7558
+    },
+    "11745:3": {
+      "sample_count": 291,
+      "avg_achievement": 92.395,
+      "p25": 93.3397,
+      "median": 96.7161,
+      "p75": 99.0124,
+      "clear_rate": 0.4845,
+      "sss_rate": 0.1409
+    },
+    "11753:3": {
+      "sample_count": 262,
+      "avg_achievement": 91.1726,
+      "p25": 91.1184,
+      "median": 95.074,
+      "p75": 97.9702,
+      "clear_rate": 0.3473,
+      "sss_rate": 0.1221
+    },
+    "11764:1": {
+      "sample_count": 27,
+      "avg_achievement": 99.7845,
+      "p25": 100.131,
+      "median": 100.6,
+      "p75": 101.0,
+      "clear_rate": 0.8889,
+      "sss_rate": 0.8148
+    },
+    "11767:3": {
+      "sample_count": 354,
+      "avg_achievement": 99.7461,
+      "p25": 99.6744,
+      "median": 100.5528,
+      "p75": 100.8,
+      "clear_rate": 0.935,
+      "sss_rate": 0.709
+    },
+    "11770:2": {
+      "sample_count": 150,
+      "avg_achievement": 99.1434,
+      "p25": 99.0987,
+      "median": 100.1135,
+      "p75": 100.685,
+      "clear_rate": 0.9067,
+      "sss_rate": 0.5333
+    }
+  }
+}

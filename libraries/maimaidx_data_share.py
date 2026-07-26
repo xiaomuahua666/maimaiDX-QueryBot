@@ -76,6 +76,7 @@ class DataShareManager:
             config["opted_out_users"] = opted
             config["updated_at"] = time.time()
             self._save(config)
+            self._invalidate_rank_course_stats()
             log.info(f"[DataShare] 用户 {uid} 已拒绝数据共享")
             return True
 
@@ -91,8 +92,18 @@ class DataShareManager:
             config["opted_out_users"] = opted
             config["updated_at"] = time.time()
             self._save(config)
+            self._invalidate_rank_course_stats()
             log.info(f"[DataShare] 用户 {uid} 已重新同意数据共享")
             return True
+
+    @staticmethod
+    def _invalidate_rank_course_stats() -> None:
+        try:
+            from .maimaidx_rank_course import invalidate_course_stats
+
+            invalidate_course_stats()
+        except ImportError:
+            pass
 
     def list_opted_out(self) -> List[str]:
         return sorted(self._opted_out_set())

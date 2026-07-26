@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "region": "CN",
+  "version": "PRiSM PLUS（舞萌DX 2026）",
+  "updated_at": "2026-07-26",
+  "source": [
+    {
+      "name": "maimai攻略wiki PRiSM PLUS 段位認定",
+      "url": "https://gamerch.com/maimai/941773"
+    },
+    {
+      "name": "ChiffonMai RankTableService（LIFE 规则交叉核对）",
+      "url": "https://github.com/ChiffonOwO/ChiffonMai/blob/main/lib/service/RankTable/RankTableService.dart",
+      "license": "MIT"
+    }
+  ],
+  "courses": [
+    {"name":"初段","song_ids":[10256,11052,10319,617],"level_indexes":[0,0,0,0],"life":{"initial":350,"great":0,"good":2,"miss":5,"heal":20}},
+    {"name":"二段","song_ids":[11764,11136,11265,10185],"level_indexes":[1,1,1,1],"life":{"initial":350,"great":0,"good":2,"miss":5,"heal":20}},
+    {"name":"三段","song_ids":[11701,11411,11358,11638],"level_indexes":[1,1,1,1],"life":{"initial":600,"great":1,"good":2,"miss":5,"heal":50}},
+    {"name":"四段","song_ids":[11698,11276,10535,417],"level_indexes":[2,2,2,2],"life":{"initial":700,"great":2,"good":2,"miss":5,"heal":50}},
+    {"name":"五段","song_ids":[579,11003,11333,11770],"level_indexes":[2,2,2,2],"life":{"initial":700,"great":2,"good":2,"miss":5,"heal":50}},
+    {"name":"六段","song_ids":[439,11405,432,11272],"level_indexes":[2,2,2,3],"life":{"initial":700,"great":2,"good":2,"miss":5,"heal":50}},
+    {"name":"七段","song_ids":[11271,634,11580,11767],"level_indexes":[3,3,3,3],"life":{"initial":700,"great":2,"good":2,"miss":5,"heal":50}},
+    {"name":"八段","song_ids":[11017,11048,11615,11512],"level_indexes":[3,3,3,3],"life":{"initial":700,"great":2,"good":2,"miss":5,"heal":20}},
+    {"name":"九段","song_ids":[11699,11141,798,11496],"level_indexes":[3,3,3,3],"life":{"initial":800,"great":2,"good":2,"miss":5,"heal":30}},
+    {"name":"十段","song_ids":[840,11207,11412,227],"level_indexes":[3,3,3,3],"life":{"initial":900,"great":2,"good":2,"miss":5,"heal":30}},
+    {"name":"真初段","song_ids":[11010,11133,759,136],"level_indexes":[3,3,3,2],"life":{"initial":50,"great":2,"good":3,"miss":5,"heal":10}},
+    {"name":"真二段","song_ids":[791,11199,191,11532],"level_indexes":[3,3,2,3],"life":{"initial":50,"great":2,"good":3,"miss":5,"heal":10}},
+    {"name":"真三段","song_ids":[11735,794,239,709],"level_indexes":[3,3,2,3],"life":{"initial":50,"great":2,"good":3,"miss":5,"heal":10}},
+    {"name":"真四段","song_ids":[11715,581,204,453],"level_indexes":[3,2,3,3],"life":{"initial":50,"great":2,"good":3,"miss":5,"heal":10}},
+    {"name":"真五段","song_ids":[11583,11653,448,673],"level_indexes":[3,3,3,3],"life":{"initial":50,"great":2,"good":3,"miss":5,"heal":10}},
+    {"name":"真六段","song_ids":[11316,11710,11177,700],"level_indexes":[3,3,3,3],"life":{"initial":50,"great":2,"good":3,"miss":5,"heal":10}},
+    {"name":"真七段","song_ids":[11460,11208,451,11413],"level_indexes":[3,3,3,3],"life":{"initial":50,"great":2,"good":3,"miss":5,"heal":10}},
+    {"name":"真八段","song_ids":[766,11213,24,556],"level_indexes":[3,3,4,3],"life":{"initial":50,"great":2,"good":3,"miss":5,"heal":10}},
+    {"name":"真九段","song_ids":[11675,11618,589,11687],"level_indexes":[3,3,4,3],"life":{"initial":50,"great":2,"good":3,"miss":5,"heal":10}},
+    {"name":"真十段","song_ids":[11295,11720,11470,11619],"level_indexes":[3,3,3,3],"life":{"initial":50,"great":2,"good":3,"miss":5,"heal":10}},
+    {"name":"真皆传","song_ids":[11223,11745,11311,11753],"level_indexes":[3,3,3,3],"life":{"initial":50,"great":2,"good":3,"miss":5,"heal":5}},
+    {"name":"里皆传","song_ids":[834,11612,11662,11663],"level_indexes":[4,3,3,4],"life":{"initial":10,"great":1,"good":3,"miss":10,"heal":0}}
+  ]
+}

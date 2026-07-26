@@ -534,6 +534,13 @@ def save_cached_player(
         if not records and prev.records:
             records = prev.records
     player_cache_db.set(qqid, username, source, userinfo, records)
+    if qqid and len(records) >= 30:
+        try:
+            from .maimaidx_rank_course import invalidate_course_stats
+
+            invalidate_course_stats()
+        except ImportError:
+            pass
 
 
 async def resolve_player_records(

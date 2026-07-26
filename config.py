@@ -162,6 +162,11 @@ class Config(BaseModel):
     # 是否允许用「数据存储」最近快照作兜底（默认 24h 内有效）。MAIMAIDX_PLAYER_CACHE_USE_STORAGE
     maimaidx_player_cache_use_storage: bool = True
     maimaidx_player_storage_fallback_seconds: int = 86400
+    # 段位表匿名样本：从近期全量成绩缓存实时聚合；无足够样本时使用内置公开数据集。
+    maimaidx_rank_course_stats_cache_seconds: int = 300
+    maimaidx_rank_course_sample_max_age_days: int = 90
+    maimaidx_rank_course_sample_max_players: int = 5000
+    maimaidx_rank_course_min_samples: int = 3
     # 曲库/谱面/别名数据本地缓存时长（秒），默认 1 小时。
     # 启动时若本地缓存文件未过期则直接读取，跳过网络请求，加快启动速度。
     # 设为 0 则每次启动都从网络获取（旧行为）。可通过 .env 设置 MAIMAIDX_MUSIC_CACHE_SECONDS
