@@ -58,6 +58,8 @@ _RESERVED_PREFIXES = (
     "开字母积分榜",
     "开字母贡献榜",
     "开字母时间榜",
+    "开字母文字模式",
+    "开字母图片模式",
     "重置猜歌",
     "猜歌",
     "猜曲绘",
@@ -97,6 +99,12 @@ letter_contrib_cmd = on_command(
 letter_time_cmd = on_command(
     "开字母时间榜", rule=GROUP_MESSAGE, priority=4, block=True
 )
+letter_text_mode_cmd = on_command(
+    "开字母文字模式", rule=LETTER_PLAYING, priority=4, block=True
+)
+letter_image_mode_cmd = on_command(
+    "开字母图片模式", rule=LETTER_PLAYING, priority=4, block=True
+)
 # 对局中可直接发字母 / 别名，无需命令前缀
 letter_quick = on_message(rule=LETTER_PLAYING, priority=9, block=False)
 
@@ -109,6 +117,8 @@ for _letter_matcher in (
     letter_score_cmd,
     letter_contrib_cmd,
     letter_time_cmd,
+    letter_text_mode_cmd,
+    letter_image_mode_cmd,
     letter_quick,
 ):
     setattr(_letter_matcher, "_maimaidx_busy_surcharge_exempt", True)
@@ -122,6 +132,7 @@ _HELP = (
     "· 星级阈值自适应：默认 ≤30/45/60/90/180 秒；群通关变快后五星上限可降至最低 15 秒\n"
     "· 贡献：有效开字母×1、补齐曲×3、开歌×4；无贡献不得分\n"
     "· 开字母排行 / 开字母贡献榜 / 开字母时间榜 — 查看本群榜单图\n"
+    "· 开字母图片模式 / 开字母文字模式 — 切换局内看板样式\n"
     "· 不玩了 — 结束并揭晓剩余（不发奖）\n"
     "与猜歌等模式同群互斥；需先「开启mai猜歌」。"
 )
@@ -537,6 +548,42 @@ async def _(bot: Bot, event: MessageEvent):
         adapt_guess_outbound(MessageSegment.image(image_b64(im)), event=event),
         reply_message=resolve_reply_message(event, reply_message=True),
     )
+
+
+@letter_text_mode_cmd.handle()
+async def _(event: MessageEvent):
+    gid = get_event_group_id(event)
+    if gid is None:
+        return
+    board = letter_guess.get(gid)
+    if board is None:
+        return
+    board.display_mode = "text"
+    await _send_board(
+        letter_text_mode_cmd,
+        event,
+        board,
+        text="已切换为纯文字模式。\n",
+    )
+    await letter_text_mode_cmd.finish()
+
+
+@letter_image_mode_cmd.handle()
+async def _(event: MessageEvent):
+    gid = get_event_group_id(event)
+    if gid is None:
+        return
+    board = letter_guess.get(gid)
+    if board is None:
+        return
+    board.display_mode = "image"
+    await _send_board(
+        letter_image_mode_cmd,
+        event,
+        board,
+        text="已切换为图片模式。\n",
+    )
+    await letter_image_mode_cmd.finish()
 
 
 @letter_quick.handle()

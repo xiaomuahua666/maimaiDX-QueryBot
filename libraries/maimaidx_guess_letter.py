@@ -356,6 +356,7 @@ class LetterBoard:
     contributions: Dict[str, LetterContribution] = field(default_factory=dict)
     # 人多/突发时粘性降级：局中看板可走文字；通关结算仍强制出图
     text_mode: bool = False
+    display_mode: str = "auto"  # "auto", "text", "image"
     process_times: List[float] = field(default_factory=list)
     # 非高峰：每人上次有效答题时间；冷却提示只发一次避免刷屏
     last_answer_at: Dict[str, float] = field(default_factory=dict)
@@ -440,6 +441,11 @@ class LetterBoard:
 
     def prefer_text(self) -> bool:
         """是否应走文字路径（已粘性进入，或当前贡献人数已达阈值）。"""
+        if self.display_mode == "text":
+            return True
+        if self.display_mode == "image":
+            return False
+            
         if self.text_mode:
             return True
         if self.contributor_count >= TEXT_MODE_MIN_CONTRIBUTORS:
