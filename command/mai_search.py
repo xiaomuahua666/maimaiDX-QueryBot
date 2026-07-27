@@ -76,6 +76,66 @@ async def _build_chart_preview_nodes(music, self_id: int, nickname: str) -> List
     return nodes
 
 
+async def _build_wmc_tags_forward_nodes(music, self_id: int, nickname: str) -> List[dict]:
+    """从 v.wmc.pub /charts/:chartKey/tags 拉取谱面难度分析标签，构建合并转发节点。"""
+    wmc_key = maiconfig.wmc_api_key
+    if not wmc_key:
+        return []
+    api = WmcAPI(maiconfig.wmc_api_base_url, wmc_key)
+    wmc_sid = music.id[1:] if music.type == "DX" and music.id.startswith("1") else music.id
+    kind = "standard" if music.type == "SD" else "dx"
+    diff_labels = ['绿谱', '黄谱', '红谱', '紫谱', '白谱']
+    nodes = []
+    for i in range(len(music.ds)):
+        if i >= len(diff_labels):
+            break
+        diff_val = i + 2
+        key = make_chart_key(wmc_sid, kind, diff_val)
+        try:
+            result = await api.get_tags(key, radar_threshold=40, feature_threshold=0.5)
+        except Exception:
+            continue
+        if not result or not result.get("tags"):
+            continue
+        tags = result["tags"]
+        lines = [f"【{diff_labels[i]}】"]
+        # 难度分类
+        dc = tags.get("difficultyClassification")
+        if dc:
+            label = dc.get("label", "")
+            est = dc.get("estimatedLevel")
+            dev = dc.get("deviation")
+            line = f"难度分类：{label}"
+            if est is not None:
+                line += f"（预测 {est:.1f}"
+                if dev is not None:
+                    sign = "+" if dev >= 0 else ""
+                    line += f"，偏差 {sign}{dev:.1f}"
+                line += "）"
+            lines.append(line)
+        # 评估轴
+        eval_tags = tags.get("evaluationTags") or []
+        if eval_tags:
+            parts = [f"{t['label']}({t['score']})" for t in eval_tags[:5]]
+            lines.append("评估：" + " ".join(parts))
+        # 雷达轴
+        radar_tags = tags.get("radarTags") or []
+        if radar_tags:
+            parts = [f"{t['label']}({t['score']})" for t in radar_tags[:5]]
+            lines.append("雷达：" + " ".join(parts))
+        # 谱面模式
+        patterns = tags.get("patterns") or []
+        if patterns:
+            sev_map = {"high": "★", "mid": "●", "low": "○"}
+            parts = [f"{t['label']}{sev_map.get(t.get('severity', ''), '')}×{t.get('count', 0)}" for t in patterns[:6]]
+            lines.append("模式：" + " ".join(parts))
+        nodes.append(_pmyx_node(self_id, nickname, "\n".join(lines)))
+    if not nodes:
+        return []
+    nodes.insert(0, _pmyx_node(self_id, nickname, f"ID {music.id} 的谱面难度分析（v.wmc.pub）"))
+    return nodes
+
+
 async def _build_pmyx_forward_nodes(music_id: str, self_id: int, nickname: str) -> List[dict]:
     """拉取该曲谱面印象，构建合并转发 node 列表；无数据时也返回一条「暂无谱面印象」节点。优先走 v.wmc.pub，未配置则回退旧 PMYX。"""
     # ---- v2: v.wmc.pub API ----
@@ -205,6 +265,9 @@ async def _send_song_info_then_pmyx_forward(
     tag_nodes = await build_tags_forward_nodes(music.id, event.self_id, nickname)
     if tag_nodes:
         all_nodes.append(_build_nested_forward_node(event.self_id, "谱面标签", tag_nodes))
+    wmc_tag_nodes = await _build_wmc_tags_forward_nodes(music, event.self_id, nickname)
+    if wmc_tag_nodes:
+        all_nodes.append(_build_nested_forward_node(event.self_id, "难度分析", wmc_tag_nodes))
     chart_img = draw_multiver_chart(music.id)
     if chart_img:
         b64 = image_to_base64(chart_img)

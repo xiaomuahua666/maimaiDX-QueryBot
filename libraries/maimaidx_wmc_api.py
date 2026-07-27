@@ -108,6 +108,20 @@ class WmcAPI:
             params={"page": page, "limit": limit},
         )
 
+    # ---------- 谱面标签（难度分析） ----------
+
+    async def get_tags(
+        self,
+        chart_key: str,
+        radar_threshold: int = 40,
+        feature_threshold: float = 0.5,
+    ) -> Optional[Dict[str, Any]]:
+        """GET /charts/:chartKey/tags — 获取谱面标签摘要。"""
+        return await self._get(
+            f"/charts/{chart_key}/tags",
+            params={"radar_threshold": radar_threshold, "feature_threshold": feature_threshold},
+        )
+
     # ---------- 排行榜 ----------
 
     async def get_rankings(
