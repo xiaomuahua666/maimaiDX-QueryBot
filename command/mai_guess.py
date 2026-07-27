@@ -1657,28 +1657,36 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
     bot = resolve_event_bot(event)
     await _guess_notify(guess_rating_start, event, '🔍 正在选取群友并加载B50…', reply=True)
 
-    # 选取候选人
-    candidate = await pick_random_candidate(bot, gid)
-    if candidate is None:
-        await guess_rating_start.finish(
-            '未找到可用的群友数据。请确保群内有成员已开启数据存储并上传过成绩。',
-            reply_message=True,
-        )
+    # 立即加锁，防止并发重复开局
+    if not rating_guess.lock(gid):
+        await guess_rating_start.finish(_GUESS_BUSY_HINT, reply_message=True)
 
-    target_uid, target_name, b50 = candidate
-    if b50.rating is None:
-        await guess_rating_start.finish('该群友的Rating数据不可用。', reply_message=True)
+    try:
+        # 选取候选人
+        candidate = await pick_random_candidate(bot, gid)
+        if candidate is None:
+            await guess_rating_start.finish(
+                '未找到可用的群友数据。请确保群内有成员已开启数据存储并上传过成绩。',
+                reply_message=True,
+            )
 
-    # 记录上局目标（防连抽）+ 清空本局志愿者（下局需重新报名）
-    rating_guess.last_target[gid] = target_uid
-    rating_guess.clear_volunteers(gid)
+        target_uid, target_name, b50 = candidate
+        if b50.rating is None:
+            await guess_rating_start.finish('该群友的Rating数据不可用。', reply_message=True)
 
-    # 抽取曲目
-    selected, sd_best, dx_best = select_random_charts(b50, display_count)
-    if not selected:
-        await guess_rating_start.finish('该群友的B50数据为空。', reply_message=True)
+        # 记录上局目标（防连抽）+ 清空本局志愿者（下局需重新报名）
+        rating_guess.last_target[gid] = target_uid
+        rating_guess.clear_volunteers(gid)
 
-    # 开局
+        # 抽取曲目
+        selected, sd_best, dx_best = select_random_charts(b50, display_count)
+        if not selected:
+            await guess_rating_start.finish('该群友的B50数据为空。', reply_message=True)
+    except Exception:
+        rating_guess.unlock(gid)
+        raise
+
+    # 开局（start 会覆盖 locked 状态）
     data = rating_guess.start(
         gid,
         target_uid=target_uid,

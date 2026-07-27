@@ -91,6 +91,8 @@ class GuessRatingManager:
     """管理各群的猜Rating会话。"""
 
     groups: Dict[int, GuessRatingData] = {}
+    # 正在开局中的群（防止并发重复开局）
+    locked: set = set()
     # 志愿者报名：{gid: {billing_id: 过期时间戳}}
     volunteers: Dict[int, Dict[int, float]] = {}
     # 上局被抽中的人：{gid: target_uid}，防连抽
@@ -101,12 +103,24 @@ class GuessRatingManager:
     LAST_TARGET_WEIGHT = 0.1  # 上局目标权重衰减
 
     def is_busy(self, gid: int) -> bool:
-        return gid in self.groups
+        return gid in self.groups or gid in self.locked
+
+    def lock(self, gid: int) -> bool:
+        """尝试锁住本群开始开局。返回 False 表示已被占用。"""
+        if gid in self.groups or gid in self.locked:
+            return False
+        self.locked.add(gid)
+        return True
+
+    def unlock(self, gid: int) -> None:
+        """开局失败时释放锁。"""
+        self.locked.discard(gid)
 
     def get(self, gid: int) -> Optional[GuessRatingData]:
         return self.groups.get(gid)
 
     def end(self, gid: int) -> Optional[GuessRatingData]:
+        self.locked.discard(gid)
         return self.groups.pop(gid, None)
 
     def add_volunteer(self, gid: int, billing_id: int) -> None:
@@ -168,6 +182,7 @@ class GuessRatingManager:
             b50_sd=b50_sd,
             b50_dx=b50_dx,
         )
+        self.locked.discard(gid)
         self.groups[gid] = data
         log.info(
             f'[GuessRating] 开局 gid={gid} target={target_name}({target_uid}) '
