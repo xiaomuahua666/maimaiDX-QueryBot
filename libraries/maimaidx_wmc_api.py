@@ -15,7 +15,7 @@ def make_chart_key(song_id: str, kind: str, diff: int) -> str:
 
 def build_preview_url(song_id: str, kind: str, diff: int) -> str:
     """生成谱面预览网页链接。"""
-    return f"https://v.awmc.cc/?song={song_id}&kind={kind}&diff={diff}"
+    return f"https://v.wmc.pub/?song={song_id}&kind={kind}&diff={diff}"
 
 
 class WmcAPI:
