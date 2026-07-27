@@ -83,7 +83,7 @@ from ..libraries.maimaidx_weakness_prescription import generate_weakness_prescri
 from ..libraries.maimaidx_b50_risk import generate_b50_risk_warning
 from ..libraries.maimaidx_head_to_head import generate_head_to_head
 from ..libraries.maimaidx_rating_sandbox import generate_rating_sandbox
-from ..libraries.maimaidx_wmc_api import WmcAPI, make_chart_key
+from ..libraries.maimaidx_wmc_api import WmcAPI, make_chart_key, resolve_wmc_base_url
 from ..libraries.maimaidx_update_plate import *
 
 best50       = on_command('b50', aliases={'B50'})
@@ -1653,7 +1653,7 @@ async def _(event: MessageEvent, user_id: Optional[int] = Depends(get_at_qq)):
         wmc_cache = {}
         wmc_key = maiconfig.wmc_api_key
         if wmc_key:
-            api = WmcAPI(maiconfig.wmc_api_base_url, wmc_key)
+            api = WmcAPI(resolve_wmc_base_url(maiconfig), wmc_key)
             tasks = []
             task_keys = []
             for chart_list in (getattr(userinfo.charts, 'sd', None) or [], getattr(userinfo.charts, 'dx', None) or []):

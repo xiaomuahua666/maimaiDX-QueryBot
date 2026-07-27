@@ -34,7 +34,10 @@ class Config(BaseModel):
     pmyx_api_base_url: Optional[str] = "http://103.45.162.66:37913"
     # ---------- 谱面印象 v2（v.wmc.pub 公开 API） ----------
     # 填写 api_key 后自动启用 v2 路径；留空则走旧 PMYX。
-    wmc_api_base_url: str = "https://v.wmc.pub/api/v1"
+    # local = 本地部署（localhost:3100），public = 官方（v.wmc.pub）
+    wmc_api_mode: str = "public"
+    wmc_api_local_url: str = "http://localhost:3100/api/v1"
+    wmc_api_public_url: str = "https://v.wmc.pub/api/v1"
     wmc_api_key: Optional[str] = None
     # sw-api 地址（PC 数 / 上传 / 倍率票），可通过环境变量 SDGBTECHAPI 设置
     sdgbtechapi: Optional[str] = None

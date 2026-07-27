@@ -8,6 +8,14 @@ from loguru import logger as log
 WMC_DIFF_NAMES = {2: "Basic", 3: "Advanced", 4: "Expert", 5: "Master", 6: "Re:Master"}
 
 
+def resolve_wmc_base_url(maiconfig) -> str:
+    """根据 wmc_api_mode 返回实际 base_url：local → localhost:3100，public → v.wmc.pub。"""
+    mode = getattr(maiconfig, "wmc_api_mode", "public")
+    if mode == "local":
+        return getattr(maiconfig, "wmc_api_local_url", "http://localhost:3100/api/v1")
+    return getattr(maiconfig, "wmc_api_public_url", "https://v.wmc.pub/api/v1")
+
+
 def make_chart_key(song_id: str, kind: str, diff: int) -> str:
     """构建 chartKey：{songId}:{kind}:{diff}，diff 取值 2-6。"""
     return f"{song_id}:{kind}:{diff}"

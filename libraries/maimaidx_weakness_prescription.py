@@ -197,7 +197,7 @@ def _draw_prescription(
 async def generate_weakness_prescription(qqid: int) -> Union[str, MessageSegment]:
     import asyncio
     from ..config import maiconfig
-    from .maimaidx_wmc_api import WmcAPI, make_chart_key
+    from .maimaidx_wmc_api import WmcAPI, make_chart_key, resolve_wmc_base_url
     try:
         userinfo = await maiApi.query_user_b50(qqid=qqid)
     except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
@@ -207,7 +207,7 @@ async def generate_weakness_prescription(qqid: int) -> Union[str, MessageSegment
     wmc_cache = {}
     wmc_key = maiconfig.wmc_api_key
     if wmc_key:
-        api = WmcAPI(maiconfig.wmc_api_base_url, wmc_key)
+        api = WmcAPI(resolve_wmc_base_url(maiconfig), wmc_key)
         tasks = []
         task_keys = []
         for chart_list in (getattr(userinfo.charts, 'sd', None) or [], getattr(userinfo.charts, 'dx', None) or []):

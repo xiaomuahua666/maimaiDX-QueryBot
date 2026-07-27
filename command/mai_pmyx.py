@@ -14,6 +14,7 @@ from ..libraries.maimaidx_wmc_api import (
     WmcAPI,
     build_preview_url,
     make_chart_key,
+    resolve_wmc_base_url,
 )
 
 
@@ -22,7 +23,7 @@ def _wmc_api() -> Optional[WmcAPI]:
     key = maiconfig.wmc_api_key
     if not key:
         return None
-    return WmcAPI(maiconfig.wmc_api_base_url, key)
+    return WmcAPI(resolve_wmc_base_url(maiconfig), key)
 
 
 def _resolve_music(args: str) -> Optional[Tuple[str, str]]:
