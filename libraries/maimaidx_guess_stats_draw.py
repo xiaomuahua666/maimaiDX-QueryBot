@@ -1,4 +1,4 @@
-"""个人猜歌数据图：五模式趋势 + 扇形占比 + 记录明细。"""
+"""个人猜歌数据图：六模式趋势 + 扇形占比 + 记录明细。"""
 
 from __future__ import annotations
 
@@ -26,6 +26,7 @@ _MODE_COLORS = {
     'audio': (72, 180, 120, 255),
     'chart': (60, 180, 170, 255),
     'letter': (200, 120, 200, 255),
+    'rating': (240, 190, 80, 255),
 }
 
 
@@ -62,7 +63,7 @@ def _draw_multi_line_chart(
     h: int,
 ) -> None:
     # 标题与图例分行，避免「近 30 日…」与五模式色点重叠
-    dt.draw(x + 20, y + 14, 24, '近 30 日积分趋势（五模式）', _TITLE, 'lt', 1, (0, 0, 0, 100))
+    dt.draw(x + 20, y + 14, 24, '近 30 日积分趋势（六模式）', _TITLE, 'lt', 1, (0, 0, 0, 100))
     lx = x + 20
     ly = y + 48
     for mode in GuessScoreManager.GUESS_MODES:
@@ -243,10 +244,11 @@ def draw_personal_guess_stats(stats: dict) -> Image.Image:
 
     y += chart_h + gap
     _rounded(dr, (margin, y, width - margin, y + mode_h), 18, _CARD)
-    dt.draw(margin + 28, y + 20, 26, '五模式记录', _TITLE, 'lt', 1, (0, 0, 0, 100))
+    dt.draw(margin + 28, y + 20, 26, '六模式记录', _TITLE, 'lt', 1, (0, 0, 0, 100))
     modes = stats.get('modes') or {}
     card_gap = 12
-    card_w = (width - margin * 2 - 40 - card_gap * 4) // 5
+    n_modes = len(GuessScoreManager.GUESS_MODES)
+    card_w = (width - margin * 2 - 40 - card_gap * (n_modes - 1)) // n_modes
     card_x0 = margin + 20
     card_y = y + 58
     for i, mode in enumerate(GuessScoreManager.GUESS_MODES):
@@ -262,12 +264,12 @@ def draw_personal_guess_stats(stats: dict) -> Image.Image:
 
     y += mode_h + gap
     _rounded(dr, (margin, y, width - margin, y + pie_h), 18, _CARD)
-    dt.draw(margin + 28, y + 16, 26, '五模式占比', _TITLE, 'lt', 1, (0, 0, 0, 100))
+    dt.draw(margin + 28, y + 16, 26, '六模式占比', _TITLE, 'lt', 1, (0, 0, 0, 100))
     radar = stats.get('radar') or {}
     labels = radar.get('labels') or [GuessScoreManager.MODE_LABELS[m] for m in GuessScoreManager.GUESS_MODES]
     mode_keys = radar.get('modes') or list(GuessScoreManager.GUESS_MODES)
-    points = radar.get('points') or [0] * 5
-    counts = radar.get('counts') or [0] * 5
+    points = radar.get('points') or [0] * len(GuessScoreManager.GUESS_MODES)
+    counts = radar.get('counts') or [0] * len(GuessScoreManager.GUESS_MODES)
     mid = width // 2
     # 环心下移，给卡片标题与子标题留白；图例在环右侧，避免压住标题/明细
     pie_cy = y + 230

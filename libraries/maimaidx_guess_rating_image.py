@@ -149,8 +149,10 @@ def render_hidden_b50(
 
     # 使用标准 B50 背景
     im = Image.open(pic('b50_bg.png')).convert('RGBA').resize((img_w, img_h), Image.Resampling.LANCZOS)
-    dr = ImageDraw.Draw(im)
-    sy = DrawText(dr, _board_font())
+    # 文字统一画在透明图层上最后合成：ImageDraw.text 会直接写入半透明像素，
+    # 导致 QQ 缩略图（白底）与预览（黑底）显示不一致
+    text_layer = Image.new('RGBA', im.size, (0, 0, 0, 0))
+    sy = DrawText(ImageDraw.Draw(text_layer), _board_font())
 
     # ── 头部遮挡：半透明圆角矩形覆盖玩家信息区域 ──
     header_overlay = Image.new('RGBA', (img_w - 40, _HEADER_H - 30), (20, 20, 40, 210))
@@ -190,7 +192,8 @@ def render_hidden_b50(
         _TITLE_COLOR, 'mm',
     )
 
-    return im
+    im.alpha_composite(text_layer)
+    return im.convert('RGB')
 
 
 def hidden_b50_image_segment(charts, display_count, **kwargs):
