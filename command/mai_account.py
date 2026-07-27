@@ -37,7 +37,10 @@ from ..libraries.maimaidx_machine_session import (
 )
 from ..libraries.maimaidx_platform import billing_user_id, resolve_score_qqid
 from ..libraries.maimaidx_playcount_db import pc_db
-from ..libraries.maimaidx_qrcode_util import extract_sgwcmaid_qrcode
+from ..libraries.maimaidx_qrcode_util import (
+    extract_sgwcmaid_from_image_segments,
+    extract_sgwcmaid_qrcode,
+)
 from ..libraries.maimaidx_pending_session import finish_pending, session_key, track_event
 from ..libraries.maimaidx_processing_time import (
     format_processing_estimate,
@@ -2183,8 +2186,10 @@ async def _(
     if raw and not extract_sgwcmaid_qrcode(raw):
         await matcher.finish("上传失败：二维码格式无效", reply_message=True)
     # 凭据安全优先：先撤回，再贴处理表情和执行任何网络请求。缓存已过期时
-    # 尚处于等待新 SGID 阶段，不能提前发送“已受理”。
+    # 尚处于等待新 SGID 阶段，不能提前发送"已受理"。
     qrcode = extract_sgwcmaid_qrcode(raw)
+    if not qrcode and any(seg.type == 'image' for seg in args):
+        qrcode = await extract_sgwcmaid_from_image_segments(args)
     recall_notice = ""
     if qrcode:
         recall_notice = await _recall_qrcode_message(bot, event)
@@ -2234,6 +2239,8 @@ async def _(
         finish_pending(pending_key)
         await matcher.finish(preflight_error, reply_message=False)
     qrcode = extract_sgwcmaid_qrcode(raw)
+    if not qrcode and any(seg.type == 'image' for seg in qrcode_message):
+        qrcode = await extract_sgwcmaid_from_image_segments(qrcode_message)
     recall_notice = ""
     if qrcode:
         recall_notice = await _recall_qrcode_message(bot, event)
