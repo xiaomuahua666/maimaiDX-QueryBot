@@ -174,16 +174,20 @@ def _default_push_reason(song: dict, strategy_tag: str) -> str:
     tags = "/".join(_song_tags(song)[:3]) or "配置鲜明"
     ach = _ach_pct(song)
     ds = _f(song.get("ds"), 0.0)
+    target = str(song.get("target") or "").upper()
+    target_word = "补鸟加" if target == "SSS+" else ("补鸟" if target == "SSS" else "吃分")
     gain = max(_i(song.get("gain_1005"), 0), _i(song.get("gain_100"), 0))
+    ach_gap = _f(song.get("ach_gap"), 0.0)
+    close_hint = "已经寸止" if ach_gap and ach_gap <= 0.2 else "顺手就能推"
     if strategy_tag == _PUSH_TAGS["theme"]:
-        return f"按你的需求直推这张，配置是 {tags}，当前 {ach:.4f}% 更好专项练。"
+        return f"对口的{tags}谱，定数{ds:.1f}现在{ach:.4f}%，专项{target_word}最划算。"
     if strategy_tag == _PUSH_TAGS["practice"]:
-        return f"这张配置 {tags} 很鲜明，定数 {ds:.1f}，适合先拿来补短板。"
+        return f"{tags}练手谱，定数{ds:.1f}顺手不超纲，先拿来补短板。"
     if strategy_tag == _PUSH_TAGS["strong"]:
-        return f"这张正对你的强项配置 {tags}，当前 {ach:.4f}% ，很适合放大优势。"
+        return f"你的强项{tags}，{close_hint}，{target_word}放大优势。"
     if strategy_tag == _PUSH_TAGS["weak"]:
-        return f"这张还是你容易吃亏的 {tags} 配置，但补洞收益会更直接。"
-    return f"综合配置和当前成绩，这张更该优先打；配置 {tags}，收益大约 {gain}。"
+        return f"卡在{tags}的下位谱，{target_word}就能修地板。"
+    return f"定数{ds:.1f}正卡你能力段，{close_hint}{target_word}进 B50，收益约{gain}。"
 
 
 def _prepare_push_song(song: dict, strategy_tag: str, reason: str | None = None) -> dict:
@@ -218,10 +222,12 @@ def _select_push_recommendations(candidates: list[dict], config_profile: dict, u
     }
 
     def _overall_score(song: dict) -> tuple:
+        # 与 sorted(..., reverse=True) 配合：数值越大越优先
         return (
-            len(_song_tags(song)),
+            -_f(song.get("ds_fit"), 99.0),
+            -_f(song.get("ach_gap"), 99.0),
             max(_i(song.get("gain_1005"), 0), _i(song.get("gain_100"), 0)),
-            -abs(99.5 - _ach_pct(song)),
+            len(_song_tags(song)),
             -_i(song.get("play_count", song.get("playCount")), 0),
         )
 
@@ -385,12 +391,17 @@ B50 重合度：低于 30%=选曲小众/口味独到/谱面含金量高（正面
 ARPI 同段对比：sufficient=True 时按 position 判断（above_p75=同段上四分位/稳手，around_median=典型画风，below_p25=下四分位/靠选谱拉分）；sufficient=False 时说「同段样本还不够，先不硬下判断」。绝对禁止自己编同段 ARPI 数值。
 config_profile：strong 是达成率 ≥100.3 且出现 ≥2 次的擅长配置（必须点名表扬）；weak 是达成率 <100.0 且出现 ≥2 次的短板配置（必须温和指出）。每次锐评至少点 1 个 strong + 1 个 weak（数据存在时），不允许空泛说「配置均衡」。
 rating_trend：若上下文给出真实推分趋势与可行性提示，推分路线必须贴合涨分节奏（快推可进攻，横盘修地板，下滑先止损）；没有趋势时不要编造历史涨分。
-push_recommendations 必须从推分候选池里挑 3-4 首，每首标注 strategy_tag（练习特化谱/强项谱/弱项谱/综合推荐）和 reason（15-25 字推荐理由）。选曲策略：不要全选 gain 最高的，要兼顾不同定数段、B35/B15 兼顾、推鸟和推鸟加混合；优先选当前达成率偏低但收益合理的谱面。不要自己另编曲目，结尾必须落到具体谱名。
+push_recommendations 必须从推分候选池里挑 3-4 首，每首标注 strategy_tag（练习特化谱/强项谱/弱项谱/综合推荐）和 reason（15-25 字推荐理由）。
+候选池已经按"贴合玩家 B35 定数段（P25~P75±0.2）+ 拟合度优先"预筛过，直接从里面选即可，不要为了 gain 高就挑最上面那张、更不要跳出候选池另编超纲高难谱。
+选曲策略：优先"寸止吃分/顺手补鸟/卡定数下位谱"这类现在差一点就能推的，兼顾 B35/B15，鸟与鸟加混着推；同一定数段不要连推 3 张。
+reason 必须用舞萌玩家口语：吃分/寸止/补鸟/补鸟加/送鸟/顺手谱/练手谱/卡定数/下位谱/开荒谱/水谱/修地板/推鸟/理论神/银神/金将，避免"专项练""放大优势"这种报告腔。
+不要自己另编曲目，结尾必须落到具体谱名。
 将牌=98/99/100% 对应铜将/银将/金将；神牌=100.5%（银神）/101%（理论神/金神）。B50 里的 101 理论值谱可顺带说「这张是理论神」。
 
 【OneCat 口播提示词】
 这是视频口播，不是分析报告。开头先裁决，再拆证据，再给建议。
 要像现场锐评：短句、停顿、反问、先下结论。可以自然用家人们、你告诉我、有没有可能、就你看、那我只能说、虚低、重量级、变态、疯了、通透等词，但别堆成口号。
+舞萌黑话优先用：吃分/寸止/补鸟/补鸟加/送鸟/顺手谱/练手谱/开荒谱/水谱/下位谱/上位谱/卡定数/修地板/推鸟/推鸟加/理论神/银神/金将/铜将/白/紫/红/黄/绿谱/内屏/外屏/触屏/tap/slide/touch/hold；结论层可用固若金汤/吃透/通透/开香槟/重量级/瞻仰。避免"专项练""放大优势""均衡发展"这类报告腔。
 如果用户指定口吻/人设/文风，要整段都服从，不能只在开头装一下。
 结尾一定要给具体推分路线和具体谱名，不能只说"还有提升空间"。
 必须至少有 1 个强夸赞词（伟大/变态/疯了/榜样/开香槟/固若金汤/重量级/瞻仰/通透/吃透）、1 个反问式口播句（你告诉我/有没有可能/那我只能说/就你看）、1 个节目效果转场（家人们/我们一起来瞻仰一下/我人直接傻了/这是真看不懂/换我已经开香槟了/往下一滑更重量级/结果你这一看）。
@@ -711,12 +722,16 @@ def _fmt(context: dict) -> str:
     push_candidates = context.get("push_candidates") or []
     if push_candidates:
         lines.append("")
-        lines.append("推分候选池（从以下候选里选 3-4 首输出到 push_recommendations）：")
+        lines.append("推分候选池（已按贴合玩家 B35 定数段筛过，从以下候选里选 3-4 首，禁止跳出此列表另编超纲高难谱）：")
         for i, c in enumerate(push_candidates[:15], 1):
             tag_text = _fmt_tags(c.get("config_tags") or [])
             extra = []
             if c.get("bucket"):
                 extra.append(str(c.get("bucket")))
+            if c.get("ds_fit") is not None:
+                extra.append(f"拟合度{_f(c.get('ds_fit'), 0):.2f}")
+            if c.get("ach_gap") is not None:
+                extra.append(f"距目标{_f(c.get('ach_gap'), 0):.4f}%")
             if c.get("peer_avg") is not None:
                 extra.append(f"同段均值{c.get('peer_avg'):.4f}%")
             if c.get("gap_vs_peer") is not None:

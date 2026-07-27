@@ -282,24 +282,47 @@ def _calc_ra(ds: float, achievement: float) -> int:
     return int(ds * (min(100.5, achievement) / 100) * base)
 
 
+def _percentile(sorted_list: list[float], p: float) -> float:
+    if not sorted_list:
+        return 0.0
+    if len(sorted_list) == 1:
+        return sorted_list[0]
+    k = (len(sorted_list) - 1) * p
+    f = int(k)
+    c = min(f + 1, len(sorted_list) - 1)
+    if f == c:
+        return sorted_list[f]
+    return sorted_list[f] * (c - k) + sorted_list[c] * (k - f)
+
+
 def _build_push_candidates(all_charts: list[dict]) -> list[dict]:
     b35 = [c for c in all_charts if c.get("bucket") == "B35"]
-    b35_ds_list = sorted([_f(c.get("ds")) for c in b35])
+    b35_ds_list = sorted([_f(c.get("ds")) for c in b35 if _f(c.get("ds")) > 0])
     b35_ras = sorted([_i(c.get("ra")) for c in b35], reverse=True)
-    ds_floor = b35_ds_list[0] if b35_ds_list else 0
-    ds_ceil = b35_ds_list[-1] if b35_ds_list else 0
     b35_floor = b35_ras[-1] if b35_ras else 0
     b15_ras = sorted([_i(c.get("ra")) for c in all_charts if c.get("bucket") == "B15"], reverse=True)
     b15_floor = b15_ras[-1] if b15_ras else 0
 
-    DS_ABOVE_BUFFER = 0.4
+    # 贴合玩家能力段：只在 B35 定数 P25~P75 上下 0.2 缓冲内挑候选，避免推超纲的高难谱。
+    if b35_ds_list:
+        p25 = _percentile(b35_ds_list, 0.25)
+        p50 = _percentile(b35_ds_list, 0.50)
+        p75 = _percentile(b35_ds_list, 0.75)
+        ds_lo = p25 - 0.2
+        ds_hi = p75 + 0.2
+        ds_center = p50
+    else:
+        ds_lo = 0.0
+        ds_hi = 99.0
+        ds_center = 0.0
+
     candidates: list[dict] = []
     for c in all_charts:
         ach = _f(c.get("achievement"))
         if ach >= 100.5:
             continue
         ds = _f(c.get("ds"))
-        if ds < ds_floor or ds > ds_ceil + DS_ABOVE_BUFFER:
+        if ds < ds_lo or ds > ds_hi:
             continue
         bucket = c.get("bucket")
         if bucket:
@@ -311,15 +334,21 @@ def _build_push_candidates(all_charts: list[dict]) -> list[dict]:
         if ach >= 100.0:
             target_gain = gain_1005
             target_label = "SSS+"
+            target_ach = 100.5
         else:
             if gain_100 >= 2:
                 target_gain = gain_100
                 target_label = "SSS"
+                target_ach = 100.0
             else:
                 target_gain = gain_1005
                 target_label = "SSS+"
+                target_ach = 100.5
         if target_gain < 2:
             continue
+        # 拟合度：与玩家 B35 中位定数越近、与目标达成率越近 → 越贴合、越"寸止吃分"
+        ds_fit = abs(ds - ds_center) if ds_center else 0.0
+        ach_gap = max(0.0, target_ach - ach)
         candidates.append({
             "song_id": _i(c.get("song_id") or c.get("music_id")),
             "title": str(c.get("title") or ""),
@@ -334,11 +363,16 @@ def _build_push_candidates(all_charts: list[dict]) -> list[dict]:
             "gain_100": 0,
             "gain_1005": target_gain,
             "target": target_label,
+            "ds_fit": round(ds_fit, 3),
+            "ach_gap": round(ach_gap, 4),
         })
     if not candidates:
         return []
-    random.shuffle(candidates)
-    result = [_normalize(c) for c in candidates[:15]]
+    # 先按拟合度升序、寸止差距升序取前 25 条，再随机采样保多样性
+    candidates.sort(key=lambda x: (x["ds_fit"], x["ach_gap"], -_i(x.get("gain_1005"), 0)))
+    pool = candidates[:25]
+    random.shuffle(pool)
+    result = [_normalize(c) for c in pool[:15]]
     return result
 
 
@@ -385,9 +419,10 @@ def _enrich_push_candidates(
 
     enriched.sort(
         key=lambda x: (
+            _f(x.get("ds_fit"), 99.0),
+            _f(x.get("ach_gap"), 99.0),
             -max(_i(x.get("gain_1005"), 0), _i(x.get("gain_100"), 0)),
             -len(x.get("config_tags") or []),
-            abs(99.5 - _f(x.get("achievement"), 0.0)),
             -_i(x.get("play_count"), 0),
             str(x.get("title") or ""),
         )
