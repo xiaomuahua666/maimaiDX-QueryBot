@@ -22,6 +22,7 @@ from ..libraries.maimaidx_guess_match import match_guess_answer
 from ..libraries.maimaidx_guess_rate_limit import consume_guess_answer_slot
 from ..libraries.maimaidx_group_rating import build_forward_node
 from ..libraries.maimaidx_guess_score import guess_score
+from ..libraries.maimaidx_guess_rank_draw import image_b64 as rank_image_b64, render_guess_rank_image
 from ..libraries.maimaidx_guess_stats_draw import personal_guess_stats_image_b64
 from ..libraries.maimaidx_guess_sync import (
     MAIN_GROUP_REDIRECT,
@@ -136,6 +137,7 @@ guess_my_stats = on_command(
     priority=5,
     block=True,
 )
+guess_group_rank = on_command('本群猜歌排行', rule=GROUP_MESSAGE)
 guess_sync_reply = on_message(
     rule=GROUP_MESSAGE & GUESS_SYNC_PENDING,
     priority=1,
@@ -1389,6 +1391,28 @@ async def _handle_guess_score_board(
         period=period,
     )
     await _send_guess_score_forward(matcher, bot, event, title, nodes)
+
+
+@guess_group_rank.handle()
+async def _(event: MessageEvent):
+    gid = get_event_group_id(event)
+    if gid is None:
+        await guess_group_rank.finish('请在群内使用。', reply_message=True)
+    if gid not in guess.switch.enable:
+        await guess_group_rank.finish(
+            '该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True,
+        )
+    ranking = guess_score.get_ranking(gid, top_n=20)
+    if not ranking:
+        await guess_group_rank.finish('本群暂无猜歌积分记录。', reply_message=True)
+    b64 = await asyncio.to_thread(
+        rank_image_b64,
+        await render_guess_rank_image(ranking),
+    )
+    await guess_group_rank.finish(
+        adapt_guess_outbound(MessageSegment.image(b64), event=event),
+        reply_message=True,
+    )
 
 
 async def _resolve_guess_stats_target(event: MessageEvent) -> tuple[str, str, bool]:
