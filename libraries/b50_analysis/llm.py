@@ -41,10 +41,10 @@ _REPORT_TONE_TERMS = [
 ]
 
 _PUSH_TAGS = {
-    "theme": "用户需求",
-    "practice": "练习特化谱",
-    "strong": "强项谱",
-    "weak": "弱项谱",
+    "theme": "你点的菜",
+    "practice": "练手磨配置",
+    "strong": "强项放大",
+    "weak": "弱项补课",
     "overall": "综合推荐",
 }
 
@@ -171,23 +171,49 @@ def _normalize_strategy_tag(value: str) -> str:
 
 
 def _default_push_reason(song: dict, strategy_tag: str) -> str:
-    tags = "/".join(_song_tags(song)[:3]) or "配置鲜明"
+    import random as _rand
+
+    tags = "/".join(_song_tags(song)[:3]) or "配置"
     ach = _ach_pct(song)
     ds = _f(song.get("ds"), 0.0)
     target = str(song.get("target") or "").upper()
     target_word = "补鸟加" if target == "SSS+" else ("补鸟" if target == "SSS" else "吃分")
     gain = max(_i(song.get("gain_1005"), 0), _i(song.get("gain_100"), 0))
     ach_gap = _f(song.get("ach_gap"), 0.0)
-    close_hint = "已经寸止" if ach_gap and ach_gap <= 0.2 else "顺手就能推"
+    close_hint = "已经寸止" if ach_gap and ach_gap <= 0.2 else "差一点就能推"
+
     if strategy_tag == _PUSH_TAGS["theme"]:
-        return f"对口的{tags}谱，定数{ds:.1f}现在{ach:.4f}%，专项{target_word}最划算。"
-    if strategy_tag == _PUSH_TAGS["practice"]:
-        return f"{tags}练手谱，定数{ds:.1f}顺手不超纲，先拿来补短板。"
-    if strategy_tag == _PUSH_TAGS["strong"]:
-        return f"你的强项{tags}，{close_hint}，{target_word}放大优势。"
-    if strategy_tag == _PUSH_TAGS["weak"]:
-        return f"卡在{tags}的下位谱，{target_word}就能修地板。"
-    return f"定数{ds:.1f}正卡你能力段，{close_hint}{target_word}进 B50，收益约{gain}。"
+        reasons = [
+            f"{tags}正好对口，{ds:.1f}定数{ach:.1f}%，这波{target_word}血赚。",
+            f"你点名的{tags}来了，定数{ds:.1f}才{ach:.1f}%，寸止位直接{target_word}。",
+            f"{tags}谱定数{ds:.1f}，{ach:.1f}%差一口气，趁热{target_word}。",
+        ]
+    elif strategy_tag == _PUSH_TAGS["practice"]:
+        reasons = [
+            f"{tags}练手谱，{ds:.1f}不超纲先拿来补补。",
+            f"{ds:.1f}定数{tags}顺手，拿来磨配置正好。",
+            f"{tags}下位谱，{ds:.1f}顺手不费力，先稳一手。",
+        ]
+    elif strategy_tag == _PUSH_TAGS["strong"]:
+        reasons = [
+            f"{tags}本来就是你的强项，{close_hint}，{target_word}直接收。",
+            f"你{tags}已经很猛了，{ds:.1f}这张{close_hint}，顺手{target_word}。",
+            f"强项{tags}再来一张，{ds:.1f}定数{ach:.1f}%，{target_word}放大优势。",
+        ]
+    elif strategy_tag == _PUSH_TAGS["weak"]:
+        reasons = [
+            f"{tags}是你短板，{ds:.1f}这张下位谱正好拿来修地板。",
+            f"弱项{tags}得练，{ds:.1f}定数先把这张{target_word}。",
+            f"{tags}不太行？{ds:.1f}这张难度刚好，拿来补短板。",
+        ]
+    else:
+        reasons = [
+            f"{ds:.1f}定数正好卡你能力段，{close_hint}{target_word}进 B50，收益约{gain}。",
+            f"定数{ds:.1f} {tags}，{ach:.1f}%差一点，{target_word}就能往上推。",
+            f"{ds:.1f}这张{close_hint}，收益{gain}，性价比很高。",
+        ]
+
+    return _rand.choice(reasons)
 
 
 def _prepare_push_song(song: dict, strategy_tag: str, reason: str | None = None) -> dict:
@@ -391,7 +417,7 @@ B50 重合度：低于 30%=选曲小众/口味独到/谱面含金量高（正面
 ARPI 同段对比：sufficient=True 时按 position 判断（above_p75=同段上四分位/稳手，around_median=典型画风，below_p25=下四分位/靠选谱拉分）；sufficient=False 时说「同段样本还不够，先不硬下判断」。绝对禁止自己编同段 ARPI 数值。
 config_profile：strong 是达成率 ≥100.3 且出现 ≥2 次的擅长配置（必须点名表扬）；weak 是达成率 <100.0 且出现 ≥2 次的短板配置（必须温和指出）。每次锐评至少点 1 个 strong + 1 个 weak（数据存在时），不允许空泛说「配置均衡」。
 rating_trend：若上下文给出真实推分趋势与可行性提示，推分路线必须贴合涨分节奏（快推可进攻，横盘修地板，下滑先止损）；没有趋势时不要编造历史涨分。
-push_recommendations 必须从推分候选池里挑 3-4 首，每首标注 strategy_tag（练习特化谱/强项谱/弱项谱/综合推荐）和 reason（15-25 字推荐理由）。
+push_recommendations 必须从推分候选池里挑 3-4 首，每首标注 strategy_tag（你点的菜/练手磨配置/强项放大/弱项补课/综合推荐）和 reason（15-25 字推荐理由）。
 候选池已经按"贴合玩家 B35 定数段（P25~P75±0.2）+ 拟合度优先"预筛过，直接从里面选即可，不要为了 gain 高就挑最上面那张、更不要跳出候选池另编超纲高难谱。
 选曲策略：优先"寸止吃分/顺手补鸟/卡定数下位谱"这类现在差一点就能推的，兼顾 B35/B15，鸟与鸟加混着推；同一定数段不要连推 3 张。
 reason 必须用舞萌玩家口语：吃分/寸止/补鸟/补鸟加/送鸟/顺手谱/练手谱/卡定数/下位谱/开荒谱/水谱/修地板/推鸟/理论神/银神/金将，避免"专项练""放大优势"这种报告腔。
@@ -409,6 +435,23 @@ rating 必须按 200 分细分段看，尤其 16500+ 是顶级门槛段，语气
 夸赞必须具体到数据：夸 B35 地板固若金汤、B15 新版本适应重量级、某张谱打得通透、某个定数被吃透、某个同段差距直接溢出。不要只写"很强"。
 community_vibe/chart_identity（诈骗谱/神谱/练习谱…）是圈子里大家的看法，能自然融入一句「大家都说这是诈骗谱」「圈里公认练习向」最好。
 SD 谱=标准谱（note 数较少、接近经典 maimai），DX 谱（引入大量 touch、密度更高）。讲 touch 交互/内外屏配合时天然指向 DX 谱，讲 tap/slide 经典配置时指向 SD 谱。
+
+【舞萌场景与社区梗】
+适度融入以下场景词让锐评更有"出勤感"和"机厅味"，但别硬塞：
+- 出勤/出勤率：去机厅打舞萌的频率，"最近出勤少了手感会掉"
+- 框体/机台/机厅：舞萌街机本身和玩的地方
+- 爆气/开大：状态好时连续高达成率的表现
+- 手伤/养手：因过度练习导致手部不适需要休息
+- 毒/毒谱：谱面设计反直觉、节奏诡异，让人频频失误
+- 纯度/含金量：B50 里小众谱、高难谱的比例越高越有含金量
+- 拼机/野队：和陌生人一起玩的场景
+- 友人/组队：和朋友一起打，默契配合
+- 段位/排位：舞萌 DX 的段位系统
+- 收歌/收曲：把某张谱打到鸟或更高评价
+- 开荒/开荒谱：第一次尝试或刚开始练的谱面
+- 水分/水谱：达成率很容易拿到的简单谱面
+- 硬谱/坐牢：难度极高、反复失败的谱面体验
+- 手感/肌肉记忆：长期练习形成的稳定发挥能力
 
 【硬性禁止】
 不要写 markdown，不要写 ```json，不要写代码块外壳，不要写解释文字。
