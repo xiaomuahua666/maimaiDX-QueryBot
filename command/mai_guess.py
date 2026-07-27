@@ -174,6 +174,12 @@ guess_rating_solve = on_message(
     block=False,
 )
 guess_rating_reset = on_command('重置猜rating', aliases={'重置猜Rating'}, priority=4, block=True, rule=GROUP_MESSAGE)
+guess_rating_volunteer = on_regex(
+    r'^(?:猜猜我的|猜我的|选我)\s*$',
+    rule=GROUP_MESSAGE,
+    priority=5,
+    block=True,
+)
 
 # 猜歌玩法不参与高峰期「额外 1 BREAK」附加费（含局内答题 on_message）。
 for _guess_matcher in (
@@ -206,6 +212,7 @@ for _guess_matcher in (
     guess_rating_start,
     guess_rating_solve,
     guess_rating_reset,
+    guess_rating_volunteer,
 ):
     setattr(_guess_matcher, '_maimaidx_busy_surcharge_exempt', True)
 
@@ -1662,6 +1669,10 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
     if b50.rating is None:
         await guess_rating_start.finish('该群友的Rating数据不可用。', reply_message=True)
 
+    # 记录上局目标（防连抽）+ 清空本局志愿者（下局需重新报名）
+    rating_guess.last_target[gid] = target_uid
+    rating_guess.clear_volunteers(gid)
+
     # 抽取曲目
     selected, sd_best, dx_best = select_random_charts(b50, display_count)
     if not selected:
@@ -1837,6 +1848,22 @@ async def _(event: MessageEvent):
         await guess_rating_reset.finish('当前没有进行中的猜Rating。', reply_message=True)
     rating_guess.end(gid)
     await guess_rating_reset.finish('猜Rating已重置。', reply_message=True)
+
+
+@guess_rating_volunteer.handle()
+async def _(event: MessageEvent):
+    gid = get_event_group_id(event)
+    if gid is None:
+        return
+    if gid not in guess.switch.enable:
+        return
+    billing = billing_user_id(event)
+    rating_guess.add_volunteer(gid, billing)
+    name = get_sender_display_name(event)
+    await guess_rating_volunteer.finish(
+        f'✅ {name} 已报名！下局猜Rating你被抽中的概率 ×5（10分钟内有效）',
+        reply_message=True,
+    )
 
 
 from ..libraries import maimaidx_guess_scheduler  # noqa: F401

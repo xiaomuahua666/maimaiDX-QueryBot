@@ -91,6 +91,14 @@ class GuessRatingManager:
     """管理各群的猜Rating会话。"""
 
     groups: Dict[int, GuessRatingData] = {}
+    # 志愿者报名：{gid: {billing_id: 过期时间戳}}
+    volunteers: Dict[int, Dict[int, float]] = {}
+    # 上局被抽中的人：{gid: target_uid}，防连抽
+    last_target: Dict[int, int] = {}
+
+    VOLUNTEER_TTL = 600  # 报名有效期 10 分钟
+    VOLUNTEER_WEIGHT = 5.0  # 志愿者权重倍率
+    LAST_TARGET_WEIGHT = 0.1  # 上局目标权重衰减
 
     def is_busy(self, gid: int) -> bool:
         return gid in self.groups
@@ -100,6 +108,41 @@ class GuessRatingManager:
 
     def end(self, gid: int) -> Optional[GuessRatingData]:
         return self.groups.pop(gid, None)
+
+    def add_volunteer(self, gid: int, billing_id: int) -> None:
+        """登记志愿者（下局猜Rating抽中概率提升）。"""
+        self.volunteers.setdefault(gid, {})[int(billing_id)] = (
+            time.time() + self.VOLUNTEER_TTL
+        )
+
+    def active_volunteers(self, gid: int) -> set:
+        """本群当前有效的志愿者 billing_id 集合（顺带清理过期）。"""
+        vols = self.volunteers.get(gid)
+        if not vols:
+            return set()
+        now = time.time()
+        expired = [u for u, exp in vols.items() if exp < now]
+        for u in expired:
+            vols.pop(u, None)
+        return set(vols.keys())
+
+    def clear_volunteers(self, gid: int) -> None:
+        """开局后清空本群志愿者（下局需重新报名）。"""
+        self.volunteers.pop(gid, None)
+
+    def weighted_pick(self, gid: int, pool: List[Tuple[int, str]]) -> Tuple[int, str]:
+        """按权重抽选候选人：志愿者×5，上局目标×0.1。"""
+        vols = self.active_volunteers(gid)
+        last = self.last_target.get(gid)
+        weights: List[float] = []
+        for uid, _name in pool:
+            w = 1.0
+            if uid in vols:
+                w *= self.VOLUNTEER_WEIGHT
+            if uid == last and len(pool) > 1:
+                w *= self.LAST_TARGET_WEIGHT
+            weights.append(w)
+        return random.choices(pool, weights=weights, k=1)[0]
 
     def start(
         self,
@@ -248,10 +291,11 @@ async def pick_random_candidate(
     if not pool:
         return None
 
-    random.shuffle(pool)
-
-    # 尝试获取B50（优先本地快照缓存，最多尝试5个）
-    for uid, name in pool[:5]:
+    # 加权不放回抽样，最多尝试 5 个
+    pool_copy = list(pool)
+    for _ in range(min(5, len(pool_copy))):
+        uid, name = rating_guess.weighted_pick(group_id, pool_copy)
+        pool_copy = [(u, n) for u, n in pool_copy if u != uid]
         try:
             b50 = await get_user_b50_or_fallback(qqid=uid)
             if b50 and b50.rating is not None and b50.charts:
