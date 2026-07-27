@@ -55,6 +55,16 @@ from ..libraries.maimaidx_model import (
     GuessDefaultData,
     GuessPicData,
 )
+from ..libraries.maimaidx_guess_rating import (
+    DEFAULT_DISPLAY_COUNT,
+    DEFAULT_DURATION,
+    MAX_DISPLAY_COUNT,
+    MIN_DISPLAY_COUNT,
+    format_reward_text,
+    pick_random_candidate,
+    rating_guess,
+    select_random_charts,
+)
 from ..libraries.maimaidx_music_info import *
 from ..libraries.maimaidx_platform import (
     GroupId,
@@ -95,6 +105,11 @@ GUESS_SYNC_PENDING = Rule(_has_guess_sync_pending)
 def is_now_playing_guess_music(event) -> bool:
     gid = get_event_group_id(event)
     return gid is not None and gid in guess.Group
+
+
+def is_now_playing_guess_rating(event) -> bool:
+    gid = get_event_group_id(event)
+    return gid is not None and rating_guess.is_busy(gid)
 
 
 guess_music_start   = on_command('猜歌', rule=GROUP_MESSAGE)
@@ -151,6 +166,15 @@ guess_migrate_data = on_command(
     block=True,
 )
 
+# ── 猜Rating ──
+guess_rating_start = on_command('猜rating', aliases={'猜Rating'}, rule=GROUP_MESSAGE, priority=5, block=True)
+guess_rating_solve = on_message(
+    rule=GROUP_MESSAGE & Rule(is_now_playing_guess_rating),
+    priority=10,
+    block=False,
+)
+guess_rating_reset = on_command('重置猜rating', aliases={'重置猜Rating'}, priority=4, block=True, rule=GROUP_MESSAGE)
+
 # 猜歌玩法不参与高峰期「额外 1 BREAK」附加费（含局内答题 on_message）。
 for _guess_matcher in (
     guess_music_start,
@@ -179,6 +203,9 @@ for _guess_matcher in (
     guess_my_stats,
     guess_sync_reply,
     guess_migrate_data,
+    guess_rating_start,
+    guess_rating_solve,
+    guess_rating_reset,
 ):
     setattr(_guess_matcher, '_maimaidx_busy_surcharge_exempt', True)
 
@@ -285,7 +312,7 @@ async def _award_guess_points(
     return settlement
 
 
-_GUESS_BUSY_HINT = '该群已有正在进行的猜歌、猜曲绘、猜曲子、猜铺面或开字母'
+_GUESS_BUSY_HINT = '该群已有正在进行的猜歌、猜曲绘、猜曲子、猜铺面、猜Rating或开字母'
 _GUESS_SEND_FAIL_MSG = '游戏数据获取失败，本游戏已结束。'
 GUESS_SEND_TIMEOUT_TEXT = 15
 GUESS_SEND_TIMEOUT_MEDIA = 60
@@ -305,7 +332,7 @@ def _letter_busy(gid: GroupId) -> bool:
 
 
 def _guess_or_letter_busy(gid: GroupId) -> bool:
-    return guess.is_busy(gid) or _letter_busy(gid)
+    return guess.is_busy(gid) or _letter_busy(gid) or rating_guess.is_busy(gid)
 
 
 def _guess_loop_should_stop(gid: GroupId) -> bool:
@@ -1584,6 +1611,231 @@ async def _(matcher: Matcher, event: MessageEvent):
     else:
         raise ValueError('matcher type error')
     await guess_music_enable.finish(msg, reply_message=True)
+
+
+# ─────────────────────── 猜Rating ───────────────────────
+
+
+def _parse_rating_args(text: str) -> tuple[int, int]:
+    """解析 猜rating [display_count] [duration] 参数。"""
+    parts = text.strip().split()
+    display_count = DEFAULT_DISPLAY_COUNT
+    duration = DEFAULT_DURATION
+    for part in parts:
+        try:
+            n = int(part)
+        except ValueError:
+            continue
+        if MIN_DISPLAY_COUNT <= n <= MAX_DISPLAY_COUNT:
+            display_count = n
+        elif 10 <= n <= 300:
+            duration = n
+    return display_count, duration
+
+
+@guess_rating_start.handle()
+async def _(event: MessageEvent, args: Message = CommandArg()):
+    await _gate_guess_group_entry(guess_rating_start, event)
+    gid = get_event_group_id(event)
+    if gid is None:
+        await guess_rating_start.finish('请在群内使用。', reply_message=True)
+    if gid not in guess.switch.enable:
+        await guess_rating_start.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True)
+    if _guess_or_letter_busy(gid):
+        await guess_rating_start.finish(_GUESS_BUSY_HINT, reply_message=True)
+
+    text = args.extract_plain_text().strip()
+    display_count, duration = _parse_rating_args(text)
+
+    bot = resolve_event_bot(event)
+    await _guess_notify(guess_rating_start, event, '🔍 正在选取群友并加载B50…', reply=True)
+
+    # 选取候选人
+    candidate = await pick_random_candidate(bot, gid)
+    if candidate is None:
+        await guess_rating_start.finish(
+            '未找到可用的群友数据。请确保群内有成员已开启数据存储并上传过成绩。',
+            reply_message=True,
+        )
+
+    target_uid, target_name, b50 = candidate
+    if b50.rating is None:
+        await guess_rating_start.finish('该群友的Rating数据不可用。', reply_message=True)
+
+    # 抽取曲目
+    selected, sd_best, dx_best = select_random_charts(b50, display_count)
+    if not selected:
+        await guess_rating_start.finish('该群友的B50数据为空。', reply_message=True)
+
+    # 开局
+    data = rating_guess.start(
+        gid,
+        target_uid=target_uid,
+        target_name=target_name,
+        target_rating=b50.rating,
+        display_count=display_count,
+        duration=duration,
+        selected_charts=selected,
+        b50_sd=sd_best,
+        b50_dx=dx_best,
+    )
+
+    # 发送隐藏B50图
+    from ..libraries.maimaidx_guess_rating_image import hidden_b50_image_segment
+
+    intro = dedent(f'''\
+        🎮 猜Rating开始！
+        展示 {len(selected)} 首 / 共 50 首
+        ⏱ {duration}秒作答时间，发送数字猜Rating（可修改）
+        最接近者获胜 🏆
+    ''')
+
+    compact = bool(getattr(maiconfig, 'maimaidx_compact_messages', True))
+    try:
+        img_seg = await asyncio.to_thread(
+            hidden_b50_image_segment,
+            selected,
+            display_count,
+            data.time_left(),
+        )
+        if compact:
+            bundle = MessageSegment.text(intro + '\n') + img_seg
+            await _safe_matcher_send(guess_rating_start, event, bundle, gid, media=True)
+        else:
+            await _safe_matcher_send(guess_rating_start, event, intro, gid)
+            await _safe_matcher_send(guess_rating_start, event, img_seg, gid, media=True)
+    except Exception as e:
+        log.warning(f'[GuessRating] 发送隐藏B50图失败 gid={gid}: {e}')
+        await _safe_matcher_send(guess_rating_start, event, intro, gid)
+
+    # 倒计时
+    remaining = duration
+    while remaining > 0:
+        await asyncio.sleep(1)
+        if rating_guess.is_busy(gid):
+            data = rating_guess.get(gid)
+            if data and data.end:
+                break
+        remaining -= 1
+        if remaining in (30, 10, 5):
+            await _guess_notify(
+                guess_rating_start, event,
+                f'⏳ 还剩 {remaining}秒！',
+            )
+
+    # 结算
+    if not rating_guess.is_busy(gid):
+        return
+
+    settlement = rating_guess.settle(gid)
+    if settlement is None:
+        return
+
+    # 发放奖励
+    from ..libraries.maimaidx_break import break_db
+
+    for reward in settlement.rewards:
+        if reward.score > 0:
+            await guess_score.award_fixed_points(
+                gid,
+                reward.uid,
+                reward.name,
+                reward.score,
+                mode=guess_score.MODE_RATING,
+            )
+        if reward.break_points > 0:
+            break_db.add_balance(
+                reward.billing_id,
+                reward.break_points,
+                'rating_guess_settlement',
+                meta={
+                    'group_id': str(gid),
+                    'target_uid': settlement.target_uid,
+                    'target_name': settlement.target_name,
+                    'target_rating': settlement.target_rating,
+                    'rank': reward.rank,
+                    'diff': reward.diff,
+                },
+            )
+
+    # 构建结算消息
+    result_lines = [
+        '🎉 猜Rating结束！',
+        '',
+        f'🎵 TA是 {settlement.target_name}！',
+        f'🎯 真实Rating：{settlement.target_rating}',
+        '',
+        '📊 排名：',
+        format_reward_text(settlement.rewards, settlement.target_rating),
+    ]
+    result_text = '\n'.join(result_lines)
+
+    # 发送揭晓B50图
+    from ..libraries.maimaidx_guess_rating_image import reveal_b50_image_segment
+
+    try:
+        reveal_img = await asyncio.to_thread(
+            reveal_b50_image_segment,
+            sd_best,
+            dx_best,
+            settlement.target_name,
+            settlement.target_rating,
+        )
+        bundle = MessageSegment.text(result_text + '\n') + reveal_img
+        await _safe_matcher_send(guess_rating_start, event, bundle, gid, media=True, fatal=False)
+    except Exception as e:
+        log.warning(f'[GuessRating] 发送揭晓图失败 gid={gid}: {e}')
+        await _safe_matcher_send(guess_rating_start, event, result_text, gid, fatal=False)
+
+    await guess_rating_start.finish()
+
+
+@guess_rating_solve.handle()
+async def _(event: MessageEvent):
+    gid = get_event_group_id(event)
+    if gid is None:
+        return
+    data = rating_guess.get(gid)
+    if data is None or data.end:
+        return
+
+    text = event.get_plaintext().strip()
+    if not text:
+        return
+
+    # 只接受纯数字
+    if not text.isdigit():
+        return
+
+    answer = int(text)
+    if answer < 0 or answer > 99999:
+        return
+
+    # 频率限制
+    uid_key = platform_user_id(event)
+    rate_limit_msg = consume_guess_answer_slot(uid_key)
+    if rate_limit_msg:
+        await guess_rating_solve.finish(
+            adapt_guess_outbound(rate_limit_msg, event=event),
+            reply_message=resolve_reply_message(event, reply_message=True),
+        )
+
+    name = get_sender_display_name(event)
+    billing = billing_user_id(event)
+    msg = rating_guess.submit(gid, uid_key, name, billing, answer)
+    if msg:
+        await _guess_notify(guess_rating_start, event, msg)
+
+
+@guess_rating_reset.handle()
+async def _(event: MessageEvent):
+    gid = get_event_group_id(event)
+    if gid is None:
+        return
+    if not rating_guess.is_busy(gid):
+        await guess_rating_reset.finish('当前没有进行中的猜Rating。', reply_message=True)
+    rating_guess.end(gid)
+    await guess_rating_reset.finish('猜Rating已重置。', reply_message=True)
 
 
 from ..libraries import maimaidx_guess_scheduler  # noqa: F401

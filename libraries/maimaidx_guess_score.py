@@ -99,19 +99,21 @@ class GuessScoreManager:
     MAX_HISTORY_PER_PERIOD = 30
     MAX_EVENTS_PER_GROUP = 8000
 
-    # 个人数据图五模式（含开字母结算分）
+    # 个人数据图六模式（含开字母、猜Rating结算分）
     MODE_SONG = 'song'
     MODE_PIC = 'pic'
     MODE_AUDIO = 'audio'
     MODE_CHART = 'chart'
     MODE_LETTER = 'letter'
-    GUESS_MODES = (MODE_SONG, MODE_PIC, MODE_AUDIO, MODE_CHART, MODE_LETTER)
+    MODE_RATING = 'rating'
+    GUESS_MODES = (MODE_SONG, MODE_PIC, MODE_AUDIO, MODE_CHART, MODE_LETTER, MODE_RATING)
     MODE_LABELS = {
         MODE_SONG: '猜歌',
         MODE_PIC: '猜曲绘',
         MODE_AUDIO: '猜曲子',
         MODE_CHART: '猜铺面',
         MODE_LETTER: '开字母',
+        MODE_RATING: '猜Rating',
     }
 
     PERIODS: Dict[str, PeriodSpec] = {
