@@ -22,6 +22,7 @@ from ..libraries.maimaidx_music import feature_manager, guess, mai, maiApi
 from ..libraries.maimaidx_music_info import build_tags_forward_nodes, draw_music_info
 from ..libraries.maimaidx_multiver_chart import draw_multiver_chart
 from ..libraries.maimaidx_pmyx_api import PmyxAPI
+from ..libraries.maimaidx_wmc_api import WMC_DIFF_NAMES, WmcAPI, build_preview_url, make_chart_key
 from ..libraries.maimaidx_timing import attach_timing, finish_timed_sync, run_timed
 
 search_music        = on_command('查歌', aliases={'search'})
@@ -76,7 +77,53 @@ async def _build_chart_preview_nodes(music, self_id: int, nickname: str) -> List
 
 
 async def _build_pmyx_forward_nodes(music_id: str, self_id: int, nickname: str) -> List[dict]:
-    """拉取该曲谱面印象（pmyx API），构建合并转发 node 列表；无数据时也返回一条「暂无谱面印象」节点。"""
+    """拉取该曲谱面印象，构建合并转发 node 列表；无数据时也返回一条「暂无谱面印象」节点。优先走 v.wmc.pub，未配置则回退旧 PMYX。"""
+    # ---- v2: v.wmc.pub API ----
+    wmc_key = maiconfig.wmc_api_key
+    if wmc_key:
+        music = mai.total_list.by_id(music_id)
+        if music:
+            api = WmcAPI(maiconfig.wmc_api_base_url, wmc_key)
+            wmc_sid = music.id[1:] if music.type == "DX" and music.id.startswith("1") else music.id
+            kind = "standard" if music.type == "SD" else "dx"
+            all_comments = []
+            for d in range(len(music.ds)):
+                diff_val = d + 2
+                key = make_chart_key(wmc_sid, kind, diff_val)
+                try:
+                    result = await api.get_comments(key, limit=15)
+                except Exception:
+                    continue
+                if result and result.get("items"):
+                    diff_name = WMC_DIFF_NAMES.get(diff_val, str(diff_val))
+                    for c in result["items"]:
+                        c["_diff_name"] = diff_name
+                    all_comments.extend(result["items"])
+            if not all_comments:
+                preview_urls = [build_preview_url(wmc_sid, kind, d + 2) for d in range(len(music.ds))]
+                url_text = "\n".join(preview_urls)
+                return [_pmyx_node(self_id, nickname, f"ID {music_id} 暂无谱面印象\n\n前往写入：\n{url_text}")]
+            random.shuffle(all_comments)
+            nodes = [_pmyx_node(self_id, nickname, f"ID {music_id} 的谱面印象（共 {len(all_comments)} 条）")]
+            for x in all_comments[:10]:
+                diff_name = x.get("_diff_name", "?")
+                author = x.get("author", "?")
+                rating = x.get("rating", 0)
+                like_count = x.get("likeCount", 0)
+                body = (x.get("body") or "").strip()
+                created = x.get("createdAt", "")[:10]
+                line = f"[{diff_name}] {author} {rating}★ 👍{like_count} {created}"
+                if body:
+                    line += f"\n{body[:200]}{'…' if len(body) > 200 else ''}"
+                nodes.append(_pmyx_node(self_id, nickname, line))
+            if len(all_comments) > 10:
+                nodes.append(_pmyx_node(self_id, nickname, f"… 随机展示 10 条，共 {len(all_comments)} 条"))
+            # 写入引导
+            preview_urls = [build_preview_url(wmc_sid, kind, d + 2) for d in range(len(music.ds))]
+            nodes.append(_pmyx_node(self_id, nickname, "写入谱面印象：\n" + "\n".join(preview_urls)))
+            return nodes
+
+    # ---- 回退：旧 PMYX API ----
     base = maiconfig.pmyx_api_base_url or "https://mai.mai2dx.shop"
     api = PmyxAPI(base)
     try:

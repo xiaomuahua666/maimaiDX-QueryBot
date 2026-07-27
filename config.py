@@ -32,6 +32,10 @@ class Config(BaseModel):
     dxrating_tags_json_path: Optional[str] = None
     # 谱面印象 API（舞萌 DX 谱面印象），默认 http://103.45.162.66:37913
     pmyx_api_base_url: Optional[str] = "http://103.45.162.66:37913"
+    # ---------- 谱面印象 v2（v.wmc.pub 公开 API） ----------
+    # 填写 api_key 后自动启用 v2 路径；留空则走旧 PMYX。
+    wmc_api_base_url: str = "https://v.wmc.pub/api/v1"
+    wmc_api_key: Optional[str] = None
     # sw-api 地址（PC 数 / 上传 / 倍率票），可通过环境变量 SDGBTECHAPI 设置
     sdgbtechapi: Optional[str] = None
     # 机台 keychip（sw-api 必填），可通过环境变量 SDGBT_CLIENT_ID 设置
