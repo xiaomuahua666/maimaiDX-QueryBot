@@ -1641,6 +1641,18 @@ def _parse_rating_args(text: str) -> tuple[int, int]:
     return display_count, duration
 
 
+async def _prerender_reveal_segment(sd_best, dx_best, target_name, target_rating):
+    """后台预渲染揭晓B50图；失败返回 None（结算时降级为纯文本）。"""
+    from ..libraries.maimaidx_guess_rating_image import reveal_b50_image_segment
+    try:
+        return await asyncio.to_thread(
+            reveal_b50_image_segment, sd_best, dx_best, target_name, target_rating
+        )
+    except Exception as e:
+        log.warning(f'[GuessRating] 预渲染揭晓图失败: {e}')
+        return None
+
+
 @guess_rating_start.handle()
 async def _(event: MessageEvent, args: Message = CommandArg()):
     await _gate_guess_group_entry(guess_rating_start, event)
@@ -1700,6 +1712,11 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
         b50_dx=dx_best,
     )
 
+    # 数据开局时已确定，倒计时期间后台预渲染揭晓图，结算时直接发送
+    reveal_task = asyncio.create_task(
+        _prerender_reveal_segment(sd_best, dx_best, target_name, b50.rating)
+    )
+
     # 发送隐藏B50图
     from ..libraries.maimaidx_guess_rating_image import hidden_b50_image_segment
 
@@ -1732,6 +1749,7 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
     while remaining > 0:
         await asyncio.sleep(1)
         if not rating_guess.is_busy(gid):
+            reveal_task.cancel()
             return
         data = rating_guess.get(gid)
         if data and data.end:
@@ -1745,10 +1763,12 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
 
     # 结算
     if not rating_guess.is_busy(gid):
+        reveal_task.cancel()
         return
 
     settlement = rating_guess.settle(gid)
     if settlement is None:
+        reveal_task.cancel()
         return
 
     # 发放奖励
@@ -1790,17 +1810,11 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
     ]
     result_text = '\n'.join(result_lines)
 
-    # 发送揭晓B50图
-    from ..libraries.maimaidx_guess_rating_image import reveal_b50_image_segment
-
+    # 发送揭晓B50图（开局后已后台预渲染，此处直接取结果）
     try:
-        reveal_img = await asyncio.to_thread(
-            reveal_b50_image_segment,
-            sd_best,
-            dx_best,
-            settlement.target_name,
-            settlement.target_rating,
-        )
+        reveal_img = await reveal_task
+        if reveal_img is None:
+            raise RuntimeError('reveal prerender failed')
         bundle = MessageSegment.text(result_text + '\n') + reveal_img
         await _safe_matcher_send(guess_rating_start, event, bundle, gid, media=True, fatal=False)
     except Exception as e:

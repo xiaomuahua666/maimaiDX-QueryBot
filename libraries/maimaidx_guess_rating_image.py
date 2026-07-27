@@ -38,7 +38,6 @@ _T_COLOR = [
 
 _TITLE_COLOR = (255, 255, 255, 255)
 _MUTED = (180, 180, 200, 255)
-_PLACEHOLDER = (200, 200, 220, 110)
 
 # 难度底图缓存
 _diff_bgs: List[Image.Image] = []
@@ -119,10 +118,10 @@ def _draw_hidden_card(
         except Exception:
             pass
 
-    # 空白成绩区域占位（标准B50中曲名/达成率/ds→ra所在位置）
-    sy.draw(x + 93, y + 14, 14, 'AWMC', _PLACEHOLDER, 'lm')
-    sy.draw(x + 93, y + 38, 26, '=w=', _PLACEHOLDER, 'lm')
-    sy.draw(x + 93, y + 65, 13, '??? -> ???', _PLACEHOLDER, 'lm')
+    # 空白成绩区域占位（标准B50中曲名/达成率/ds→ra所在位置），颜色与标准B50一致
+    sy.draw(x + 93, y + 14, 14, 'AWMC', _T_COLOR[idx], 'lm')
+    sy.draw(x + 93, y + 38, 26, '=w=', _T_COLOR[idx], 'lm')
+    sy.draw(x + 93, y + 65, 13, '??? -> ???', _T_COLOR[idx], 'lm')
 
 
 def render_hidden_b50(

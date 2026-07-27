@@ -74,7 +74,14 @@ class DataStorageManager:
             log.error(f"[DataStorage] 保存配置失败: {e}")
 
     def is_enabled(self, qqid: int) -> bool:
-        return int(qqid) in [int(x) for x in self._load_config().get("enabled_users", [])]
+        return int(qqid) in self.enabled_users()
+
+    def enabled_users(self) -> set:
+        """返回所有开启数据存储的用户集合（单次 IO，供批量判断用）。"""
+        try:
+            return {int(x) for x in self._load_config().get("enabled_users", [])}
+        except Exception:
+            return set()
 
     def _user_meta_map(self, config: Dict[str, Any]) -> Dict[str, Any]:
         meta = config.get("user_meta")

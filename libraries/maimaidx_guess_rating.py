@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import random
 import time
 from dataclasses import dataclass, field
@@ -289,35 +290,48 @@ async def pick_random_candidate(
     if not members:
         return None
 
-    # 优先从本地数据存储找有快照的用户
-    candidates_with_data: List[Tuple[int, str]] = []
-    all_members: List[Tuple[int, str]] = []
-    for m in members:
-        uid = int(m['user_id'])
-        name = m.get('nickname') or m.get('card') or str(uid)
-        all_members.append((uid, name))
-        if data_storage.is_enabled(uid):
-            snapshots = data_storage.list_snapshots(uid, limit=1)
-            if snapshots:
-                candidates_with_data.append((uid, name))
+    all_members: List[Tuple[int, str]] = [
+        (int(m['user_id']), m.get('nickname') or m.get('card') or str(m['user_id']))
+        for m in members
+    ]
+
+    # 优先从本地数据存储找有快照的用户。
+    # 启用集合一次读入 + 快照索引扫描放线程，避免在事件循环里逐成员读文件
+    def _scan_with_data() -> List[Tuple[int, str]]:
+        enabled = data_storage.enabled_users()
+        if not enabled:
+            return []
+        return [
+            (uid, name)
+            for uid, name in all_members
+            if uid in enabled and data_storage.list_snapshots(uid, limit=1)
+        ]
+
+    candidates_with_data = await asyncio.to_thread(_scan_with_data)
 
     # 优先选有本地数据的
     pool = candidates_with_data if candidates_with_data else all_members
     if not pool:
         return None
 
-    # 加权不放回抽样，最多尝试 5 个
+    # 加权不放回抽取最多 5 个，并发拉取 B50，按抽取顺序取首个可用
+    picks: List[Tuple[int, str]] = []
     pool_copy = list(pool)
     for _ in range(min(5, len(pool_copy))):
         uid, name = rating_guess.weighted_pick(group_id, pool_copy)
+        picks.append((uid, name))
         pool_copy = [(u, n) for u, n in pool_copy if u != uid]
-        try:
-            b50 = await get_user_b50_or_fallback(qqid=uid)
-            if b50 and b50.rating is not None and b50.charts:
-                return uid, name, b50
-        except Exception as e:
-            log.debug(f'[GuessRating] 拉取B50失败 uid={uid}: {e}')
+
+    results = await asyncio.gather(
+        *(get_user_b50_or_fallback(qqid=uid) for uid, _ in picks),
+        return_exceptions=True,
+    )
+    for (uid, name), b50 in zip(picks, results):
+        if isinstance(b50, Exception):
+            log.debug(f'[GuessRating] 拉取B50失败 uid={uid}: {b50}')
             continue
+        if b50 and b50.rating is not None and b50.charts:
+            return uid, name, b50
 
     return None
 
