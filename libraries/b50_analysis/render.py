@@ -560,17 +560,19 @@ class _Draw:
                 level_idx = _i(song.get("level_index"), -1)
                 card_h = 44
                 self.rrect((left_x, left_cy, left_x + col_w, left_cy + card_h), 6, (255, 248, 240, 240))
-                self.d.text((left_x + 8, left_cy + 10), f"{i+1}.", font=self.font("en", 20), fill=(200, 120, 20))
+                num_text = f"{i+1}."
+                self.d.text((left_x + 8, left_cy + 12), num_text, font=self.font("en", 20), fill=(200, 120, 20))
                 name_x = left_x + 32
                 if level_idx >= 0 and level_idx < len(DIFF_FILE):
                     diff_path = self.icons / DIFF_FILE[level_idx]
                     if diff_path.exists():
-                        diff_img = Image.open(diff_path).convert("RGBA").resize((26, 30), Image.Resampling.LANCZOS)
+                        diff_img = Image.open(diff_path).convert("RGBA").resize((28, 32), Image.Resampling.LANCZOS)
                         self.paste(diff_img, (name_x, left_cy + 6))
-                        name_x += 34
-                self.d.text((name_x, left_cy + 10), title, font=self.font("cn", 19), fill=(51, 51, 51))
+                        name_x += 36
+                self.d.text((name_x, left_cy + 12), title, font=self.font("cn", 19), fill=(51, 51, 51))
                 gain_text = f"{target}+{gain}"
-                self.d.text((left_x + col_w - 90, left_cy + 10), gain_text, font=self.font("en", 18), fill=(232, 124, 32))
+                gain_w = self.font("en", 18).getbbox(gain_text)[2]
+                self.d.text((left_x + col_w - gain_w - 10, left_cy + 12), gain_text, font=self.font("en", 18), fill=(232, 124, 32))
                 left_cy += card_h + 5
         right_cy = cy
         if peer_songs:
@@ -590,13 +592,15 @@ class _Draw:
                 if level_idx >= 0 and level_idx < len(DIFF_FILE):
                     diff_path = self.icons / DIFF_FILE[level_idx]
                     if diff_path.exists():
-                        diff_img = Image.open(diff_path).convert("RGBA").resize((24, 28), Image.Resampling.LANCZOS)
+                        diff_img = Image.open(diff_path).convert("RGBA").resize((26, 30), Image.Resampling.LANCZOS)
                         self.paste(diff_img, (name_x, right_cy + 5))
-                        name_x += 30
-                self.d.text((name_x, right_cy + 8), title, font=self.font("cn", 18), fill=(51, 51, 51))
+                        name_x += 32
+                self.d.text((name_x, right_cy + 10), title, font=self.font("cn", 18), fill=(51, 51, 51))
                 if gap is not None:
                     gap_color = (46, 125, 50) if gap >= 0 else (198, 40, 40)
-                    self.d.text((right_x + col_w - 80, right_cy + 8), f"{gap:+.1f}%", font=self.font("en", 17), fill=gap_color)
+                    gap_text = f"{gap:+.1f}%"
+                    gap_w = self.font("en", 17).getbbox(gap_text)[2]
+                    self.d.text((right_x + col_w - gap_w - 10, right_cy + 10), gap_text, font=self.font("en", 17), fill=gap_color)
                 right_cy += card_h + 5
         return max(left_cy, right_cy)
 
@@ -654,11 +658,15 @@ class _Draw:
         if bg_path.exists() and _bg_image is None:
             _bg_image = Image.open(bg_path).convert("RGBA")
         if _bg_image:
-            scale = CANVAS_W / _bg_image.width
-            new_w = int(_bg_image.width * scale)
-            new_h = int(_bg_image.height * scale)
+            target_h = self.im.height
+            bg_w, bg_h = _bg_image.size
+            scale_w = CANVAS_W / bg_w
+            scale_h = target_h / bg_h
+            scale = max(scale_w, scale_h)
+            new_w = int(bg_w * scale)
+            new_h = int(bg_h * scale)
             resized = _bg_image.resize((new_w, new_h), Image.Resampling.LANCZOS)
-            bg_layer = Image.new("RGBA", (CANVAS_W, self.im.height), (255, 255, 255, 255))
+            bg_layer = Image.new("RGBA", (CANVAS_W, target_h), (255, 255, 255, 255))
             bg_layer.alpha_composite(resized, (0, 0))
             bg_layer.alpha_composite(self.im, (0, 0))
             self.im = bg_layer
