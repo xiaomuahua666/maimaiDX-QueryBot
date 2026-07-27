@@ -168,6 +168,47 @@ class _Draw:
                 color = (232, 60, 60) if is_red else base_color
                 self.d.text((cx, y), token, font=font, fill=color)
                 cx += font.getbbox(token)[2]
+
+    def _draw_redt_justified(self, line: str, x: int, y: int, font: Any, base_color: tuple, max_w: int, last_line: bool = False) -> None:
+        if last_line or max_w <= 0:
+            self._draw_redt(line, x, y, font, base_color)
+            return
+        segs: list[tuple[str, bool]] = []
+        is_red = False
+        buf = ""
+        for ch in re.split(r'(<r>|</r>)', line):
+            if ch == "<r>":
+                if buf:
+                    segs.append((buf, is_red))
+                buf = ""
+                is_red = True
+            elif ch == "</r>":
+                if buf:
+                    segs.append((buf, is_red))
+                buf = ""
+                is_red = False
+            else:
+                buf += ch
+        if buf:
+            segs.append((buf, is_red))
+        chars: list[tuple[str, bool, int]] = []
+        for text, red in segs:
+            for c in text:
+                chars.append((c, red, font.getbbox(c)[2]))
+        if not chars:
+            return
+        total_w = sum(cw for _, _, cw in chars)
+        n = len(chars)
+        if n <= 1:
+            self._draw_redt(line, x, y, font, base_color)
+            return
+        extra = max_w - total_w
+        gap = extra / (n - 1) if extra > 0 else 0
+        cx = x
+        for i, (ch, is_red, cw) in enumerate(chars):
+            color = (232, 60, 60) if is_red else base_color
+            self.d.text((cx, y), ch, font=font, fill=color)
+            cx += cw + gap
     def wrap(self, text: str, font: Any, max_w: int) -> list[str]:
         lines: list[str] = []
         for raw in str(text or "").replace("\r", "").split("\n"):
@@ -274,7 +315,7 @@ class _Draw:
         summary = self.data.get("summary") or {}
         rating = _i(player.get("rating"))
 
-        self.rrect((40, 30, 620, 420), 16, (245, 248, 255, 230))
+        self.rrect((40, 30, 620, 420), 16, (245, 248, 255, 255))
         if self.avatar:
             mask = Image.new("L", (140, 140), 0)
             ImageDraw.Draw(mask).ellipse((0, 0, 140, 140), fill=255)
@@ -621,20 +662,20 @@ class _Draw:
             self.stroke_text((120, top_y + 10), self.analysis_title, font=at_font, fill=(26, 115, 232))
 
         body_y = top_y + 74
-        self.rrect((70, body_y, 1730, body_y + body_h), 14, (255, 249, 238, 230), (245, 210, 150, 255), width=3)
+        self.rrect((70, body_y, 1730, body_y + body_h), 14, (255, 249, 238, 255), (245, 210, 150, 255), width=3)
         self.d.text((120, body_y + 14), "正文", font=self.font("cn", 28), fill=(198, 100, 20))
         y_cur = body_y + 62
-        for line in body_lines:
-            self._draw_redt(line, 120, y_cur, body_font, (80, 65, 45))
+        for i, line in enumerate(body_lines):
+            self._draw_redt_justified(line, 120, y_cur, body_font, (80, 65, 45), 1580, last_line=(i == len(body_lines) - 1))
             y_cur += body_step
 
         if self.analysis_impression:
             summary_y = body_y + body_h + 24
-            self.rrect((70, summary_y, 1730, summary_y + summary_h), 14, (245, 248, 255, 178), (210, 225, 245, 255), width=3)
+            self.rrect((70, summary_y, 1730, summary_y + summary_h), 14, (245, 248, 255, 255), (210, 225, 245, 255), width=3)
             self.d.text((120, summary_y + 14), "总结", font=self.font("cn", 26), fill=(26, 115, 232))
             y_cur = summary_y + 52
-            for line in summary_lines:
-                self._draw_redt(line, 120, y_cur, summary_font, (80, 80, 80))
+            for i, line in enumerate(summary_lines):
+                self._draw_redt_justified(line, 120, y_cur, summary_font, (80, 80, 80), 1580, last_line=(i == len(summary_lines) - 1))
                 y_cur += summary_step
         return top_y + panel_h + 20
 
