@@ -522,112 +522,83 @@ class _Draw:
                 cy += section_card_h + 15
         return cy
 
-    def draw_push_route(self, start_y: int) -> int:
+    def draw_push_route_and_peer(self, start_y: int) -> int:
         push_songs = self.data.get("push_candidates") or []
-        if not push_songs:
-            return start_y
-        route_songs = [s for s in push_songs if _i(s.get("gain_1005")) > 0][:6]
-        if not route_songs:
-            return start_y
-        cy = start_y
-        title_font = self.font("cn", 28)
-        title_text = "推分路线"
-        tw = title_font.getbbox(title_text)[2]
-        light_bg = (255, 230, 200, 200)
-        self.rrect((60 - 10, cy - 4, 60 + tw + 10, cy + 36), 10, light_bg)
-        self.stroke_text((60, cy - 4), title_text, font=title_font, fill=(200, 120, 20))
-        cy += 42
-        total_gain = sum(_i(s.get("gain_1005")) for s in route_songs)
-        summary_text = f"推荐 {len(route_songs)} 首，预计总收益 +{total_gain}"
-        self.d.text((70, cy), summary_text, font=self.font("cn", 22), fill=(120, 100, 80))
-        cy += 32
-        DIFF_FILE = ["Basic.png", "Advanced.png", "Expert.png", "Master.png", "Re_master.png"]
-        for i, song in enumerate(route_songs):
-            title = str(song.get("title") or "")[:28]
-            ds = _f(song.get("ds"))
-            ach = _f(song.get("achievement"))
-            gain = _i(song.get("gain_1005"))
-            target = str(song.get("target") or "SSS+")
-            level_label = str(song.get("level_label") or "")
-            level_idx = _i(song.get("level_index"), -1)
-            card_w = 1700
-            card_h = 52
-            self.rrect((60, cy, 60 + card_w, cy + card_h), 8, (255, 248, 240, 240))
-            num_font = self.font("en", 24)
-            self.d.text((70, cy + 12), f"{i+1}.", font=num_font, fill=(200, 120, 20))
-            if level_idx >= 0:
-                diff_path = self.icons / DIFF_FILE[level_idx] if level_idx < len(DIFF_FILE) else None
-                if diff_path and diff_path.exists():
-                    diff_img = Image.open(diff_path).convert("RGBA").resize((32, 36), Image.Resampling.LANCZOS)
-                    self.paste(diff_img, (95, cy + 8))
-                    name_x = 135
-                else:
-                    self.d.text((95, cy + 14), DIFF_SHORT.get(level_idx, ""), font=self.font("en", 18), fill=(140, 140, 140))
-                    name_x = 95 + self.font("en", 18).getbbox(DIFF_SHORT.get(level_idx, ""))[2] + 4
-            else:
-                self.d.text((95, cy + 14), level_label[:4], font=self.font("en", 18), fill=(140, 140, 140))
-                name_x = 95 + self.font("en", 18).getbbox(level_label[:4])[2] + 4
-            self.d.text((name_x, cy + 12), title, font=self.font("cn", 22), fill=(51, 51, 51))
-            info_x = 60 + card_w - 200
-            self.d.text((info_x, cy + 6), f"{ds:.1f}", font=self.font("en", 20), fill=(120, 120, 120))
-            self.d.text((info_x + 55, cy + 6), f"{ach:.1f}%", font=self.font("en", 20), fill=(100, 100, 100))
-            gain_text = f"{target} +{gain}"
-            self.d.text((info_x - 120, cy + 14), gain_text, font=self.font("en", 22), fill=(232, 124, 32))
-            cy += card_h + 8
-        return cy
-
-    def draw_peer_reference(self, start_y: int) -> int:
+        route_songs = [s for s in push_songs if _i(s.get("gain_1005")) > 0][:6] if push_songs else []
         peer_stats = self.data.get("peer_stats") or {}
-        if not peer_stats.get("available"):
+        peer_available = peer_stats.get("available")
+        strongest = (self.data.get("evidence") or {}).get("selected_evidence") or []
+        peer_songs = strongest[:4] if peer_available and strongest else []
+        if not route_songs and not peer_songs:
             return start_y
-        strongest = self.data.get("evidence", {}).get("selected_evidence") or []
-        if not strongest:
-            return start_y
+        DIFF_FILE = ["Basic.png", "Advanced.png", "Expert.png", "Master.png", "Re_master.png"]
+        left_x, right_x = 60, 920
+        col_w = 830
         cy = start_y
         title_font = self.font("cn", 28)
-        title_text = "同段参考"
-        tw = title_font.getbbox(title_text)[2]
-        light_bg = (200, 230, 255, 200)
-        self.rrect((60 - 10, cy - 4, 60 + tw + 10, cy + 36), 10, light_bg)
-        self.stroke_text((60, cy - 4), title_text, font=title_font, fill=(30, 100, 200))
+        if route_songs:
+            title_text = "推分路线"
+            tw = title_font.getbbox(title_text)[2]
+            self.rrect((left_x - 10, cy - 4, left_x + tw + 10, cy + 36), 10, (255, 230, 200, 200))
+            self.stroke_text((left_x, cy - 4), title_text, font=title_font, fill=(200, 120, 20))
+        if peer_songs:
+            title_text2 = "同段参考"
+            tw2 = title_font.getbbox(title_text2)[2]
+            self.rrect((right_x - 10, cy - 4, right_x + tw2 + 10, cy + 36), 10, (200, 230, 255, 200))
+            self.stroke_text((right_x, cy - 4), title_text2, font=title_font, fill=(30, 100, 200))
         cy += 42
-        bucket = peer_stats.get("bucket", "")
-        arpi = peer_stats.get("arpi")
-        arpi_text = f"同段 {bucket}，ARPI {arpi:+.4f}" if arpi is not None else f"同段 {bucket}"
-        self.d.text((70, cy), arpi_text, font=self.font("cn", 22), fill=(80, 100, 140))
-        cy += 30
-        peer_songs = strongest[:4]
-        DIFF_FILE = ["Basic.png", "Advanced.png", "Expert.png", "Master.png", "Re_master.png"]
-        for song in peer_songs:
-            title = str(song.get("title") or "")[:24]
-            ds = _f(song.get("ds"))
-            ach = _f(song.get("achievement"))
-            peer_avg = song.get("peer_avg")
-            gap = song.get("gap")
-            level_idx = _i(song.get("level_index"), -1)
-            card_w = 1700
-            card_h = 42
-            self.rrect((60, cy, 60 + card_w, cy + card_h), 6, (240, 248, 255, 240))
-            if level_idx >= 0:
-                diff_path = self.icons / DIFF_FILE[level_idx] if level_idx < len(DIFF_FILE) else None
-                if diff_path and diff_path.exists():
-                    diff_img = Image.open(diff_path).convert("RGBA").resize((28, 32), Image.Resampling.LANCZOS)
-                    self.paste(diff_img, (70, cy + 5))
-                    name_x = 105
-                else:
-                    name_x = 70
-            else:
-                name_x = 70
-            self.d.text((name_x, cy + 8), title, font=self.font("cn", 20), fill=(51, 51, 51))
-            info_x = 60 + card_w - 180
-            self.d.text((info_x, cy + 6), f"{ds:.1f}", font=self.font("en", 18), fill=(120, 120, 120))
-            if peer_avg is not None:
-                self.d.text((info_x + 50, cy + 6), f"同段{peer_avg:.1f}%", font=self.font("en", 18), fill=(100, 120, 160))
-            if gap is not None:
-                gap_color = (46, 125, 50) if gap >= 0 else (198, 40, 40)
-                self.d.text((info_x + 140, cy + 6), f"{gap:+.1f}%", font=self.font("en", 18), fill=gap_color)
-            cy += card_h + 6
-        return cy
+        left_cy = cy
+        if route_songs:
+            total_gain = sum(_i(s.get("gain_1005")) for s in route_songs)
+            self.d.text((left_x + 10, left_cy), f"推荐{len(route_songs)}首 +{total_gain}", font=self.font("cn", 20), fill=(120, 100, 80))
+            left_cy += 28
+            for i, song in enumerate(route_songs):
+                title = str(song.get("title") or "")[:22]
+                ds = _f(song.get("ds"))
+                gain = _i(song.get("gain_1005"))
+                target = str(song.get("target") or "SSS+")
+                level_idx = _i(song.get("level_index"), -1)
+                card_h = 44
+                self.rrect((left_x, left_cy, left_x + col_w, left_cy + card_h), 6, (255, 248, 240, 240))
+                self.d.text((left_x + 8, left_cy + 10), f"{i+1}.", font=self.font("en", 20), fill=(200, 120, 20))
+                name_x = left_x + 32
+                if level_idx >= 0 and level_idx < len(DIFF_FILE):
+                    diff_path = self.icons / DIFF_FILE[level_idx]
+                    if diff_path.exists():
+                        diff_img = Image.open(diff_path).convert("RGBA").resize((26, 30), Image.Resampling.LANCZOS)
+                        self.paste(diff_img, (name_x, left_cy + 6))
+                        name_x += 34
+                self.d.text((name_x, left_cy + 10), title, font=self.font("cn", 19), fill=(51, 51, 51))
+                gain_text = f"{target}+{gain}"
+                self.d.text((left_x + col_w - 90, left_cy + 10), gain_text, font=self.font("en", 18), fill=(232, 124, 32))
+                left_cy += card_h + 5
+        right_cy = cy
+        if peer_songs:
+            bucket = peer_stats.get("bucket", "")
+            arpi = peer_stats.get("arpi")
+            arpi_text = f"ARPI {arpi:+.4f}" if arpi is not None else bucket
+            self.d.text((right_x + 10, right_cy), arpi_text, font=self.font("cn", 20), fill=(80, 100, 140))
+            right_cy += 28
+            for song in peer_songs:
+                title = str(song.get("title") or "")[:20]
+                ds = _f(song.get("ds"))
+                gap = song.get("gap")
+                level_idx = _i(song.get("level_index"), -1)
+                card_h = 40
+                self.rrect((right_x, right_cy, right_x + col_w, right_cy + card_h), 6, (240, 248, 255, 240))
+                name_x = right_x + 8
+                if level_idx >= 0 and level_idx < len(DIFF_FILE):
+                    diff_path = self.icons / DIFF_FILE[level_idx]
+                    if diff_path.exists():
+                        diff_img = Image.open(diff_path).convert("RGBA").resize((24, 28), Image.Resampling.LANCZOS)
+                        self.paste(diff_img, (name_x, right_cy + 5))
+                        name_x += 30
+                self.d.text((name_x, right_cy + 8), title, font=self.font("cn", 18), fill=(51, 51, 51))
+                if gap is not None:
+                    gap_color = (46, 125, 50) if gap >= 0 else (198, 40, 40)
+                    self.d.text((right_x + col_w - 80, right_cy + 8), f"{gap:+.1f}%", font=self.font("en", 17), fill=gap_color)
+                right_cy += card_h + 5
+        return max(left_cy, right_cy)
 
     def draw_analysis(self, start_y: int) -> int:
         top_y = start_y + 45
@@ -673,9 +644,8 @@ class _Draw:
         self.load_avatar()
         self.draw_header()
         songs_end = self.draw_sections()
-        route_end = self.draw_push_route(songs_end + 30)
-        peer_end = self.draw_peer_reference(route_end + 30)
-        panel_end = self.draw_analysis(peer_end + 50)
+        route_peer_end = self.draw_push_route_and_peer(songs_end + 30)
+        panel_end = self.draw_analysis(route_peer_end + 50)
         self._ensure_h(panel_end + 140)
         self.draw_footer(panel_end + 10)
 
