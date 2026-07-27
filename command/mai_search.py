@@ -78,28 +78,28 @@ async def _build_chart_preview_nodes(music, self_id: int, nickname: str) -> List
 
 async def _build_wmc_tags_forward_nodes(music, self_id: int, nickname: str) -> List[dict]:
     """从 v.wmc.pub /charts/:chartKey/tags 拉取谱面难度分析标签，构建合并转发节点。"""
+    import asyncio
     wmc_key = maiconfig.wmc_api_key
     if not wmc_key:
         return []
-    api = WmcAPI(maiconfig.wmc_api_base_url, wmc_key)
+    api = WmcAPI(resolve_wmc_base_url(maiconfig), wmc_key)
     wmc_sid = music.id[1:] if music.type == "DX" and music.id.startswith("1") else music.id
     kind = "standard" if music.type == "SD" else "dx"
     diff_labels = ['绿谱', '黄谱', '红谱', '紫谱', '白谱']
+    # 并发拉取所有难度的 tags
+    tasks = []
+    for i in range(min(len(music.ds), len(diff_labels))):
+        key = make_chart_key(wmc_sid, kind, i + 2)
+        tasks.append(api.get_tags(key, radar_threshold=40, feature_threshold=0.5))
+    if not tasks:
+        return []
+    results = await asyncio.gather(*tasks, return_exceptions=True)
     nodes = []
-    for i in range(len(music.ds)):
-        if i >= len(diff_labels):
-            break
-        diff_val = i + 2
-        key = make_chart_key(wmc_sid, kind, diff_val)
-        try:
-            result = await api.get_tags(key, radar_threshold=40, feature_threshold=0.5)
-        except Exception:
-            continue
-        if not result or not result.get("tags"):
+    for i, result in enumerate(results):
+        if isinstance(result, Exception) or not result or not isinstance(result, dict) or not result.get("tags"):
             continue
         tags = result["tags"]
         lines = [f"【{diff_labels[i]}】"]
-        # 难度分类
         dc = tags.get("difficultyClassification")
         if dc:
             label = dc.get("label", "")
@@ -113,17 +113,14 @@ async def _build_wmc_tags_forward_nodes(music, self_id: int, nickname: str) -> L
                     line += f"，偏差 {sign}{dev:.1f}"
                 line += "）"
             lines.append(line)
-        # 评估轴
         eval_tags = tags.get("evaluationTags") or []
         if eval_tags:
             parts = [f"{t['label']}({t['score']})" for t in eval_tags[:5]]
             lines.append("评估：" + " ".join(parts))
-        # 雷达轴
         radar_tags = tags.get("radarTags") or []
         if radar_tags:
             parts = [f"{t['label']}({t['score']})" for t in radar_tags[:5]]
             lines.append("雷达：" + " ".join(parts))
-        # 谱面模式
         patterns = tags.get("patterns") or []
         if patterns:
             sev_map = {"high": "★", "mid": "●", "low": "○"}
@@ -143,22 +140,26 @@ async def _build_pmyx_forward_nodes(music_id: str, self_id: int, nickname: str) 
     if wmc_key:
         music = mai.total_list.by_id(music_id)
         if music:
+            import asyncio
             api = WmcAPI(resolve_wmc_base_url(maiconfig), wmc_key)
             wmc_sid = music.id[1:] if music.type == "DX" and music.id.startswith("1") else music.id
             kind = "standard" if music.type == "SD" else "dx"
-            all_comments = []
+            # 并发拉取所有难度的评论
+            tasks = []
             for d in range(len(music.ds)):
-                diff_val = d + 2
-                key = make_chart_key(wmc_sid, kind, diff_val)
-                try:
-                    result = await api.get_comments(key, limit=15)
-                except Exception:
+                key = make_chart_key(wmc_sid, kind, d + 2)
+                tasks.append(api.get_comments(key, limit=15))
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            all_comments = []
+            for d, result in enumerate(results):
+                if isinstance(result, Exception) or not result or not isinstance(result, dict):
                     continue
-                if result and result.get("items"):
-                    diff_name = WMC_DIFF_NAMES.get(diff_val, str(diff_val))
-                    for c in result["items"]:
+                items = result.get("items") or []
+                if items:
+                    diff_name = WMC_DIFF_NAMES.get(d + 2, str(d + 2))
+                    for c in items:
                         c["_diff_name"] = diff_name
-                    all_comments.extend(result["items"])
+                    all_comments.extend(items)
             if not all_comments:
                 preview_urls = [build_preview_url(wmc_sid, kind, d + 2) for d in range(len(music.ds))]
                 url_text = "\n".join(preview_urls)
@@ -259,13 +260,16 @@ async def _send_song_info_then_pmyx_forward(
     await matcher.send(attach_timing(msg, total), reply_message=reply)
     nickname = _bot_nickname(bot)
     all_nodes = []
-    pmyx_nodes = await _build_pmyx_forward_nodes(music.id, event.self_id, nickname)
+    # 并发拉取三个数据源
+    import asyncio
+    pmyx_task = _build_pmyx_forward_nodes(music.id, event.self_id, nickname)
+    tag_task = build_tags_forward_nodes(music.id, event.self_id, nickname)
+    wmc_task = _build_wmc_tags_forward_nodes(music, event.self_id, nickname)
+    pmyx_nodes, tag_nodes, wmc_tag_nodes = await asyncio.gather(pmyx_task, tag_task, wmc_task)
     if pmyx_nodes:
         all_nodes.append(_build_nested_forward_node(event.self_id, "谱面印象", pmyx_nodes))
-    tag_nodes = await build_tags_forward_nodes(music.id, event.self_id, nickname)
     if tag_nodes:
         all_nodes.append(_build_nested_forward_node(event.self_id, "谱面标签", tag_nodes))
-    wmc_tag_nodes = await _build_wmc_tags_forward_nodes(music, event.self_id, nickname)
     if wmc_tag_nodes:
         all_nodes.append(_build_nested_forward_node(event.self_id, "难度分析", wmc_tag_nodes))
     chart_img = draw_multiver_chart(music.id)
