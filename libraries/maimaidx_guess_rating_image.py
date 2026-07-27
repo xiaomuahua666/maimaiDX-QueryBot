@@ -38,8 +38,7 @@ _T_COLOR = [
 
 _TITLE_COLOR = (255, 255, 255, 255)
 _MUTED = (180, 180, 200, 255)
-_ACCENT = (124, 129, 255, 255)
-_HINT = (100, 220, 140, 255)
+_PLACEHOLDER = (200, 200, 220, 110)
 
 # 难度底图缓存
 _diff_bgs: List[Image.Image] = []
@@ -72,11 +71,11 @@ def _draw_hidden_card(
     chart: ChartInfo,
     x: int,
     y: int,
-    theme: str,
+    sy: DrawText,
 ) -> None:
     """绘制单张隐藏卡片：曲绘、难度底图、版本标、等级图标、FC/FS。
 
-    与 ScoreBaseImage.whiledraw 相同坐标，仅省略文字（ID/曲名/达成率/ds→ra/DX星）。
+    与 ScoreBaseImage.whiledraw 相同坐标，文字区域用 AWMC =w= 占位。
     """
     _ensure_diff_bgs()
     idx = min(chart.level_index, 4)
@@ -120,11 +119,15 @@ def _draw_hidden_card(
         except Exception:
             pass
 
+    # 空白成绩区域占位（标准B50中曲名/达成率/ds→ra所在位置）
+    sy.draw(x + 93, y + 14, 14, 'AWMC', _PLACEHOLDER, 'lm')
+    sy.draw(x + 93, y + 38, 26, '=w=', _PLACEHOLDER, 'lm')
+    sy.draw(x + 93, y + 65, 13, '??? -> ???', _PLACEHOLDER, 'lm')
+
 
 def render_hidden_b50(
     charts: List[ChartInfo],
     display_count: int,
-    time_left: float,
     *,
     theme: str = None,
 ) -> Image.Image:
@@ -133,7 +136,6 @@ def render_hidden_b50(
     Args:
         charts: 随机抽取的谱面列表
         display_count: 展示数量
-        time_left: 剩余时间（秒）
         theme: 主题名
     Returns:
         PIL Image（与标准B50同尺寸 1400×N）
@@ -161,25 +163,13 @@ def render_hidden_b50(
     im.alpha_composite(header_overlay, (20, 15))
 
     # 标题
-    sy.draw(img_w // 2, 55, 42, '猜猜TA的Rating是多少？', _TITLE_COLOR, 'mm', 2, (0, 0, 0, 120))
-
-    # 倒计时
-    s = max(0, int(time_left))
-    time_text = f'⏱ {s // 60}分{s % 60}秒' if s >= 60 else f'⏱ {s}秒'
-    sy.draw(img_w // 2, 110, 26, time_text, _HINT, 'mm')
+    sy.draw(img_w // 2, 70, 42, '猜猜TA的Rating是多少？', _TITLE_COLOR, 'mm', 2, (0, 0, 0, 120))
 
     # 提示
     sy.draw(
-        img_w // 2, 148, 17,
+        img_w // 2, 130, 17,
         f'发送数字作答 · 可修改 · 展示{len(charts)}首/共50首',
         _MUTED, 'mm',
-    )
-
-    # 副标题
-    sy.draw(
-        img_w // 2, 178, 14,
-        '隐藏了成绩、DX分、曲名、达成率、Rating',
-        (120, 120, 150, 255), 'mm',
     )
 
     # ── 绘制卡片（与标准B50相同坐标）──
@@ -189,22 +179,24 @@ def render_hidden_b50(
         if col == 0 and num > 0:
             y += _ROW_H
         x = _MARGIN_X + col * (_CARD_W + 6)
-        _draw_hidden_card(im, chart, x, y, theme)
+        _draw_hidden_card(im, chart, x, y, sy)
 
-    # Footer
+    # ── Footer：明显一点的底栏 ──
+    footer_bar = Image.new('RGBA', (img_w, 44), (20, 20, 40, 220))
+    im.alpha_composite(footer_bar, (0, img_h - 44))
     sy.draw(
-        img_w // 2, img_h - 28, 13,
+        img_w // 2, img_h - 22, 16,
         f'猜Rating | {footer_generated()}',
-        _MUTED, 'mm',
+        _TITLE_COLOR, 'mm',
     )
 
     return im
 
 
-def hidden_b50_image_segment(charts, display_count, time_left, **kwargs):
+def hidden_b50_image_segment(charts, display_count, **kwargs):
     """返回 MessageSegment 格式的隐藏B50图。"""
     from nonebot.adapters.onebot.v11 import MessageSegment
-    im = render_hidden_b50(charts, display_count, time_left, **kwargs)
+    im = render_hidden_b50(charts, display_count, **kwargs)
     return MessageSegment.image(image_to_base64(im))
 
 

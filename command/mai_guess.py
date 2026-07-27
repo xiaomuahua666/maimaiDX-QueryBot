@@ -1696,7 +1696,6 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
             hidden_b50_image_segment,
             selected,
             display_count,
-            data.time_left(),
         )
         if compact:
             bundle = MessageSegment.text(intro + '\n') + img_seg
