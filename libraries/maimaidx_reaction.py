@@ -6,6 +6,8 @@ from typing import Any
 
 from ..config import log, maiconfig
 
+REACT_EMOJI_CHECK = "9989"
+
 
 async def react_processing(bot: Any, event: Any, *, emoji_id: str | None = None) -> bool:
     """对触发消息贴表情，表示已开始处理；失败时静默忽略。

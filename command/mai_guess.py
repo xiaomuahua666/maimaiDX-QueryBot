@@ -48,6 +48,7 @@ from ..libraries.maimaidx_guess_chart import (
     request_chart_batch_cancel,
 )
 from ..libraries.maimaidx_music import guess
+from ..libraries.maimaidx_reaction import REACT_EMOJI_CHECK, react_processing
 from ..libraries.maimaidx_model import (
     GuessAudioData,
     GuessChartData,
@@ -1844,7 +1845,10 @@ async def _(event: MessageEvent):
     billing = billing_user_id(event)
     msg = rating_guess.submit(gid, uid_key, name, billing, answer)
     if msg:
-        await _guess_notify(guess_rating_start, event, msg)
+        bot = resolve_event_bot(event)
+        reacted = await react_processing(bot, event, emoji_id=REACT_EMOJI_CHECK)
+        if not reacted:
+            await _guess_notify(guess_rating_start, event, msg)
 
 
 @guess_rating_reset.handle()
@@ -1867,6 +1871,10 @@ async def _(event: MessageEvent):
         return
     billing = billing_user_id(event)
     rating_guess.add_volunteer(gid, billing)
+    bot = resolve_event_bot(event)
+    reacted = await react_processing(bot, event, emoji_id=REACT_EMOJI_CHECK)
+    if reacted:
+        await guess_rating_volunteer.finish()
     name = get_sender_display_name(event)
     await guess_rating_volunteer.finish(
         f'✅ {name} 已报名！下局猜Rating你被抽中的概率 ×5（10分钟内有效）',
