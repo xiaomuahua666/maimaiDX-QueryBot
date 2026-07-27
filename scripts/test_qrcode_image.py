@@ -5,7 +5,7 @@ import base64
 from io import BytesIO
 from types import SimpleNamespace
 
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageFilter
 import zxingcpp
 
 from libraries.maimaidx_qrcode_util import (
@@ -20,9 +20,9 @@ SGWCMAID = (
 )
 
 
-def qr_png(text: str) -> bytes:
+def qr_png(text: str, scale: int = 5) -> bytes:
     barcode = zxingcpp.create_barcode(text, zxingcpp.BarcodeFormat.QRCode)
-    image = Image.fromarray(barcode.to_image(scale=5))
+    image = Image.fromarray(barcode.to_image(scale=scale))
     output = BytesIO()
     image.save(output, format="PNG")
     return output.getvalue()
@@ -37,6 +37,25 @@ official_url = (
 )
 assert decode_sgwcmaid_qrcode_image(qr_png(official_url)) == SGWCMAID
 assert decode_sgwcmaid_qrcode_image(qr_png("https://example.com/not-maimai")) is None
+
+
+def render_low_quality_png(text: str) -> bytes:
+    """模拟手机拍屏 + 群图压缩：小尺寸、低对比、轻微模糊、JPEG 压缩。"""
+    barcode = zxingcpp.create_barcode(text, zxingcpp.BarcodeFormat.QRCode)
+    img = Image.fromarray(barcode.to_image(scale=3)).convert("RGB")
+    img = img.resize((280, 280), Image.Resampling.LANCZOS)
+    img = img.filter(ImageFilter.GaussianBlur(radius=0.9))
+    img = ImageEnhance.Contrast(img).enhance(0.55)
+    img = ImageEnhance.Brightness(img).enhance(1.15)
+    output = BytesIO()
+    img.save(output, format="JPEG", quality=45)
+    return output.getvalue()
+
+
+low_quality_bytes = render_low_quality_png(SGWCMAID)
+assert decode_sgwcmaid_qrcode_image(low_quality_bytes) == SGWCMAID, (
+    "低质量图片二维码兜底解码失败"
+)
 
 segment = SimpleNamespace(
     type="image",

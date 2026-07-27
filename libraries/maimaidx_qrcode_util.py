@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 
 import httpx
 import numpy as np
-from PIL import Image, ImageOps
+from PIL import Image, ImageFilter, ImageOps
 
 # 机台二维码：SGWCMAID 后接连续非空白字符（可嵌在「mai绑定 SGWCMAID…」等文本中）
 SGWCMAID_PATTERN = re.compile(r'(SGWCMAID\S+)')
@@ -34,6 +34,7 @@ DIRECT_QRCODE_PREFIX_PATTERN = (
 
 _QRCODE_QUICK_CHECK = 'SGWCMAID'
 _IMAGE_MAX_PIXELS = 25_000_000
+_IMAGE_QR_MIN_LONG_SIDE = 900
 
 
 def message_may_contain_qrcode(text: str) -> bool:
@@ -76,17 +77,49 @@ def decode_sgwcmaid_qrcode_image(image_bytes: bytes) -> Optional[str]:
         image = ImageOps.exif_transpose(opened).convert('RGB')
         if width * height > _IMAGE_MAX_PIXELS:
             image.thumbnail((4096, 4096), Image.Resampling.LANCZOS)
-        pixels = np.asarray(image)
 
-    results = zxingcpp.read_barcodes(
-        pixels,
-        formats=zxingcpp.BarcodeFormat.QRCode,
-    )
-    for result in results:
-        qrcode = extract_sgwcmaid_qrcode(str(result.text or '').strip())
-        if qrcode:
-            return qrcode
+    for candidate in _qrcode_scan_candidates(image):
+        pixels = np.asarray(candidate)
+        for binarizer in (
+            zxingcpp.Binarizer.LocalAverage,
+            zxingcpp.Binarizer.GlobalHistogram,
+            zxingcpp.Binarizer.FixedThreshold,
+        ):
+            try:
+                results = zxingcpp.read_barcodes(
+                    pixels,
+                    formats=zxingcpp.BarcodeFormat.QRCode,
+                    binarizer=binarizer,
+                    try_invert=True,
+                    try_downscale=True,
+                    try_rotate=True,
+                )
+            except Exception:
+                continue
+            for result in results:
+                qrcode = extract_sgwcmaid_qrcode(str(result.text or '').strip())
+                if qrcode:
+                    return qrcode
     return None
+
+
+def _qrcode_scan_candidates(image: Image.Image) -> list[Image.Image]:
+    """按识别友好度依次返回候选图像：原图 → 放大 → 灰度增强 → 锐化。"""
+    candidates: list[Image.Image] = [image]
+
+    long_side = max(image.size)
+    if 0 < long_side < _IMAGE_QR_MIN_LONG_SIDE:
+        scale = _IMAGE_QR_MIN_LONG_SIDE / long_side
+        new_size = (
+            max(1, int(round(image.width * scale))),
+            max(1, int(round(image.height * scale))),
+        )
+        candidates.append(image.resize(new_size, Image.Resampling.LANCZOS))
+
+    gray = ImageOps.autocontrast(image.convert('L'), cutoff=2)
+    candidates.append(gray)
+    candidates.append(gray.filter(ImageFilter.UnsharpMask(radius=1.2, percent=180)))
+    return candidates
 
 
 async def _read_local_image(path: Path, max_bytes: int) -> Optional[bytes]:

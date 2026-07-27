@@ -130,4 +130,7 @@ def format_command_error(e: Exception) -> str:
         ServerError,
     )):
         return str(e)
+    import httpx
+    if isinstance(e, (httpx.RemoteProtocolError, httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError)):
+        return '数据获取失败，无法反应本次查询成绩'
     return f'未知错误：{type(e).__name__}\n请联系Bot管理员'
