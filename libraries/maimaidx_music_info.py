@@ -202,13 +202,17 @@ def get_chart_tags_by_group(title: str, level_index: int) -> Dict[str, List[str]
     return {gk: list(gv) for gk, gv in by_group.items()} if by_group else {}
 
 
-def get_b50_tag_stats(userinfo) -> Dict[str, Dict[str, int]]:
-    """根据 B50 用户数据统计各分组标签出现次数，用于底力分析图。"""
+def get_b50_tag_stats(userinfo, wmc_tags_cache: Optional[Dict[tuple, dict]] = None) -> Dict[str, Dict[str, int]]:
+    """根据 B50 用户数据统计各分组标签出现次数，用于底力分析图。
+    
+    wmc_tags_cache: 可选，预拉取的 v.wmc.pub /tags 结果。
+        key=(song_id_str, diff_val), value=API 返回的 tags dict。
+        提供时优先使用，否则回退本地 JSON。
+    """
     _load_tags_from_json()
     index = _tags_by_difficulty_and_group
-    if not index:
-        return {'配置': {}, '难度': {}, '评价': {}}
     counts = defaultdict(lambda: defaultdict(int))
+    has_any = False
     # 查分器 sd=B35、dx=B15（与谱面类型 SD/DX 无关）
     for chart_list in (getattr(userinfo.charts, 'sd', None) or [], getattr(userinfo.charts, 'dx', None) or []):
         if not chart_list:
@@ -224,15 +228,46 @@ def get_b50_tag_stats(userinfo) -> Dict[str, Dict[str, int]]:
             title = (getattr(music, 'title', None) or '').strip()
             if not title:
                 continue
-            sheet = LEVEL_INDEX_TO_SHEET[min(max(0, level_index), 4)]
-            by_group = index.get((title, sheet))
-            diff_tags = list(by_group.get('难度', [])) if by_group else []
-            if by_group:
-                for group_name, tags in by_group.items():
-                    for tag in tags:
-                        counts[group_name][tag] += 1
-            if '水' not in diff_tags and '诈称谱' not in diff_tags:
-                counts['难度']['正常谱'] += 1
+            # 尝试 v.wmc.pub 缓存
+            wmc_used = False
+            if wmc_tags_cache:
+                wmc_sid = music.id[1:] if music.type == "DX" and music.id.startswith("1") else music.id
+                kind = "standard" if music.type == "SD" else "dx"
+                diff_val = min(max(level_index + 2, 2), 6)
+                cache_key = (wmc_sid, kind, diff_val)
+                tags_data = wmc_tags_cache.get(cache_key)
+                if tags_data:
+                    has_any = True
+                    wmc_used = True
+                    dc = tags_data.get("difficultyClassification", {})
+                    dc_label = dc.get("label", "")
+                    if dc_label == "正常谱":
+                        counts['难度']['正常谱'] += 1
+                    elif dc_label == "水":
+                        counts['难度']['水'] += 1
+                    elif dc_label in ("诈称谱", "虚高谱"):
+                        counts['难度']['诈称谱'] += 1
+                    for t in tags_data.get("radarTags", []):
+                        counts['配置'][t['label']] += 1
+                    for t in tags_data.get("evaluationTags", []):
+                        counts['评价'][t['label']] += 1
+            if not wmc_used:
+                # 回退本地 JSON
+                if not index:
+                    continue
+                sheet = LEVEL_INDEX_TO_SHEET[min(max(0, level_index), 4)]
+                by_group = index.get((title, sheet))
+                diff_tags = list(by_group.get('难度', [])) if by_group else []
+                if by_group:
+                    has_any = True
+                    for group_name, tags in by_group.items():
+                        for tag in tags:
+                            counts[group_name][tag] += 1
+                if '水' not in diff_tags and '诈称谱' not in diff_tags:
+                    if has_any:
+                        counts['难度']['正常谱'] += 1
+    if not has_any:
+        return {'配置': {}, '难度': {}, '评价': {}}
     return {g: dict(counts[g]) for g in ('配置', '难度', '评价')}
 
 

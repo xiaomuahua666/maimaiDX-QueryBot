@@ -195,12 +195,45 @@ def _draw_prescription(
 
 
 async def generate_weakness_prescription(qqid: int) -> Union[str, MessageSegment]:
+    import asyncio
+    from ..config import maiconfig
+    from .maimaidx_wmc_api import WmcAPI, make_chart_key
     try:
         userinfo = await maiApi.query_user_b50(qqid=qqid)
     except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
         return str(e)
 
-    stats = get_b50_tag_stats(userinfo)
+    # 预拉取 v.wmc.pub 标签
+    wmc_cache = {}
+    wmc_key = maiconfig.wmc_api_key
+    if wmc_key:
+        api = WmcAPI(maiconfig.wmc_api_base_url, wmc_key)
+        tasks = []
+        task_keys = []
+        for chart_list in (getattr(userinfo.charts, 'sd', None) or [], getattr(userinfo.charts, 'dx', None) or []):
+            if not chart_list:
+                continue
+            for chart in chart_list:
+                sid = getattr(chart, 'song_id', None)
+                li = getattr(chart, 'level_index', 0)
+                if sid is None:
+                    continue
+                music = mai.total_list.by_id(str(sid))
+                if not music:
+                    continue
+                wmc_sid = music.id[1:] if music.type == "DX" and music.id.startswith("1") else music.id
+                kind = "standard" if music.type == "SD" else "dx"
+                diff_val = min(max(li + 2, 2), 6)
+                key = make_chart_key(wmc_sid, kind, diff_val)
+                tasks.append(api.get_tags(key, radar_threshold=30, feature_threshold=0.3))
+                task_keys.append((wmc_sid, kind, diff_val))
+        if tasks:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for k, r in zip(task_keys, results):
+                if isinstance(r, dict) and r.get("tags"):
+                    wmc_cache[k] = r["tags"]
+
+    stats = get_b50_tag_stats(userinfo, wmc_tags_cache=wmc_cache or None)
     if not any(stats.get('配置', {}).values()):
         return (
             '无法生成弱项处方：未加载谱面标签数据。\n'
