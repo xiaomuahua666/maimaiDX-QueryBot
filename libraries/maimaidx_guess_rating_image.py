@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List
 
 from PIL import Image, ImageDraw
 
@@ -12,32 +12,36 @@ from ..config import (
     fcl,
     footer_generated,
     fsl,
-    maimaidir,
     score_Rank_l,
 )
 from .image import DrawText, image_to_base64, music_picture
 from .maimaidx_model import ChartInfo
-from .maimaidx_theme import Theme, resolve_theme_path
+from .maimaidx_theme import Theme, pic
 
-# ─────────────── 颜色常量 ───────────────
+# ─────────────── 与标准B50一致的布局常量 ───────────────
 
-_BG = (30, 30, 46, 255)
-_CARD = (45, 45, 65, 255)
-_TITLE = (200, 200, 230, 255)
-_MUTED = (140, 140, 170, 255)
-_ACCENT = (124, 129, 255, 255)
-_HINT = (100, 200, 140, 255)
+_CARD_W = 270
+_ROW_H = 114
+_COLS = 5
+_MARGIN_X = 16
+_HEADER_H = 235
+_FOOTER_H = 80
 
-# 难度底色（与标准B50一致）
-_BG_COLOR = [
-    (111, 212, 61, 255),    # Basic
-    (248, 183, 9, 255),     # Advanced
-    (255, 129, 141, 255),   # Expert
-    (159, 81, 220, 255),    # Master
-    (219, 170, 255, 255),   # Re:Master
+# 文字颜色（与 ScoreBaseImage 一致）
+_T_COLOR = [
+    (255, 255, 255, 255),
+    (255, 255, 255, 255),
+    (255, 255, 255, 255),
+    (255, 255, 255, 255),
+    (138, 0, 226, 255),
 ]
 
-# 难度底图（类变量缓存）
+_TITLE_COLOR = (255, 255, 255, 255)
+_MUTED = (180, 180, 200, 255)
+_ACCENT = (124, 129, 255, 255)
+_HINT = (100, 220, 140, 255)
+
+# 难度底图缓存
 _diff_bgs: List[Image.Image] = []
 
 
@@ -45,26 +49,22 @@ def _ensure_diff_bgs():
     global _diff_bgs
     if _diff_bgs:
         return
-    _diff_bgs = [Image.new('RGBA', (270, 108), color) for color in _BG_COLOR]
+    _diff_bgs = [
+        Image.open(pic('b50_score_basic.png')),
+        Image.open(pic('b50_score_advanced.png')),
+        Image.open(pic('b50_score_expert.png')),
+        Image.open(pic('b50_score_master.png')),
+        Image.open(pic('b50_score_remaster.png')),
+    ]
 
 
 def _board_font():
+    from pathlib import Path
     for candidate in (SIYUAN, TBFONT):
-        try:
-            from pathlib import Path
-            p = Path(candidate)
-            if p.exists():
-                return p
-        except Exception:
-            continue
+        p = Path(candidate)
+        if p.exists():
+            return p
     return SIYUAN
-
-
-def _load_theme_file(theme: str, filename: str) -> Optional[Image.Image]:
-    p = resolve_theme_path(maimaidir, theme, filename)
-    if p.exists():
-        return Image.open(p)
-    return None
 
 
 def _draw_hidden_card(
@@ -73,66 +73,52 @@ def _draw_hidden_card(
     x: int,
     y: int,
     theme: str,
-    sy: DrawText,
-    tb: DrawText,
 ) -> None:
-    """绘制单张隐藏信息卡片：只显示曲绘、难度底色、版本标、等级图标、FC/FS。"""
+    """绘制单张隐藏卡片：曲绘、难度底图、版本标、等级图标、FC/FS。
+
+    与 ScoreBaseImage.whiledraw 相同坐标，仅省略文字（ID/曲名/达成率/ds→ra/DX星）。
+    """
     _ensure_diff_bgs()
     idx = min(chart.level_index, 4)
 
-    # 难度底色
     im.alpha_composite(_diff_bgs[idx], (x, y))
 
-    # 曲绘
     try:
         cover = Image.open(music_picture(chart.song_id)).resize((75, 75))
         im.alpha_composite(cover, (x + 12, y + 12))
     except Exception:
         pass
 
-    # SD/DX 版本标
     try:
-        ver = _load_theme_file(theme, f'{chart.type.upper()}.png')
-        if ver:
-            im.alpha_composite(ver.resize((37, 14)), (x + 51, y + 91))
+        ver = Image.open(pic(f'{chart.type.upper()}.png')).resize((37, 14))
+        im.alpha_composite(ver, (x + 51, y + 91))
     except Exception:
         pass
 
-    # 等级图标 (SSS / SS+ / S 等)
     rate_key = getattr(chart, 'rate', None) or 'd'
     if rate_key.islower() and rate_key in score_Rank_l:
         rate_name = score_Rank_l[rate_key]
     else:
         rate_name = rate_key
     try:
-        rate_icon = _load_theme_file(theme, f'UI_TTR_Rank_{rate_name}.png')
-        if rate_icon:
-            im.alpha_composite(rate_icon.resize((63, 28)), (x + 92, y + 78))
+        rate_icon = Image.open(pic(f'UI_TTR_Rank_{rate_name}.png')).resize((63, 28))
+        im.alpha_composite(rate_icon, (x + 92, y + 78))
     except Exception:
         pass
 
-    # FC 图标
     if chart.fc:
         try:
-            fc_icon = Image.open(
-                f'{maimaidir}/pic/UI_MSS_MBase_Icon_{fcl[chart.fc]}.png'
-            ).resize((34, 34))
+            fc_icon = Image.open(pic(f'UI_MSS_MBase_Icon_{fcl[chart.fc]}.png')).resize((34, 34))
             im.alpha_composite(fc_icon, (x + 154, y + 77))
         except Exception:
             pass
 
-    # FS 图标
     if chart.fs:
         try:
-            fs_icon = Image.open(
-                f'{maimaidir}/pic/UI_MSS_MBase_Icon_{fsl[chart.fs]}.png'
-            ).resize((34, 34))
+            fs_icon = Image.open(pic(f'UI_MSS_MBase_Icon_{fsl[chart.fs]}.png')).resize((34, 34))
             im.alpha_composite(fs_icon, (x + 185, y + 77))
         except Exception:
             pass
-
-    # 只在底部画一个占位符方块，隐藏DX星星
-    # 完全不绘制任何文字信息（ID、曲名、达成率、ds→ra 全部隐藏）
 
 
 def render_hidden_b50(
@@ -142,85 +128,72 @@ def render_hidden_b50(
     *,
     theme: str = None,
 ) -> Image.Image:
-    """渲染隐藏信息的B50图。
+    """渲染隐藏信息B50图。使用标准 b50_bg.png 背景 + 标准卡片底图。
 
     Args:
         charts: 随机抽取的谱面列表
-        display_count: 展示数量（用于布局计算）
+        display_count: 展示数量
         time_left: 剩余时间（秒）
         theme: 主题名
     Returns:
-        PIL Image
+        PIL Image（与标准B50同尺寸 1400×N）
     """
     if theme is None:
         theme = Theme.get_default().value
 
-    # 计算布局
-    cols = 5
-    rows = (len(charts) + cols - 1) // cols
-    card_w = 270
-    margin_x = 16
-    dy = 114  # 行间距
+    rows = (len(charts) + _COLS - 1) // _COLS
+    img_w = 1400
+    img_h = _HEADER_H + rows * _ROW_H + _FOOTER_H
 
-    header_h = 200
-    footer_h = 80
-    img_w = margin_x * 2 + cols * card_w
-    img_h = header_h + rows * dy + footer_h
-
-    im = Image.new('RGBA', (img_w, img_h), _BG)
+    # 使用标准 B50 背景
+    im = Image.open(pic('b50_bg.png')).convert('RGBA').resize((img_w, img_h), Image.Resampling.LANCZOS)
     dr = ImageDraw.Draw(im)
     sy = DrawText(dr, _board_font())
-    tb = DrawText(dr, _board_font())
 
-    # 圆角背景
-    dr.rounded_rectangle(
-        (10, 10, img_w - 10, img_h - 10),
-        radius=18,
-        fill=_CARD,
+    # ── 头部遮挡：半透明圆角矩形覆盖玩家信息区域 ──
+    header_overlay = Image.new('RGBA', (img_w - 40, _HEADER_H - 30), (20, 20, 40, 210))
+    dr_ov = ImageDraw.Draw(header_overlay)
+    dr_ov.rounded_rectangle(
+        (0, 0, img_w - 40, _HEADER_H - 30),
+        radius=20,
+        fill=(20, 20, 40, 210),
     )
+    im.alpha_composite(header_overlay, (20, 15))
 
     # 标题
-    sy.draw(img_w // 2, 40, 36, '猜猜TA的Rating是多少？', _TITLE, 'mm', 2, (0, 0, 0, 100))
+    sy.draw(img_w // 2, 55, 42, '猜猜TA的Rating是多少？', _TITLE_COLOR, 'mm', 2, (0, 0, 0, 120))
 
     # 倒计时
     s = max(0, int(time_left))
-    if s >= 60:
-        time_text = f'⏱ {s // 60}分{s % 60}秒'
-    else:
-        time_text = f'⏱ {s}秒'
-    sy.draw(img_w // 2, 85, 22, time_text, _HINT, 'mm')
+    time_text = f'⏱ {s // 60}分{s % 60}秒' if s >= 60 else f'⏱ {s}秒'
+    sy.draw(img_w // 2, 110, 26, time_text, _HINT, 'mm')
 
     # 提示
     sy.draw(
-        img_w // 2, 120, 16,
+        img_w // 2, 148, 17,
         f'发送数字作答 · 可修改 · 展示{len(charts)}首/共50首',
         _MUTED, 'mm',
     )
 
-    # 装饰线
-    dr.line((60, 155, img_w - 60, 155), fill=_ACCENT, width=2)
-
     # 副标题
     sy.draw(
-        img_w // 2, 178, 15,
+        img_w // 2, 178, 14,
         '隐藏了成绩、DX分、曲名、达成率、Rating',
-        (100, 100, 130, 255), 'mm',
+        (120, 120, 150, 255), 'mm',
     )
 
-    # 绘制卡片
-    y = header_h
+    # ── 绘制卡片（与标准B50相同坐标）──
+    y = _HEADER_H
     for num, chart in enumerate(charts):
-        col = num % cols
+        col = num % _COLS
         if col == 0 and num > 0:
-            y += dy
-        x = margin_x + col * card_w
-        _draw_hidden_card(im, chart, x, y, theme, sy, tb)
+            y += _ROW_H
+        x = _MARGIN_X + col * (_CARD_W + 6)
+        _draw_hidden_card(im, chart, x, y, theme)
 
     # Footer
     sy.draw(
-        img_w // 2,
-        img_h - 28,
-        13,
+        img_w // 2, img_h - 28, 13,
         f'猜Rating | {footer_generated()}',
         _MUTED, 'mm',
     )
@@ -265,7 +238,6 @@ def reveal_b50_image_segment(
         im = await drawer.draw()
         return MessageSegment.image(image_to_base64(im))
 
-    # 同步渲染（DrawBest.draw 是 async 但实际不需要 await）
     import asyncio
     try:
         loop = asyncio.get_running_loop()
@@ -273,7 +245,6 @@ def reveal_b50_image_segment(
         loop = None
 
     if loop and loop.is_running():
-        # 在异步上下文中，用线程池
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor() as pool:
             future = pool.submit(asyncio.run, _render())

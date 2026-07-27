@@ -1712,10 +1712,11 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
     remaining = duration
     while remaining > 0:
         await asyncio.sleep(1)
-        if rating_guess.is_busy(gid):
-            data = rating_guess.get(gid)
-            if data and data.end:
-                break
+        if not rating_guess.is_busy(gid):
+            return
+        data = rating_guess.get(gid)
+        if data and data.end:
+            break
         remaining -= 1
         if remaining in (30, 10, 5):
             await _guess_notify(
@@ -1787,6 +1788,7 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
         log.warning(f'[GuessRating] 发送揭晓图失败 gid={gid}: {e}')
         await _safe_matcher_send(guess_rating_start, event, result_text, gid, fatal=False)
 
+    rating_guess.end(gid)
     await guess_rating_start.finish()
 
 
