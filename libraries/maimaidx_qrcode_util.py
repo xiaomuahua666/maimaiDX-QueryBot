@@ -8,6 +8,7 @@ import ipaddress
 from io import BytesIO
 from pathlib import Path
 import re
+import sys
 from typing import Any, Iterable, Optional
 from urllib.parse import urlparse
 
@@ -35,6 +36,9 @@ DIRECT_QRCODE_PREFIX_PATTERN = (
 _QRCODE_QUICK_CHECK = 'SGWCMAID'
 _IMAGE_MAX_PIXELS = 25_000_000
 _IMAGE_QR_MIN_LONG_SIDE = 900
+_IMAGE_QR_SCAN_TIMEOUT_SECONDS = 4.0
+_IMAGE_QR_SCAN_QUEUE_SECONDS = 0.05
+_IMAGE_QR_SCAN_SEMAPHORE = asyncio.Semaphore(1)
 
 
 def message_may_contain_qrcode(text: str) -> bool:
@@ -120,6 +124,49 @@ def _qrcode_scan_candidates(image: Image.Image) -> list[Image.Image]:
     candidates.append(gray)
     candidates.append(gray.filter(ImageFilter.UnsharpMask(radius=1.2, percent=180)))
     return candidates
+
+
+async def _decode_sgwcmaid_qrcode_image_isolated(
+    image_bytes: bytes,
+) -> Optional[str]:
+    """在可强制结束的子进程中扫码，避免 native 解码器长期持有 GIL 卡死 Bot。"""
+    try:
+        await asyncio.wait_for(
+            _IMAGE_QR_SCAN_SEMAPHORE.acquire(),
+            timeout=_IMAGE_QR_SCAN_QUEUE_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        # 普通群图很多时直接跳过排队，避免扫码任务反过来堆积消息处理。
+        return None
+
+    process: Optional[asyncio.subprocess.Process] = None
+    try:
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            str(Path(__file__).resolve()),
+            '--decode-stdin',
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await asyncio.wait_for(
+            process.communicate(image_bytes),
+            timeout=_IMAGE_QR_SCAN_TIMEOUT_SECONDS,
+        )
+    except (asyncio.TimeoutError, OSError):
+        if process is not None and process.returncode is None:
+            process.kill()
+            await process.wait()
+        return None
+    finally:
+        if process is not None and process.returncode is None:
+            process.kill()
+            await process.wait()
+        _IMAGE_QR_SCAN_SEMAPHORE.release()
+
+    if process.returncode != 0 or not stdout:
+        return None
+    return extract_sgwcmaid_qrcode(stdout.decode('utf-8', errors='ignore').strip())
 
 
 async def _read_local_image(path: Path, max_bytes: int) -> Optional[bytes]:
@@ -228,11 +275,24 @@ async def extract_sgwcmaid_from_image_segments(
             if not image_bytes:
                 continue
             try:
-                qrcode = await asyncio.to_thread(
-                    decode_sgwcmaid_qrcode_image, image_bytes
-                )
+                qrcode = await _decode_sgwcmaid_qrcode_image_isolated(image_bytes)
             except (OSError, ValueError):
                 continue
             if qrcode:
                 return qrcode
     return None
+
+
+def _decode_stdin() -> int:
+    """扫码子进程入口；二维码原文仅经 stdin/stdout 传递，不进入命令行。"""
+    try:
+        qrcode = decode_sgwcmaid_qrcode_image(sys.stdin.buffer.read())
+    except Exception:
+        return 1
+    if qrcode:
+        sys.stdout.write(qrcode)
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(_decode_stdin() if '--decode-stdin' in sys.argv else 2)
