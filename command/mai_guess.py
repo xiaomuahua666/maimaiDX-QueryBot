@@ -200,7 +200,7 @@ guess_rating_volunteer = on_regex(
 
 # ── B50 找内鬼 ──
 guess_impostor_start = on_regex(
-    r'^(?:B50|b50)?\s*(?:找内鬼|找假卡)\s*$',
+    r'^\s*(?:找内鬼|找假卡)\s*$',
     rule=GROUP_MESSAGE,
     priority=5,
     block=True,

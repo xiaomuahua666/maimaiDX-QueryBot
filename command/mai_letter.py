@@ -81,7 +81,6 @@ _RESERVED_PREFIXES = (
     "猜谱面",
     "猜Rating",
     "猜rating",
-    "B50找内鬼",
     "找内鬼",
     "找假卡",
     "重置找内鬼",
