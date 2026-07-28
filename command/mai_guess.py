@@ -1968,15 +1968,32 @@ async def _(event: MessageEvent):
 
     bot = resolve_event_bot(event)
     try:
-        candidate = await pick_random_candidate(
-            bot, gid, min_charts=IMPOSTOR_CARD_COUNT, weighted=False,
+        target = await pick_random_candidate(
+            bot, gid, min_charts=IMPOSTOR_CARD_COUNT - 1, weighted=False,
         )
-        if candidate is None:
+        if target is None:
             await guess_impostor_start.finish(
-                '未找到至少有5张B50卡片的群友数据。', reply_message=True,
+                f'未找到至少有 {IMPOSTOR_CARD_COUNT - 1} 张B50卡片的群友数据。',
+                reply_message=True,
             )
-        target_uid, target_name, b50 = candidate
-        charts, answer, actual_ra, fake_ra = build_impostor_cards(b50)
+        target_uid, target_name, target_b50 = target
+        alien = await pick_random_candidate(
+            bot, gid, min_charts=1, weighted=False,
+            exclude_uids={target_uid},
+        )
+        if alien is None:
+            await guess_impostor_start.finish(
+                '未找到另一位群友作为“内鬼”成绩来源，暂无法开局。',
+                reply_message=True,
+            )
+        alien_uid, alien_name, alien_b50 = alien
+        try:
+            charts, answer = build_impostor_cards(target_b50, alien_b50)
+        except ValueError as e:
+            log.warning(f'[GuessImpostor] 构建内鬼卡失败 gid={gid}: {e}')
+            await guess_impostor_start.finish(
+                f'内鬼卡构建失败：{e}', reply_message=True,
+            )
     except Exception:
         impostor_guess.unlock(gid)
         raise
@@ -1985,9 +2002,9 @@ async def _(event: MessageEvent):
         gid,
         target_uid=target_uid,
         target_name=target_name,
+        alien_uid=alien_uid,
+        alien_name=alien_name,
         answer=answer,
-        actual_ra=actual_ra,
-        fake_ra=fake_ra,
         charts=charts,
         duration=IMPOSTOR_DURATION,
     )
@@ -1996,9 +2013,9 @@ async def _(event: MessageEvent):
 
     intro = dedent(f'''\
         🕵️ B50找内鬼开始！
-        5张卡片中有1张的「单曲RA」被篡改。
+        5张卡片中有1张不属于题主，是别人的成绩混进来的。
         ⏱ {IMPOSTOR_DURATION}秒内发送 1～5 作答，可修改。
-        答对按速度获得积分与BREAK；该B50的题主不参与奖励。
+        答对按速度获得积分与BREAK；题主和内鬼本人不参与奖励。
     ''')
     try:
         image_seg = await asyncio.to_thread(impostor_image_segment, charts)
@@ -2058,8 +2075,7 @@ async def _(event: MessageEvent):
 
     result_lines = [
         '🎉 B50找内鬼结束！',
-        f'🕵️ 内鬼是第 {settlement.answer} 张：'
-        f'真实RA {settlement.actual_ra} → 假RA {settlement.fake_ra}',
+        f'🕵️ 内鬼是第 {settlement.answer} 张：该成绩来自 {settlement.alien_name} 的B50',
         f'📚 本局数据来自 {settlement.target_name} 的B50',
         '',
         '🏆 找对排名：',
@@ -2074,8 +2090,6 @@ async def _(event: MessageEvent):
             impostor_image_segment,
             charts,
             reveal_index=settlement.answer,
-            actual_ra=settlement.actual_ra,
-            fake_ra=settlement.fake_ra,
         )
         await _safe_matcher_send(
             guess_impostor_start,

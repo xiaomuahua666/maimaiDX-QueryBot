@@ -23,8 +23,6 @@ def render_impostor_board(
     charts: List[ChartInfo],
     *,
     reveal_index: Optional[int] = None,
-    actual_ra: Optional[int] = None,
-    fake_ra: Optional[int] = None,
     theme: str = None,
 ) -> Image.Image:
     if theme is None:
@@ -48,9 +46,9 @@ def render_impostor_board(
     title = 'B50 找内鬼 · 答案揭晓' if reveal_index else 'B50 找内鬼'
     dt.draw(img_w // 2, 66, 42, title, (255, 255, 255, 255), 'mm', 2, (0, 0, 0, 120))
     if reveal_index:
-        hint = f'第 {reveal_index} 张：真实 RA {actual_ra}，被篡改为 {fake_ra}'
+        hint = f'第 {reveal_index} 张不属于题主 · 来自另一位群友的成绩'
     else:
-        hint = '有一张卡片的单曲 RA 被篡改 · 发送 1～5 作答'
+        hint = '5 张卡片中有 1 张不属于题主 · 发送 1～5 作答'
     dt.draw(img_w // 2, 126, 19, hint, (190, 200, 220, 255), 'mm')
 
     score_drawer = ScoreBaseImage(im, theme=theme)

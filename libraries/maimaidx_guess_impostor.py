@@ -1,4 +1,4 @@
-"""B50 找内鬼：在五张 B50 卡片中找出单曲 RA 被篡改的一张。"""
+"""B50 找内鬼：在五张卡片中找出不属于题主 B50 的那一张。"""
 
 from __future__ import annotations
 
@@ -41,9 +41,9 @@ class ImpostorReward:
 class ImpostorSettlement:
     target_uid: int
     target_name: str
+    alien_uid: int
+    alien_name: str
     answer: int
-    actual_ra: int
-    fake_ra: int
     rewards: List[ImpostorReward]
     wrong_names: List[str]
 
@@ -52,9 +52,9 @@ class ImpostorSettlement:
 class GuessImpostorData:
     target_uid: int
     target_name: str
+    alien_uid: int
+    alien_name: str
     answer: int
-    actual_ra: int
-    fake_ra: int
     charts: List[ChartInfo]
     duration: int
     started_at: float
@@ -94,18 +94,18 @@ class GuessImpostorManager:
         *,
         target_uid: int,
         target_name: str,
+        alien_uid: int,
+        alien_name: str,
         answer: int,
-        actual_ra: int,
-        fake_ra: int,
         charts: List[ChartInfo],
         duration: int = IMPOSTOR_DURATION,
     ) -> GuessImpostorData:
         data = GuessImpostorData(
             target_uid=target_uid,
             target_name=target_name,
+            alien_uid=alien_uid,
+            alien_name=alien_name,
             answer=answer,
-            actual_ra=actual_ra,
-            fake_ra=fake_ra,
             charts=charts,
             duration=duration,
             started_at=time.time(),
@@ -114,7 +114,7 @@ class GuessImpostorManager:
         self.groups[gid] = data
         log.info(
             f'[GuessImpostor] 开局 gid={gid} target={target_name}({target_uid}) '
-            f'answer={answer} ra={actual_ra}->{fake_ra}'
+            f'alien={alien_name}({alien_uid}) answer={answer}'
         )
         return data
 
@@ -148,9 +148,11 @@ class GuessImpostorManager:
         if data is None:
             return None
         data.end = True
+        # 排除题主与内鬼本人（他们知道答案）
+        excluded = {int(data.target_uid), int(data.alien_uid)}
         valid_entries = [
             entry for entry in data.entries.values()
-            if int(entry.billing_id) != int(data.target_uid)
+            if int(entry.billing_id) not in excluded
         ]
         correct = sorted(
             (entry for entry in valid_entries if entry.answer == data.answer),
@@ -173,9 +175,9 @@ class GuessImpostorManager:
         return ImpostorSettlement(
             target_uid=data.target_uid,
             target_name=data.target_name,
+            alien_uid=data.alien_uid,
+            alien_name=data.alien_name,
             answer=data.answer,
-            actual_ra=data.actual_ra,
-            fake_ra=data.fake_ra,
             rewards=rewards,
             wrong_names=wrong_names,
         )
@@ -184,33 +186,52 @@ class GuessImpostorManager:
 impostor_guess = GuessImpostorManager()
 
 
-def build_impostor_cards(
-    b50: UserInfo,
-    count: int = IMPOSTOR_CARD_COUNT,
-) -> Tuple[List[ChartInfo], int, int, int]:
-    """抽取卡片并篡改其中一张 RA。
-
-    返回 ``(展示卡片, 内鬼序号, 真实RA, 假RA)``。所有正常卡片先按当前
-    公式校正 RA，避免上游历史定数导致一局出现多个“内鬼”。
-    """
+def _b50_charts(b50: UserInfo) -> List[ChartInfo]:
     sd = (b50.charts and b50.charts.sd) or []
     dx = (b50.charts and b50.charts.dx) or []
-    source = list(sd) + list(dx)
-    if len(source) < count:
-        raise ValueError(f'B50 卡片不足：需要 {count}，实际 {len(source)}')
+    return list(sd) + list(dx)
 
-    charts = [chart.model_copy(deep=True) for chart in random.sample(source, count)]
-    for chart in charts:
+
+def build_impostor_cards(
+    target_b50: UserInfo,
+    alien_b50: UserInfo,
+    count: int = IMPOSTOR_CARD_COUNT,
+) -> Tuple[List[ChartInfo], int]:
+    """从题主 B50 抽 ``count-1`` 张 + 内鬼来源 B50 抽 1 张。
+
+    - 内鬼曲目要求不在题主 B50 里，避免撞歌。
+    - 所有卡片 RA 按当前公式重新计算，避免历史定数造成额外线索。
+
+    Returns:
+        ``(展示卡片, 内鬼在展示列表中的 1-based 序号)``
+    """
+    target_charts = _b50_charts(target_b50)
+    alien_charts = _b50_charts(alien_b50)
+    if len(target_charts) < count - 1:
+        raise ValueError(
+            f'题主 B50 卡片不足：需要 {count - 1}，实际 {len(target_charts)}'
+        )
+
+    target_song_ids = {int(chart.song_id) for chart in target_charts}
+    alien_candidates = [
+        chart for chart in alien_charts
+        if int(chart.song_id) not in target_song_ids
+    ]
+    if not alien_candidates:
+        raise ValueError('内鬼来源与题主 B50 曲目完全重合，无法构造内鬼卡')
+
+    normal_cards = [
+        chart.model_copy(deep=True)
+        for chart in random.sample(target_charts, count - 1)
+    ]
+    alien_card = random.choice(alien_candidates).model_copy(deep=True)
+
+    cards = normal_cards + [alien_card]
+    random.shuffle(cards)
+    for chart in cards:
         chart.ra = int(computeRa(float(chart.ds), float(chart.achievements)))
-
-    impostor_index = random.randrange(len(charts))
-    actual_ra = int(charts[impostor_index].ra)
-    delta = random.randint(6, 12) * random.choice((-1, 1))
-    fake_ra = max(1, actual_ra + delta)
-    if fake_ra == actual_ra:
-        fake_ra = actual_ra + 6
-    charts[impostor_index].ra = fake_ra
-    return charts, impostor_index + 1, actual_ra, fake_ra
+    answer_index = cards.index(alien_card) + 1
+    return cards, answer_index
 
 
 def format_impostor_rewards(rewards: List[ImpostorReward]) -> str:

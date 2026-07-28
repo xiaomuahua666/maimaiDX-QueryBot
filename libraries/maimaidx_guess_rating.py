@@ -302,6 +302,7 @@ async def pick_random_candidate(
     *,
     min_charts: int = 1,
     weighted: bool = True,
+    exclude_uids: Optional[set] = None,
 ) -> Optional[Tuple[int, str, UserInfo]]:
     """从群成员中随机选一个有B50数据的人。
 
@@ -309,6 +310,8 @@ async def pick_random_candidate(
         (uid, display_name, b50) 或 None
     """
     from .maimaidx_data_storage import data_storage
+
+    exclude = {int(x) for x in (exclude_uids or set())}
 
     # 获取群成员列表
     try:
@@ -330,6 +333,7 @@ async def pick_random_candidate(
     all_members: List[Tuple[int, str]] = [
         (int(m['user_id']), m.get('nickname') or m.get('card') or str(m['user_id']))
         for m in members
+        if int(m['user_id']) not in exclude
     ]
 
     # 优先从本地数据存储找有快照的用户。

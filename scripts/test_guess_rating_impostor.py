@@ -62,15 +62,48 @@ def main() -> None:
         username="owner",
         charts=Data(sd=charts, dx=[]),
     )
+    # 内鬼来源：另一位群友，曲目 song_id 与 owner 不重合
+    alien_charts = [
+        ChartInfo(
+            achievements=99.5,
+            fc="",
+            fs="",
+            level="14",
+            levelIndex=3,
+            level_label="Master",
+            title=f"Alien {index}",
+            type="DX",
+            ds=13.8,
+            dxScore=0,
+            rating=280,
+            rate="ssp",
+            song_id=1000 + index,
+        )
+        for index in range(20)
+    ]
+    alien = UserInfo(
+        additional_rating=0,
+        nickname="alien",
+        rating=14200,
+        username="alien",
+        charts=Data(sd=alien_charts, dx=[]),
+    )
 
     assert [RATING_DIFFICULTIES[i].display_count for i in range(1, 6)] == [20, 16, 12, 8, 8]
     assert RATING_DIFFICULTIES[5].hide_cover is True
     assert RATING_DIFFICULTIES[4].hide_cover is False
     random.seed(7)
-    cards, answer, actual_ra, fake_ra = build_impostor_cards(user)
+    cards, answer = build_impostor_cards(user, alien)
     assert len(cards) == 5
     assert 1 <= answer <= 5
-    assert actual_ra != fake_ra
+    # 内鬼那张的 song_id 来自 alien_charts；其余来自 user.charts
+    alien_song_ids = {c.song_id for c in alien_charts}
+    user_song_ids = {c.song_id for c in charts}
+    assert cards[answer - 1].song_id in alien_song_ids
+    for idx, card in enumerate(cards):
+        if idx + 1 == answer:
+            continue
+        assert card.song_id in user_song_ids
 
     rating = GuessRatingManager()
     rating.groups = {}
@@ -88,7 +121,8 @@ def main() -> None:
         b50_sd=charts,
         b50_dx=[],
     )
-    assert rating.submit(1, "owner", "owner", 100, 15000) == ""
+    # 题主也能作答获得回应（结算再排除）
+    assert rating.submit(1, "owner", "owner", 100, 15000).startswith("✅")
     rating.submit(1, "a", "A", 101, 14990)
     rating.submit(1, "b", "B", 102, 14980)
     rating.submit(1, "c", "C", 103, 14970)
@@ -105,12 +139,14 @@ def main() -> None:
         2,
         target_uid=200,
         target_name="owner",
+        alien_uid=300,
+        alien_name="alien",
         answer=answer,
-        actual_ra=actual_ra,
-        fake_ra=fake_ra,
         charts=cards,
     )
+    # 题主 / 内鬼 submit 有回应但结算时被过滤
     assert impostor.submit(2, "owner", "owner", 200, answer).startswith("✅")
+    assert impostor.submit(2, "alien", "alien", 300, answer).startswith("✅")
     impostor.submit(2, "a", "A", 201, answer)
     impostor.submit(2, "b", "B", 202, 1 if answer != 1 else 2)
     impostor.submit(2, "c", "C", 203, answer)
