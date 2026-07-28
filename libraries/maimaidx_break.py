@@ -1310,7 +1310,7 @@ class BreakDatabase:
             self._conn.execute(
                 """UPDATE break_daily_usage SET break_spent=break_spent+?,
                    break_gained=break_gained+? WHERE qqid=? AND date=?""",
-                (balance, win_amount, qqid, self._today()),
+                (max(0, -net), max(0, net), qqid, self._today()),
             )
             self._append_log(
                 qqid, net, 'gamble_all',

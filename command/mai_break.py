@@ -68,15 +68,15 @@ break_red_packet_status = on_command(
 break_gamble_all = on_command(
     '倾家荡产', aliases={'梭哈'}
 )
-break_gamble_pool = on_command(
-    '抽奖池', aliases={'今日贡献榜', '贡献榜'}
-)
-break_gamble_claim = on_command(
-    '领取福利', aliases={'领福利'}
-)
-break_gamble_leaderboard = on_command(
-    '贡献总榜', aliases={'首富榜', '总贡献榜'}
-)
+# break_gamble_pool = on_command(
+#     '抽奖池', aliases={'今日贡献榜', '贡献榜'}
+# )
+# break_gamble_claim = on_command(
+#     '领取福利', aliases={'领福利'}
+# )
+# break_gamble_leaderboard = on_command(
+#     '贡献总榜', aliases={'首富榜', '总贡献榜'}
+# )
 
 for _debt_exempt_matcher in (
     awmc_checkin,
@@ -643,6 +643,11 @@ async def _(message: Message = CommandArg()):
 @break_gamble_all.handle()
 async def _(matcher: Matcher, event: MessageEvent, message: Message = CommandArg()):
     await _require_break_agreement(break_gamble_all, event)
+
+    from datetime import date
+    if date.today().day != 28:
+        await break_gamble_all.finish('倾家荡产仅在每月28号开放~', reply_message=True)
+
     raw = message.extract_plain_text().strip()
     if raw.lower() in {'帮助', '说明', 'help', '?'}:
         await break_gamble_all.finish(GAMBLE_ALL_HELP, reply_message=True)
@@ -724,101 +729,101 @@ async def _(matcher: Matcher, event: MessageEvent):
             )
 
     await break_gamble_all.finish(text, reply_message=True)
-
-
-@break_gamble_pool.handle()
-async def _(event: MessageEvent):
-    await _require_break_agreement(break_gamble_pool, event)
-    status = break_db.get_gamble_pool_status()
-
-    if status.total_pool == 0:
-        await break_gamble_pool.finish(
-            '🎰 今日抽奖池\n'
-            '━━━━━━━━━━━━━━\n'
-            '还没有人倾家荡产呢~\n'
-            '发送"*倾家荡产"来贡献吧！',
-            reply_message=True,
-        )
-        return
-
-    # 构建贡献榜
-    lines = [
-        '🎰 今日抽奖池',
-        '━━━━━━━━━━━━━━',
-        f'💰 今日池总额：{status.total_pool} BREAK',
-        f'🎁 可分配福利：{status.distributable} BREAK（80%）',
-        '',
-        '📊 今日贡献榜（前5）',
-    ]
-
-    for i, contributor in enumerate(status.contributors, 1):
-        medal = ['🥇', '🥈', '🥉', '4️⃣', '5️⃣'][i - 1]
-        lines.append(f'{medal} 用户 {contributor.qqid} — {contributor.amount} BREAK')
-
-    lines.extend([
-        '',
-        '感谢他们为 AWMC 做出的贡献~',
-        '',
-        '💡 发送"领取福利"可领取今日福利！',
-    ])
-
-    await break_gamble_pool.finish('\n'.join(lines), reply_message=True)
-
-
-@break_gamble_claim.handle()
-async def _(event: MessageEvent):
-    await _require_break_agreement(break_gamble_claim, event)
-    qqid = int(billing_user_id(event))
-
-    try:
-        reward, balance = break_db.claim_gamble_pool_reward(qqid)
-    except Exception as exc:
-        await break_gamble_claim.finish(f'领取失败：{exc}', reply_message=True)
-
-    await break_gamble_claim.finish(
-        '🎁 今日福利领取成功！\n'
-        f'━━━━━━━━━━━━━━\n'
-        f'💰 获得：{reward} BREAK\n'
-        f'💳 当前余额：{balance} BREAK\n'
-        '━━━━━━━━━━━━━━\n'
-        '感谢今日贡献榜大佬们的赞助喵呜~',
-        reply_message=True,
-    )
-
-
-@break_gamble_leaderboard.handle()
-async def _(event: MessageEvent):
-    await _require_break_agreement(break_gamble_leaderboard, event)
-    leaderboard = break_db.get_gamble_pool_leaderboard(limit=10)
-
-    if not leaderboard:
-        await break_gamble_leaderboard.finish(
-            '🏆 贡献总榜（首富榜）\n'
-            '━━━━━━━━━━━━━━\n'
-            '还没有人贡献过呢~\n'
-            '发送"倾家荡产"来贡献吧！',
-            reply_message=True,
-        )
-        return
-
-    # 构建贡献榜
-    lines = [
-        '🏆 贡献总榜（首富榜）',
-        '━━━━━━━━━━━━━━',
-        '',
-    ]
-
-    medals = ['🥇', '🥈', '🥉'] + [f'{i}️⃣' for i in range(4, 11)]
-
-    for i, contributor in enumerate(leaderboard):
-        medal = medals[i] if i < len(medals) else f'{i+1}️⃣'
-        lines.append(f'{medal} 用户 {contributor.qqid} — {contributor.amount} BREAK')
-
-    lines.extend([
-        '',
-        '感谢他们为 AWMC 做出的贡献~',
-        '',
-        '💡 发送"倾家荡产"来贡献吧！',
-    ])
-
-    await break_gamble_leaderboard.finish('\n'.join(lines), reply_message=True)
+#
+#
+# @break_gamble_pool.handle()
+# async def _(event: MessageEvent):
+#     await _require_break_agreement(break_gamble_pool, event)
+#     status = break_db.get_gamble_pool_status()
+#
+#     if status.total_pool == 0:
+#         await break_gamble_pool.finish(
+#             '🎰 今日抽奖池\n'
+#             '━━━━━━━━━━━━━━\n'
+#             '还没有人倾家荡产呢~\n'
+#             '发送"*倾家荡产"来贡献吧！',
+#             reply_message=True,
+#         )
+#         return
+#
+#     # 构建贡献榜
+#     lines = [
+#         '🎰 今日抽奖池',
+#         '━━━━━━━━━━━━━━',
+#         f'💰 今日池总额：{status.total_pool} BREAK',
+#         f'🎁 可分配福利：{status.distributable} BREAK（80%）',
+#         '',
+#         '📊 今日贡献榜（前5）',
+#     ]
+#
+#     for i, contributor in enumerate(status.contributors, 1):
+#         medal = ['🥇', '🥈', '🥉', '4️⃣', '5️⃣'][i - 1]
+#         lines.append(f'{medal} 用户 {contributor.qqid} — {contributor.amount} BREAK')
+#
+#     lines.extend([
+#         '',
+#         '感谢他们为 AWMC 做出的贡献~',
+#         '',
+#         '💡 发送"领取福利"可领取今日福利！',
+#     ])
+#
+#     await break_gamble_pool.finish('\n'.join(lines), reply_message=True)
+#
+#
+# @break_gamble_claim.handle()
+# async def _(event: MessageEvent):
+#     await _require_break_agreement(break_gamble_claim, event)
+#     qqid = int(billing_user_id(event))
+#
+#     try:
+#         reward, balance = break_db.claim_gamble_pool_reward(qqid)
+#     except Exception as exc:
+#         await break_gamble_claim.finish(f'领取失败：{exc}', reply_message=True)
+#
+#     await break_gamble_claim.finish(
+#         '🎁 今日福利领取成功！\n'
+#         f'━━━━━━━━━━━━━━\n'
+#         f'💰 获得：{reward} BREAK\n'
+#         f'💳 当前余额：{balance} BREAK\n'
+#         '━━━━━━━━━━━━━━\n'
+#         '感谢今日贡献榜大佬们的赞助喵呜~',
+#         reply_message=True,
+#     )
+#
+#
+# @break_gamble_leaderboard.handle()
+# async def _(event: MessageEvent):
+#     await _require_break_agreement(break_gamble_leaderboard, event)
+#     leaderboard = break_db.get_gamble_pool_leaderboard(limit=10)
+#
+#     if not leaderboard:
+#         await break_gamble_leaderboard.finish(
+#             '🏆 贡献总榜（首富榜）\n'
+#             '━━━━━━━━━━━━━━\n'
+#             '还没有人贡献过呢~\n'
+#             '发送"倾家荡产"来贡献吧！',
+#             reply_message=True,
+#         )
+#         return
+#
+#     # 构建贡献榜
+#     lines = [
+#         '🏆 贡献总榜（首富榜）',
+#         '━━━━━━━━━━━━━━',
+#         '',
+#     ]
+#
+#     medals = ['🥇', '🥈', '🥉'] + [f'{i}️⃣' for i in range(4, 11)]
+#
+#     for i, contributor in enumerate(leaderboard):
+#         medal = medals[i] if i < len(medals) else f'{i+1}️⃣'
+#         lines.append(f'{medal} 用户 {contributor.qqid} — {contributor.amount} BREAK')
+#
+#     lines.extend([
+#         '',
+#         '感谢他们为 AWMC 做出的贡献~',
+#         '',
+#         '💡 发送"倾家荡产"来贡献吧！',
+#     ])
+#
+#     await break_gamble_leaderboard.finish('\n'.join(lines), reply_message=True)
