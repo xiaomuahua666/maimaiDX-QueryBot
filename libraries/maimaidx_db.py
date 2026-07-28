@@ -84,7 +84,19 @@ class UnifiedConnection:
     def __init__(self, backend: str = 'sqlite', prefix: str = '', **kwargs):
         self._backend = backend
         self._prefix = prefix
-        if backend == 'mysql':
+        self._kwargs = kwargs
+        self._conn = None
+        self._connect()
+
+    def _connect(self):
+        """建立连接。"""
+        if self._conn is not None:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+        kwargs = self._kwargs
+        if self._backend == 'mysql':
             import pymysql
             import pymysql.cursors
             self._conn = pymysql.connect(
@@ -107,10 +119,18 @@ class UnifiedConnection:
             self._conn.execute("PRAGMA wal_autocheckpoint=1000")
 
     def execute(self, sql: str, params: tuple = ()):
-        """返回兼容游标，支持 .fetchone() / .fetchall() 链式调用。"""
-        cur = self.cursor()
-        cur.execute(sql, params)
-        return cur
+        """返回兼容游标，自动重连。"""
+        try:
+            cur = self.cursor()
+            cur.execute(sql, params)
+            return cur
+        except Exception:
+            if self._backend == 'mysql':
+                self._connect()
+                cur = self.cursor()
+                cur.execute(sql, params)
+                return cur
+            raise
 
     def executescript(self, sql: str):
         """SQLite 建表语句；MySQL 下跳过（表已由迁移脚本创建）。"""
@@ -121,7 +141,12 @@ class UnifiedConnection:
         return UnifiedCursor(self._conn.cursor(), self._backend, self._prefix)
 
     def commit(self):
-        self._conn.commit()
+        try:
+            self._conn.commit()
+        except Exception:
+            if self._backend == 'mysql':
+                self._connect()
+            raise
 
     @property
     def row_factory(self):
