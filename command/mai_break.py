@@ -9,6 +9,7 @@ from nonebot.permission import SUPERUSER
 
 from ..libraries.maimaidx_break import (
     DEFAULT_CONFIG,
+    GAMBLE_ENTRY_COST,
     LOTTERY_PRIZES,
     LOTTERY_WEIGHTS,
     break_db,
@@ -105,10 +106,14 @@ GAMBLE_ALL_HELP = (
     '【倾家荡产】\n'
     '梭哈你的全部 BREAK，一抽定生死！\n\n'
     '用法：倾家荡产 [模式]\n'
-    '模式：\n'
-    '  · 标准（默认）- 谢谢参与概率 65%，多种倍率\n'
-    '  · 刺激 - 谢谢参与概率 75%，大倍率更多\n'
-    '  · 高风险 - 谢谢参与概率 80%，但 100x 概率更高\n\n'
+    '入场费（不退还）：\n'
+    '  · 标准（默认）— 2 BREAK\n'
+    '  · 刺激 — 3 BREAK\n'
+    '  · 高风险 — 5 BREAK\n\n'
+    '倍率表：\n'
+    '  标准：70% 谢谢参与 / 15% 返本 / 8% 2x / 4% 5x / 2% 10x / 0.8% 30x / 0.2% 50x\n'
+    '  刺激：78% 谢谢参与 / 10% 2x / 6% 5x / 4% 20x / 1.5% 50x / 0.5% 100x\n'
+    '  高风险：82% 谢谢参与 / 8% 5x / 6% 20x / 3% 50x / 1% 100x\n\n'
     '例："倾家荡产" 或 "倾家荡产 刺激"\n'
     'BREAK 是 Bot 内部积分，不具有现金价值。'
 )
@@ -644,10 +649,6 @@ async def _(message: Message = CommandArg()):
 async def _(matcher: Matcher, event: MessageEvent, message: Message = CommandArg()):
     await _require_break_agreement(break_gamble_all, event)
 
-    from datetime import date
-    if date.today().day != 28:
-        await break_gamble_all.finish('倾家荡产仅在每月28号开放~', reply_message=True)
-
     raw = message.extract_plain_text().strip()
     if raw.lower() in {'帮助', '说明', 'help', '?'}:
         await break_gamble_all.finish(GAMBLE_ALL_HELP, reply_message=True)
@@ -659,11 +660,15 @@ async def _(matcher: Matcher, event: MessageEvent, message: Message = CommandArg
     elif '高风险' in raw:
         mode = '高风险'
 
+    entry_cost = GAMBLE_ENTRY_COST[mode]
+
     # 获取用户余额
     qqid = int(billing_user_id(event))
     balance = break_db.get_balance(qqid)
-    if balance <= 0:
-        await break_gamble_all.finish('你没有 BREAK 可以梭哈！先去签到吧~', reply_message=True)
+    if balance < entry_cost:
+        await break_gamble_all.finish(
+            f'{mode}模式入场费 {entry_cost} BREAK，余额不足！\n'
+            f'当前余额：{balance} BREAK', reply_message=True)
 
     # 二次确认
     pending_key = session_key('break_gamble_all', event)
@@ -673,9 +678,11 @@ async def _(matcher: Matcher, event: MessageEvent, message: Message = CommandArg
 
     prompt = (
         f'🎰 倾家荡产 - {mode}模式\n'
+        f'入场费：{entry_cost} BREAK\n'
         f'当前余额：{balance} BREAK\n\n'
-        f'确定要梭哈全部 {balance} BREAK 吗？\n'
-        f'发送"确认"开始抽奖，"取消"退出。'
+        f'入场后梭哈剩余 {balance - entry_cost} BREAK\n'
+        f'确定要入场吗？\n'
+        f'发送"确认"开始，"取消"退出。'
     )
     await break_gamble_all.send(prompt, reply_message=True)
 
@@ -695,6 +702,10 @@ async def _(matcher: Matcher, event: MessageEvent):
 
     mode = matcher.state['gamble_mode']
     qqid = int(billing_user_id(event))
+    entry_cost = GAMBLE_ENTRY_COST[mode]
+
+    # 扣入场费
+    break_db.try_consume(qqid, entry_cost, 'gamble_entry_fee')
 
     try:
         result = break_db.gamble_all(qqid, mode)
@@ -708,6 +719,7 @@ async def _(matcher: Matcher, event: MessageEvent):
     if result.multiplier == 0:
         text = (
             f'🎰 倾家荡产 - {result.mode}模式\n'
+            f'入场费：-{entry_cost} BREAK\n'
             f'💫 谢谢参与！-{result.balance_before} BREAK\n'
             f'当前余额：{result.balance_after} BREAK\n'
             f'呜呜呜~下次再接再厉！'
@@ -716,6 +728,7 @@ async def _(matcher: Matcher, event: MessageEvent):
         profit = result.win_amount - result.balance_before
         text = (
             f'🎰 倾家荡产 - {result.mode}模式\n'
+            f'入场费：-{entry_cost} BREAK\n'
             f'🎉 恭喜！中了 {result.multiplier}x 倍率！\n'
             f'赢得：{result.win_amount} BREAK（+{profit}）\n'
             f'当前余额：{result.balance_after} BREAK'
