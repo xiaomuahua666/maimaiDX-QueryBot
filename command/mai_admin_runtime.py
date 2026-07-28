@@ -261,22 +261,27 @@ async def _audit_and_ban_preprocessor(
                 pass
         raise IgnoredException("maimaidx user banned")
 
-    payer = int(billing_user_id(event))
-    balance = break_db.get_balance(payer)
-    if balance < 0 and not is_plugin_admin(uid) and not _debt_exempt(matcher):
-        now = time.time()
-        debt_key = str(payer)
-        if now - _debt_notified.get(debt_key, 0) > _DEBT_NOTICE_COOLDOWN_SECONDS:
-            _debt_notified[debt_key] = now
-            try:
-                await bot.send(
-                    event,
-                    f"当前 BREAK 余额为 {balance}，已暂停其他功能。\n"
-                    "请先通过 AWMC签到、今日舞萌或抢红包将余额补回非负数。",
-                )
-            except Exception:
-                pass
-        raise IgnoredException("negative BREAK balance")
+    try:
+        payer = int(billing_user_id(event))
+        balance = break_db.get_balance(payer)
+        if balance < 0 and not is_plugin_admin(uid) and not _debt_exempt(matcher):
+            now = time.time()
+            debt_key = str(payer)
+            if now - _debt_notified.get(debt_key, 0) > _DEBT_NOTICE_COOLDOWN_SECONDS:
+                _debt_notified[debt_key] = now
+                try:
+                    await bot.send(
+                        event,
+                        f"当前 BREAK 余额为 {balance}，已暂停其他功能。\n"
+                        "请先通过 AWMC签到、今日舞萌或抢红包将余额补回非负数。",
+                    )
+                except Exception:
+                    pass
+            raise IgnoredException("negative BREAK balance")
+    except IgnoredException:
+        raise
+    except Exception:
+        log.warning('[BREAK] 欠费检查失败，跳过', exc_info=True)
 
     if _serial_user_operation(matcher):
         operation_key = str(billing_user_id(event))
@@ -287,45 +292,50 @@ async def _audit_and_ban_preprocessor(
         state["__maimaidx_serial_user_operation"] = operation_key
 
     busy_surcharge_exempt = _busy_surcharge_exempt(matcher)
-    if (
-        bool(getattr(maiconfig, "maimaidx_busy_surcharge_enabled", True))
-        and not busy_surcharge_exempt
-    ):
-        window = max(
-            1.0, float(getattr(maiconfig, "maimaidx_busy_window_seconds", 60.0))
-        )
-        free_requests = max(
-            0, int(getattr(maiconfig, "maimaidx_busy_free_requests", 30))
-        )
-        surcharge = max(
-            0, int(getattr(maiconfig, "maimaidx_busy_surcharge_break", 1))
-        )
-        request_count = request_meter.record(
-            _event_request_key(bot, event), window_seconds=window
-        )
-        if request_count is not None and request_count > free_requests and surcharge:
-            payer = int(billing_user_id(event))
-            if not is_superuser_exempt(payer):
-                meta = {
-                    "window_seconds": window,
-                    "free_requests": free_requests,
-                    "request_count": request_count,
-                }
-                if not break_db.try_consume(
-                    payer, surcharge, "busy_request_surcharge", meta=meta
-                ):
-                    balance = break_db.get_balance(payer)
-                    await bot.send(
-                        event,
-                        "当前使用人数较多，本次请求需额外支付 "
-                        f"{surcharge} BREAK。\n"
-                        + format_break_insufficient_message(payer, surcharge, balance),
-                    )
-                    _release_user_operation(state)
-                    raise IgnoredException("maimaidx busy surcharge insufficient")
-                state["__maimaidx_busy_charge"] = {
-                    **meta, "charged": surcharge, "balance": break_db.get_balance(payer)
-                }
+    try:
+        if (
+            bool(getattr(maiconfig, "maimaidx_busy_surcharge_enabled", True))
+            and not busy_surcharge_exempt
+        ):
+            window = max(
+                1.0, float(getattr(maiconfig, "maimaidx_busy_window_seconds", 60.0))
+            )
+            free_requests = max(
+                0, int(getattr(maiconfig, "maimaidx_busy_free_requests", 30))
+            )
+            surcharge = max(
+                0, int(getattr(maiconfig, "maimaidx_busy_surcharge_break", 1))
+            )
+            request_count = request_meter.record(
+                _event_request_key(bot, event), window_seconds=window
+            )
+            if request_count is not None and request_count > free_requests and surcharge:
+                payer = int(billing_user_id(event))
+                if not is_superuser_exempt(payer):
+                    meta = {
+                        "window_seconds": window,
+                        "free_requests": free_requests,
+                        "request_count": request_count,
+                    }
+                    if not break_db.try_consume(
+                        payer, surcharge, "busy_request_surcharge", meta=meta
+                    ):
+                        balance = break_db.get_balance(payer)
+                        await bot.send(
+                            event,
+                            "当前使用人数较多，本次请求需额外支付 "
+                            f"{surcharge} BREAK。\n"
+                            + format_break_insufficient_message(payer, surcharge, balance),
+                        )
+                        _release_user_operation(state)
+                        raise IgnoredException("maimaidx busy surcharge insufficient")
+                    state["__maimaidx_busy_charge"] = {
+                        **meta, "charged": surcharge, "balance": break_db.get_balance(payer)
+                    }
+    except IgnoredException:
+        raise
+    except Exception:
+        log.warning('[BREAK] 拥堵计费检查失败，跳过', exc_info=True)
 
     ref_id = await asyncio.to_thread(
         admin_audit.start_trace,
