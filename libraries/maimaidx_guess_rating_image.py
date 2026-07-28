@@ -86,9 +86,12 @@ def _draw_hidden_card(
     im.alpha_composite(_diff_bgs[idx], (x, y))
 
     if hide_cover:
-        # 5 级：曲绘位置盖成纯黑（隐藏所有曲绘信息）
-        cover_mask = Image.new('RGBA', (75, 75), (0, 0, 0, 255))
-        im.alpha_composite(cover_mask, (x + 12, y + 12))
+        # 5 级：曲绘统一换成 0.png（占位曲绘），彻底隐藏所有曲绘信息
+        try:
+            cover = Image.open(music_picture(0)).resize((75, 75))
+            im.alpha_composite(cover.convert('RGBA'), (x + 12, y + 12))
+        except Exception:
+            pass
     else:
         try:
             cover = Image.open(music_picture(chart.song_id)).resize((75, 75))
