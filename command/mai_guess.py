@@ -375,12 +375,15 @@ def _letter_busy(gid: GroupId) -> bool:
     return letter_guess.is_playing(gid)
 
 
+def _rating_or_impostor_busy(gid: GroupId) -> bool:
+    return rating_guess.is_busy(gid) or impostor_guess.is_busy(gid)
+
+
 def _guess_or_letter_busy(gid: GroupId) -> bool:
     return (
         guess.is_busy(gid)
         or _letter_busy(gid)
-        or rating_guess.is_busy(gid)
-        or impostor_guess.is_busy(gid)
+        or _rating_or_impostor_busy(gid)
     )
 
 
@@ -1052,7 +1055,7 @@ async def _(event: MessageEvent):
     gid = get_event_group_id(event)
     if gid not in guess.switch.enable:
         await guess_music_audio.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True)
-    if _letter_busy(gid) or not await guess.try_begin_prepare(gid):
+    if _letter_busy(gid) or _rating_or_impostor_busy(gid) or not await guess.try_begin_prepare(gid):
         await guess_music_audio.finish(_GUESS_BUSY_HINT, reply_message=True)
 
     data = None
@@ -1162,7 +1165,7 @@ async def _(event: MessageEvent):
     gid = get_event_group_id(event)
     if gid not in guess.switch.enable:
         await guess_music_chart.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True)
-    if _letter_busy(gid) or not await guess.try_begin_prepare(gid):
+    if _letter_busy(gid) or _rating_or_impostor_busy(gid) or not await guess.try_begin_prepare(gid):
         await guess_music_chart.finish(_GUESS_BUSY_HINT, reply_message=True)
 
     data = None
