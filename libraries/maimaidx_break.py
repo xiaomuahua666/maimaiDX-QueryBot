@@ -39,7 +39,7 @@ DEFAULT_CONFIG: Dict[str, str] = {
     'analysis_price_multiplier': '3',
     'analysis_precharge_cost': '6',
     # 恢复旧版第 1～5 天曲线；之后按 streak_bonus_growth 继续增长，不封顶。
-    'streak_bonus': '3,5,8,12,20',
+    'streak_bonus': '1,2,3,4,5',
     'streak_bonus_growth': '1',
     'makeup_checkin_costs': '30,60,90',
     'bonus_group_1072033605': '0.25',
