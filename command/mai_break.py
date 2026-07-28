@@ -764,7 +764,7 @@ async def _(event: MessageEvent):
         '🎰 今日抽奖池',
         '━━━━━━━━━━━━━━',
         f'💰 今日池总额：{status.total_pool} BREAK',
-        f'🎁 可分配福利：{status.distributable} BREAK（50%）',
+        f'🎁 剩余可分配福利：{status.distributable} BREAK',
         '',
         '📊 今日贡献榜（前5）',
     ]

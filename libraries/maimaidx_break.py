@@ -195,6 +195,16 @@ CREATE TABLE IF NOT EXISTS break_gamble_pool (
 );
 CREATE INDEX idx_break_gamble_pool_date
     ON break_gamble_pool(date, amount DESC);
+CREATE TABLE IF NOT EXISTS break_gamble_pool_payout (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    qqid        INTEGER NOT NULL,
+    date        TEXT NOT NULL,
+    amount      INTEGER NOT NULL,
+    payout_type TEXT NOT NULL,
+    created_at  REAL NOT NULL
+);
+CREATE INDEX idx_break_gamble_pool_payout_date
+    ON break_gamble_pool_payout(date);
 """
 
 
@@ -1283,6 +1293,23 @@ class BreakDatabase:
             self._conn.commit()
             return LotteryResult(count, cost, prize, balance + net)
 
+    def _get_remaining_distributable(self, today: str) -> int:
+        """今日剩余可分配额度 = 总池*50% - 已分配（赢+领福利）。"""
+        pool_row = self._conn.execute(
+            'SELECT COALESCE(SUM(amount), 0) as total FROM break_gamble_pool WHERE date=?',
+            (today,),
+        ).fetchone()
+        total_pool = int(pool_row['total'])
+        distributable = int(total_pool * 0.5)
+
+        paid_row = self._conn.execute(
+            'SELECT COALESCE(SUM(amount), 0) as paid FROM break_gamble_pool_payout WHERE date=?',
+            (today,),
+        ).fetchone()
+        total_paid = int(paid_row['paid'])
+
+        return max(0, distributable - total_paid)
+
     def gamble_all(self, qqid: int, mode: str = '标准') -> GambleAllResult:
         """倾家荡产：梭哈全部 BREAK，按模式概率获得倍率反馈。"""
         if mode not in GAMBLE_WEIGHTS_MAP:
@@ -1304,7 +1331,22 @@ class BreakDatabase:
 
             win_amount = balance * multiplier
             net = win_amount - balance  # 正数=赢，负数=输
+            today = self._today()
             now = time.time()
+
+            # 赢钱时从可分配额度扣，不够则封顶
+            if net > 0:
+                remaining = self._get_remaining_distributable(today)
+                if net > remaining:
+                    net = remaining
+                    win_amount = balance + net
+                    multiplier = win_amount / balance if balance > 0 else 0
+                # 记录支出
+                self._conn.execute(
+                    """INSERT INTO break_gamble_pool_payout (qqid, date, amount, payout_type, created_at)
+                       VALUES (?, ?, ?, 'gamble_win', ?)""",
+                    (qqid, today, net, now),
+                )
 
             self._conn.execute(
                 'UPDATE break_users SET balance=balance+?, updated_at=? WHERE qqid=?',
@@ -1313,7 +1355,7 @@ class BreakDatabase:
             self._conn.execute(
                 """UPDATE break_daily_usage SET break_spent=break_spent+?,
                    break_gained=break_gained+? WHERE qqid=? AND date=?""",
-                (max(0, -net), max(0, net), qqid, self._today()),
+                (max(0, -net), max(0, net), qqid, today),
             )
             self._append_log(
                 qqid, net, 'gamble_all',
@@ -1325,7 +1367,7 @@ class BreakDatabase:
                 self._conn.execute(
                     """INSERT INTO break_gamble_pool (qqid, date, amount, created_at)
                        VALUES (?, ?, ?, ?)""",
-                    (qqid, self._today(), balance, now),
+                    (qqid, today, balance, now),
                 )
 
             self._conn.commit()
@@ -1365,7 +1407,7 @@ class BreakDatabase:
             return GamblePoolStatus(
                 date=date,
                 total_pool=total_pool,
-                distributable=int(total_pool * 0.5),
+                distributable=self._get_remaining_distributable(date),
                 contributors=contributors,
             )
 
@@ -1437,6 +1479,19 @@ class BreakDatabase:
             distributable = int(total_pool * 0.5)
             user_contribution_ratio = net_contribution / total_pool
             reward = max(1, int(distributable * user_contribution_ratio))
+
+            # 从可分配额度扣，不够则封顶
+            remaining = self._get_remaining_distributable(today)
+            if remaining <= 0:
+                raise ValueError('今日可分配福利已发完')
+            reward = min(reward, remaining)
+
+            # 记录支出
+            self._conn.execute(
+                """INSERT INTO break_gamble_pool_payout (qqid, date, amount, payout_type, created_at)
+                   VALUES (?, ?, ?, 'welfare_claim', ?)""",
+                (qqid, today, reward, now),
+            )
 
             # 发放福利
             self._conn.execute(
