@@ -147,7 +147,6 @@ class UnifiedConnection:
     def execute(self, sql: str, params: tuple = ()):
         """返回兼容游标，仅连接断开时自动重连。"""
         try:
-            self._ping()
             cur = self.cursor()
             cur.execute(sql, params)
             self._last_active = time.time()
