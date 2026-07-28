@@ -221,17 +221,14 @@ class GuessRatingManager:
     ) -> str:
         """提交/修改答案。返回提示文案。
 
-        题主也可作答并获得回应；结算时通过 billing_id 过滤，不计入奖励，
-        也不体现在参与人数里（避免暴露题主身份）。
+        题主同样可以作答、修改、被统计在参与人数中；结算时按 billing_id
+        过滤题主，不计入排名和奖励。
         """
         data = self.groups.get(gid)
         if data is None or data.end:
             return ''
-        is_target = int(billing_id) == int(data.target_uid)
         if uid in data.entries:
             data.entries[uid].answer = answer
-            if is_target:
-                return f'✅ {name} 已修改答案为 {answer}'
             return f'✅ {name} 已修改答案为 {answer}'
         data.entries[uid] = RatingGuessEntry(
             uid=uid,
@@ -240,14 +237,7 @@ class GuessRatingManager:
             answer=answer,
             first_at=time.time(),
         )
-        if is_target:
-            return f'✅ {name} 已作答'
-        # 参与人数只统计非题主
-        participant_count = sum(
-            1 for entry in data.entries.values()
-            if int(entry.billing_id) != int(data.target_uid)
-        )
-        return f'✅ {name} 已作答（{participant_count}人参与）'
+        return f'✅ {name} 已作答（{len(data.entries)}人参与）'
 
     def settle(self, gid: int) -> Optional[RatingGuessSettlement]:
         """结算：计算排名与奖励。"""

@@ -129,7 +129,6 @@ class GuessImpostorManager:
         data = self.groups.get(gid)
         if data is None or data.end or not 1 <= answer <= len(data.charts):
             return ''
-        is_target = int(billing_id) == int(data.target_uid)
         if uid in data.entries:
             data.entries[uid].answer = answer
             # 速度榜按最终答案提交时间计算，防止先随便抢答再末秒改对。
@@ -142,14 +141,7 @@ class GuessImpostorManager:
             answer=answer,
             first_at=time.time(),
         )
-        # 题主答题不暴露身份、也不体现在参与计数里
-        if is_target:
-            return f'✅ {name} 已作答'
-        participant_count = sum(
-            1 for entry in data.entries.values()
-            if int(entry.billing_id) != int(data.target_uid)
-        )
-        return f'✅ {name} 已作答（{participant_count}人参与）'
+        return f'✅ {name} 已作答（{len(data.entries)}人参与）'
 
     def settle(self, gid: int) -> Optional[ImpostorSettlement]:
         data = self.groups.get(gid)
