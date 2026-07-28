@@ -102,14 +102,19 @@ class MaimaiAPI:
         method: str, 
         endpoint: str, 
         headers: Optional[Dict[str, str]] = None,
+        *,
+        max_retries: int = 2,
+        retry_delay: float = 2.0,
         **kwargs
     ) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
         """
-        查分器通用请求
+        查分器通用请求（带重试机制）
 
         Params:
             `method`: 请求方式
             `endpoint`: 请求接口
+            `max_retries`: 网络错误时最大重试次数
+            `retry_delay`: 重试间隔（秒），使用指数退避
             `kwargs`: 其它参数
         Returns:
             `Dict[str, Any]` 返回结果
@@ -125,59 +130,73 @@ class MaimaiAPI:
         _ctx = _timing.measure('fetch') if _is_fetch else None
         if _ctx:
             _ctx.__enter__()
-        _audit_started = time.time()
-        try:
+        
+        last_exc: Optional[Exception] = None
+        for attempt in range(max_retries + 1):
+            _audit_started = time.time()
             try:
-                async with httpx.AsyncClient(timeout=httpx.Timeout(90)) as session:
-                    res = await session.request(
-                        method,
-                        self.MaiProberProxyAPI + endpoint,
-                        headers=headers,
-                        **kwargs
+                try:
+                    async with httpx.AsyncClient(timeout=httpx.Timeout(90)) as session:
+                        res = await session.request(
+                            method,
+                            self.MaiProberProxyAPI + endpoint,
+                            headers=headers,
+                            **kwargs
+                        )
+                except Exception as exc:
+                    admin_audit.add_step(
+                        'http.divingfish', 'error',
+                        {'method': method, 'endpoint': endpoint, 'error': str(exc)},
+                        started_at=_audit_started,
                     )
-            except Exception as exc:
-                admin_audit.add_step(
-                    'http.divingfish', 'error',
-                    {'method': method, 'endpoint': endpoint, 'error': str(exc)},
-                    started_at=_audit_started,
-                )
-                raise
-        finally:
-            if _ctx:
-                _ctx.__exit__(None, None, None)
-        admin_audit.add_step(
-            'http.divingfish',
-            'success' if res.status_code == 200 else 'error',
-            {'method': method, 'endpoint': endpoint, 'status_code': res.status_code},
-            started_at=_audit_started,
-        )
-        if res.status_code == 200:
-            data = res.json()
-            if _bill_qq:
-                settle_prober_fetch(_bill_qq)
-        elif res.status_code == 400:
-            error: Dict = res.json()
-            if 'message' in error:
-                if error['message'] == 'no such user':
-                    raise UserNotFoundError
-                elif error['message'] == 'user not exists':
-                    raise UserNotExistsError
+                    last_exc = exc
+                    if attempt < max_retries:
+                        import asyncio
+                        await asyncio.sleep(retry_delay * (attempt + 1))
+                        continue
+                    raise
+            finally:
+                if _ctx and attempt == max_retries:
+                    _ctx.__exit__(None, None, None)
+            
+            admin_audit.add_step(
+                'http.divingfish',
+                'success' if res.status_code == 200 else 'error',
+                {'method': method, 'endpoint': endpoint, 'status_code': res.status_code},
+                started_at=_audit_started,
+            )
+            if res.status_code == 200:
+                data = res.json()
+                if _bill_qq:
+                    settle_prober_fetch(_bill_qq)
+                return data
+            elif res.status_code == 400:
+                error: Dict = res.json()
+                if 'message' in error:
+                    if error['message'] == 'no such user':
+                        raise UserNotFoundError
+                    elif error['message'] == 'user not exists':
+                        raise UserNotExistsError
+                    else:
+                        raise UserNotFoundError
+                elif 'msg' in error:
+                    if error['msg'] == '开发者token有误':
+                        raise TokenError
+                    elif error['msg'] == '开发者token被禁用':
+                        raise TokenDisableError
+                    else:
+                        raise TokenNotFoundError
                 else:
                     raise UserNotFoundError
-            elif 'msg' in error:
-                if error['msg'] == '开发者token有误':
-                    raise TokenError
-                elif error['msg'] == '开发者token被禁用':
-                    raise TokenDisableError
-                else:
-                    raise TokenNotFoundError
+            elif res.status_code == 403:
+                raise UserDisabledQueryError
             else:
-                raise UserNotFoundError
-        elif res.status_code == 403:
-            raise UserDisabledQueryError
-        else:
-            raise UnknownError
-        return data
+                raise UnknownError
+        
+        # 不应到达此处，但以防万一
+        if last_exc is not None:
+            raise last_exc
+        raise UnknownError
 
     async def _requestmai(
         self,
