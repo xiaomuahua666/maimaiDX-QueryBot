@@ -343,6 +343,52 @@ class RedPacketStatus:
     claims: List[tuple[int, int]] = field(default_factory=list)
 
 
+# 倾家荡产模式定义
+GAMBLE_MODES = ('标准', '刺激', '高风险')
+
+# 各模式概率：(倍率, 权重)
+# 标准模式：65% 谢谢参与，85% 期望返还率
+GAMBLE_WEIGHTS_STANDARD = (
+    (0, 65),    # 谢谢参与
+    (1, 15),    # 返还本金
+    (2, 10),    # 2 倍
+    (5, 5),     # 5 倍
+    (10, 3),    # 10 倍
+    (50, 1.5),  # 50 倍
+    (100, 0.5), # 100 倍
+)
+# 刺激模式：75% 谢谢参与，80% 期望返还率，波动更大
+GAMBLE_WEIGHTS_EXCITING = (
+    (0, 75),    # 谢谢参与
+    (2, 15),    # 2 倍
+    (10, 7),    # 10 倍
+    (50, 2.5),  # 50 倍
+    (100, 0.5), # 100 倍
+)
+# 高风险模式：80% 谢谢参与，100% 期望返还率，极不稳定
+GAMBLE_WEIGHTS_RISKY = (
+    (0, 80),    # 谢谢参与
+    (5, 12),    # 5 倍
+    (50, 6),    # 50 倍
+    (100, 2),   # 100 倍
+)
+
+GAMBLE_WEIGHTS_MAP = {
+    '标准': GAMBLE_WEIGHTS_STANDARD,
+    '刺激': GAMBLE_WEIGHTS_EXCITING,
+    '高风险': GAMBLE_WEIGHTS_RISKY,
+}
+
+
+@dataclass
+class GambleAllResult:
+    mode: str
+    balance_before: int
+    multiplier: int
+    win_amount: int
+    balance_after: int
+
+
 def _parse_config_int(raw: str, default: int) -> int:
     try:
         return int(float(raw))
@@ -1216,6 +1262,52 @@ class BreakDatabase:
             )
             self._conn.commit()
             return LotteryResult(count, cost, prize, balance + net)
+
+    def gamble_all(self, qqid: int, mode: str = '标准') -> GambleAllResult:
+        """倾家荡产：梭哈全部 BREAK，按模式概率获得倍率反馈。"""
+        if mode not in GAMBLE_WEIGHTS_MAP:
+            raise ValueError(f'未知模式：{mode}，可选：{", ".join(GAMBLE_MODES)}')
+
+        self._ensure_user(qqid)
+        self._ensure_daily(qqid)
+
+        with self._lock:
+            balance = self.get_balance(qqid)
+            if balance <= 0:
+                raise BreakInsufficientError(1, balance, qqid=qqid)
+
+            # 按权重随机选择倍率
+            weights_data = GAMBLE_WEIGHTS_MAP[mode]
+            multipliers = [m for m, _ in weights_data]
+            weights = [w for _, w in weights_data]
+            multiplier = random.choices(multipliers, weights=weights, k=1)[0]
+
+            win_amount = balance * multiplier
+            net = win_amount - balance  # 正数=赢，负数=输
+            now = time.time()
+
+            self._conn.execute(
+                'UPDATE break_users SET balance=balance+?, updated_at=? WHERE qqid=?',
+                (net, now, qqid),
+            )
+            self._conn.execute(
+                """UPDATE break_daily_usage SET break_spent=break_spent+?,
+                   break_gained=break_gained+? WHERE qqid=? AND date=?""",
+                (balance, win_amount, qqid, self._today()),
+            )
+            self._append_log(
+                qqid, net, 'gamble_all',
+                meta={'mode': mode, 'balance': balance, 'multiplier': multiplier, 'win': win_amount},
+            )
+            self._conn.commit()
+
+            return GambleAllResult(
+                mode=mode,
+                balance_before=balance,
+                multiplier=multiplier,
+                win_amount=win_amount,
+                balance_after=balance + net,
+            )
 
     def award_guess_points(
         self,

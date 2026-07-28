@@ -65,6 +65,9 @@ break_red_packet_claim = on_command(
 break_red_packet_status = on_command(
     '红包状态', aliases={'红包记录', '查看红包'}
 )
+break_gamble_all = on_command(
+    '*倾家荡产', aliases={'倾家荡产', '梭哈'}
+)
 
 for _debt_exempt_matcher in (
     awmc_checkin,
@@ -85,8 +88,20 @@ LOTTERY_HELP = (
     '默认每次消耗 2 BREAK，奖池为：\n'
     + _LOTTERY_PRIZE_LINES
     + '用法：BREAK抽奖 [次数]\n'
-    '例：“BREAK抽奖”抽 1 次，“BREAK抽奖 5”连抽 5 次。\n'
+    '例："BREAK抽奖"抽 1 次，"BREAK抽奖 5"连抽 5 次。\n'
     '非空奖概率 65%，单抽期望返还 1.6 BREAK；最多 10 连抽，长期仍为净消耗。'
+)
+
+GAMBLE_ALL_HELP = (
+    '【倾家荡产】\n'
+    '梭哈你的全部 BREAK，一抽定生死！\n\n'
+    '用法：*倾家荡产 [模式]\n'
+    '模式：\n'
+    '  · 标准（默认）- 谢谢参与概率 65%，多种倍率\n'
+    '  · 刺激 - 谢谢参与概率 75%，大倍率更多\n'
+    '  · 高风险 - 谢谢参与概率 80%，但 100x 概率更高\n\n'
+    '例："*倾家荡产" 或 "*倾家荡产 刺激"\n'
+    'BREAK 是 Bot 内部积分，不具有现金价值。'
 )
 
 def get_at_qq(message: MessageEvent) -> Optional[int]:
@@ -110,7 +125,8 @@ async def _():
         '· 今日舞萌 — 人品值四舍五入后 ÷10，每日领取一次 BREAK\n'
         '· 猜歌 — 每次猜对奖励 1 BREAK，无每日上限\n'
         '· 转账BREAK @用户 数量 — 转给其他用户\n'
-        '· BREAK抽奖 [1-10] — 每次默认消耗 2 BREAK，发送“BREAK抽奖 帮助”看奖池\n'
+        '· BREAK抽奖 [1-10] — 每次默认消耗 2 BREAK，发送"BREAK抽奖 帮助"看奖池\n'
+        '· *倾家荡产 [模式] — 梭哈全部 BREAK，发送"*倾家荡产 帮助"看模式说明\n'
         '· 发红包 [总额] [份数] — 群内发送 BREAK 手气红包，也可按提示逐步输入\n'
         '· 抢红包 — 领取本群当前红包；红包状态 — 查看领取明细\n'
         '· 我的AWMC — 查看账号状态、使用统计；群内自动附带猜歌数据图\n'
@@ -610,3 +626,89 @@ async def _(message: Message = CommandArg()):
     key, value = parts[0].strip(), parts[1].strip()
     break_db.set_config(key, value)
     await awmc_admin_config.finish(f'已设置 {key} = {value}', reply_message=True)
+
+
+@break_gamble_all.handle()
+async def _(matcher: Matcher, event: MessageEvent, message: Message = CommandArg()):
+    await _require_break_agreement(break_gamble_all, event)
+    raw = message.extract_plain_text().strip()
+    if raw.lower() in {'帮助', '说明', 'help', '?'}:
+        await break_gamble_all.finish(GAMBLE_ALL_HELP, reply_message=True)
+
+    # 解析模式
+    mode = '标准'
+    if '刺激' in raw:
+        mode = '刺激'
+    elif '高风险' in raw:
+        mode = '高风险'
+
+    # 获取用户余额
+    qqid = int(billing_user_id(event))
+    balance = break_db.get_balance(qqid)
+    if balance <= 0:
+        await break_gamble_all.finish('你没有 BREAK 可以梭哈！先去签到吧~', reply_message=True)
+
+    # 二次确认
+    pending_key = session_key('break_gamble_all', event)
+    track_event(pending_key, event)
+    matcher.state['gamble_mode'] = mode
+    matcher.state['gamble_balance'] = balance
+
+    await break_gamble_all.send(
+        f'🎰 倾家荡产 - {mode}模式\n'
+        f'当前余额：{balance} BREAK\n\n'
+        f'确定要梭哈全部 {balance} BREAK 吗？\n'
+        f'发送"确认"开始抽奖，"取消"退出。',
+        reply_message=True,
+    )
+
+
+@break_gamble_all.got('confirm', prompt='发送"确认"开始抽奖，"取消"退出。')
+async def _(matcher: Matcher, event: MessageEvent):
+    pending_key = session_key('break_gamble_all', event)
+    raw = str(matcher.state['confirm']).strip()
+
+    if raw.lower() in {'取消', 'cancel', 'q', '退出', 'no', 'n'}:
+        finish_pending(pending_key)
+        await break_gamble_all.finish('已取消倾家荡产。', reply_message=True)
+
+    if raw.lower() not in {'确认', 'confirm', 'y', 'yes', '是', '冲', '梭哈'}:
+        finish_pending(pending_key)
+        await break_gamble_all.finish('已取消倾家荡产。', reply_message=True)
+
+    mode = matcher.state['gamble_mode']
+    qqid = int(billing_user_id(event))
+
+    try:
+        result = break_db.gamble_all(qqid, mode)
+    except Exception as exc:
+        finish_pending(pending_key)
+        await break_gamble_all.finish(f'抽奖失败：{exc}', reply_message=True)
+
+    finish_pending(pending_key)
+
+    # 构建结果文本
+    if result.multiplier == 0:
+        text = (
+            f'🎰 倾家荡产 - {result.mode}模式\n'
+            f'💫 谢谢参与！-{result.balance_before} BREAK\n'
+            f'当前余额：{result.balance_after} BREAK\n'
+            f'呜呜呜~下次再接再厉！'
+        )
+    else:
+        profit = result.win_amount - result.balance_before
+        text = (
+            f'🎰 倾家荡产 - {result.mode}模式\n'
+            f'🎉 恭喜！中了 {result.multiplier}x 倍率！\n'
+            f'赢得：{result.win_amount} BREAK（+{profit}）\n'
+            f'当前余额：{result.balance_after} BREAK'
+        )
+
+        # 大奖建议发红包
+        if profit >= 100:
+            text += (
+                '\n\n喵呜~！恭喜您中大奖啦！\n'
+                '要不要发个红包庆祝一下呢~'
+            )
+
+    await break_gamble_all.finish(text, reply_message=True)
