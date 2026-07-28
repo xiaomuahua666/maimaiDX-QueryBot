@@ -520,19 +520,9 @@ class BreakDatabase:
             return
         self._initialized = True
         self._conn = create_unified_connection()
-        # 建表：逐条 execute 让 wrapper 做方言转换；索引忽略已存在错误
-        for stmt in _CREATE_SQL.split(';'):
-            stmt = stmt.strip()
-            if not stmt:
-                continue
-            try:
-                self._conn.execute(stmt)
-            except Exception:
-                if stmt.upper().startswith('CREATE INDEX'):
-                    pass  # 索引已存在，忽略
-                else:
-                    raise
-        self._conn.commit()
+        # 建表：仅 SQLite 模式执行；MySQL 已由迁移脚本创建
+        if self._conn._backend == 'sqlite':
+            self._conn.executescript(_CREATE_SQL)
         self._seed_config()
 
     def _seed_config(self):
