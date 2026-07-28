@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -78,6 +79,17 @@ class UnifiedCursor:
         self._cur.close()
 
 
+def _is_connection_error(exc: Exception) -> bool:
+    """判断是否为连接断开类错误。"""
+    try:
+        import pymysql.err
+        if isinstance(exc, (pymysql.err.InterfaceError, pymysql.err.OperationalError)):
+            return True
+    except ImportError:
+        pass
+    return False
+
+
 class UnifiedConnection:
     """兼容 sqlite3.Connection 的统一连接，透明支持 SQLite 和 MySQL。"""
 
@@ -86,6 +98,7 @@ class UnifiedConnection:
         self._prefix = prefix
         self._kwargs = kwargs
         self._conn = None
+        self._last_active = 0.0
         self._connect()
 
     def _connect(self):
@@ -108,6 +121,9 @@ class UnifiedConnection:
                 charset=kwargs.get('charset', 'utf8mb4'),
                 cursorclass=pymysql.cursors.DictCursor,
                 autocommit=False,
+                connect_timeout=5,
+                read_timeout=10,
+                write_timeout=10,
             )
         else:
             db_path = kwargs.get('db_path', ':memory:')
@@ -117,18 +133,31 @@ class UnifiedConnection:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA synchronous=NORMAL")
             self._conn.execute("PRAGMA wal_autocheckpoint=1000")
+        self._last_active = time.time()
+
+    def _ping(self):
+        """MySQL 模式下检查连接是否存活，断开则重连。"""
+        if self._backend != 'mysql':
+            return
+        try:
+            self._conn.ping(reconnect=False)
+        except Exception:
+            self._connect()
 
     def execute(self, sql: str, params: tuple = ()):
-        """返回兼容游标，自动重连。"""
+        """返回兼容游标，仅连接断开时自动重连。"""
         try:
+            self._ping()
             cur = self.cursor()
             cur.execute(sql, params)
+            self._last_active = time.time()
             return cur
-        except Exception:
-            if self._backend == 'mysql':
+        except Exception as exc:
+            if self._backend == 'mysql' and _is_connection_error(exc):
                 self._connect()
                 cur = self.cursor()
                 cur.execute(sql, params)
+                self._last_active = time.time()
                 return cur
             raise
 
@@ -143,8 +172,9 @@ class UnifiedConnection:
     def commit(self):
         try:
             self._conn.commit()
-        except Exception:
-            if self._backend == 'mysql':
+            self._last_active = time.time()
+        except Exception as exc:
+            if self._backend == 'mysql' and _is_connection_error(exc):
                 self._connect()
             raise
 
