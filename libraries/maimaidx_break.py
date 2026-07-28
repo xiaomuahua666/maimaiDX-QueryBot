@@ -1020,9 +1020,9 @@ class BreakDatabase:
                     created_date = datetime.fromtimestamp(float(row['created_at'])).date().isoformat()
                     self._conn.execute(
                         """UPDATE break_daily_usage
-                           SET break_spent=MAX(0, break_spent-?)
+                            SET break_spent=CASE WHEN break_spent-? < 0 THEN 0 ELSE break_spent-? END
                            WHERE qqid=? AND date=?""",
-                        (refund, sender, created_date),
+                        (refund, refund, sender, created_date),
                     )
                     self._append_log(
                         sender,
