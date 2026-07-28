@@ -1365,7 +1365,7 @@ class BreakDatabase:
             return GamblePoolStatus(
                 date=date,
                 total_pool=total_pool,
-                distributable=int(total_pool * 0.8),
+                distributable=int(total_pool * 0.5),
                 contributors=contributors,
             )
 
@@ -1418,9 +1418,24 @@ class BreakDatabase:
             if total_pool <= 0:
                 raise ValueError('今日奖池为空')
 
-            # 计算福利：按贡献比例分配 80% 的奖池
-            distributable = int(total_pool * 0.8)
-            user_contribution_ratio = contributed / total_pool
+            # 净贡献 = 输掉的 - 赢来的（从 break_log 查今日 gamble_all 赢的金额）
+            today_start = datetime.combine(date.today(), datetime.min.time()).timestamp()
+            today_end = today_start + 86400
+            won_row = self._conn.execute(
+                """SELECT COALESCE(SUM(delta), 0) as won FROM break_log
+                   WHERE qqid=? AND reason='gamble_all' AND delta > 0
+                   AND created_at >= ? AND created_at < ?""",
+                (qqid, today_start, today_end),
+            ).fetchone()
+            today_won = int(won_row['won'])
+            net_contribution = max(0, contributed - today_won)
+
+            if net_contribution <= 0:
+                raise ValueError('今日净贡献为0，无法领取福利')
+
+            # 计算福利：按净贡献比例分配 50% 的奖池
+            distributable = int(total_pool * 0.5)
+            user_contribution_ratio = net_contribution / total_pool
             reward = max(1, int(distributable * user_contribution_ratio))
 
             # 发放福利
@@ -1435,7 +1450,7 @@ class BreakDatabase:
             )
             self._append_log(
                 qqid, reward, 'gamble_pool_reward',
-                meta={'contributed': contributed, 'total_pool': total_pool},
+                meta={'contributed': contributed, 'today_won': today_won, 'net_contribution': net_contribution, 'total_pool': total_pool},
             )
             self._conn.execute(
                 'INSERT INTO break_daily_reward (qqid, date, reward_key, amount, created_at) VALUES (?, ?, ?, ?, ?)',
