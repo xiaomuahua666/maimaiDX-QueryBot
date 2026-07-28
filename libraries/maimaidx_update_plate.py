@@ -1,3 +1,5 @@
+import hashlib
+import json
 import time
 from io import BytesIO
 from typing import Dict, List, Optional
@@ -8,7 +10,6 @@ from PIL import Image, ImageDraw
 from ..config import (
     levelList,
     log,
-    maiconfig,
     footer_designed_generated,
     plate_tabledir,
     plate_to_dx_version,
@@ -22,6 +23,90 @@ from .image import DrawText, draw_centered_design_footer, generate_frosted_card,
 from .maimaidx_music import Music, mai
 from .maimaidx_table_image import TableImageAssets
 from .maimaidx_theme import pic
+
+
+_PLATE_MANIFEST_VERSION = 1
+_PLATE_MANIFEST_PATH = plate_tabledir / '.manifest.json'
+
+
+def _plate_table_signature(plate_key: str, *, is_wu: bool = False) -> Optional[str]:
+    """Return a stable signature for the data that determines a plate background."""
+    song_ids = resolve_plate_id_list(mai.total_plate_id_list, plate_key)
+    if not song_ids:
+        return None
+
+    remaster_ids = set(mai.total_plate_id_list.get('舞ReMASTER', [])) if is_wu else set()
+    rows = []
+    for raw_id in song_ids:
+        song_id = int(raw_id)
+        song = mai.total_list.by_id(song_id)
+        if song is None:
+            # Keep missing catalogue entries in the signature so a later data-source
+            # repair invalidates the background instead of silently blessing it.
+            rows.append((song_id, None, None, None))
+            continue
+        index = 4 if is_wu and song_id in remaster_ids and len(song.level) > 4 else 3
+        rows.append((song_id, song.level[index], float(song.ds[index]), 5 if index == 4 else 4))
+    rows.sort(key=lambda row: row[0])
+
+    payload = json.dumps(
+        {'version': _PLATE_MANIFEST_VERSION, 'plate_key': plate_key, 'songs': rows},
+        ensure_ascii=False,
+        separators=(',', ':'),
+    )
+    return hashlib.sha256(payload.encode('utf-8')).hexdigest()
+
+
+def _load_plate_manifest() -> dict:
+    try:
+        data = json.loads(_PLATE_MANIFEST_PATH.read_text(encoding='utf-8'))
+        if data.get('version') == _PLATE_MANIFEST_VERSION and isinstance(data.get('tables'), dict):
+            return data
+    except (OSError, ValueError, TypeError):
+        pass
+    return {'version': _PLATE_MANIFEST_VERSION, 'tables': {}}
+
+
+def _record_plate_table_signature(image_key: str, plate_key: str, *, is_wu: bool = False) -> None:
+    signature = _plate_table_signature(plate_key, is_wu=is_wu)
+    if signature is None:
+        return
+    manifest = _load_plate_manifest()
+    manifest['tables'][image_key] = signature
+    _PLATE_MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = _PLATE_MANIFEST_PATH.with_suffix('.json.tmp')
+    temp_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + '\n',
+        encoding='utf-8',
+    )
+    temp_path.replace(_PLATE_MANIFEST_PATH)
+
+
+def plate_table_is_current(image_key: str, plate_key: str, *, is_wu: bool = False) -> bool:
+    image_path = plate_tabledir / f'{image_key}.png'
+    signature = _plate_table_signature(plate_key, is_wu=is_wu)
+    if not image_path.exists() or signature is None:
+        return False
+    return _load_plate_manifest()['tables'].get(image_key) == signature
+
+
+def stale_plate_table_names() -> List[str]:
+    """List canonical plate backgrounds that are missing or no longer match live data."""
+    stale: List[str] = []
+    checked: set[str] = set()
+    for raw_name in list(plate_to_dx_version.keys())[1:]:
+        name = platecn.get(raw_name, raw_name)
+        if name in checked:
+            continue
+        checked.add(name)
+        _, plate_key = version_map.get(name, ([plate_to_dx_version.get(name)], name))
+        if not plate_table_is_current(name, plate_key):
+            stale.append(name)
+    for page in (1, 2):
+        image_key = f'舞-{page}'
+        if not plate_table_is_current(image_key, '舞', is_wu=True):
+            stale.append(image_key)
+    return stale
 
 
 class UpdateTable:
@@ -236,7 +321,9 @@ class UpdateTable:
             {k: all_level_dict[k] for k in keys[idx:]},
         ]):
             im = self._draw_plate(level_dict, remaster_id_list, remaster_songs, pages)
-            await self._save_image(im, plate_tabledir / f'舞-{pages + 1}.png')
+            image_key = f'舞-{pages + 1}'
+            await self._save_image(im, plate_tabledir / f'{image_key}.png')
+            _record_plate_table_signature(image_key, '舞', is_wu=True)
         log.info(f'舞/霸者完成表更新完成，耗时：{time.time() - single_time:.3f}s')
         return '舞/霸者完成表更新完成'
 
@@ -254,6 +341,7 @@ class UpdateTable:
                 level_dict[s.level[3]].append(s)
             im = self._draw_plate(level_dict)
             await self._save_image(im, plate_tabledir / f'{name}.png')
+            _record_plate_table_signature(name, version_name)
             elapsed = round(time.time() - single_time, 3)
             all_time += elapsed
             log.info(f'{name}代牌子更新完成，耗时：{elapsed}s')

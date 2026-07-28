@@ -1,4 +1,4 @@
-"""个人猜歌数据图：六模式趋势 + 扇形占比 + 记录明细。"""
+"""个人猜歌数据图：多模式趋势 + 扇形占比 + 记录明细。"""
 
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ _MODE_COLORS = {
     'chart': (60, 180, 170, 255),
     'letter': (200, 120, 200, 255),
     'rating': (240, 190, 80, 255),
+    'impostor': (235, 88, 112, 255),
 }
 
 
@@ -62,8 +63,12 @@ def _draw_multi_line_chart(
     w: int,
     h: int,
 ) -> None:
-    # 标题与图例分行，避免「近 30 日…」与五模式色点重叠
-    dt.draw(x + 20, y + 14, 24, '近 30 日积分趋势（六模式）', _TITLE, 'lt', 1, (0, 0, 0, 100))
+    # 标题与图例分行，避免标题和玩法色点重叠。
+    dt.draw(
+        x + 20, y + 14, 24,
+        f'近 30 日积分趋势（{len(GuessScoreManager.GUESS_MODES)} 种玩法）',
+        _TITLE, 'lt', 1, (0, 0, 0, 100),
+    )
     lx = x + 20
     ly = y + 48
     for mode in GuessScoreManager.GUESS_MODES:
@@ -136,7 +141,7 @@ def _draw_donut(
     legend_x: int,
     hole_ratio: float = 0.58,
 ) -> None:
-    """环形扇形图：表达五模式在合计中的占比，图例在环右侧。"""
+    """环形扇形图：表达各玩法在合计中的占比，图例在环右侧。"""
     # 小标题在环上方，与环/卡片标题留足空隙
     dt.draw(cx, cy - radius - 36, 17, title, _TITLE, 'mm', 1, (0, 0, 0, 80))
 
@@ -194,10 +199,13 @@ def _draw_donut(
 def draw_personal_guess_stats(stats: dict) -> Image.Image:
     """根据 GuessScoreManager.build_user_guess_stats 结果出图。"""
     width = 1080
+    n_modes = len(GuessScoreManager.GUESS_MODES)
+    mode_cols = min(4, max(1, n_modes))
+    mode_rows = (n_modes + mode_cols - 1) // mode_cols
     header_h = 150
     chart_h = 340
-    mode_h = 200
-    pie_h = 420
+    mode_h = 82 + mode_rows * 118 + max(0, mode_rows - 1) * 12 + 20
+    pie_h = max(420, 150 + n_modes * 42)
     recent_rows = max(1, len(stats.get('recent') or []))
     recent_h = 56 + recent_rows * 36 + 24
     footer_h = 56
@@ -244,27 +252,31 @@ def draw_personal_guess_stats(stats: dict) -> Image.Image:
 
     y += chart_h + gap
     _rounded(dr, (margin, y, width - margin, y + mode_h), 18, _CARD)
-    dt.draw(margin + 28, y + 20, 26, '六模式记录', _TITLE, 'lt', 1, (0, 0, 0, 100))
+    dt.draw(
+        margin + 28, y + 20, 26,
+        f'{n_modes} 种玩法记录', _TITLE, 'lt', 1, (0, 0, 0, 100),
+    )
     modes = stats.get('modes') or {}
     card_gap = 12
-    n_modes = len(GuessScoreManager.GUESS_MODES)
-    card_w = (width - margin * 2 - 40 - card_gap * (n_modes - 1)) // n_modes
+    card_w = (width - margin * 2 - 40 - card_gap * (mode_cols - 1)) // mode_cols
     card_x0 = margin + 20
     card_y = y + 58
     for i, mode in enumerate(GuessScoreManager.GUESS_MODES):
-        cx = card_x0 + i * (card_w + card_gap)
+        row, col = divmod(i, mode_cols)
+        cx = card_x0 + col * (card_w + card_gap)
+        cy = card_y + row * (118 + card_gap)
         color = _MODE_COLORS[mode]
-        _rounded(dr, (cx, card_y, cx + card_w, card_y + 118), 14, _PANEL)
+        _rounded(dr, (cx, cy, cx + card_w, cy + 118), 14, _PANEL)
         info = modes.get(mode) or {}
-        dt.draw(cx + 12, card_y + 16, 18, GuessScoreManager.MODE_LABELS[mode], color, 'lt')
-        dt.draw(cx + 12, card_y + 48, 16, f'次数 {int(info.get("count") or 0)}', _TEXT, 'lt')
-        dt.draw(cx + 12, card_y + 74, 16, f'积分 {int(info.get("points") or 0)}', _TEXT, 'lt')
+        dt.draw(cx + 12, cy + 16, 18, GuessScoreManager.MODE_LABELS[mode], color, 'lt')
+        dt.draw(cx + 12, cy + 48, 16, f'次数 {int(info.get("count") or 0)}', _TEXT, 'lt')
+        dt.draw(cx + 12, cy + 74, 16, f'积分 {int(info.get("points") or 0)}', _TEXT, 'lt')
         last_at = info.get('last_at') or '—'
-        dt.draw(cx + 12, card_y + 98, 13, f'最近 {last_at}', _MUTED, 'lt')
+        dt.draw(cx + 12, cy + 98, 13, f'最近 {last_at}', _MUTED, 'lt')
 
     y += mode_h + gap
     _rounded(dr, (margin, y, width - margin, y + pie_h), 18, _CARD)
-    dt.draw(margin + 28, y + 16, 26, '六模式占比', _TITLE, 'lt', 1, (0, 0, 0, 100))
+    dt.draw(margin + 28, y + 16, 26, '玩法占比', _TITLE, 'lt', 1, (0, 0, 0, 100))
     radar = stats.get('radar') or {}
     labels = radar.get('labels') or [GuessScoreManager.MODE_LABELS[m] for m in GuessScoreManager.GUESS_MODES]
     mode_keys = radar.get('modes') or list(GuessScoreManager.GUESS_MODES)

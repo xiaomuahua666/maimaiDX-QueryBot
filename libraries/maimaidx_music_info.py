@@ -980,6 +980,14 @@ async def draw_plate_table(
 
         from .maimaidx_theme import Theme as _Th
         from .maimaidx_table_image import PlateGridConfig, TableImageAssets
+        from .maimaidx_update_plate import plate_table_is_current
+
+        image_key = plate_file.removesuffix('.png')
+        if not plate_table_is_current(image_key, _ver, is_wu=is_wu):
+            return (
+                f'{version}代完成表底图缺失或已过期。\n'
+                '请联系管理员私聊机器人执行「更新完成表」后再试。'
+            )
 
         TableImageAssets.ensure_loaded()
         assets = TableImageAssets

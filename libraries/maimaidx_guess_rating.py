@@ -15,17 +15,28 @@ from .maimaidx_model import ChartInfo, UserInfo
 
 # ─────────────────────── 常量 ───────────────────────
 
-DEFAULT_DISPLAY_COUNT = 20
 DEFAULT_DURATION = 60
-MIN_DISPLAY_COUNT = 10
-MAX_DISPLAY_COUNT = 50
 
-# 固定收益表: (score, break_points)
-REWARD_TABLE: Dict[int, Tuple[int, int]] = {
-    1: (15, 3),   # 🥇 最接近
-    2: (5, 1),    # 🥈 第二
-    3: (3, 0),    # 🥉 第三
+
+@dataclass(frozen=True)
+class RatingDifficulty:
+    """猜 Rating 难度配置。难度越高，展示卡片和辅助信息越少。"""
+
+    level: int
+    display_count: int
+    show_rate: bool
+    show_fc_fs: bool
+    score_bonus: Tuple[int, int, int]
+    break_bonus: Tuple[int, int, int]
+
+
+RATING_DIFFICULTIES: Dict[int, RatingDifficulty] = {
+    1: RatingDifficulty(1, 20, True, True, (15, 5, 3), (3, 1, 0)),
+    2: RatingDifficulty(2, 16, True, False, (18, 6, 4), (4, 1, 0)),
+    3: RatingDifficulty(3, 12, False, False, (21, 7, 5), (4, 2, 0)),
+    4: RatingDifficulty(4, 8, False, False, (24, 8, 6), (5, 2, 1)),
 }
+
 PARTICIPATION_SCORE = 1  # 参与奖
 
 
@@ -70,7 +81,9 @@ class GuessRatingData:
     target_uid: int
     target_name: str
     target_rating: int
+    difficulty: int
     display_count: int
+    total_chart_count: int
     duration: int
     started_at: float
     end: bool = False
@@ -166,7 +179,9 @@ class GuessRatingManager:
         target_uid: int,
         target_name: str,
         target_rating: int,
+        difficulty: int,
         display_count: int,
+        total_chart_count: int,
         duration: int,
         selected_charts: List[ChartInfo],
         b50_sd: List[ChartInfo],
@@ -176,7 +191,9 @@ class GuessRatingManager:
             target_uid=target_uid,
             target_name=target_name,
             target_rating=target_rating,
+            difficulty=difficulty,
             display_count=display_count,
+            total_chart_count=total_chart_count,
             duration=duration,
             started_at=time.time(),
             selected_charts=selected_charts,
@@ -187,7 +204,8 @@ class GuessRatingManager:
         self.groups[gid] = data
         log.info(
             f'[GuessRating] 开局 gid={gid} target={target_name}({target_uid}) '
-            f'rating={target_rating} display={len(selected_charts)} duration={duration}s'
+            f'rating={target_rating} difficulty={difficulty} '
+            f'display={len(selected_charts)}/{total_chart_count} duration={duration}s'
         )
         return data
 
@@ -202,6 +220,9 @@ class GuessRatingManager:
         """提交/修改答案。返回提示文案。"""
         data = self.groups.get(gid)
         if data is None or data.end:
+            return ''
+        # 题主天然知道自己的 Rating，不能参加作答与结算。
+        if int(billing_id) == int(data.target_uid):
             return ''
         if uid in data.entries:
             data.entries[uid].answer = answer
@@ -229,13 +250,24 @@ class GuessRatingManager:
             entry.diff = abs(entry.answer - actual)
 
         # 按误差排序
-        ranked = sorted(data.entries.values(), key=lambda e: (e.diff, e.first_at))
+        # 结算再过滤一次题主，防止旧状态或平台 ID 映射绕过 submit 检查。
+        ranked = sorted(
+            (
+                entry for entry in data.entries.values()
+                if int(entry.billing_id) != int(data.target_uid)
+            ),
+            key=lambda e: (e.diff, e.first_at),
+        )
 
         rewards: List[RatingGuessReward] = []
+        difficulty = RATING_DIFFICULTIES.get(
+            data.difficulty, RATING_DIFFICULTIES[1]
+        )
         for i, entry in enumerate(ranked):
             rank = i + 1
-            if rank in REWARD_TABLE:
-                score, bp = REWARD_TABLE[rank]
+            if 1 <= rank <= 3:
+                score = difficulty.score_bonus[rank - 1]
+                bp = difficulty.break_bonus[rank - 1]
             else:
                 score, bp = PARTICIPATION_SCORE, 0
             rewards.append(RatingGuessReward(
@@ -265,6 +297,9 @@ rating_guess = GuessRatingManager()
 async def pick_random_candidate(
     bot,
     group_id: int,
+    *,
+    min_charts: int = 1,
+    weighted: bool = True,
 ) -> Optional[Tuple[int, str, UserInfo]]:
     """从群成员中随机选一个有B50数据的人。
 
@@ -318,7 +353,10 @@ async def pick_random_candidate(
     picks: List[Tuple[int, str]] = []
     pool_copy = list(pool)
     for _ in range(min(5, len(pool_copy))):
-        uid, name = rating_guess.weighted_pick(group_id, pool_copy)
+        if weighted:
+            uid, name = rating_guess.weighted_pick(group_id, pool_copy)
+        else:
+            uid, name = random.choice(pool_copy)
         picks.append((uid, name))
         pool_copy = [(u, n) for u, n in pool_copy if u != uid]
 
@@ -330,7 +368,10 @@ async def pick_random_candidate(
         if isinstance(b50, Exception):
             log.debug(f'[GuessRating] 拉取B50失败 uid={uid}: {b50}')
             continue
-        if b50 and b50.rating is not None and b50.charts:
+        chart_count = 0
+        if b50 and b50.charts:
+            chart_count = len(b50.charts.sd or []) + len(b50.charts.dx or [])
+        if b50 and b50.rating is not None and chart_count >= max(1, min_charts):
             return uid, name, b50
 
     return None

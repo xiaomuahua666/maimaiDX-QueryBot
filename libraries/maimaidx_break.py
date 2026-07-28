@@ -39,6 +39,9 @@ DEFAULT_CONFIG: Dict[str, str] = {
     'analysis_min_cost': '2',
     'analysis_max_cost': '20',
     'analysis_fallback_cost': '4',
+    # 锐评最终价格 = 原 Token 价格 × 倍率；调用模型前先预扣固定额度。
+    'analysis_price_multiplier': '3',
+    'analysis_precharge_cost': '6',
     # 恢复旧版第 1～5 天曲线；之后按 streak_bonus_growth 继续增长，不封顶。
     'streak_bonus': '3,5,8,12,20',
     'streak_bonus_growth': '1',
@@ -712,6 +715,89 @@ class BreakDatabase:
             self._append_log(qqid, -amount, reason, meta=meta)
             self._conn.commit()
         return True
+
+    def try_reserve_analysis(self, qqid: int, amount: int, *, meta: Optional[dict] = None) -> bool:
+        """原子预扣锐评额度；预扣暂不计入消费统计，等待成功结算或失败退款。"""
+        amount = max(0, int(amount))
+        if amount <= 0:
+            return True
+        self._ensure_user(qqid)
+        self._ensure_daily(qqid)
+        with self._lock:
+            row = self._conn.execute(
+                'SELECT balance FROM break_users WHERE qqid = ?', (qqid,)
+            ).fetchone()
+            balance = int(row['balance']) if row else 0
+            if balance < amount:
+                return False
+            now = time.time()
+            self._conn.execute(
+                'UPDATE break_users SET balance = balance - ?, updated_at = ? WHERE qqid = ?',
+                (amount, now, qqid),
+            )
+            self._append_log(qqid, -amount, 'b50_analysis_precharge', meta=meta)
+            self._conn.commit()
+        return True
+
+    def refund_analysis_reservation(
+        self,
+        qqid: int,
+        reserved: int,
+        *,
+        meta: Optional[dict] = None,
+    ) -> int:
+        """锐评未完成时全额退回预扣，不产生消费/收入统计。"""
+        reserved = max(0, int(reserved))
+        if reserved <= 0:
+            return self.get_balance(qqid)
+        self._ensure_user(qqid)
+        with self._lock:
+            now = time.time()
+            self._conn.execute(
+                'UPDATE break_users SET balance = balance + ?, updated_at = ? WHERE qqid = ?',
+                (reserved, now, qqid),
+            )
+            self._append_log(qqid, reserved, 'b50_analysis_refund', meta=meta)
+            self._conn.commit()
+            return self.get_balance(qqid)
+
+    def settle_analysis_reservation(
+        self,
+        qqid: int,
+        cost: int,
+        reserved: int,
+        *,
+        meta: Optional[dict] = None,
+    ) -> int:
+        """将预扣结算为实际锐评费用，多退少补并只统计一次真实消费。"""
+        cost = max(0, int(cost))
+        reserved = max(0, int(reserved))
+        self._ensure_user(qqid)
+        self._ensure_daily(qqid)
+        with self._lock:
+            adjustment = reserved - cost
+            now = time.time()
+            self._conn.execute(
+                'UPDATE break_users SET balance = balance + ?, '
+                'total_analysis_count = total_analysis_count + 1, '
+                'last_analysis_at = ?, updated_at = ? WHERE qqid = ?',
+                (adjustment, now, now, qqid),
+            )
+            self._conn.execute(
+                """UPDATE break_daily_usage SET
+                   analysis_count = analysis_count + 1,
+                   break_spent = break_spent + ?
+                   WHERE qqid = ? AND date = ?""",
+                (cost, qqid, self._today()),
+            )
+            detail = dict(meta or {})
+            detail.update({'reserved': reserved, 'cost': cost, 'adjustment': adjustment})
+            self._append_log(qqid, adjustment, 'b50_analysis_settlement', meta=detail)
+            self._conn.commit()
+            row = self._conn.execute(
+                'SELECT balance FROM break_users WHERE qqid = ?', (qqid,)
+            ).fetchone()
+            return int(row['balance']) if row else 0
 
     def add_balance(
         self,
@@ -1909,7 +1995,15 @@ def analysis_base_cost() -> int:
 
 def analysis_cost() -> int:
     """兼容旧调用：返回 usage 缺失时的兜底价。"""
-    return _config_int('analysis_fallback_cost', analysis_base_cost())
+    return analysis_token_cost(0, 0, usage_available=False)
+
+
+def analysis_price_multiplier() -> int:
+    return max(1, _config_int('analysis_price_multiplier', 3))
+
+
+def analysis_precharge_cost() -> int:
+    return max(0, _config_int('analysis_precharge_cost', 6))
 
 
 def analysis_token_cost(
@@ -1918,17 +2012,19 @@ def analysis_token_cost(
     *,
     usage_available: bool = True,
 ) -> int:
-    """按模型实际 Token 用量计算锐评价格，并应用最低/最高保护。"""
+    """按模型实际 Token 用量计算基础价，再应用锐评价格倍率。"""
     minimum = max(0, _config_int('analysis_min_cost', 2))
     maximum = max(minimum, _config_int('analysis_max_cost', 20))
+    multiplier = analysis_price_multiplier()
     if not usage_available:
         fallback = _config_int('analysis_fallback_cost', 4)
-        return min(maximum, max(minimum, fallback))
+        return min(maximum, max(minimum, fallback)) * multiplier
     input_rate = max(1, _config_int('analysis_input_tokens_per_break', 4000))
     output_rate = max(1, _config_int('analysis_output_tokens_per_break', 1000))
     weighted = max(0, int(input_tokens)) / input_rate
     weighted += max(0, int(output_tokens)) / output_rate
-    return min(maximum, max(minimum, int(math.ceil(weighted))))
+    base_cost = min(maximum, max(minimum, int(math.ceil(weighted))))
+    return base_cost * multiplier
 
 
 def format_analysis_cost_line(
@@ -1954,9 +2050,11 @@ def format_analysis_cost_line(
     output_rate = max(1, _config_int('analysis_output_tokens_per_break', 1000))
     minimum = max(0, _config_int('analysis_min_cost', 2))
     maximum = max(minimum, _config_int('analysis_max_cost', 20))
+    multiplier = analysis_price_multiplier()
     text += (
         f'\n计费规则：输入每 {input_rate:,} Token + 输出每 {output_rate:,} Token '
-        f'各计 1 BREAK，合计向上取整，最低 {minimum}、最高 {maximum}。'
+        f'各计 1 BREAK，基础价合计向上取整后 ×{multiplier}，'
+        f'最低 {minimum * multiplier}、最高 {maximum * multiplier}。'
     )
     return text
 
@@ -1966,15 +2064,43 @@ def format_analysis_pricing_help() -> str:
     output_rate = max(1, _config_int('analysis_output_tokens_per_break', 1000))
     minimum = max(0, _config_int('analysis_min_cost', 2))
     maximum = max(minimum, _config_int('analysis_max_cost', 20))
-    fallback = min(
+    multiplier = analysis_price_multiplier()
+    fallback_base = min(
         maximum,
         max(minimum, _config_int('analysis_fallback_cost', 4)),
     )
+    precharge = analysis_precharge_cost()
     return (
         f'· 分析b50 / 锐评一下 — 按实际 Token 计费：每 {input_rate:,} 输入 Token '
         f'+ 每 {output_rate:,} 输出 Token 各计 1 BREAK，合计向上取整；'
-        f'最低 {minimum}、最高 {maximum} BREAK，不设峰时加价；usage 缺失时 {fallback} BREAK。'
-        '先用后付，可扣至负数；负余额期间暂停其他功能\n'
+        f'基础价 ×{multiplier}，最低 {minimum * multiplier}、最高 {maximum * multiplier} BREAK；'
+        f'usage 缺失时 {fallback_base * multiplier} BREAK。调用前预扣 {precharge} BREAK，'
+        '成功后按实际用量多退少补，失败全额退回\n'
+    )
+
+
+def reserve_analysis_charge(qqid: int) -> int:
+    """调用模型前预扣固定额度；余额不足时不发起锐评。"""
+    if is_superuser_exempt(qqid):
+        return 0
+    reserved = analysis_precharge_cost()
+    if not break_db.try_reserve_analysis(
+        qqid,
+        reserved,
+        meta={'kind': 'llm', 'stage': 'precharge'},
+    ):
+        raise BreakInsufficientError(reserved, break_db.get_balance(qqid), qqid=qqid)
+    return reserved
+
+
+def refund_analysis_charge(qqid: int, reserved: int, *, reason: str) -> int:
+    """模型或制图失败时退回尚未结算的预扣额度。"""
+    if is_superuser_exempt(qqid) or reserved <= 0:
+        return break_db.get_balance(qqid)
+    return break_db.refund_analysis_reservation(
+        qqid,
+        reserved,
+        meta={'kind': 'llm', 'stage': 'refund', 'reason': str(reason)[:120]},
     )
 
 
@@ -2039,6 +2165,7 @@ def settle_analysis_charge(
     qqid: int,
     cost: int,
     *,
+    reserved: int = 0,
     token_usage: Optional[dict] = None,
 ) -> int:
     cost = max(0, int(cost))
@@ -2046,12 +2173,26 @@ def settle_analysis_charge(
     if is_superuser_exempt(qqid):
         break_db.record_usage(qqid, 'analysis', break_delta=0)
         return 0
-    meta = {'kind': 'llm', 'pricing': 'token', **usage}
-    balance = break_db.add_balance(qqid, -cost, 'b50_analysis', meta=meta)
-    break_db.record_usage(qqid, 'analysis', break_delta=-cost)
+    meta = {
+        'kind': 'llm',
+        'pricing': 'token_x_multiplier',
+        'price_multiplier': analysis_price_multiplier(),
+        **usage,
+    }
+    if reserved > 0:
+        balance = break_db.settle_analysis_reservation(
+            qqid,
+            cost,
+            reserved,
+            meta=meta,
+        )
+    else:
+        # 兼容旧调用方：没有预扣记录时仍可直接结算。
+        balance = break_db.add_balance(qqid, -cost, 'b50_analysis', meta=meta)
+        break_db.record_usage(qqid, 'analysis', break_delta=-cost)
     if balance < 0:
         log.info(
-            f'[BREAK] qq={qqid} 锐评先用后付 cost={cost} balance={balance}'
+            f'[BREAK] qq={qqid} 锐评多退少补 cost={cost} reserved={reserved} balance={balance}'
         )
     return cost
 
@@ -2192,6 +2333,9 @@ def format_account_profile_sections(
             'checkin_storage_bonus': '签到·数据存储加成',
             'today_luck': '今日舞萌',
             'b50_analysis': '分析b50',
+            'b50_analysis_precharge': '分析b50·预扣',
+            'b50_analysis_refund': '分析b50·退款',
+            'b50_analysis_settlement': '分析b50·结算调整',
             'busy_request_surcharge': '高负载请求附加费',
             'guess_reward': '猜歌奖励',
             'admin_set': '管理员设置',

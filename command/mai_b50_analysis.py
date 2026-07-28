@@ -24,6 +24,9 @@ from ..libraries.maimaidx_break import (
     analysis_token_cost,
     break_db,
     format_analysis_cost_line,
+    format_analysis_pricing_help,
+    refund_analysis_charge,
+    reserve_analysis_charge,
     settle_analysis_charge,
     take_break_charge_footer,
 )
@@ -69,12 +72,8 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
 
     await react_processing(bot, event)
 
-    pending = (
-        '正在查询 B50，请稍候…\n'
-        '锐评按模型实际 Token 计费：输入每 4,000 Token、输出每 1,000 Token '
-        '各计 1 BREAK，合计向上取整；最低 2、最高 20 BREAK。'
-        '采用先用后付，完成后才按实际用量扣费。'
-    )
+    pricing_help = format_analysis_pricing_help().strip().removeprefix('· ')
+    pending = f'正在查询 B50，请稍候…\n{pricing_help}'
     if not bool(getattr(maiconfig, 'maimaidx_compact_messages', True)):
         await matcher.send(pending, reply_message=True)
 
@@ -134,34 +133,44 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
     context['player']['qq'] = str(legacy_qq)
 
     try:
-        analysis_text, token_usage = await generate_analysis(context, maiconfig, style)
-    except Exception as e:
-        await matcher.finish(f'分析生成失败：{e}', reply_message=True)
+        reserved = reserve_analysis_charge(billing_qq)
+    except BreakInsufficientError as e:
+        await matcher.finish(str(e), reply_message=True)
         return
 
+    failure_stage = '分析生成'
     try:
-        _parsed = json.loads(analysis_text)
-        for field in ('overall_roast', 'impression_roast', 'title'):
-            original = str(_parsed.get(field) or '')
-            if not original:
-                continue
-            checked = check_llm_output(original)
-            if checked.get('safe', True):
-                continue
-            _parsed[field] = checked.get('redacted', original)
-        if isinstance(_parsed.get('push_recommendations'), list):
-            context.setdefault('evidence', {})['push_recommendations'] = (
-                _parsed.get('push_recommendations') or []
-            )
-        analysis_text = json.dumps(_parsed, ensure_ascii=False)
-    except Exception:
-        pass
+        analysis_text, token_usage = await generate_analysis(context, maiconfig, style)
+        try:
+            _parsed = json.loads(analysis_text)
+            for field in ('overall_roast', 'impression_roast', 'title'):
+                original = str(_parsed.get(field) or '')
+                if not original:
+                    continue
+                checked = check_llm_output(original)
+                if checked.get('safe', True):
+                    continue
+                _parsed[field] = checked.get('redacted', original)
+            if isinstance(_parsed.get('push_recommendations'), list):
+                context.setdefault('evidence', {})['push_recommendations'] = (
+                    _parsed.get('push_recommendations') or []
+                )
+            analysis_text = json.dumps(_parsed, ensure_ascii=False)
+        except Exception:
+            pass
 
-    try:
+        failure_stage = '制图'
         await prepare_render_cache(context, maiconfig.b50_assets_path)
         img = render_image(context, analysis_text, maiconfig.b50_assets_path)
-    except Exception as e:
-        await matcher.finish(f'制图失败：{e}', reply_message=True)
+    except BaseException as e:
+        refund_analysis_charge(
+            billing_qq,
+            reserved,
+            reason=f'{failure_stage}:{type(e).__name__}',
+        )
+        if not isinstance(e, Exception):
+            raise
+        await matcher.finish(f'{failure_stage}失败：{e}（预扣已全额退回）', reply_message=True)
         return
 
     input_tokens = int(token_usage.get('input_tokens') or 0)
@@ -175,6 +184,7 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
     charged = settle_analysis_charge(
         billing_qq,
         cost,
+        reserved=reserved,
         token_usage=token_usage,
     )
 

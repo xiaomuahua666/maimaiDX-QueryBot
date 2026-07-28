@@ -105,15 +105,25 @@ async def collect_cleanup_targets() -> List[PendingTarget]:
     targets: List[PendingTarget] = list(_pending.values())
     _pending.clear()
 
-    # 猜歌 / 猜曲绘 / 猜曲子 / 猜铺面 / 开字母
+    # 猜歌 / 猜曲绘 / 猜曲子 / 猜铺面 / 猜 Rating / 找内鬼 / 开字母
     try:
         from .maimaidx_guess_audio import request_hot_batch_cancel
         from .maimaidx_guess_letter import letter_guess
+        from .maimaidx_guess_rating import rating_guess
+        from .maimaidx_guess_impostor import impostor_guess
         from .maimaidx_guess_score import guess_score
         from .maimaidx_music import guess
 
         request_hot_batch_cancel()
-        gids = list(set(guess.Group.keys()) | set(guess.Preparing) | set(letter_guess.Group.keys()))
+        gids = list(
+            set(guess.Group.keys())
+            | set(guess.Preparing)
+            | set(letter_guess.Group.keys())
+            | set(rating_guess.groups.keys())
+            | set(rating_guess.locked)
+            | set(impostor_guess.groups.keys())
+            | set(impostor_guess.locked)
+        )
         for gid in gids:
             targets.append(PendingTarget('group', str(gid)))
             guess.Preparing.discard(gid)
@@ -126,6 +136,8 @@ async def collect_cleanup_targets() -> List[PendingTarget]:
                 except Exception:
                     pass
                 guess.end(gid)
+            rating_guess.end(gid)
+            impostor_guess.end(gid)
     except Exception as exc:
         log.warning(f'[shutdown] 结束猜歌失败: {type(exc).__name__}: {exc}')
 

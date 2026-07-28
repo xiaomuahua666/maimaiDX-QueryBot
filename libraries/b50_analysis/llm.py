@@ -178,7 +178,11 @@ def _default_push_reason(song: dict, strategy_tag: str) -> str:
     ds = _f(song.get("ds"), 0.0)
     target = str(song.get("target") or "").upper()
     target_word = "补鸟加" if target == "SSS+" else ("补鸟" if target == "SSS" else "吃分")
-    gain = max(_i(song.get("gain_1005"), 0), _i(song.get("gain_100"), 0))
+    gain = _i(song.get("estimated_gain"), 0) or (
+        _i(song.get("gain_1005"), 0)
+        if target == "SSS+"
+        else _i(song.get("gain_100"), 0)
+    )
     ach_gap = _f(song.get("ach_gap"), 0.0)
     close_hint = "已经寸止" if ach_gap and ach_gap <= 0.2 else "差一点就能推"
 
@@ -252,7 +256,7 @@ def _select_push_recommendations(candidates: list[dict], config_profile: dict, u
         return (
             -_f(song.get("ds_fit"), 99.0),
             -_f(song.get("ach_gap"), 99.0),
-            max(_i(song.get("gain_1005"), 0), _i(song.get("gain_100"), 0)),
+            _i(song.get("estimated_gain"), 0),
             len(_song_tags(song)),
             -_i(song.get("play_count", song.get("playCount")), 0),
         )
@@ -400,6 +404,7 @@ _SYSTEM = """\
 
 【工作流程】
 先抓用户点名主题（如果有用户需求，就先解决用户需求）或本次最大爆点，再用 B35/B15、配置、同段对比、推分候选去验证，最后落到具体推分路线和具体谱名。不要固定按 rating、ARPI、首曲、配置、推分顺序念稿。
+每次都要形成完整闭环：一句明确总评 → 2-3 个有曲名和数据的强项 → 1-2 个有证据的短板 → 与同段脱敏聚合样本对照（可用时）→ 按优先级给出能执行、能核算收益的推分路线。不能只夸不诊断，也不能只毒舌不给方案。
 
 【字段翻译铁律】
 ds=定数；rating 和 ARPI 保留英文；achievement=达成率；peer_avg/avg_achievement=同段平均达成率；gap_vs_peer=比同段高多少；config_tags=配置词；community_vibe/chart_identity=大家都说/圈里常讲；overlap/b50_overlap=B50 重合度；chart_type=具体颜色（绿/黄/红/紫/白谱）；play_count/pc=游玩次数。
@@ -415,11 +420,13 @@ B35 是旧版本/历史 best 35，看基本盘、下限、长期结构；B15 是
 rating 不到 15000 却出现 14+，尤其 15.0 理论值，和常规进度严重不匹配，应直接从 rating 视角判为虚低/恐怖/世界未解之谜级。
 B50 重合度：低于 30%=选曲小众/口味独到/谱面含金量高（正面评价）；30-50% 正常；高于 50% 偏模板/跟风攻略。不能只报数字不解读。单曲重合度低的谱更值得夸「这张大家没几个打，你啃下来了」。
 ARPI 同段对比：sufficient=True 时按 position 判断（above_p75=同段上四分位/稳手，around_median=典型画风，below_p25=下四分位/靠选谱拉分）；sufficient=False 时说「同段样本还不够，先不硬下判断」。绝对禁止自己编同段 ARPI 数值。
+peer_comparison 必须同时检查 player_count、matched、coverage 和 confidence。high 可作主要证据；medium 只能作辅助；low 必须明确说样本有限，不能把 0.1% 以内的小差距说成稳定强弱。只允许引用脱敏聚合统计，禁止描述、猜测、影射任何其他单个玩家。
 config_profile：strong 是达成率 ≥100.3 且出现 ≥2 次的擅长配置（必须点名表扬）；weak 是达成率 <100.0 且出现 ≥2 次的短板配置（必须温和指出）。每次锐评至少点 1 个 strong + 1 个 weak（数据存在时），不允许空泛说「配置均衡」。
 rating_trend：若上下文给出真实推分趋势与可行性提示，推分路线必须贴合涨分节奏（快推可进攻，横盘修地板，下滑先止损）；没有趋势时不要编造历史涨分。
 push_recommendations 必须从推分候选池里挑 3-4 首，每首标注 strategy_tag（你点的菜/练手磨配置/强项放大/弱项补课/综合推荐）和 reason（15-25 字推荐理由）。
 候选池已经按"贴合玩家 B35 定数段（P25~P75±0.2）+ 拟合度优先"预筛过，直接从里面选即可，不要为了 gain 高就挑最上面那张、更不要跳出候选池另编超纲高难谱。
 选曲策略：优先"寸止吃分/顺手补鸟/卡定数下位谱"这类现在差一点就能推的，兼顾 B35/B15，鸟与鸟加混着推；同一定数段不要连推 3 张。
+每首的预计收益是相对当前 B35/B15 地板的单曲静态估算；多首完成后地板会变化，禁止把这些预计收益直接相加后承诺总涨分。
 reason 必须用舞萌玩家口语：吃分/寸止/补鸟/补鸟加/送鸟/顺手谱/练手谱/卡定数/下位谱/开荒谱/水谱/修地板/推鸟/理论神/银神/金将，避免"专项练""放大优势"这种报告腔。
 不要自己另编曲目，结尾必须落到具体谱名。
 将牌=98/99/100% 对应铜将/银将/金将；神牌=100.5%（银神）/101%（理论神/金神）。B50 里的 101 理论值谱可顺带说「这张是理论神」。
@@ -605,7 +612,14 @@ def _fmt(context: dict) -> str:
 
     peer_comp = pack.get("peer_comparison") or {}
     if peer_comp.get("matched") is not None:
-        lines.append(f"同段匹配：{peer_comp.get('matched')}  同段桶：{peer_comp.get('rating_bucket')}")
+        lines.append(
+            f"同段样本：玩家 {peer_comp.get('player_count')} 人  "
+            f"匹配谱面 {peer_comp.get('matched')}/{peer_comp.get('b50_chart_count')}  "
+            f"覆盖率 {_f(peer_comp.get('coverage')) * 100:.1f}%  "
+            f"证据置信度 {peer_comp.get('confidence')}（{peer_comp.get('confidence_text')}）"
+        )
+        if peer_comp.get("generated_at"):
+            lines.append(f"同段统计生成时间：{peer_comp.get('generated_at')}")
     if peer_comp.get("available") is False:
         lines.append("同段统计：不可用时不要硬写 ARPI/gap")
 
@@ -629,6 +643,8 @@ def _fmt(context: dict) -> str:
             parts.append(f"同段均值 {peer_avg:.4f}%")
         if gap is not None:
             parts.append(f"同段差距 {gap:+.4f}")
+        if c.get("peer_sample_count") is not None:
+            parts.append(f"该谱同段样本 {c.get('peer_sample_count')} 人")
         if tags:
             parts.append(f"配置 {tags}")
         return "  ".join(parts)
@@ -705,6 +721,8 @@ def _fmt(context: dict) -> str:
                     pieces.append(f"同段均值 {c.get('peer_avg'):.4f}%")
                 if c.get("gap_vs_peer") is not None:
                     pieces.append(f"同段差距 {c.get('gap_vs_peer'):+.4f}")
+                if c.get("peer_sample_count") is not None:
+                    pieces.append(f"样本 {c.get('peer_sample_count')} 人")
                 tag_text = _fmt_tags(c.get("config_tags") or c.get("config") or [])
                 if tag_text:
                     pieces.append(f"配置 {tag_text}")
@@ -787,8 +805,16 @@ def _fmt(context: dict) -> str:
                 extra.append(f"同段差距{c.get('gap_vs_peer'):+.4f}")
             if tag_text:
                 extra.append(f"配置{tag_text}")
+            floor = c.get("replacement_floor")
+            entry_text = (
+                f"进入{c.get('rating_pool', '')}需替换地板{floor}"
+                if floor is not None
+                else f"{c.get('rating_pool', '')}当前卡直接提升"
+            )
             lines.append(
-                f"  {i}. {c.get('title','')}  定数{c.get('ds','')}  达成率{c.get('achievement', c.get('achievements',''))}%  RA→{c.get('gain_1005',0)}/{c.get('gain_100',0)}  {c.get('level_label','')}"
+                f"  {i}. {c.get('title','')}  定数{c.get('ds','')}  达成率{c.get('achievement', c.get('achievements',''))}%  "
+                f"目标{c.get('target','')}({c.get('target_achievement','')}%) 预计+{c.get('estimated_gain',0)} RA  "
+                f"{entry_text}  {c.get('level_label','')}"
                 + (f"  {'  '.join(extra)}" if extra else "")
             )
 
@@ -797,9 +823,20 @@ def _fmt(context: dict) -> str:
     if chart_summaries:
         lines.append("")
         lines.append("大家的评价（community_vibe/chart_identity，自然融入「大家都说」）：")
-        for title, s in list(chart_summaries.items())[:6]:
+        summary_rows = []
+        summary_seen = set()
+        for chart in picked + push_candidates + list(context.get("b50") or []):
+            mid = str(chart.get("music_id") or chart.get("song_id") or "")
+            if not mid or mid in summary_seen:
+                continue
+            s = chart_summaries.get(mid)
             if not isinstance(s, dict):
                 continue
+            summary_seen.add(mid)
+            summary_rows.append((str(chart.get("title") or mid), s))
+            if len(summary_rows) >= 6:
+                break
+        for title, s in summary_rows:
             vibe = s.get("community_vibe") or s.get("chart_identity") or ""
             tags = _fmt_tags(s.get("config_tags") or [])
             if vibe or tags:

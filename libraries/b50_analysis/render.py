@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import io
 import json
 import math
-import random
 import re
 from pathlib import Path
 from typing import Any
@@ -469,12 +467,16 @@ class _Draw:
         is_push = label == "推分"
         fc_img = self.icon(FC_ICON.get(str(song.get("fc_label") or ""), ""), (72, 72))
         row2_y = y + 152
-        gain_1005 = _i(song.get("gain_1005"))
+        target = str(song.get("target") or "SSS+").upper()
+        target_gain = _i(song.get("estimated_gain")) or (
+            _i(song.get("gain_1005"))
+            if target == "SSS+"
+            else _i(song.get("gain_100"))
+        )
         tag_x = tx
         score_end_x = tx
-        if gain_1005 > 0:
-            target = song.get("target", "SSS+")
-            score_text = f"{target} +{gain_1005}"
+        if target_gain > 0:
+            score_text = f"{target} +{target_gain}"
             self.d.text((tx, row2_y), score_text, font=self.font("en", 22), fill=(232, 124, 32))
             score_end_x = tx + self.font("en", 22).getbbox(score_text)[2] + 8
             if is_push:
@@ -488,7 +490,7 @@ class _Draw:
                 gap_x = tx + self.font("cn", 20).getbbox(p_text)[2] + 8
                 self.d.text((gap_x, row2_y), f"ARPI {gap:+.4f}", font=self.font("en", 24), fill=(46, 125, 50) if gap >= 0 else (198, 40, 40))
         if fc_img:
-            if is_push and gain_1005 > 0:
+            if is_push and target_gain > 0:
                 fc_x = tx + ach_w + 14 + 72 + 8
                 self.paste(fc_img, (fc_x, ach_y + 6))
             else:
@@ -534,7 +536,6 @@ class _Draw:
     def draw_sections(self) -> int:
         evidence = self.data.get("evidence") or {}
         cy = 450
-        card_h = 210
         sections = [
             ("亮点谱面", "highlights", "亮点", (46, 125, 50), (120, 200, 125, 230), True, 4, 210, False),
             ("普通点", "ordinaries", "普通", (198, 40, 40), (235, 150, 150, 230), True, 2, 210, False),
@@ -564,8 +565,16 @@ class _Draw:
         return cy
 
     def draw_push_route_and_peer(self, start_y: int) -> int:
+        def route_gain(song: dict) -> int:
+            target = str(song.get("target") or "SSS+").upper()
+            return _i(song.get("estimated_gain")) or (
+                _i(song.get("gain_1005"))
+                if target == "SSS+"
+                else _i(song.get("gain_100"))
+            )
+
         push_songs = self.data.get("push_candidates") or []
-        route_songs = [s for s in push_songs if _i(s.get("gain_1005")) > 0][:6] if push_songs else []
+        route_songs = [s for s in push_songs if route_gain(s) > 0][:6] if push_songs else []
         peer_stats = self.data.get("peer_stats") or {}
         peer_available = peer_stats.get("available")
         strongest = (self.data.get("evidence") or {}).get("selected_evidence") or []
@@ -590,13 +599,13 @@ class _Draw:
         cy += 42
         left_cy = cy
         if route_songs:
-            total_gain = sum(_i(s.get("gain_1005")) for s in route_songs)
-            self.d.text((left_x + 10, left_cy), f"推荐{len(route_songs)}首 +{total_gain}", font=self.font("cn", 20), fill=(120, 100, 80))
+            gains = [route_gain(s) for s in route_songs]
+            gain_range = f"单曲预计 +{min(gains)}~{max(gains)}"
+            self.d.text((left_x + 10, left_cy), f"推荐{len(route_songs)}首 · {gain_range}", font=self.font("cn", 20), fill=(120, 100, 80))
             left_cy += 28
             for i, song in enumerate(route_songs):
                 title = str(song.get("title") or "")[:22]
-                ds = _f(song.get("ds"))
-                gain = _i(song.get("gain_1005"))
+                gain = route_gain(song)
                 target = str(song.get("target") or "SSS+")
                 level_idx = _i(song.get("level_index"), -1)
                 card_h = 44
@@ -624,7 +633,6 @@ class _Draw:
             right_cy += 28
             for song in peer_songs:
                 title = str(song.get("title") or "")[:20]
-                ds = _f(song.get("ds"))
                 gap = song.get("gap")
                 level_idx = _i(song.get("level_index"), -1)
                 card_h = 40

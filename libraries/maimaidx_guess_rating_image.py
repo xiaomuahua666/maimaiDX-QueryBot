@@ -1,4 +1,4 @@
-"""猜Rating隐藏B50渲染：隐藏成绩/名字/Rating，只保留曲绘/等级/FC/FS。"""
+"""猜 Rating 分级看板：隐藏身份与数值成绩，并按难度逐步减少辅助信息。"""
 
 from __future__ import annotations
 
@@ -71,8 +71,11 @@ def _draw_hidden_card(
     x: int,
     y: int,
     sy: DrawText,
+    *,
+    show_rate: bool = True,
+    show_fc_fs: bool = True,
 ) -> None:
-    """绘制单张隐藏卡片：曲绘、难度底图、版本标、等级图标、FC/FS。
+    """绘制单张隐藏卡片：曲绘、难度底图、版本标及可选的评级/FC/FS。
 
     与 ScoreBaseImage.whiledraw 相同坐标，文字区域用 AWMC =w= 占位。
     """
@@ -93,25 +96,26 @@ def _draw_hidden_card(
     except Exception:
         pass
 
-    rate_key = getattr(chart, 'rate', None) or 'd'
-    if rate_key.islower() and rate_key in score_Rank_l:
-        rate_name = score_Rank_l[rate_key]
-    else:
-        rate_name = rate_key
-    try:
-        rate_icon = Image.open(pic(f'UI_TTR_Rank_{rate_name}.png')).resize((63, 28))
-        im.alpha_composite(rate_icon, (x + 92, y + 78))
-    except Exception:
-        pass
+    if show_rate:
+        rate_key = getattr(chart, 'rate', None) or 'd'
+        if rate_key.islower() and rate_key in score_Rank_l:
+            rate_name = score_Rank_l[rate_key]
+        else:
+            rate_name = rate_key
+        try:
+            rate_icon = Image.open(pic(f'UI_TTR_Rank_{rate_name}.png')).resize((63, 28))
+            im.alpha_composite(rate_icon, (x + 92, y + 78))
+        except Exception:
+            pass
 
-    if chart.fc:
+    if show_fc_fs and chart.fc:
         try:
             fc_icon = Image.open(pic(f'UI_MSS_MBase_Icon_{fcl[chart.fc]}.png')).resize((34, 34))
             im.alpha_composite(fc_icon, (x + 154, y + 77))
         except Exception:
             pass
 
-    if chart.fs:
+    if show_fc_fs and chart.fs:
         try:
             fs_icon = Image.open(pic(f'UI_MSS_MBase_Icon_{fsl[chart.fs]}.png')).resize((34, 34))
             im.alpha_composite(fs_icon, (x + 185, y + 77))
@@ -128,6 +132,10 @@ def render_hidden_b50(
     charts: List[ChartInfo],
     display_count: int,
     *,
+    total_chart_count: int = 50,
+    difficulty: int = 1,
+    show_rate: bool = True,
+    show_fc_fs: bool = True,
     theme: str = None,
 ) -> Image.Image:
     """渲染隐藏信息B50图。使用标准 b50_bg.png 背景 + 标准卡片底图。
@@ -169,7 +177,8 @@ def render_hidden_b50(
     # 提示
     sy.draw(
         img_w // 2, 130, 17,
-        f'发送数字作答 · 可修改 · 展示{len(charts)}首/共50首',
+        f'难度 {difficulty} · 发送数字作答 · 可修改 · '
+        f'展示{len(charts)}首/共{total_chart_count}首',
         _MUTED, 'mm',
     )
 
@@ -180,7 +189,11 @@ def render_hidden_b50(
         if col == 0 and num > 0:
             y += _ROW_H
         x = _MARGIN_X + col * (_CARD_W + 6)
-        _draw_hidden_card(im, chart, x, y, sy)
+        _draw_hidden_card(
+            im, chart, x, y, sy,
+            show_rate=show_rate,
+            show_fc_fs=show_fc_fs,
+        )
 
     # ── Footer：明显一点的底栏 ──
     footer_bar = Image.new('RGBA', (img_w, 44), (20, 20, 40, 220))

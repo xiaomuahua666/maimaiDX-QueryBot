@@ -1,5 +1,6 @@
 import asyncio
 import json
+import random
 import time
 from pathlib import Path
 from textwrap import dedent
@@ -57,14 +58,19 @@ from ..libraries.maimaidx_model import (
     GuessPicData,
 )
 from ..libraries.maimaidx_guess_rating import (
-    DEFAULT_DISPLAY_COUNT,
     DEFAULT_DURATION,
-    MAX_DISPLAY_COUNT,
-    MIN_DISPLAY_COUNT,
+    RATING_DIFFICULTIES,
     format_reward_text,
     pick_random_candidate,
     rating_guess,
     select_random_charts,
+)
+from ..libraries.maimaidx_guess_impostor import (
+    IMPOSTOR_CARD_COUNT,
+    IMPOSTOR_DURATION,
+    build_impostor_cards,
+    format_impostor_rewards,
+    impostor_guess,
 )
 from ..libraries.maimaidx_music_info import *
 from ..libraries.maimaidx_platform import (
@@ -111,6 +117,11 @@ def is_now_playing_guess_music(event) -> bool:
 def is_now_playing_guess_rating(event) -> bool:
     gid = get_event_group_id(event)
     return gid is not None and rating_guess.is_busy(gid)
+
+
+def is_now_playing_guess_impostor(event) -> bool:
+    gid = get_event_group_id(event)
+    return gid is not None and impostor_guess.is_busy(gid)
 
 
 guess_music_start   = on_command('猜歌', rule=GROUP_MESSAGE)
@@ -168,7 +179,12 @@ guess_migrate_data = on_command(
 )
 
 # ── 猜Rating ──
-guess_rating_start = on_command('猜rating', aliases={'猜Rating'}, rule=GROUP_MESSAGE, priority=5, block=True)
+guess_rating_start = on_regex(
+    r'^猜(?i:rating)([1-4])?(?:\s+([1-4]))?(?:\s+(\d{2,3}))?\s*$',
+    rule=GROUP_MESSAGE,
+    priority=5,
+    block=True,
+)
 guess_rating_solve = on_message(
     rule=GROUP_MESSAGE & Rule(is_now_playing_guess_rating),
     priority=10,
@@ -180,6 +196,23 @@ guess_rating_volunteer = on_regex(
     rule=GROUP_MESSAGE,
     priority=5,
     block=True,
+)
+
+# ── B50 找内鬼 ──
+guess_impostor_start = on_regex(
+    r'^(?:B50|b50)?\s*(?:找内鬼|找假卡)\s*$',
+    rule=GROUP_MESSAGE,
+    priority=5,
+    block=True,
+)
+guess_impostor_solve = on_message(
+    rule=GROUP_MESSAGE & Rule(is_now_playing_guess_impostor),
+    priority=10,
+    block=False,
+)
+guess_impostor_reset = on_command(
+    '重置找内鬼', aliases={'重置找假卡'},
+    priority=4, block=True, rule=GROUP_MESSAGE,
 )
 
 # 猜歌玩法不参与高峰期「额外 1 BREAK」附加费（含局内答题 on_message）。
@@ -214,6 +247,9 @@ for _guess_matcher in (
     guess_rating_solve,
     guess_rating_reset,
     guess_rating_volunteer,
+    guess_impostor_start,
+    guess_impostor_solve,
+    guess_impostor_reset,
 ):
     setattr(_guess_matcher, '_maimaidx_busy_surcharge_exempt', True)
 
@@ -320,7 +356,7 @@ async def _award_guess_points(
     return settlement
 
 
-_GUESS_BUSY_HINT = '该群已有正在进行的猜歌、猜曲绘、猜曲子、猜铺面、猜Rating或开字母'
+_GUESS_BUSY_HINT = '该群已有正在进行的猜歌、猜曲绘、猜曲子、猜铺面、猜Rating、B50找内鬼或开字母'
 _GUESS_SEND_FAIL_MSG = '游戏数据获取失败，本游戏已结束。'
 GUESS_SEND_TIMEOUT_TEXT = 15
 GUESS_SEND_TIMEOUT_MEDIA = 60
@@ -340,7 +376,12 @@ def _letter_busy(gid: GroupId) -> bool:
 
 
 def _guess_or_letter_busy(gid: GroupId) -> bool:
-    return guess.is_busy(gid) or _letter_busy(gid) or rating_guess.is_busy(gid)
+    return (
+        guess.is_busy(gid)
+        or _letter_busy(gid)
+        or rating_guess.is_busy(gid)
+        or impostor_guess.is_busy(gid)
+    )
 
 
 def _guess_loop_should_stop(gid: GroupId) -> bool:
@@ -1624,21 +1665,14 @@ async def _(matcher: Matcher, event: MessageEvent):
 # ─────────────────────── 猜Rating ───────────────────────
 
 
-def _parse_rating_args(text: str) -> tuple[int, int]:
-    """解析 猜rating [display_count] [duration] 参数。"""
-    parts = text.strip().split()
-    display_count = DEFAULT_DISPLAY_COUNT
-    duration = DEFAULT_DURATION
-    for part in parts:
-        try:
-            n = int(part)
-        except ValueError:
-            continue
-        if MIN_DISPLAY_COUNT <= n <= MAX_DISPLAY_COUNT:
-            display_count = n
-        elif 10 <= n <= 300:
-            duration = n
-    return display_count, duration
+def _parse_rating_match(matched) -> tuple[int, int]:
+    """解析 ``猜Rating[1-4] [时长]``；不指定难度时与猜曲绘一致随机。"""
+    attached = matched.group(1)
+    spaced = matched.group(2)
+    duration_raw = matched.group(3)
+    difficulty = int(attached or spaced) if (attached or spaced) else random.randint(1, 4)
+    duration = int(duration_raw) if duration_raw else DEFAULT_DURATION
+    return difficulty, max(10, min(300, duration))
 
 
 async def _prerender_reveal_segment(sd_best, dx_best, target_name, target_rating):
@@ -1654,7 +1688,7 @@ async def _prerender_reveal_segment(sd_best, dx_best, target_name, target_rating
 
 
 @guess_rating_start.handle()
-async def _(event: MessageEvent, args: Message = CommandArg()):
+async def _(event: MessageEvent, matched=RegexMatched()):
     await _gate_guess_group_entry(guess_rating_start, event)
     gid = get_event_group_id(event)
     if gid is None:
@@ -1664,8 +1698,9 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
     if _guess_or_letter_busy(gid):
         await guess_rating_start.finish(_GUESS_BUSY_HINT, reply_message=True)
 
-    text = args.extract_plain_text().strip()
-    display_count, duration = _parse_rating_args(text)
+    difficulty, duration = _parse_rating_match(matched)
+    difficulty_cfg = RATING_DIFFICULTIES[difficulty]
+    display_count = difficulty_cfg.display_count
 
     bot = resolve_event_bot(event)
     await _guess_notify(guess_rating_start, event, '🔍 正在选取群友并加载B50…', reply=True)
@@ -1676,7 +1711,9 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
 
     try:
         # 选取候选人
-        candidate = await pick_random_candidate(bot, gid)
+        candidate = await pick_random_candidate(
+            bot, gid, min_charts=display_count,
+        )
         if candidate is None:
             await guess_rating_start.finish(
                 '未找到可用的群友数据。请确保群内有成员已开启数据存储并上传过成绩。',
@@ -1705,7 +1742,9 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
         target_uid=target_uid,
         target_name=target_name,
         target_rating=b50.rating,
+        difficulty=difficulty,
         display_count=display_count,
+        total_chart_count=len(sd_best) + len(dx_best),
         duration=duration,
         selected_charts=selected,
         b50_sd=sd_best,
@@ -1722,9 +1761,10 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
 
     intro = dedent(f'''\
         🎮 猜Rating开始！
-        展示 {len(selected)} 首 / 共 50 首
+        难度 {difficulty} · 展示 {len(selected)} 首 / 共 {data.total_chart_count} 首
         ⏱ {duration}秒作答时间，发送数字猜Rating（可修改）
         最接近者获胜 🏆
+        题主不能作答或参与奖励；难度越高积分与BREAK略高。
     ''')
 
     compact = bool(getattr(maiconfig, 'maimaidx_compact_messages', True))
@@ -1733,6 +1773,10 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
             hidden_b50_image_segment,
             selected,
             display_count,
+            total_chart_count=data.total_chart_count,
+            difficulty=difficulty,
+            show_rate=difficulty_cfg.show_rate,
+            show_fc_fs=difficulty_cfg.show_fc_fs,
         )
         if compact:
             bundle = MessageSegment.text(intro + '\n') + img_seg
@@ -1793,6 +1837,7 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
                     'target_uid': settlement.target_uid,
                     'target_name': settlement.target_name,
                     'target_rating': settlement.target_rating,
+                    'difficulty': difficulty,
                     'rank': reward.rank,
                     'diff': reward.diff,
                 },
@@ -1804,6 +1849,7 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
         '',
         f'🎵 TA是 {settlement.target_name}！',
         f'🎯 真实Rating：{settlement.target_rating}',
+        f'🎚 本局难度：{difficulty}',
         '',
         '📊 排名：',
         format_reward_text(settlement.rewards, settlement.target_rating),
@@ -1894,6 +1940,205 @@ async def _(event: MessageEvent):
         f'✅ {name} 已报名！下局猜Rating你被抽中的概率 ×5（10分钟内有效）',
         reply_message=True,
     )
+
+
+# ─────────────────────── B50 找内鬼 ───────────────────────
+
+
+@guess_impostor_start.handle()
+async def _(event: MessageEvent):
+    await _gate_guess_group_entry(guess_impostor_start, event)
+    gid = get_event_group_id(event)
+    if gid is None:
+        await guess_impostor_start.finish('请在群内使用。', reply_message=True)
+    if gid not in guess.switch.enable:
+        await guess_impostor_start.finish(
+            '该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True,
+        )
+    if _guess_or_letter_busy(gid):
+        await guess_impostor_start.finish(_GUESS_BUSY_HINT, reply_message=True)
+
+    await _guess_notify(
+        guess_impostor_start, event,
+        '🕵️ 正在抽取B50并制作内鬼卡…', reply=True,
+    )
+    if not impostor_guess.lock(gid):
+        await guess_impostor_start.finish(_GUESS_BUSY_HINT, reply_message=True)
+
+    bot = resolve_event_bot(event)
+    try:
+        candidate = await pick_random_candidate(
+            bot, gid, min_charts=IMPOSTOR_CARD_COUNT, weighted=False,
+        )
+        if candidate is None:
+            await guess_impostor_start.finish(
+                '未找到至少有5张B50卡片的群友数据。', reply_message=True,
+            )
+        target_uid, target_name, b50 = candidate
+        charts, answer, actual_ra, fake_ra = build_impostor_cards(b50)
+    except Exception:
+        impostor_guess.unlock(gid)
+        raise
+
+    data = impostor_guess.start(
+        gid,
+        target_uid=target_uid,
+        target_name=target_name,
+        answer=answer,
+        actual_ra=actual_ra,
+        fake_ra=fake_ra,
+        charts=charts,
+        duration=IMPOSTOR_DURATION,
+    )
+
+    from ..libraries.maimaidx_guess_impostor_image import impostor_image_segment
+
+    intro = dedent(f'''\
+        🕵️ B50找内鬼开始！
+        5张卡片中有1张的「单曲RA」被篡改。
+        ⏱ {IMPOSTOR_DURATION}秒内发送 1～5 作答，可修改。
+        答对按速度获得积分与BREAK；该B50的题主不参与奖励。
+    ''')
+    try:
+        image_seg = await asyncio.to_thread(impostor_image_segment, charts)
+        await _safe_matcher_send(
+            guess_impostor_start,
+            event,
+            MessageSegment.text(intro + '\n') + image_seg,
+            gid,
+            media=True,
+            fatal=False,
+        )
+    except Exception as e:
+        impostor_guess.end(gid)
+        log.warning(f'[GuessImpostor] 生成开局图失败 gid={gid}: {e}')
+        await guess_impostor_start.finish(
+            'B50找内鬼图片生成失败，本局已结束。', reply_message=True,
+        )
+
+    remaining = data.duration
+    while remaining > 0:
+        await asyncio.sleep(1)
+        current = impostor_guess.get(gid)
+        if current is None or current.end:
+            return
+        remaining -= 1
+        if remaining in (30, 10, 5):
+            await _guess_notify(
+                guess_impostor_start, event, f'⏳ 找内鬼还剩 {remaining}秒！',
+            )
+
+    settlement = impostor_guess.settle(gid)
+    if settlement is None:
+        return
+
+    from ..libraries.maimaidx_break import break_db
+
+    for reward in settlement.rewards:
+        await guess_score.award_fixed_points(
+            gid,
+            reward.uid,
+            reward.name,
+            reward.score,
+            mode=guess_score.MODE_IMPOSTOR,
+        )
+        if reward.break_points > 0:
+            break_db.add_balance(
+                reward.billing_id,
+                reward.break_points,
+                'b50_impostor_settlement',
+                meta={
+                    'group_id': str(gid),
+                    'target_uid': settlement.target_uid,
+                    'answer': settlement.answer,
+                    'rank': reward.rank,
+                },
+            )
+
+    result_lines = [
+        '🎉 B50找内鬼结束！',
+        f'🕵️ 内鬼是第 {settlement.answer} 张：'
+        f'真实RA {settlement.actual_ra} → 假RA {settlement.fake_ra}',
+        f'📚 本局数据来自 {settlement.target_name} 的B50',
+        '',
+        '🏆 找对排名：',
+        format_impostor_rewards(settlement.rewards),
+    ]
+    if settlement.wrong_names:
+        result_lines.append(f'未找对：{len(settlement.wrong_names)}人')
+    result_text = '\n'.join(result_lines)
+
+    try:
+        reveal_seg = await asyncio.to_thread(
+            impostor_image_segment,
+            charts,
+            reveal_index=settlement.answer,
+            actual_ra=settlement.actual_ra,
+            fake_ra=settlement.fake_ra,
+        )
+        await _safe_matcher_send(
+            guess_impostor_start,
+            event,
+            MessageSegment.text(result_text + '\n') + reveal_seg,
+            gid,
+            media=True,
+            fatal=False,
+        )
+    except Exception as e:
+        log.warning(f'[GuessImpostor] 生成揭晓图失败 gid={gid}: {e}')
+        await _safe_matcher_send(
+            guess_impostor_start, event, result_text, gid, fatal=False,
+        )
+
+    impostor_guess.end(gid)
+    await guess_impostor_start.finish()
+
+
+@guess_impostor_solve.handle()
+async def _(event: MessageEvent):
+    gid = get_event_group_id(event)
+    if gid is None:
+        return
+    data = impostor_guess.get(gid)
+    if data is None or data.end:
+        return
+    text = event.get_plaintext().strip()
+    if text not in {'1', '2', '3', '4', '5'}:
+        return
+
+    uid_key = platform_user_id(event)
+    rate_limit_msg = consume_guess_answer_slot(uid_key)
+    if rate_limit_msg:
+        await guess_impostor_solve.finish(
+            adapt_guess_outbound(rate_limit_msg, event=event),
+            reply_message=resolve_reply_message(event, reply_message=True),
+        )
+
+    msg = impostor_guess.submit(
+        gid,
+        uid_key,
+        get_sender_display_name(event),
+        billing_user_id(event),
+        int(text),
+    )
+    if msg:
+        bot = resolve_event_bot(event)
+        reacted = await react_processing(bot, event, emoji_id=REACT_EMOJI_CHECK)
+        if not reacted:
+            await _guess_notify(guess_impostor_start, event, msg)
+
+
+@guess_impostor_reset.handle()
+async def _(event: MessageEvent):
+    gid = get_event_group_id(event)
+    if gid is None:
+        return
+    if not impostor_guess.is_busy(gid):
+        await guess_impostor_reset.finish(
+            '当前没有进行中的B50找内鬼。', reply_message=True,
+        )
+    impostor_guess.end(gid)
+    await guess_impostor_reset.finish('B50找内鬼已重置。', reply_message=True)
 
 
 from ..libraries import maimaidx_guess_scheduler  # noqa: F401

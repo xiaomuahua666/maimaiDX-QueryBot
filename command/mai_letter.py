@@ -27,6 +27,8 @@ from ..libraries.maimaidx_guess_letter import (
     letter_triple_banner,
 )
 from ..libraries.maimaidx_guess_score import guess_score
+from ..libraries.maimaidx_guess_rating import rating_guess
+from ..libraries.maimaidx_guess_impostor import impostor_guess
 from ..libraries.maimaidx_guess_sync import MAIN_GROUP_REDIRECT, guess_sync
 from ..libraries.maimaidx_letter_rank_draw import (
     image_b64,
@@ -77,6 +79,12 @@ _RESERVED_PREFIXES = (
     "猜曲子",
     "猜铺面",
     "猜谱面",
+    "猜Rating",
+    "猜rating",
+    "B50找内鬼",
+    "找内鬼",
+    "找假卡",
+    "重置找内鬼",
 )
 
 
@@ -429,9 +437,9 @@ async def _(matcher, event: MessageEvent, args: Message = CommandArg()):
             )
         await letter_open.finish(_HELP, reply_message=True)
 
-    if guess.is_busy(gid):
+    if guess.is_busy(gid) or rating_guess.is_busy(gid) or impostor_guess.is_busy(gid):
         await letter_open.finish(
-            "该群已有正在进行的猜歌/猜曲绘/猜曲子/猜铺面，请先结束或「重置猜歌」。",
+            "该群已有正在进行的猜歌/猜曲绘/猜曲子/猜铺面/猜Rating/B50找内鬼，请先结束当前游戏。",
             reply_message=True,
         )
     try:

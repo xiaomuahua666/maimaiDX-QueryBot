@@ -71,6 +71,17 @@ async def get_music():
             '可能导致牌子「完成表」指令无法使用，'
             '请及时私聊BOT使用指令「更新完成表」进行生成。'
         )
+    else:
+        from .libraries.maimaidx_update_plate import stale_plate_table_names
+
+        stale_tables = stale_plate_table_names()
+        if stale_tables:
+            preview = '、'.join(stale_tables[:8])
+            suffix = f' 等 {len(stale_tables)} 张' if len(stale_tables) > 8 else ''
+            log.opt(colors=True).warning(
+                f'<y>检测到完成表底图缺失或已过期：</y>{preview}{suffix}。'
+                '请及时私聊BOT使用指令「更新完成表」重新生成。'
+            )
     log.opt(colors=True).success('<g>maimaiDX 插件初始化完成，等待客户端连接</g>')
     try:
         from .libraries.maimaidx_guess_chart import (

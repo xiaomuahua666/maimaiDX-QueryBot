@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import gzip
 import json
-import random
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -211,14 +210,36 @@ def _build_b50_evidence_pack(charts: list[dict], rating: int, peer_data: dict, c
     selected = _unique_rows(strongest[:4] + weakest[:4] + rows_by_rating[:4], 10)
     entry_points = _unique_rows(strongest[:6] + weakest[:6], 10)
 
+    matched = _i(peer_data.get("matched"))
+    player_count = _i(peer_data.get("player_count"))
+    coverage = matched / len(rows) if rows else 0.0
+    if player_count >= 50 and matched >= 35 and coverage >= 0.7:
+        confidence = "high"
+        confidence_text = "高：同段玩家与匹配谱面都较充足，可作为主要证据"
+    elif player_count >= 20 and matched >= 15 and coverage >= 0.3:
+        confidence = "medium"
+        confidence_text = "中：可辅助判断，但不要把细小差距说成定论"
+    elif peer_data:
+        confidence = "low"
+        confidence_text = "低：样本或覆盖不足，只能作弱参考"
+    else:
+        confidence = "unavailable"
+        confidence_text = "不可用：禁止生成同段对比结论"
+
     return {
         "peer_comparison": {
             "available": bool(peer_data),
             "rating_bucket": peer_data.get("bucket"),
-            "matched": peer_data.get("matched", 0),
+            "player_count": player_count,
+            "matched": matched,
+            "b50_chart_count": len(rows),
+            "coverage": round(coverage, 4),
+            "confidence": confidence,
+            "confidence_text": confidence_text,
+            "generated_at": peer_data.get("generated_at"),
             "ARPI": peer_data.get("arpi"),
             "b50_overlap": peer_data.get("b50_overlap") or {},
-            "rule": "peer_avg/avg_achievement 是同 rating 桶玩家在同一谱同一难度的平均达成率；gap_vs_peer=当前达成率-peer_avg；ARPI 是所有可匹配 B50 谱面的平均 gap。",
+            "rule": "peer_avg/avg_achievement 是开启共享且未退出用户的脱敏聚合均值；gap_vs_peer=当前达成率-peer_avg；ARPI 是所有可匹配 B50 谱面的平均 gap。只能输出聚合样本，不能描述或猜测其他单个用户。",
         },
         "rating_split": {
             "total": rating,
@@ -325,10 +346,11 @@ def _build_push_candidates(all_charts: list[dict]) -> list[dict]:
         if ds < ds_lo or ds > ds_hi:
             continue
         bucket = c.get("bucket")
+        rating_pool = c.get("rating_pool") or bucket
         if bucket:
             current_ra = _i(c.get("ra"))
         else:
-            current_ra = min(b35_floor, b15_floor)
+            current_ra = b15_floor if rating_pool == "B15" else b35_floor
         gain_1005 = max(0, _calc_ra(ds, 100.5) - current_ra)
         gain_100 = max(0, _calc_ra(ds, 100.0) - current_ra)
         if ach >= 100.0:
@@ -360,19 +382,28 @@ def _build_push_candidates(all_charts: list[dict]) -> list[dict]:
             "ra": _i(c.get("ra")),
             "fc": str(c.get("fc") or c.get("fc_label") or "").lower(),
             "type": str(c.get("type") or "SD").upper(),
-            "gain_100": 0,
-            "gain_1005": target_gain,
+            "rating_pool": rating_pool,
+            "replacement_floor": current_ra if not bucket else None,
+            "gain_100": gain_100,
+            "gain_1005": gain_1005,
+            "estimated_gain": target_gain,
             "target": target_label,
+            "target_achievement": target_ach,
             "ds_fit": round(ds_fit, 3),
             "ach_gap": round(ach_gap, 4),
         })
     if not candidates:
         return []
-    # 先按拟合度升序、寸止差距升序取前 25 条，再随机采样保多样性
-    candidates.sort(key=lambda x: (x["ds_fit"], x["ach_gap"], -_i(x.get("gain_1005"), 0)))
-    pool = candidates[:25]
-    random.shuffle(pool)
-    result = [_normalize(c) for c in pool[:15]]
+    # 稳定排序便于复核；多样性由后续强项/短板/主题选曲器负责。
+    candidates.sort(
+        key=lambda x: (
+            x["ds_fit"],
+            x["ach_gap"],
+            -_i(x.get("estimated_gain"), 0),
+            str(x.get("title") or ""),
+        )
+    )
+    result = [_normalize(c) for c in candidates[:15]]
     return result
 
 
@@ -421,7 +452,7 @@ def _enrich_push_candidates(
         key=lambda x: (
             _f(x.get("ds_fit"), 99.0),
             _f(x.get("ach_gap"), 99.0),
-            -max(_i(x.get("gain_1005"), 0), _i(x.get("gain_100"), 0)),
+            -_i(x.get("estimated_gain"), 0),
             -len(x.get("config_tags") or []),
             -_i(x.get("play_count"), 0),
             str(x.get("title") or ""),
@@ -576,6 +607,10 @@ def build_context(b50_data: dict, peer_stats: dict | None = None) -> dict:
     dx_charts = [_normalize(c) for c in ((b50_data.get("charts") or {}).get("dx") or [])]
     if not sd_charts and not dx_charts:
         return {"player": player, "peer_stats": {}, "summary": {}, "evidence": {}, "b50": [], **_load_assets_context(str(b50_data.get("_assets_path") or ""))}
+    for c in sd_charts:
+        c["rating_pool"] = "B35"
+    for c in dx_charts:
+        c["rating_pool"] = "B15"
     for c in sd_charts[:35]:
         c["bucket"] = "B35"
     for c in dx_charts[:15]:
@@ -619,15 +654,18 @@ def build_context(b50_data: dict, peer_stats: dict | None = None) -> dict:
                     c["peer_avg"] = avg
                     c["gap"] = gap
                     c["overlap"] = appear
+                    c["peer_sample_count"] = _i(stat.get("sample_count"))
                     gaps.append(gap)
                     overlaps.append(appear)
             if gaps:
                 peer_data = {
                     "available": True,
                     "bucket": bucket_key,
+                    "player_count": _i(raw_bucket.get("player_count")),
                     "matched": len(gaps),
                     "arpi": round(sum(gaps) / len(gaps), 4),
                     "b50_overlap": {"value": round(sum(overlaps) / len(overlaps), 2)},
+                    "generated_at": peer_stats.get("generated_at"),
                 }
         arpi_bucket_stats = _arpi_bucket_stats(raw_bucket, peer_data.get("arpi"))
 

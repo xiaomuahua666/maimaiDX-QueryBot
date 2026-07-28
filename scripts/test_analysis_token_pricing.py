@@ -30,6 +30,8 @@ pricing_config = {
     "analysis_min_cost": 2,
     "analysis_max_cost": 20,
     "analysis_fallback_cost": 4,
+    "analysis_price_multiplier": 3,
+    "analysis_precharge_cost": 6,
 }
 
 
@@ -39,28 +41,34 @@ def config_int(key: str, default: int) -> int:
 
 pricing = load_functions(
     ROOT / "libraries" / "maimaidx_break.py",
-    {"analysis_token_cost", "format_analysis_cost_line"},
+    {
+        "analysis_price_multiplier",
+        "analysis_precharge_cost",
+        "analysis_token_cost",
+        "format_analysis_cost_line",
+    },
     {"Optional": Optional, "math": math, "_config_int": config_int},
 )
 cost = pricing["analysis_token_cost"]
-assert cost(0, 0) == 2
-assert cost(4000, 1000) == 2
-assert cost(4001, 1000) == 3
-assert cost(8000, 2000) == 4
-assert cost(16000, 4000) == 8
-assert cost(999999, 999999) == 20
-assert cost(0, 0, usage_available=False) == 4
+assert cost(0, 0) == 6
+assert cost(4000, 1000) == 6
+assert cost(4001, 1000) == 9
+assert cost(8000, 2000) == 12
+assert cost(16000, 4000) == 24
+assert cost(999999, 999999) == 60
+assert cost(0, 0, usage_available=False) == 12
 
 line = pricing["format_analysis_cost_line"](
-    charged=4,
+    charged=12,
     balance=21,
     input_tokens=16000,
     output_tokens=4000,
 )
-assert "锐评消耗 4 BREAK" in line
+assert "锐评消耗 12 BREAK" in line
 assert "输入 16,000 / 输出 4,000 Token" in line
 assert "输入每 4,000 Token + 输出每 1,000 Token" in line
-assert "最低 2、最高 20" in line
+assert "基础价合计向上取整后 ×3" in line
+assert "最低 6、最高 60" in line
 
 usage_helpers = load_functions(
     ROOT / "libraries" / "b50_analysis" / "llm.py",
@@ -105,7 +113,7 @@ assert dict_usage["output_tokens"] == 1200
 
 class FakeBreakDb:
     def __init__(self):
-        self.balance = 1
+        self.balance = 10
         self.adjustment = None
         self.usage = None
 
@@ -117,6 +125,12 @@ class FakeBreakDb:
     def record_usage(self, qqid, kind, break_delta=0):
         self.usage = (qqid, kind, break_delta)
 
+    def settle_analysis_reservation(self, qqid, cost, reserved, *, meta=None):
+        self.adjustment = (qqid, reserved - cost, "b50_analysis_settlement", meta)
+        self.balance += reserved - cost
+        self.usage = (qqid, "analysis", -cost)
+        return self.balance
+
 fake_db = FakeBreakDb()
 settlement = load_functions(
     ROOT / "libraries" / "maimaidx_break.py",
@@ -125,25 +139,28 @@ settlement = load_functions(
         "Optional": Optional,
         "break_db": fake_db,
         "is_superuser_exempt": lambda _qqid: False,
+        "analysis_price_multiplier": lambda: 3,
         "log": SimpleNamespace(info=lambda *_args, **_kwargs: None),
     },
 )
 charged = settlement["settle_analysis_charge"](
     10001,
-    4,
+    12,
+    reserved=6,
     token_usage={"input_tokens": 16000, "output_tokens": 4000},
 )
-assert charged == 4
-assert fake_db.adjustment[1:3] == (-4, "b50_analysis")
-assert fake_db.adjustment[3]["pricing"] == "token"
-assert fake_db.balance == -3
-assert fake_db.usage == (10001, "analysis", -4)
+assert charged == 12
+assert fake_db.adjustment[1:3] == (-6, "b50_analysis_settlement")
+assert fake_db.adjustment[3]["pricing"] == "token_x_multiplier"
+assert fake_db.balance == 4
+assert fake_db.usage == (10001, "analysis", -12)
 
 analysis_command = (ROOT / "command" / "mai_b50_analysis.py").read_text(
     encoding="utf-8"
 )
-assert "ensure_analysis_affordable" not in analysis_command
 assert "break_billing" not in analysis_command
-assert "采用先用后付" in analysis_command
+assert "reserve_analysis_charge" in analysis_command
+assert "refund_analysis_charge" in analysis_command
+assert "format_analysis_pricing_help" in analysis_command
 
 print("analysis token pricing tests: ok")

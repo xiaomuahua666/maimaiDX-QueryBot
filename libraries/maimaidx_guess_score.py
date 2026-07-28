@@ -99,14 +99,18 @@ class GuessScoreManager:
     MAX_HISTORY_PER_PERIOD = 30
     MAX_EVENTS_PER_GROUP = 8000
 
-    # 个人数据图六模式（含开字母、猜Rating结算分）
+    # 个人数据图模式（含开字母、猜Rating、B50 找内鬼结算分）
     MODE_SONG = 'song'
     MODE_PIC = 'pic'
     MODE_AUDIO = 'audio'
     MODE_CHART = 'chart'
     MODE_LETTER = 'letter'
     MODE_RATING = 'rating'
-    GUESS_MODES = (MODE_SONG, MODE_PIC, MODE_AUDIO, MODE_CHART, MODE_LETTER, MODE_RATING)
+    MODE_IMPOSTOR = 'impostor'
+    GUESS_MODES = (
+        MODE_SONG, MODE_PIC, MODE_AUDIO, MODE_CHART,
+        MODE_LETTER, MODE_RATING, MODE_IMPOSTOR,
+    )
     MODE_LABELS = {
         MODE_SONG: '猜歌',
         MODE_PIC: '猜曲绘',
@@ -114,6 +118,7 @@ class GuessScoreManager:
         MODE_CHART: '猜铺面',
         MODE_LETTER: '开字母',
         MODE_RATING: '猜Rating',
+        MODE_IMPOSTOR: '找内鬼',
     }
 
     PERIODS: Dict[str, PeriodSpec] = {
@@ -300,7 +305,7 @@ class GuessScoreManager:
         days: int = 30,
         recent_n: int = 12,
     ) -> Dict:
-        """个人猜歌数据图用快照：五模式趋势 / 雷达 / 近期明细（含开字母结算）。"""
+        """个人猜歌数据图用快照：多模式趋势 / 占比 / 近期明细。"""
         uk = self._uid_key(uid)
         member = self.store.groups.get(self._gid_key(gid), GuessGroupScores()).members.get(uk)
         name = (member.name if member else '') or uk
@@ -381,7 +386,7 @@ class GuessScoreManager:
             },
             'note': (
                 f'趋势/明细自明细落库后实时更新；'
-                f'近 {days} 日五模式共 {len(window)} 次。'
+                f'近 {days} 日 {len(self.GUESS_MODES)} 种玩法共 {len(window)} 次。'
             ),
         }
 

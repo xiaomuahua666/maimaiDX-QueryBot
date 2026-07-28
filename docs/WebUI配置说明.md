@@ -148,11 +148,13 @@ https://bot.example.com/ops/maimai/api/...
 | `bonus_thursday` | 0.5 | 周四加成 |
 | `bonus_group_first` | 0.5 | 群首签加成 |
 | `query_cost` | 1 | 查分 API 非首免价格 |
-| `analysis_input_tokens_per_break` | 4000 | 锐评每 1 BREAK 对应的输入 Token |
-| `analysis_output_tokens_per_break` | 1000 | 锐评每 1 BREAK 对应的输出 Token |
-| `analysis_min_cost` | 2 | 单次锐评最低价格 |
-| `analysis_max_cost` | 20 | 单次锐评最高价格及调用前余额门槛 |
-| `analysis_fallback_cost` | 4 | 模型未返回 Token usage 时的兜底价格 |
+| `analysis_input_tokens_per_break` | 4000 | 锐评基础价每 1 BREAK 对应的输入 Token |
+| `analysis_output_tokens_per_break` | 1000 | 锐评基础价每 1 BREAK 对应的输出 Token |
+| `analysis_min_cost` | 2 | 倍率应用前的单次锐评最低基础价 |
+| `analysis_max_cost` | 20 | 倍率应用前的单次锐评最高基础价 |
+| `analysis_fallback_cost` | 4 | 模型未返回 Token usage 时的兜底基础价 |
+| `analysis_price_multiplier` | 3 | 锐评基础价倍率；默认最终收费为基础价 ×3 |
+| `analysis_precharge_cost` | 6 | 调用模型前的预扣额度；成功后多退少补，失败全退 |
 | `guess_break_per_correct` | 1 | 每次猜对奖励 |
 | `upload_fish_cost` | 2 | 上传水鱼价格 |
 | `upload_lx_cost` | 2 | 上传落雪价格 |
