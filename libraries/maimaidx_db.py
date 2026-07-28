@@ -54,6 +54,8 @@ class UnifiedCursor:
         if self._prefix:
             for t in _TABLE_NAMES:
                 sql = re.sub(rf'\b{t}\b', f'{self._prefix}{t}', sql)
+        # `key` 列是 MySQL 保留字，需要加反引号（仅匹配小写 key，避免误匹配 DUPLICATE KEY）
+        sql = re.sub(r'(?<!\w)key(?=[,\s)=])', '`key`', sql)
         # ? → %s
         sql = sql.replace('?', '%s')
         return sql
