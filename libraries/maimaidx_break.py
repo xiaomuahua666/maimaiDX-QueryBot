@@ -190,6 +190,15 @@ CREATE TABLE IF NOT EXISTS break_red_packet_claim (
     PRIMARY KEY (packet_id, qqid),
     FOREIGN KEY (packet_id) REFERENCES break_red_packet(id)
 );
+CREATE TABLE IF NOT EXISTS break_gamble_pool (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    qqid        INTEGER NOT NULL,
+    date        TEXT NOT NULL,
+    amount      INTEGER NOT NULL,
+    created_at  REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_break_gamble_pool_date
+    ON break_gamble_pool(date, amount DESC);
 """
 
 
@@ -387,6 +396,20 @@ class GambleAllResult:
     multiplier: int
     win_amount: int
     balance_after: int
+
+
+@dataclass
+class GamblePoolContributor:
+    qqid: int
+    amount: int
+
+
+@dataclass
+class GamblePoolStatus:
+    date: str
+    total_pool: int
+    distributable: int  # total_pool * 80%
+    contributors: List[GamblePoolContributor]
 
 
 def _parse_config_int(raw: str, default: int) -> int:
@@ -1299,6 +1322,15 @@ class BreakDatabase:
                 qqid, net, 'gamble_all',
                 meta={'mode': mode, 'balance': balance, 'multiplier': multiplier, 'win': win_amount},
             )
+
+            # 记录输掉的 break 到抽奖池（只有输光时才记录）
+            if multiplier == 0 and balance > 0:
+                self._conn.execute(
+                    """INSERT INTO break_gamble_pool (qqid, date, amount, created_at)
+                       VALUES (?, ?, ?, ?)""",
+                    (qqid, self._today(), balance, now),
+                )
+
             self._conn.commit()
 
             return GambleAllResult(
@@ -1308,6 +1340,101 @@ class BreakDatabase:
                 win_amount=win_amount,
                 balance_after=balance + net,
             )
+
+    def get_gamble_pool_status(self, date: Optional[str] = None) -> GamblePoolStatus:
+        """获取今日抽奖池状态和贡献榜。"""
+        if date is None:
+            date = self._today()
+
+        with self._lock:
+            # 查询今日总贡献
+            row = self._conn.execute(
+                'SELECT COALESCE(SUM(amount), 0) as total FROM break_gamble_pool WHERE date=?',
+                (date,),
+            ).fetchone()
+            total_pool = int(row['total'])
+
+            # 查询贡献榜前5
+            rows = self._conn.execute(
+                """SELECT qqid, SUM(amount) as amount FROM break_gamble_pool
+                   WHERE date=? GROUP BY qqid ORDER BY amount DESC LIMIT 5""",
+                (date,),
+            ).fetchall()
+            contributors = [
+                GamblePoolContributor(qqid=int(r['qqid']), amount=int(r['amount']))
+                for r in rows
+            ]
+
+            return GamblePoolStatus(
+                date=date,
+                total_pool=total_pool,
+                distributable=int(total_pool * 0.8),
+                contributors=contributors,
+            )
+
+    def claim_gamble_pool_reward(self, qqid: int) -> tuple[int, int]:
+        """领取今日抽奖池福利。返回 (奖励金额, 当前余额)。"""
+        today = self._today()
+        now = time.time()
+
+        with self._lock:
+            # 检查今日是否有贡献
+            row = self._conn.execute(
+                'SELECT COALESCE(SUM(amount), 0) as contributed FROM break_gamble_pool WHERE qqid=? AND date=?',
+                (qqid, today),
+            ).fetchone()
+            contributed = int(row['contributed'])
+
+            if contributed <= 0:
+                raise ValueError('今日没有贡献，无法领取福利')
+
+            # 检查是否已领取
+            reward_key = 'gamble_pool_reward'
+            existing = self._conn.execute(
+                'SELECT amount FROM break_daily_reward WHERE qqid=? AND date=? AND reward_key=?',
+                (qqid, today, reward_key),
+            ).fetchone()
+
+            if existing:
+                raise ValueError('今日已领取过福利')
+
+            # 计算今日总池
+            pool_row = self._conn.execute(
+                'SELECT COALESCE(SUM(amount), 0) as total FROM break_gamble_pool WHERE date=?',
+                (today,),
+            ).fetchone()
+            total_pool = int(pool_row['total'])
+
+            if total_pool <= 0:
+                raise ValueError('今日奖池为空')
+
+            # 计算福利：按贡献比例分配 80% 的奖池
+            distributable = int(total_pool * 0.8)
+            user_contribution_ratio = contributed / total_pool
+            reward = max(1, int(distributable * user_contribution_ratio))
+
+            # 发放福利
+            self._conn.execute(
+                'UPDATE break_users SET balance=balance+?, updated_at=? WHERE qqid=?',
+                (reward, now, qqid),
+            )
+            self._conn.execute(
+                """UPDATE break_daily_usage SET break_gained=break_gained+?
+                   WHERE qqid=? AND date=?""",
+                (reward, qqid, today),
+            )
+            self._append_log(
+                qqid, reward, 'gamble_pool_reward',
+                meta={'contributed': contributed, 'total_pool': total_pool},
+            )
+            self._conn.execute(
+                'INSERT INTO break_daily_reward (qqid, date, reward_key, amount, created_at) VALUES (?, ?, ?, ?, ?)',
+                (qqid, today, reward_key, reward, now),
+            )
+            self._conn.commit()
+
+            balance = self.get_balance(qqid)
+            return reward, balance
 
     def award_guess_points(
         self,
