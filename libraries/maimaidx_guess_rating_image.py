@@ -74,6 +74,7 @@ def _draw_hidden_card(
     *,
     show_rate: bool = True,
     show_fc_fs: bool = True,
+    hide_cover: bool = False,
 ) -> None:
     """绘制单张隐藏卡片：曲绘、难度底图、版本标及可选的评级/FC/FS。
 
@@ -84,11 +85,16 @@ def _draw_hidden_card(
 
     im.alpha_composite(_diff_bgs[idx], (x, y))
 
-    try:
-        cover = Image.open(music_picture(chart.song_id)).resize((75, 75))
-        im.alpha_composite(cover, (x + 12, y + 12))
-    except Exception:
-        pass
+    if hide_cover:
+        # 5 级：曲绘位置盖成纯黑（隐藏所有曲绘信息）
+        cover_mask = Image.new('RGBA', (75, 75), (0, 0, 0, 255))
+        im.alpha_composite(cover_mask, (x + 12, y + 12))
+    else:
+        try:
+            cover = Image.open(music_picture(chart.song_id)).resize((75, 75))
+            im.alpha_composite(cover, (x + 12, y + 12))
+        except Exception:
+            pass
 
     try:
         ver = Image.open(pic(f'{chart.type.upper()}.png')).resize((37, 14))
@@ -136,6 +142,7 @@ def render_hidden_b50(
     difficulty: int = 1,
     show_rate: bool = True,
     show_fc_fs: bool = True,
+    hide_cover: bool = False,
     theme: str = None,
 ) -> Image.Image:
     """渲染隐藏信息B50图。使用标准 b50_bg.png 背景 + 标准卡片底图。
@@ -193,6 +200,7 @@ def render_hidden_b50(
             im, chart, x, y, sy,
             show_rate=show_rate,
             show_fc_fs=show_fc_fs,
+            hide_cover=hide_cover,
         )
 
     # ── Footer：明显一点的底栏 ──

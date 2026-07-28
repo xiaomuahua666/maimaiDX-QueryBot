@@ -180,7 +180,7 @@ guess_migrate_data = on_command(
 
 # ── 猜Rating ──
 guess_rating_start = on_regex(
-    r'^猜(?i:rating)([1-4])?(?:\s+([1-4]))?(?:\s+(\d{2,3}))?\s*$',
+    r'^猜(?i:rating)([1-5])?(?:\s+([1-5]))?(?:\s+(\d{2,3}))?\s*$',
     rule=GROUP_MESSAGE,
     priority=5,
     block=True,
@@ -1666,7 +1666,7 @@ async def _(matcher: Matcher, event: MessageEvent):
 
 
 def _parse_rating_match(matched) -> tuple[int, int]:
-    """解析 ``猜Rating[1-4] [时长]``；不指定难度时与猜曲绘一致随机。"""
+    """解析 ``猜Rating[1-5] [时长]``；不指定难度时与猜曲绘一致随机 1-4。"""
     attached = matched.group(1)
     spaced = matched.group(2)
     duration_raw = matched.group(3)
@@ -1777,6 +1777,7 @@ async def _(event: MessageEvent, matched=RegexMatched()):
             difficulty=difficulty,
             show_rate=difficulty_cfg.show_rate,
             show_fc_fs=difficulty_cfg.show_fc_fs,
+            hide_cover=difficulty_cfg.hide_cover,
         )
         if compact:
             bundle = MessageSegment.text(intro + '\n') + img_seg

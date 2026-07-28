@@ -63,7 +63,9 @@ def main() -> None:
         charts=Data(sd=charts, dx=[]),
     )
 
-    assert [RATING_DIFFICULTIES[i].display_count for i in range(1, 5)] == [20, 16, 12, 8]
+    assert [RATING_DIFFICULTIES[i].display_count for i in range(1, 6)] == [20, 16, 12, 8, 8]
+    assert RATING_DIFFICULTIES[5].hide_cover is True
+    assert RATING_DIFFICULTIES[4].hide_cover is False
     random.seed(7)
     cards, answer, actual_ra, fake_ra = build_impostor_cards(user)
     assert len(cards) == 5
@@ -108,7 +110,7 @@ def main() -> None:
         fake_ra=fake_ra,
         charts=cards,
     )
-    assert impostor.submit(2, "owner", "owner", 200, answer) == ""
+    assert impostor.submit(2, "owner", "owner", 200, answer).startswith("✅")
     impostor.submit(2, "a", "A", 201, answer)
     impostor.submit(2, "b", "B", 202, 1 if answer != 1 else 2)
     impostor.submit(2, "c", "C", 203, answer)

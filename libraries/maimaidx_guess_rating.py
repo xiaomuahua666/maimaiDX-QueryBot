@@ -26,15 +26,17 @@ class RatingDifficulty:
     display_count: int
     show_rate: bool
     show_fc_fs: bool
+    hide_cover: bool
     score_bonus: Tuple[int, int, int]
     break_bonus: Tuple[int, int, int]
 
 
 RATING_DIFFICULTIES: Dict[int, RatingDifficulty] = {
-    1: RatingDifficulty(1, 20, True, True, (15, 5, 3), (3, 1, 0)),
-    2: RatingDifficulty(2, 16, True, False, (18, 6, 4), (4, 1, 0)),
-    3: RatingDifficulty(3, 12, False, False, (21, 7, 5), (4, 2, 0)),
-    4: RatingDifficulty(4, 8, False, False, (24, 8, 6), (5, 2, 1)),
+    1: RatingDifficulty(1, 20, True,  True,  False, (15, 5, 3), (3, 1, 0)),
+    2: RatingDifficulty(2, 16, True,  False, False, (18, 6, 4), (4, 1, 0)),
+    3: RatingDifficulty(3, 12, False, False, False, (21, 7, 5), (4, 2, 0)),
+    4: RatingDifficulty(4, 8,  False, False, False, (24, 8, 6), (5, 2, 1)),
+    5: RatingDifficulty(5, 8,  False, False, True,  (30, 10, 7), (6, 3, 1)),
 }
 
 PARTICIPATION_SCORE = 1  # 参与奖
