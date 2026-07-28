@@ -120,7 +120,7 @@ CREATE TABLE IF NOT EXISTS break_makeup_checkin (
     created_at   REAL NOT NULL,
     PRIMARY KEY (qqid, target_date)
 );
-CREATE INDEX IF NOT EXISTS idx_break_makeup_month
+CREATE INDEX idx_break_makeup_month
     ON break_makeup_checkin(qqid, used_month);
 CREATE TABLE IF NOT EXISTS break_config (
     key     TEXT PRIMARY KEY,
@@ -134,7 +134,7 @@ CREATE TABLE IF NOT EXISTS break_log (
     meta        TEXT,
     created_at  REAL NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_break_log_qqid ON break_log(qqid, created_at DESC);
+CREATE INDEX idx_break_log_qqid ON break_log(qqid, created_at DESC);
 CREATE TABLE IF NOT EXISTS break_guess_daily (
     qqid            INTEGER NOT NULL,
     date            TEXT NOT NULL,
@@ -153,7 +153,7 @@ CREATE TABLE IF NOT EXISTS break_service_daily (
     last_at       REAL NOT NULL,
     PRIMARY KEY (qqid, date, service)
 );
-CREATE INDEX IF NOT EXISTS idx_break_service_daily
+CREATE INDEX idx_break_service_daily
     ON break_service_daily(date, service);
 CREATE TABLE IF NOT EXISTS break_daily_reward (
     qqid        INTEGER NOT NULL,
@@ -176,7 +176,7 @@ CREATE TABLE IF NOT EXISTS break_red_packet (
     expires_at        REAL NOT NULL,
     finished_at       REAL
 );
-CREATE INDEX IF NOT EXISTS idx_break_red_packet_group
+CREATE INDEX idx_break_red_packet_group
     ON break_red_packet(group_id, status, created_at DESC);
 CREATE TABLE IF NOT EXISTS break_red_packet_claim (
     packet_id  TEXT NOT NULL,
@@ -193,7 +193,7 @@ CREATE TABLE IF NOT EXISTS break_gamble_pool (
     amount      INTEGER NOT NULL,
     created_at  REAL NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_break_gamble_pool_date
+CREATE INDEX idx_break_gamble_pool_date
     ON break_gamble_pool(date, amount DESC);
 """
 
@@ -520,11 +520,18 @@ class BreakDatabase:
             return
         self._initialized = True
         self._conn = create_unified_connection()
-        # 建表：逐条 execute 让 wrapper 做方言转换
+        # 建表：逐条 execute 让 wrapper 做方言转换；索引忽略已存在错误
         for stmt in _CREATE_SQL.split(';'):
             stmt = stmt.strip()
-            if stmt:
+            if not stmt:
+                continue
+            try:
                 self._conn.execute(stmt)
+            except Exception:
+                if stmt.upper().startswith('CREATE INDEX'):
+                    pass  # 索引已存在，忽略
+                else:
+                    raise
         self._conn.commit()
         self._seed_config()
 
