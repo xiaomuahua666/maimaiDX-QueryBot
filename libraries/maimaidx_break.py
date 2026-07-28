@@ -1,7 +1,7 @@
 """
 AWMC BREAK 积分：签到、查分扣费、账号统计。
 
-- SQLite 持久化：data/break/break.db
+- 统一通过 UnifiedConnection 支持 SQLite / MySQL
 - 签到倍率加算叠加；查分仅在实际 API 请求时扣费
 """
 
@@ -11,7 +11,6 @@ import contextvars
 import json
 import math
 import random
-import sqlite3
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -19,16 +18,13 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 from threading import RLock
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-from ..config import BOT_QQ_GROUP, log
+from ..config import BOT_QQ_GROUP, log, maiconfig
+from .maimaidx_db import create_unified_connection
 from .maimaidx_error import BreakInsufficientError
-from .maimaidx_sqlite import configure_sqlite_connection
-
-DB_DIR = Path(__file__).resolve().parent.parent / 'data' / 'break'
-DB_PATH = DB_DIR / 'break.db'
 
 DEFAULT_CONFIG: Dict[str, str] = {
     'checkin_base_min': '1',
@@ -523,11 +519,12 @@ class BreakDatabase:
         if self._initialized:
             return
         self._initialized = True
-        DB_DIR.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
-        configure_sqlite_connection(self._conn)
-        self._conn.executescript(_CREATE_SQL)
+        self._conn = create_unified_connection()
+        # 建表：逐条 execute 让 wrapper 做方言转换
+        for stmt in _CREATE_SQL.split(';'):
+            stmt = stmt.strip()
+            if stmt:
+                self._conn.execute(stmt)
         self._conn.commit()
         self._seed_config()
 
@@ -556,7 +553,7 @@ class BreakDatabase:
                 (DEFAULT_CONFIG['ticket_cost_per_multiplier'], 'ticket_cost_per_multiplier'),
             )
             self._conn.commit()
-            log.info('[BREAK] 已将发票价格迁移为倍率 ×10')
+        log.info('[BREAK] 已将发票价格迁移为倍率 ×10')
 
     def _migrate_analysis_max_cost_default(self) -> None:
         """将首版 Token 计费封顶从 6 BREAK 迁移为 20 BREAK。"""
@@ -570,7 +567,7 @@ class BreakDatabase:
                 (DEFAULT_CONFIG['analysis_max_cost'], 'analysis_max_cost'),
             )
             self._conn.commit()
-            log.info('[BREAK] 已将锐评 Token 计费封顶迁移为 20 BREAK')
+        log.info('[BREAK] 已将锐评 Token 计费封顶迁移为 20 BREAK')
 
     def _migrate_analysis_token_rates_default(self) -> None:
         """将旧版锐评默认费率迁移为新标准，保留管理员自定义值。"""
@@ -625,7 +622,7 @@ class BreakDatabase:
                 (DEFAULT_CONFIG['streak_bonus'], 'streak_bonus'),
             )
             self._conn.commit()
-            log.info('[BREAK] 已恢复连续签到奖励曲线，并启用无上限增长')
+        log.info('[BREAK] 已恢复连续签到奖励曲线，并启用无上限增长')
 
     def get_config(self, key: str, default: str = '') -> str:
         row = self._conn.execute(
@@ -864,7 +861,7 @@ class BreakDatabase:
             self._append_log(qqid, adjustment, 'b50_analysis_settlement', meta=detail)
             self._conn.commit()
             row = self._conn.execute(
-                'SELECT balance FROM break_users WHERE qqid = ?', (qqid,)
+                'SELECT balance FROM break_users WHERE qqid = ?', (qqid,),
             ).fetchone()
             return int(row['balance']) if row else 0
 
