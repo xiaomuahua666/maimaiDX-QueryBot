@@ -1372,6 +1372,19 @@ class BreakDatabase:
                 contributors=contributors,
             )
 
+    def get_gamble_pool_leaderboard(self, limit: int = 10) -> list[GamblePoolContributor]:
+        """获取历史贡献总榜。"""
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT qqid, SUM(amount) as amount FROM break_gamble_pool
+                   GROUP BY qqid ORDER BY amount DESC LIMIT ?""",
+                (limit,),
+            ).fetchall()
+            return [
+                GamblePoolContributor(qqid=int(r['qqid']), amount=int(r['amount']))
+                for r in rows
+            ]
+
     def claim_gamble_pool_reward(self, qqid: int) -> tuple[int, int]:
         """领取今日抽奖池福利。返回 (奖励金额, 当前余额)。"""
         today = self._today()
