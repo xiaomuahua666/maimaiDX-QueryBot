@@ -68,6 +68,12 @@ upload_all_cost
 ticket_cost_per_multiplier
 transfer_fee
 lottery_cost
+cache_query_cost
+weekly_report_cost
+monthly_report_cost
+annual_report_cost
+daily_report_cost
+coop_b50_cost
 ```
 
 ## 用户封禁

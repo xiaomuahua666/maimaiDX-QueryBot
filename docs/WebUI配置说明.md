@@ -142,19 +142,20 @@ https://bot.example.com/ops/maimai/api/...
 |---|---:|---|
 | `checkin_base_min` | 1 | 签到随机下限 |
 | `checkin_base_max` | 2 | 签到随机上限 |
-| `streak_bonus` | `3,5,8,12,20` | 连续签到前几天的额外值 |
-| `streak_bonus_growth` | `1` | 超过上述天数后每天继续增加的值；不设总上限 |
+| `streak_bonus` | `1,2,3,4,5` | 连续签到前几天的额外值 |
+| `streak_bonus_growth` | `0` | 超过上述天数后每天继续增加的值；0 = 封顶在曲线末尾 |
 | `bonus_group_1072033605` | 0.25 | 群 1072033605、993795066 的共同签到加成 |
 | `bonus_thursday` | 0.5 | 周四加成 |
 | `bonus_group_first` | 0.5 | 群首签加成 |
 | `query_cost` | 1 | 查分 API 非首免价格 |
+| `cache_query_cost` | 1 | 本地缓存查询价格（缓存命中时扣费） |
 | `analysis_input_tokens_per_break` | 4000 | 锐评基础价每 1 BREAK 对应的输入 Token |
 | `analysis_output_tokens_per_break` | 1000 | 锐评基础价每 1 BREAK 对应的输出 Token |
 | `analysis_min_cost` | 2 | 倍率应用前的单次锐评最低基础价 |
 | `analysis_max_cost` | 20 | 倍率应用前的单次锐评最高基础价 |
 | `analysis_fallback_cost` | 4 | 模型未返回 Token usage 时的兜底基础价 |
-| `analysis_price_multiplier` | 3 | 锐评基础价倍率；默认最终收费为基础价 ×3 |
-| `analysis_precharge_cost` | 6 | 调用模型前的预扣额度；成功后多退少补，失败全退 |
+| `analysis_price_multiplier` | 5 | 锐评基础价倍率；默认最终收费为基础价 ×5 |
+| `analysis_precharge_cost` | 10 | 调用模型前的预扣额度；成功后多退少补，失败全退 |
 | `guess_break_per_correct` | 1 | 每次猜对奖励 |
 | `upload_fish_cost` | 2 | 上传水鱼价格 |
 | `upload_lx_cost` | 2 | 上传落雪价格 |
@@ -162,6 +163,11 @@ https://bot.example.com/ops/maimai/api/...
 | `ticket_cost_per_multiplier` | 10 | 发票每倍率单价 |
 | `transfer_fee` | 0 | BREAK 转账手续费 |
 | `lottery_cost` | 2 | BREAK 抽奖每次成本 |
+| `weekly_report_cost` | 1 | 周报功能费 |
+| `monthly_report_cost` | 2 | 月报功能费 |
+| `annual_report_cost` | 3 | 年报功能费 |
+| `daily_report_cost` | 0 | 日报功能费（0 = 免费） |
+| `coop_b50_cost` | 2 | 合作 B50 功能费 |
 
 还可查看近 30 日产出、消耗、查分量、分析量和活跃用户，以及最近
 BREAK 逐笔流水。每日首次免费的上传也会保留 `delta=0` 记录。

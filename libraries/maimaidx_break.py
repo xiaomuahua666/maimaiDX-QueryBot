@@ -30,17 +30,18 @@ DEFAULT_CONFIG: Dict[str, str] = {
     'checkin_base_min': '1',
     'checkin_base_max': '2',
     'query_cost': '1',
+    'cache_query_cost': '1',
     'analysis_input_tokens_per_break': '4000',
     'analysis_output_tokens_per_break': '1000',
     'analysis_min_cost': '2',
     'analysis_max_cost': '20',
     'analysis_fallback_cost': '4',
     # 锐评最终价格 = 原 Token 价格 × 倍率；调用模型前先预扣固定额度。
-    'analysis_price_multiplier': '3',
-    'analysis_precharge_cost': '6',
-    # 恢复旧版第 1～5 天曲线；之后按 streak_bonus_growth 继续增长，不封顶。
+    'analysis_price_multiplier': '5',
+    'analysis_precharge_cost': '10',
+    # 第 1～5 天按曲线递增；streak_bonus_growth 控制超过曲线后每天的增长量，0 = 封顶。
     'streak_bonus': '1,2,3,4,5',
-    'streak_bonus_growth': '1',
+    'streak_bonus_growth': '0',
     'makeup_checkin_costs': '30,60,90',
     'bonus_group_1072033605': '0.25',
     'bonus_thursday': '0.5',
@@ -59,6 +60,11 @@ DEFAULT_CONFIG: Dict[str, str] = {
     'ticket_unused_penalty': '20',
     'transfer_fee': '0',
     'lottery_cost': '2',
+    'weekly_report_cost': '1',
+    'monthly_report_cost': '2',
+    'annual_report_cost': '3',
+    'daily_report_cost': '0',
+    'coop_b50_cost': '2',
     'red_packet_expire_minutes': '10',
     'red_packet_max_total': '10000',
     'red_packet_max_count': '100',
@@ -429,15 +435,16 @@ def _parse_config_int(raw: str, default: int) -> int:
 
 
 def calculate_streak_bonus(streak: int, bonuses: list[int], growth: int) -> int:
-    """按配置曲线计算连签奖励；超过曲线后线性增长，不封顶。"""
+    """按配置曲线计算连签奖励；超过曲线后按 growth 线性增长，growth=0 时封顶。"""
     if not bonuses:
         return 0
     idx = max(int(streak) - 1, 0)
     if idx < len(bonuses):
         return max(0, int(bonuses[idx]))
-    return max(0, int(bonuses[-1])) + max(1, int(growth)) * (
-        idx - len(bonuses) + 1
-    )
+    extra = idx - len(bonuses) + 1
+    if extra <= 0 or int(growth) <= 0:
+        return max(0, int(bonuses[-1]))
+    return max(0, int(bonuses[-1])) + int(growth) * extra
 
 
 def calculate_luck_break(luck: int) -> tuple[int, int]:
@@ -1696,12 +1703,12 @@ class BreakDatabase:
         if not parts:
             return 0
         growth = max(
-            1,
+            0,
             _parse_config_int(
                 self.get_config(
                     'streak_bonus_growth', DEFAULT_CONFIG['streak_bonus_growth']
                 ),
-                1,
+                0,
             ),
         )
         return calculate_streak_bonus(streak, parts, growth)
@@ -2207,6 +2214,27 @@ def get_billing_qqid() -> Optional[int]:
     return _billing_qqid.get()
 
 
+def charge_session_extra(qqid: Optional[int], cost: int, service: str) -> bool:
+    """在 break_billing 上下文内额外扣除功能费；成功返回 True。"""
+    if not qqid or cost <= 0 or is_superuser_exempt(qqid):
+        return True
+    session = _charge_session.get()
+    if break_db.is_daily_free_available(qqid):
+        break_db.mark_daily_free_used(qqid)
+        break_db.record_usage(qqid, service, break_delta=0)
+        if session:
+            session.used_free = True
+            session.balance = break_db.get_balance(qqid)
+        return True
+    if not break_db.try_consume(qqid, cost, service, meta={'kind': service}):
+        return False
+    break_db.record_usage(qqid, service, break_delta=-cost)
+    if session:
+        session.spent += cost
+        session.balance = break_db.get_balance(qqid)
+    return True
+
+
 @asynccontextmanager
 async def break_billing(qqid: Optional[int]):
     """指令级扣费上下文：查分器/落雪成绩 API 成功后会在此 qq 上结算 BREAK。"""
@@ -2266,6 +2294,10 @@ def is_superuser_exempt(qqid: int) -> bool:
 
 def query_cost() -> int:
     return _config_int('query_cost', 1)
+
+
+def cache_query_cost() -> int:
+    return _config_int('cache_query_cost', 1)
 
 
 _ANALYSIS_PEAK_WINDOWS_UTC8 = (
@@ -2431,6 +2463,30 @@ def settle_prober_fetch(qqid: Optional[int]) -> None:
         return
     if not break_db.try_consume(qqid, cost, 'query', meta={'kind': 'prober_api'}):
         log.warning(f'[BREAK] qq={qqid} query consume failed after fetch')
+        return
+    break_db.record_usage(qqid, 'query', break_delta=-cost)
+    if session:
+        session.spent += cost
+        session.balance = break_db.get_balance(qqid)
+
+
+def settle_cache_hit(qqid: Optional[int]) -> None:
+    """本地缓存命中后结算：检查免费额度或扣 BREAK。"""
+    if not qqid or is_superuser_exempt(qqid):
+        return
+    session = _charge_session.get()
+    cost = cache_query_cost()
+    if cost <= 0:
+        return
+    if break_db.is_daily_free_available(qqid):
+        break_db.mark_daily_free_used(qqid)
+        break_db.record_usage(qqid, 'query', break_delta=0)
+        if session:
+            session.used_free = True
+            session.balance = break_db.get_balance(qqid)
+        return
+    if not break_db.try_consume(qqid, cost, 'query', meta={'kind': 'cache_hit'}):
+        log.warning(f'[BREAK] qq={qqid} cache hit consume failed')
         return
     break_db.record_usage(qqid, 'query', break_delta=-cost)
     if session:

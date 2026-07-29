@@ -241,6 +241,8 @@ async def _finish_score(
     username: Optional[str] = None,
     forced_source: Optional[str] = None,
     unsupported_feature: Optional[str] = None,
+    service_name: Optional[str] = None,
+    service_cost: int = 0,
 ):
     """统一成绩图收尾：计时执行 coro，成功追加「数据源 + 耗时」文案，错误原样发送。"""
     from ..libraries.maimaidx_timing import is_valid_image_result, run_timed
@@ -249,6 +251,9 @@ async def _finish_score(
     payer = billing_qqid
     if payer is None and billing_event is not None:
         payer = billing_user_id(billing_event)
+    if service_name and service_cost > 0 and payer:
+        from ..libraries.maimaidx_break import break_db
+        break_db.ensure_service_affordable(int(payer), service_name, service_cost)
     try:
         result, total = await run_timed(coro, billing_qqid=payer)
     except BreakInsufficientError as e:
@@ -259,6 +264,9 @@ async def _finish_score(
         clear_fetch_meta()
         await plugin_finish(matcher, str(e), event=billing_event)
         return
+    if service_name and service_cost > 0 and payer:
+        from ..libraries.maimaidx_break import break_db
+        break_db.settle_service_success(int(payer), service_name, service_cost)
     if isinstance(result, str):
         clear_fetch_meta()
         await plugin_finish(matcher, result, event=billing_event)
@@ -384,6 +392,10 @@ async def _coop_resolve_nicks_and_finish(event, at_qq, cmd, generator):
         await cmd.finish('请使用「合作b50@某人」或「合作ab50@某人」并@一位好友。', reply_message=True)
     if at_qq == event.user_id:
         await cmd.finish('请@除自己以外的另一位好友。', reply_message=True)
+    from ..libraries.maimaidx_break import break_db, charge_session_extra
+    cost = int(break_db.get_config('coop_b50_cost', '2'))
+    if cost > 0:
+        break_db.ensure_service_affordable(int(event.user_id), 'coop_b50', cost)
     nick_a = _display_name_from_sender(event.sender) or str(event.user_id)
     nick_b = nick_a
     if isinstance(event, GroupMessageEvent):
@@ -400,6 +412,8 @@ async def _coop_resolve_nicks_and_finish(event, at_qq, cmd, generator):
     else:
         nick_b = str(at_qq)
     from ..libraries.maimaidx_timing import finish_timed
+    if cost > 0:
+        charge_session_extra(int(event.user_id), cost, 'coop_b50')
     await finish_timed(cmd, generator(event.user_id, at_qq, nick_a, nick_b), billing_qqid=event.user_id)
 
 
@@ -1254,8 +1268,12 @@ async def _weekly_report(event: MessageEvent):
             reply_message=True,
         )
         return
+    from ..libraries.maimaidx_break import break_db
+    cost = int(break_db.get_config('weekly_report_cost', '1'))
     await _finish_score(weekly_report, generate_progress_report(qqid, 7), qqid,
         billing_qqid=event.user_id,
+        service_name='weekly_report' if cost > 0 else None,
+        service_cost=cost,
     )
 
 
@@ -1268,8 +1286,12 @@ async def _monthly_report(event: MessageEvent):
             reply_message=True,
         )
         return
+    from ..libraries.maimaidx_break import break_db
+    cost = int(break_db.get_config('monthly_report_cost', '2'))
     await _finish_score(monthly_report, generate_progress_report(qqid, 30), qqid,
         billing_qqid=event.user_id,
+        service_name='monthly_report' if cost > 0 else None,
+        service_cost=cost,
     )
 
 
@@ -1282,8 +1304,12 @@ async def _annual_report(event: MessageEvent):
             reply_message=True,
         )
         return
+    from ..libraries.maimaidx_break import break_db
+    cost = int(break_db.get_config('annual_report_cost', '3'))
     await _finish_score(annual_report, generate_progress_report(qqid, 365), qqid,
         billing_qqid=event.user_id,
+        service_name='annual_report' if cost > 0 else None,
+        service_cost=cost,
     )
 
 
@@ -1296,8 +1322,12 @@ async def _daily_report(event: MessageEvent):
             reply_message=True,
         )
         return
+    from ..libraries.maimaidx_break import break_db
+    cost = int(break_db.get_config('daily_report_cost', '0'))
     await _finish_score(daily_report, generate_daily_report(qqid), qqid,
         billing_qqid=event.user_id,
+        service_name='daily_report' if cost > 0 else None,
+        service_cost=cost,
     )
 
 

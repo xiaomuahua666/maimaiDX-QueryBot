@@ -40,7 +40,8 @@ assert [streak_bonus(day, curve, 1) for day in range(1, 9)] == [
     23,
 ]
 assert streak_bonus(100, curve, 1) == 115
-assert streak_bonus(6, curve, 0) == 21  # 增长至少为 1，不能重新形成上限
+assert streak_bonus(6, curve, 0) == 20  # growth=0 封顶在曲线末尾
+assert streak_bonus(100, curve, 0) == 20  # 无论多远都封顶
 
 assert {
     value: luck_break(value)
