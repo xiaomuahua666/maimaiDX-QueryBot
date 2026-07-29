@@ -102,21 +102,21 @@ LOTTERY_HELP = (
     '非空奖概率 65%，单抽期望返还 1.6 BREAK；最多 10 连抽，长期仍为净消耗。'
 )
 
-GAMBLE_ALL_HELP = (
-    '【倾家荡产】\n'
-    '梭哈你的全部 BREAK，一抽定生死！\n\n'
-    '用法：倾家荡产 [模式]\n'
-    '入场费（不退还）：\n'
-    '  · 标准（默认）— 2 BREAK\n'
-    '  · 刺激 — 3 BREAK\n'
-    '  · 高风险 — 5 BREAK\n\n'
-    '倍率表：\n'
-    '  标准：70% 谢谢参与 / 15% 返本 / 8% 2x / 4% 5x / 2% 10x / 0.8% 30x / 0.2% 50x\n'
-    '  刺激：78% 谢谢参与 / 10% 2x / 6% 5x / 4% 20x / 1.5% 50x / 0.5% 100x\n'
-    '  高风险：82% 谢谢参与 / 8% 5x / 6% 20x / 3% 50x / 1% 100x\n\n'
-    '例："倾家荡产" 或 "倾家荡产 刺激"\n'
-    'BREAK 是 Bot 内部积分，不具有现金价值。'
-)
+# GAMBLE_ALL_HELP = (
+#     '【倾家荡产】\n'
+#     '梭哈你的全部 BREAK，一抽定生死！\n\n'
+#     '用法：倾家荡产 [模式]\n'
+#     '入场费（不退还）：\n'
+#     '  · 标准（默认）— 2 BREAK\n'
+#     '  · 刺激 — 3 BREAK\n'
+#     '  · 高风险 — 5 BREAK\n\n'
+#     '倍率表：\n'
+#     '  标准：70% 谢谢参与 / 15% 返本 / 8% 2x / 4% 5x / 2% 10x / 0.8% 30x / 0.2% 50x\n'
+#     '  刺激：78% 谢谢参与 / 10% 2x / 6% 5x / 4% 20x / 1.5% 50x / 0.5% 100x\n'
+#     '  高风险：82% 谢谢参与 / 8% 5x / 6% 20x / 3% 50x / 1% 100x\n\n'
+#     '例："倾家荡产" 或 "倾家荡产 刺激"\n'
+#     'BREAK 是 Bot 内部积分，不具有现金价值。'
+# )
 
 def get_at_qq(message: MessageEvent) -> Optional[int]:
     for item in message.message:
@@ -140,7 +140,7 @@ async def _():
         '· 猜歌 — 每次猜对奖励 1 BREAK，无每日上限\n'
         '· 转账BREAK @用户 数量 — 转给其他用户\n'
         '· BREAK抽奖 [1-10] — 每次默认消耗 2 BREAK，发送"BREAK抽奖 帮助"看奖池\n'
-        '· 倾家荡产 [模式] — 梭哈全部 BREAK，发送"倾家荡产 帮助"看模式说明\n'
+        # '· 倾家荡产 [模式] — 梭哈全部 BREAK，发送"倾家荡产 帮助"看模式说明\n'
         '· 抽奖池 — 查看今日贡献榜和可领取福利\n'
         '· 领取福利 — 领取今日抽奖池福利（需当日有贡献）\n'
         '· 贡献总榜 — 查看历史贡献总榜（首富榜）\n'
@@ -156,7 +156,7 @@ async def _():
         '· 周四 +50%\n'
         '· 群内当日首签 +50%\n'
         '· 开启数据存储 +50%（发送「开启存储数据」；需保持开启跨天，频繁开关不重复发）\n'
-        '· 连续签到额外奖励'
+        '· 连续签到额外奖励（第 6 天起封顶）'
     )
     await awmc_help.finish(text, reply_message=True)
 
@@ -645,103 +645,103 @@ async def _(message: Message = CommandArg()):
     await awmc_admin_config.finish(f'已设置 {key} = {value}', reply_message=True)
 
 
-@break_gamble_all.handle()
-async def _(matcher: Matcher, event: MessageEvent, message: Message = CommandArg()):
-    await _require_break_agreement(break_gamble_all, event)
-
-    raw = message.extract_plain_text().strip()
-    if raw.lower() in {'帮助', '说明', 'help', '?'}:
-        await break_gamble_all.finish(GAMBLE_ALL_HELP, reply_message=True)
-
-    # 解析模式
-    mode = '标准'
-    if '刺激' in raw:
-        mode = '刺激'
-    elif '高风险' in raw:
-        mode = '高风险'
-
-    entry_cost = GAMBLE_ENTRY_COST[mode]
-
-    # 获取用户余额
-    qqid = int(billing_user_id(event))
-    balance = break_db.get_balance(qqid)
-    if balance < entry_cost:
-        await break_gamble_all.finish(
-            f'{mode}模式入场费 {entry_cost} BREAK，余额不足！\n'
-            f'当前余额：{balance} BREAK', reply_message=True)
-
-    # 二次确认
-    pending_key = session_key('break_gamble_all', event)
-    track_event(pending_key, event)
-    matcher.state['gamble_mode'] = mode
-    matcher.state['gamble_balance'] = balance
-
-    prompt = (
-        f'🎰 倾家荡产 - {mode}模式\n'
-        f'入场费：{entry_cost} BREAK\n'
-        f'当前余额：{balance} BREAK\n\n'
-        f'入场后梭哈剩余 {balance - entry_cost} BREAK\n'
-        f'确定要入场吗？\n'
-        f'发送"确认"开始，"取消"退出。'
-    )
-    await break_gamble_all.send(prompt, reply_message=True)
-
-
-@break_gamble_all.got('confirm')
-async def _(matcher: Matcher, event: MessageEvent):
-    pending_key = session_key('break_gamble_all', event)
-    raw = str(matcher.state['confirm']).strip()
-
-    if raw.lower() in {'取消', 'cancel', 'q', '退出', 'no', 'n'}:
-        finish_pending(pending_key)
-        await break_gamble_all.finish('已取消倾家荡产。', reply_message=True)
-
-    if raw.lower() not in {'确认', 'confirm', 'y', 'yes', '是', '冲', '梭哈'}:
-        finish_pending(pending_key)
-        await break_gamble_all.finish('已取消倾家荡产。', reply_message=True)
-
-    mode = matcher.state['gamble_mode']
-    qqid = int(billing_user_id(event))
-    entry_cost = GAMBLE_ENTRY_COST[mode]
-
-    # 扣入场费
-    break_db.try_consume(qqid, entry_cost, 'gamble_entry_fee')
-
-    try:
-        result = break_db.gamble_all(qqid, mode)
-    except Exception as exc:
-        finish_pending(pending_key)
-        await break_gamble_all.finish(f'抽奖失败：{exc}', reply_message=True)
-
-    finish_pending(pending_key)
-
-    # 构建结果文本
-    if result.multiplier == 0:
-        text = (
-            f'🎰 倾家荡产 - {result.mode}模式\n'
-            f'入场费：-{entry_cost} BREAK\n'
-            f'💫 谢谢参与！-{result.balance_before} BREAK\n'
-            f'当前余额：{result.balance_after} BREAK\n'
-            f'呜呜呜~下次再接再厉！'
-        )
-    else:
-        profit = result.win_amount - result.balance_before
-        text = (
-            f'🎰 倾家荡产 - {result.mode}模式\n'
-            f'入场费：-{entry_cost} BREAK\n'
-            f'🎉 恭喜！中了 {result.multiplier}x 倍率！\n'
-            f'赢得：{result.win_amount} BREAK（+{profit}）\n'
-            f'当前余额：{result.balance_after} BREAK'
-        )
-
-        # 大奖建议发红包
-        if profit >= 100:
-            text += (
-                '\n\n喵呜~！恭喜您中大奖啦！\n'
-                '要不要发个红包庆祝一下呢~'
-            )
-
-    await break_gamble_all.finish(text, reply_message=True)
+# @break_gamble_all.handle()
+# async def _(matcher: Matcher, event: MessageEvent, message: Message = CommandArg()):
+#     await _require_break_agreement(break_gamble_all, event)
+#
+#     raw = message.extract_plain_text().strip()
+#     if raw.lower() in {'帮助', '说明', 'help', '?'}:
+#         await break_gamble_all.finish(GAMBLE_ALL_HELP, reply_message=True)
+#
+#     # 解析模式
+#     mode = '标准'
+#     if '刺激' in raw:
+#         mode = '刺激'
+#     elif '高风险' in raw:
+#         mode = '高风险'
+#
+#     entry_cost = GAMBLE_ENTRY_COST[mode]
+#
+#     # 获取用户余额
+#     qqid = int(billing_user_id(event))
+#     balance = break_db.get_balance(qqid)
+#     if balance < entry_cost:
+#         await break_gamble_all.finish(
+#             f'{mode}模式入场费 {entry_cost} BREAK，余额不足！\n'
+#             f'当前余额：{balance} BREAK', reply_message=True)
+#
+#     # 二次确认
+#     pending_key = session_key('break_gamble_all', event)
+#     track_event(pending_key, event)
+#     matcher.state['gamble_mode'] = mode
+#     matcher.state['gamble_balance'] = balance
+#
+#     prompt = (
+#         f'🎰 倾家荡产 - {mode}模式\n'
+#         f'入场费：{entry_cost} BREAK\n'
+#         f'当前余额：{balance} BREAK\n\n'
+#         f'入场后梭哈剩余 {balance - entry_cost} BREAK\n'
+#         f'确定要入场吗？\n'
+#         f'发送"确认"开始，"取消"退出。'
+#     )
+#     await break_gamble_all.send(prompt, reply_message=True)
+#
+#
+# @break_gamble_all.got('confirm')
+# async def _(matcher: Matcher, event: MessageEvent):
+#     pending_key = session_key('break_gamble_all', event)
+#     raw = str(matcher.state['confirm']).strip()
+#
+#     if raw.lower() in {'取消', 'cancel', 'q', '退出', 'no', 'n'}:
+#         finish_pending(pending_key)
+#         await break_gamble_all.finish('已取消倾家荡产。', reply_message=True)
+#
+#     if raw.lower() not in {'确认', 'confirm', 'y', 'yes', '是', '冲', '梭哈'}:
+#         finish_pending(pending_key)
+#         await break_gamble_all.finish('已取消倾家荡产。', reply_message=True)
+#
+#     mode = matcher.state['gamble_mode']
+#     qqid = int(billing_user_id(event))
+#     entry_cost = GAMBLE_ENTRY_COST[mode]
+#
+#     # 扣入场费
+#     break_db.try_consume(qqid, entry_cost, 'gamble_entry_fee')
+#
+#     try:
+#         result = break_db.gamble_all(qqid, mode)
+#     except Exception as exc:
+#         finish_pending(pending_key)
+#         await break_gamble_all.finish(f'抽奖失败：{exc}', reply_message=True)
+#
+#     finish_pending(pending_key)
+#
+#     # 构建结果文本
+#     if result.multiplier == 0:
+#         text = (
+#             f'🎰 倾家荡产 - {result.mode}模式\n'
+#             f'入场费：-{entry_cost} BREAK\n'
+#             f'💫 谢谢参与！-{result.balance_before} BREAK\n'
+#             f'当前余额：{result.balance_after} BREAK\n'
+#             f'呜呜呜~下次再接再厉！'
+#         )
+#     else:
+#         profit = result.win_amount - result.balance_before
+#         text = (
+#             f'🎰 倾家荡产 - {result.mode}模式\n'
+#             f'入场费：-{entry_cost} BREAK\n'
+#             f'🎉 恭喜！中了 {result.multiplier}x 倍率！\n'
+#             f'赢得：{result.win_amount} BREAK（+{profit}）\n'
+#             f'当前余额：{result.balance_after} BREAK'
+#         )
+#
+#         # 大奖建议发红包
+#         if profit >= 100:
+#             text += (
+#                 '\n\n喵呜~！恭喜您中大奖啦！\n'
+#                 '要不要发个红包庆祝一下呢~'
+#             )
+#
+#     await break_gamble_all.finish(text, reply_message=True)
 #
 #
 @break_gamble_pool.handle()
@@ -753,8 +753,8 @@ async def _(event: MessageEvent):
         await break_gamble_pool.finish(
             '🎰 今日抽奖池\n'
             '━━━━━━━━━━━━━━\n'
-            '还没有人倾家荡产呢~\n'
-            '发送"*倾家荡产"来贡献吧！',
+            '还没有人贡献呢~\n'
+            '参与 BREAK 抽奖即可贡献！',
             reply_message=True,
         )
         return
@@ -814,7 +814,7 @@ async def _(event: MessageEvent):
             '🏆 贡献总榜（首富榜）\n'
             '━━━━━━━━━━━━━━\n'
             '还没有人贡献过呢~\n'
-            '发送"倾家荡产"来贡献吧！',
+            '参与 BREAK 抽奖即可贡献！',
             reply_message=True,
         )
         return
@@ -836,7 +836,7 @@ async def _(event: MessageEvent):
         '',
         '感谢他们为 AWMC 做出的贡献~',
         '',
-        '💡 发送"倾家荡产"来贡献吧！',
+        '💡 发送"BREAK抽奖"来贡献吧！',
     ])
 
     await break_gamble_leaderboard.finish('\n'.join(lines), reply_message=True)
