@@ -142,6 +142,7 @@ class DuelRound:
     right: ChartRef
     answer: int  # 1=左胜, 2=右胜
     round_no: int
+    total_rounds: int = 5
 
 
 @dataclass
@@ -191,7 +192,7 @@ def _build_chart_ref(music: Music, level_index: int) -> Optional[ChartRef]:
     if not (0 <= level_index < len(music.charts)):
         return None
     chart = music.charts[level_index]
-    if chart is None:
+    if chart is None or chart.notes is None:
         return None
     notes = chart.notes
     tap = int(getattr(notes, 'tap', 0) or 0)
@@ -419,6 +420,9 @@ def build_duel_rounds(
             break
         round_obj.round_no = len(rounds) + 1
         rounds.append(round_obj)
+    total = len(rounds)
+    for rd in rounds:
+        rd.total_rounds = total
     return rounds
 
 

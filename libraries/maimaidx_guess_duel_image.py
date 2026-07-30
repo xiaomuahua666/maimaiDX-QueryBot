@@ -169,7 +169,7 @@ def render_duel_board(
     if reveal:
         title = f'舞萌极限二选一 · 第 {round_obj.round_no} 轮答案揭晓'
     subtitle = (
-        f'第 {round_obj.round_no}/{len(round_obj.rounds or [round_obj])} 轮 · {round_obj.prompt}'
+        f'第 {round_obj.round_no}/{round_obj.total_rounds} 轮 · {round_obj.prompt}'
     )
     _header(im, dt, title=title, subtitle=subtitle, width=width)
 
