@@ -83,51 +83,51 @@ db._conn.executescript(
 
 now = time.time()
 db._conn.execute(
-    "INSERT INTO break_users (qqid, balance, created_at, updated_at) VALUES (1, 10, ?, ?)",
+    "INSERT INTO break_users (qqid, balance, created_at, updated_at) VALUES (1, 20, ?, ?)",
     (now, now),
 )
 db._conn.commit()
-assert db.try_reserve_analysis(1, 6)
-assert db.get_balance(1) == 4
+assert db.try_reserve_analysis(1, 10)
+assert db.get_balance(1) == 10
 daily = db._conn.execute("SELECT * FROM break_daily_usage WHERE qqid=1").fetchone()
 assert daily["break_spent"] == 0
 
-balance = db.settle_analysis_reservation(1, 12, 6, meta={"pricing": "test"})
-assert balance == -2
+balance = db.settle_analysis_reservation(1, 40, 10, meta={"pricing": "test"})
+assert balance == -20
 user = db._conn.execute("SELECT * FROM break_users WHERE qqid=1").fetchone()
 daily = db._conn.execute("SELECT * FROM break_daily_usage WHERE qqid=1").fetchone()
 assert user["total_analysis_count"] == 1
 assert daily["analysis_count"] == 1
-assert daily["break_spent"] == 12
+assert daily["break_spent"] == 40
 
 db._conn.execute(
-    "INSERT INTO break_users (qqid, balance, created_at, updated_at) VALUES (2, 8, ?, ?)",
+    "INSERT INTO break_users (qqid, balance, created_at, updated_at) VALUES (2, 18, ?, ?)",
     (now, now),
 )
 db._conn.commit()
-assert db.try_reserve_analysis(2, 6)
-assert db.refund_analysis_reservation(2, 6, meta={"reason": "test"}) == 8
+assert db.try_reserve_analysis(2, 10)
+assert db.refund_analysis_reservation(2, 10, meta={"reason": "test"}) == 18
 daily = db._conn.execute("SELECT * FROM break_daily_usage WHERE qqid=2").fetchone()
 assert daily["analysis_count"] == 0
 assert daily["break_spent"] == 0
 assert daily["break_gained"] == 0
 
 db._conn.execute(
-    "INSERT INTO break_users (qqid, balance, created_at, updated_at) VALUES (3, 5, ?, ?)",
+    "INSERT INTO break_users (qqid, balance, created_at, updated_at) VALUES (3, 9, ?, ?)",
     (now, now),
 )
 db._conn.commit()
-assert not db.try_reserve_analysis(3, 6)
-assert db.get_balance(3) == 5
+assert not db.try_reserve_analysis(3, 10)
+assert db.get_balance(3) == 9
 
 logs = db._conn.execute(
     "SELECT delta, reason FROM break_log ORDER BY id"
 ).fetchall()
 assert [(row["delta"], row["reason"]) for row in logs] == [
-    (-6, "b50_analysis_precharge"),
-    (-6, "b50_analysis_settlement"),
-    (-6, "b50_analysis_precharge"),
-    (6, "b50_analysis_refund"),
+    (-10, "b50_analysis_precharge"),
+    (-30, "b50_analysis_settlement"),
+    (-10, "b50_analysis_precharge"),
+    (10, "b50_analysis_refund"),
 ]
 
 print("analysis reservation tests: ok")
