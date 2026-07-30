@@ -72,6 +72,14 @@ from ..libraries.maimaidx_guess_impostor import (
     format_impostor_rewards,
     impostor_guess,
 )
+from ..libraries.maimaidx_guess_duel import (
+    DUEL_ROUND_DURATION,
+    DUEL_ROUNDS,
+    DUEL_ROUND_SCORES,
+    build_duel_rounds,
+    duel_guess,
+)
+from ..libraries.maimaidx_guess_duel_image import duel_image_segment
 from ..libraries.maimaidx_music_info import *
 from ..libraries.maimaidx_platform import (
     GroupId,
@@ -122,6 +130,11 @@ def is_now_playing_guess_rating(event) -> bool:
 def is_now_playing_guess_impostor(event) -> bool:
     gid = get_event_group_id(event)
     return gid is not None and impostor_guess.is_busy(gid)
+
+
+def is_now_playing_guess_duel(event) -> bool:
+    gid = get_event_group_id(event)
+    return gid is not None and duel_guess.is_busy(gid)
 
 
 guess_music_start   = on_command('猜歌', rule=GROUP_MESSAGE)
@@ -215,6 +228,29 @@ guess_impostor_reset = on_command(
     priority=4, block=True, rule=GROUP_MESSAGE,
 )
 
+# ── 舞萌极限二选一 ──
+guess_duel_start = on_regex(
+    r'^\s*(?:舞萌极限二选一|极限二选一|二选一)\s*$',
+    rule=GROUP_MESSAGE,
+    priority=5,
+    block=True,
+)
+guess_duel_join = on_regex(
+    r'^\s*(?:加入|参赛)\s*$',
+    rule=GROUP_MESSAGE,
+    priority=6,
+    block=True,
+)
+guess_duel_solve = on_message(
+    rule=GROUP_MESSAGE & Rule(is_now_playing_guess_duel),
+    priority=10,
+    block=False,
+)
+guess_duel_reset = on_command(
+    '重置二选一', aliases={'重置舞萌极限二选一'},
+    priority=4, block=True, rule=GROUP_MESSAGE,
+)
+
 # 猜歌玩法不参与高峰期「额外 1 BREAK」附加费（含局内答题 on_message）。
 for _guess_matcher in (
     guess_music_start,
@@ -250,6 +286,10 @@ for _guess_matcher in (
     guess_impostor_start,
     guess_impostor_solve,
     guess_impostor_reset,
+    guess_duel_start,
+    guess_duel_join,
+    guess_duel_solve,
+    guess_duel_reset,
 ):
     setattr(_guess_matcher, '_maimaidx_busy_surcharge_exempt', True)
 
@@ -356,7 +396,7 @@ async def _award_guess_points(
     return settlement
 
 
-_GUESS_BUSY_HINT = '该群已有正在进行的猜歌、猜曲绘、猜曲子、猜铺面、猜Rating、B50找内鬼或开字母'
+_GUESS_BUSY_HINT = '该群已有正在进行的猜歌、猜曲绘、猜曲子、猜铺面、猜Rating、B50找内鬼、舞萌极限二选一或开字母'
 _GUESS_SEND_FAIL_MSG = '游戏数据获取失败，本游戏已结束。'
 GUESS_SEND_TIMEOUT_TEXT = 15
 GUESS_SEND_TIMEOUT_MEDIA = 60
@@ -379,11 +419,16 @@ def _rating_or_impostor_busy(gid: GroupId) -> bool:
     return rating_guess.is_busy(gid) or impostor_guess.is_busy(gid)
 
 
+def _duel_busy(gid: GroupId) -> bool:
+    return duel_guess.is_busy(gid)
+
+
 def _guess_or_letter_busy(gid: GroupId) -> bool:
     return (
         guess.is_busy(gid)
         or _letter_busy(gid)
         or _rating_or_impostor_busy(gid)
+        or _duel_busy(gid)
     )
 
 
@@ -2157,6 +2202,330 @@ async def _(event: MessageEvent):
         )
     impostor_guess.end(gid)
     await guess_impostor_reset.finish('B50找内鬼已重置。', reply_message=True)
+
+
+# ─────────────────────── 舞萌极限二选一 ───────────────────────
+
+
+def _duel_choice_from_text(text: str) -> Optional[int]:
+    s = text.strip()
+    if s in {'左', 'l', 'L', '1'}:
+        return 1
+    if s in {'右', 'r', 'R', '2'}:
+        return 2
+    return None
+
+
+def _format_duel_round_summary(round_obj) -> str:
+    return (
+        f'📊 第 {round_obj.round_no} 轮 · {round_obj.prompt}\n'
+        f'左：{round_obj.left.title} [{round_obj.left.level}] · '
+        f'右：{round_obj.right.title} [{round_obj.right.level}]'
+    )
+
+
+async def _duel_intro_text() -> str:
+    return dedent(f'''\
+        ⚔️ 舞萌极限二选一开始！
+        每轮展示两张谱面和一个唯一答案问题，发送 左/右 即可作答。
+        答错或超时即淘汰，坚持到最后者获胜。
+        规则要点：
+        · 5 轮累计积分：{"/".join(str(s) for s in DUEL_ROUND_SCORES)} = {sum(DUEL_ROUND_SCORES)} 分
+        · 全通关前三额外 BREAK 奖励：2 / 1 / 0
+        · 首轮开始后中途参赛需发送「加入」，第二轮后禁止加入
+        · 作答不可修改；每轮仅可答一次
+        正在为你预渲染本局题目…
+    ''')
+
+
+@guess_duel_start.handle()
+async def _(event: MessageEvent):
+    await _gate_guess_group_entry(guess_duel_start, event)
+    gid = get_event_group_id(event)
+    if gid is None:
+        await guess_duel_start.finish('请在群内使用。', reply_message=True)
+    if gid not in guess.switch.enable:
+        await guess_duel_start.finish(
+            '该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True,
+        )
+    if _guess_or_letter_busy(gid):
+        await guess_duel_start.finish(_GUESS_BUSY_HINT, reply_message=True)
+
+    if not duel_guess.lock(gid):
+        await guess_duel_start.finish(_GUESS_BUSY_HINT, reply_message=True)
+
+    try:
+        rounds = await asyncio.to_thread(build_duel_rounds)
+    except Exception as e:
+        duel_guess.unlock(gid)
+        log.warning(f'[Duel] 出题异常 gid={gid}: {type(e).__name__}: {e}')
+        await guess_duel_start.finish(
+            '出题失败，本局未开始。', reply_message=True,
+        )
+    if not rounds or len(rounds) < DUEL_ROUNDS:
+        duel_guess.unlock(gid)
+        await guess_duel_start.finish(
+            '出题失败：可用谱面不足，请稍后再试。', reply_message=True,
+        )
+
+    data = duel_guess.start(
+        gid,
+        rounds=rounds,
+        duration=DUEL_ROUND_DURATION,
+    )
+
+    try:
+        await _guess_notify(
+            guess_duel_start, event, await _duel_intro_text(), reply=True,
+        )
+        for r in rounds:
+            seg = await asyncio.to_thread(duel_image_segment, r, reveal=False)
+            await _safe_matcher_send(
+                guess_duel_start, event, seg, gid, media=True, fatal=True,
+            )
+    except Exception as e:
+        log.warning(f'[Duel] 预渲染/发送失败 gid={gid}: {type(e).__name__}: {e}')
+        duel_guess.end(gid)
+        await guess_duel_start.finish(
+            '题目图片生成失败，本局已结束。', reply_message=True,
+        )
+
+    bot = resolve_event_bot(event)
+    try:
+        first_round = data.rounds[0]
+        data.current_round = 1
+        data.start_round_at = time.time()
+        # 提示本轮时间限制
+        await _guess_notify(
+            guess_duel_start, event,
+            f'⏱ 第 1/{len(data.rounds)} 轮已开始！'
+            f'{first_round.prompt}\n'
+            f'请在 {DUEL_ROUND_DURATION} 秒内发送「左」或「右」。',
+        )
+
+        for r_idx in range(1, len(data.rounds) + 1):
+            remaining = data.round_durations
+            while remaining > 0:
+                current = duel_guess.get(gid)
+                if current is None or current.end:
+                    return
+                await asyncio.sleep(1)
+                remaining -= 1
+                if remaining in (10, 5) and remaining > 0:
+                    await _guess_notify(
+                        guess_duel_start, event,
+                        f'⏳ 第 {r_idx} 轮还剩 {remaining} 秒',
+                    )
+
+            current = duel_guess.get(gid)
+            if current is None or current.end:
+                return
+            # 结算本轮
+            eliminated, survivors, all_clear = duel_guess.settle_round(gid)
+            round_obj = data.rounds[r_idx - 1]
+            correct_side = '左' if round_obj.answer == 1 else '右'
+            head = f'🏁 第 {r_idx} 轮结束！正确答案是「{correct_side}」'
+            lines = [head]
+            if survivors:
+                lines.append(
+                    f'✅ 晋级 {len(survivors)} 人（累计 {sum(DUEL_ROUND_SCORES[:r_idx])} 分）'
+                )
+            if eliminated:
+                lines.append(
+                    f'❌ 出局 {len(eliminated)} 人'
+                    f'（保留前 {r_idx - 1} 轮积分）'
+                )
+            try:
+                reveal_seg = await asyncio.to_thread(
+                    duel_image_segment, round_obj, reveal=True,
+                )
+                await _safe_matcher_send(
+                    guess_duel_start, event,
+                    MessageSegment.text('\n'.join(lines) + '\n') + reveal_seg,
+                    gid, media=True, fatal=False,
+                )
+            except Exception as e:
+                log.warning(f'[Duel] 揭晓图生成失败 gid={gid}: {e}')
+                await _safe_matcher_send(
+                    guess_duel_start, event, '\n'.join(lines), gid, fatal=False,
+                )
+
+            # 第二轮起锁定中途参赛
+            if r_idx == 1:
+                duel_guess.lock_after_first_round(gid)
+
+            if r_idx >= len(data.rounds) or not survivors:
+                break
+
+            # 进入下一轮
+            data.current_round = r_idx + 1
+            data.start_round_at = time.time()
+            next_round = data.rounds[r_idx]
+            await _guess_notify(
+                guess_duel_start, event,
+                f'⏱ 第 {r_idx + 1}/{len(data.rounds)} 轮开始！\n'
+                f'{next_round.prompt}\n'
+                f'请在 {DUEL_ROUND_DURATION} 秒内发送「左」或「右」。',
+            )
+
+        # 最终结算
+        settlement = duel_guess.settle_final(gid)
+        if settlement is None:
+            return
+
+        from ..libraries.maimaidx_break import break_db
+
+        survivors_uids = set(settlement.survivors)
+        for p in data.participants.values():
+            if p.final_score <= 0:
+                continue
+            added = p.final_score
+            await guess_score.award_fixed_points(
+                gid,
+                p.uid,
+                p.name,
+                added,
+                mode=guess_score.MODE_DUEL,
+            )
+            if p.uid in survivors_uids and p.finish_rank >= 1:
+                bp = 0
+                if p.finish_rank == 1:
+                    bp = 2
+                elif p.finish_rank == 2:
+                    bp = 1
+                if bp > 0:
+                    break_db.add_balance(
+                        p.billing_id,
+                        bp,
+                        'duel_all_clear_bonus',
+                        meta={
+                            'group_id': str(gid),
+                            'rank': p.finish_rank,
+                            'rounds': len(data.rounds),
+                        },
+                    )
+
+        # 结算文案
+        result_lines = [
+            '🎉 舞萌极限二选一结束！',
+            f'参与人数 {len(data.participants)}；'
+            f'晋级到最后 {len(settlement.survivors)} 人；'
+            f'中途淘汰 {settlement.eliminated_count} 人',
+            '',
+        ]
+        # 全部通关排名
+        if settlement.rewards:
+            result_lines.append('🏆 全通关排名：')
+            for uid, name, rank, score, bp in settlement.rewards:
+                medal = {1: '🥇', 2: '🥈', 3: '🥉'}.get(rank, '▫️')
+                bp_part = f' +{bp}BREAK' if bp else ''
+                result_lines.append(
+                    f'{medal} #{rank} {name}  +{score}分{bp_part}'
+                )
+        else:
+            result_lines.append('本局无人全通关 😶')
+
+        # 中途淘汰者积分
+        eliminated_lines: List[str] = []
+        for p in sorted(
+            (p for p in data.participants.values() if p.eliminated_round),
+            key=lambda p: (-p.final_score, p.eliminated_round),
+        ):
+            eliminated_lines.append(
+                f'· {p.name}：通过 {p.eliminated_round - 1} 轮，'
+                f'保留 {p.final_score} 分'
+            )
+        if eliminated_lines:
+            result_lines.append('')
+            result_lines.append('🛡 参与奖：')
+            result_lines.extend(eliminated_lines[:8])
+            if len(eliminated_lines) > 8:
+                result_lines.append(f'… 及其他 {len(eliminated_lines) - 8} 人')
+
+        await _safe_matcher_send(
+            guess_duel_start, event,
+            '\n'.join(result_lines), gid, fatal=False,
+        )
+    finally:
+        duel_guess.end(gid)
+    await guess_duel_start.finish()
+
+
+@guess_duel_join.handle()
+async def _(event: MessageEvent):
+    gid = get_event_group_id(event)
+    if gid is None:
+        return
+    if not duel_guess.is_busy(gid):
+        return
+    uid = platform_user_id(event)
+    ok, msg = duel_guess.join(
+        gid, uid,
+        get_sender_display_name(event),
+        billing_user_id(event),
+    )
+    if ok:
+        data = duel_guess.get(gid)
+        count = len(data.participants) if data else 0
+        await _guess_notify(
+            guess_duel_join, event,
+            f'✅ 已加入本局（共 {count} 人）。本轮结束前均可加入。',
+        )
+    elif msg:
+        await _guess_notify(
+            guess_duel_join, event, msg,
+        )
+
+
+@guess_duel_solve.handle()
+async def _(event: MessageEvent):
+    gid = get_event_group_id(event)
+    if gid is None:
+        return
+    data = duel_guess.get(gid)
+    if data is None or data.end or data.current_round == 0:
+        return
+    text = event.get_plaintext().strip()
+    choice = _duel_choice_from_text(text)
+    if choice is None:
+        return
+
+    uid_key = platform_user_id(event)
+    rate_limit_msg = consume_guess_answer_slot(uid_key)
+    if rate_limit_msg:
+        await guess_duel_solve.finish(
+            adapt_guess_outbound(rate_limit_msg, event=event),
+            reply_message=resolve_reply_message(event, reply_message=True),
+        )
+
+    accepted, msg, _ = duel_guess.submit(
+        gid, uid_key, choice,
+        name=get_sender_display_name(event),
+        billing_id=billing_user_id(event),
+    )
+    if accepted:
+        bot = resolve_event_bot(event)
+        reacted = await react_processing(bot, event, emoji_id=REACT_EMOJI_CHECK)
+        if not reacted:
+            label = '左' if choice == 1 else '右'
+            await _guess_notify(
+                guess_duel_solve, event, f'✅ 已选择「{label}」',
+            )
+    elif msg:
+        await _guess_notify(guess_duel_solve, event, msg)
+
+
+@guess_duel_reset.handle()
+async def _(event: MessageEvent):
+    gid = get_event_group_id(event)
+    if gid is None:
+        return
+    if not duel_guess.is_busy(gid):
+        await guess_duel_reset.finish(
+            '当前没有进行中的舞萌极限二选一。', reply_message=True,
+        )
+    duel_guess.end(gid)
+    await guess_duel_reset.finish('舞萌极限二选一已重置。', reply_message=True)
 
 
 from ..libraries import maimaidx_guess_scheduler  # noqa: F401
