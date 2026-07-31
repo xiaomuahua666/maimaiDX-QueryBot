@@ -256,8 +256,11 @@ async def _send_song_info_then_pmyx_forward(
         pic = await draw_music_info(music, event.user_id)
         return (Message(prefix) + pic) if prefix else pic
 
-    msg, total = await run_timed(_gen())
-    await matcher.send(attach_timing(msg, total), reply_message=reply)
+    msg, total = await run_timed(_gen(), billing_qqid=event.user_id)
+    from ..libraries.maimaidx_break import take_break_charge_footer
+    charge = take_break_charge_footer()
+    charge_extra = '\n'.join(charge) if charge else ''
+    await matcher.send(attach_timing(msg, total, extra=charge_extra), reply_message=reply)
     nickname = _bot_nickname(bot)
     all_nodes = []
     # 并发拉取三个数据源
