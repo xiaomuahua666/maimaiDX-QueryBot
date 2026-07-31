@@ -2206,6 +2206,9 @@ async def _(event: MessageEvent):
 
 # ─────────────────────── 舞萌极限二选一 ───────────────────────
 
+# 暂时禁用开局；设为 True 可重新开放。重置指令仍可用以清理残留对局。
+DUEL_TEMPORARILY_DISABLED = True
+
 
 def _duel_choice_from_text(text: str) -> Optional[int]:
     s = text.strip()
@@ -2241,6 +2244,10 @@ async def _duel_intro_text() -> str:
 @guess_duel_start.handle()
 async def _(event: MessageEvent):
     await _gate_guess_group_entry(guess_duel_start, event)
+    if DUEL_TEMPORARILY_DISABLED:
+        await guess_duel_start.finish(
+            '舞萌极限二选一玩法暂时关闭，请稍后再试。', reply_message=True,
+        )
     gid = get_event_group_id(event)
     if gid is None:
         await guess_duel_start.finish('请在群内使用。', reply_message=True)
