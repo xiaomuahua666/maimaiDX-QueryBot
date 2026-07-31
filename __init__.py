@@ -65,6 +65,17 @@ async def get_music():
             '可能导致「定数表」「完成表」指令无法使用，'
             '请及时私聊BOT使用指令「更新定数表」进行生成。'
         )
+    else:
+        from .libraries.maimaidx_update_plate import stale_rating_table_names
+
+        stale_tables = stale_rating_table_names()
+        if stale_tables:
+            preview = '、'.join(stale_tables[:8])
+            suffix = f' 等 {len(stale_tables)} 张' if len(stale_tables) > 8 else ''
+            log.opt(colors=True).warning(
+                f'<y>检测到定数表底图缺失或已过期：</y>{preview}{suffix}。'
+                '请及时私聊BOT使用指令「更新定数表」重新生成。'
+            )
     if not plate_tabledir.exists() or not list(plate_tabledir.iterdir()):
         log.opt(colors=True).warning(
             '<y>注意！注意！</y>检测到完成表文件夹为空！'

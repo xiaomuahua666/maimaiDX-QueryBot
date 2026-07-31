@@ -21,12 +21,92 @@ from ..config import (
 )
 from .image import DrawText, draw_centered_design_footer, generate_frosted_card, music_picture
 from .maimaidx_music import Music, mai
-from .maimaidx_table_image import TableImageAssets
+from .maimaidx_table_image import RatingGridConfig, TableImageAssets
 from .maimaidx_theme import pic
 
 
 _PLATE_MANIFEST_VERSION = 1
 _PLATE_MANIFEST_PATH = plate_tabledir / '.manifest.json'
+_RATING_MANIFEST_VERSION = 1
+_RATING_MANIFEST_PATH = rating_table_dir / '.manifest.json'
+
+
+def _rating_table_signature(rating: str) -> Optional[str]:
+    """Return a signature for every field that affects a rating-table layout."""
+    level_data = mai.total_level_data.get(rating)
+    if level_data is None:
+        return None
+
+    groups = []
+    for ds, songs in level_data.items():
+        groups.append(
+            (
+                str(ds),
+                [
+                    (
+                        int(song.id),
+                        int(song.lv),
+                        float(song.ds),
+                        str(song.type),
+                    )
+                    for song in songs
+                ],
+            )
+        )
+    payload = json.dumps(
+        {
+            'version': _RATING_MANIFEST_VERSION,
+            'rating': rating,
+            'layout': {
+                'start_x': RatingGridConfig.start_x,
+                'start_y': RatingGridConfig.start_y,
+                'gap': RatingGridConfig.gap,
+                'row_count': RatingGridConfig.row_count,
+            },
+            'groups': groups,
+        },
+        ensure_ascii=False,
+        separators=(',', ':'),
+    )
+    return hashlib.sha256(payload.encode('utf-8')).hexdigest()
+
+
+def _load_rating_manifest() -> dict:
+    try:
+        data = json.loads(_RATING_MANIFEST_PATH.read_text(encoding='utf-8'))
+        if data.get('version') == _RATING_MANIFEST_VERSION and isinstance(data.get('tables'), dict):
+            return data
+    except (OSError, ValueError, TypeError):
+        pass
+    return {'version': _RATING_MANIFEST_VERSION, 'tables': {}}
+
+
+def _record_rating_table_signature(rating: str) -> None:
+    signature = _rating_table_signature(rating)
+    if signature is None:
+        return
+    manifest = _load_rating_manifest()
+    manifest['tables'][rating] = signature
+    _RATING_MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = _RATING_MANIFEST_PATH.with_suffix('.json.tmp')
+    temp_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + '\n',
+        encoding='utf-8',
+    )
+    temp_path.replace(_RATING_MANIFEST_PATH)
+
+
+def rating_table_is_current(rating: str) -> bool:
+    signature = _rating_table_signature(rating)
+    image_path = rating_table_dir / f'{rating}.png'
+    if not image_path.exists() or signature is None:
+        return False
+    return _load_rating_manifest()['tables'].get(rating) == signature
+
+
+def stale_rating_table_names() -> List[str]:
+    """List rating backgrounds that are missing or no longer match live data."""
+    return [rating for rating in levelList[6:] if not rating_table_is_current(rating)]
 
 
 def _plate_table_signature(plate_key: str, *, is_wu: bool = False) -> Optional[str]:
@@ -178,6 +258,7 @@ class UpdateTable:
                 fot.draw(x + 175, y + 280, 30, 'UNKNOWN', assets.font_color, 'mm', 8, (255, 255, 255, 255))
 
         await self._save_image(im, rating_table_dir / '15.png')
+        _record_rating_table_signature('15')
         log.info(f'lv.15 定数表更新完成，耗时：{time.time() - draw_time:.3f}s')
 
     async def update_rating_table(self) -> str:
@@ -189,8 +270,6 @@ class UpdateTable:
             lvlist = mai.total_level_data[lv]
             grid_step = 85
             start_x = 140
-            from .maimaidx_table_image import RatingGridConfig
-
             current_y = RatingGridConfig.start_y
             for songs in lvlist.values():
                 current_y = RatingGridConfig.advance_group_y(current_y, len(songs))
@@ -231,6 +310,7 @@ class UpdateTable:
                 start_y = RatingGridConfig.advance_group_y(start_y, len(songs))
 
             await self._save_image(im, rating_table_dir / f'{lv}.png')
+            _record_rating_table_signature(lv)
             elapsed = round(time.time() - single_time, 3)
             all_time += elapsed
             log.info(f'lv.{lv} 定数表更新完成，耗时：{elapsed}s')

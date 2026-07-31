@@ -710,6 +710,13 @@ async def draw_rating_table(qqid: int, rating: str, isfc: bool = False) -> Union
     from .maimaidx_table_image import RatingGridConfig, TableImageAssets, rating_table_path
 
     try:
+        from .maimaidx_update_plate import rating_table_is_current
+
+        if not rating_table_is_current(rating):
+            return (
+                f'Level {rating} 完成表底图缺失或已过期。\n'
+                '请联系管理员私聊机器人执行「更新定数表」后再试。'
+            )
         TableImageAssets.ensure_loaded()
         assets = TableImageAssets
         version = list(set(_v for _v in plate_to_dx_version.values()))

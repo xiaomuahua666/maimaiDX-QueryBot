@@ -51,6 +51,14 @@ async def _(match = RegexMatched()):
         await rating_table.finish('只支持查询lv7-15的定数表', reply_message=True)
     elif args in levelList[6:]:
         from ..libraries.maimaidx_table_image import rating_table_path
+        from ..libraries.maimaidx_update_plate import rating_table_is_current
+
+        if not rating_table_is_current(args):
+            await rating_table.finish(
+                f'Level {args} 定数表底图缺失或已过期。\n'
+                '请联系管理员私聊机器人执行「更新定数表」后再试。',
+                reply_message=True,
+            )
         path = rating_table_path(args)
         pic, total = run_timed_call(draw_rating, args, path)
         await rating_table.finish(attach_timing(pic, total), reply_message=True)
