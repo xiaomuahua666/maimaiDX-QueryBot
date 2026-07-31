@@ -58,15 +58,15 @@ def is_empty_b50(userinfo: UserInfo) -> bool:
 
 
 def is_masked_b50(userinfo: UserInfo) -> bool:
-    """水鱼掩码成绩通常为 0.5 的整数倍（如 100.5000、101.0000）。"""
+    """水鱼掩码成绩放大 10000 后末位是 0（如 100.4950→1004950 末位 0、100.0000→1000000 末位 0、99.5000→995000 末位 0）。"""
     achs = _chart_achievements(userinfo)
     if not achs:
         return False
 
-    def _is_half_step(x: float) -> bool:
-        return abs(x * 2 - round(x * 2)) < 1e-4
+    def _last_digit_is_zero(x: float) -> bool:
+        return int(round(x * 10000)) % 10 == 0
 
-    return all(_is_half_step(a) for a in achs)
+    return all(_last_digit_is_zero(a) for a in achs)
 
 
 def compute_b50_warning_text(userinfo: UserInfo, source: str) -> str:
