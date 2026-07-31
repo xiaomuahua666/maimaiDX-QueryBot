@@ -96,14 +96,35 @@ def is_valid_image_result(result) -> bool:
     return True
 
 
-async def run_timed(coro: Awaitable[T], *, billing_qqid: Optional[int] = None) -> tuple[T, float]:
-    """reset 后执行协程并返回 (结果, 总秒数)。billing_qqid 开启查分 BREAK 扣费上下文。"""
+async def run_timed(
+    coro: Awaitable[T],
+    *,
+    billing_qqid: Optional[int] = None,
+    feature_charge: Optional[str] = None,
+) -> tuple[T, float]:
+    """reset 后执行协程并返回 (结果, 总秒数)。billing_qqid 开启查分 BREAK 扣费上下文。
+
+    feature_charge: 成功后若会话尚未扣费，则按该业务名结算 query_cost（如 'search'）。
+    """
     reset()
     t0 = time.perf_counter()
     if billing_qqid is not None:
-        from .maimaidx_break import break_billing
+        from .maimaidx_break import (
+            break_billing,
+            ensure_query_affordable,
+            settle_feature_if_uncharged,
+        )
+        if feature_charge:
+            ensure_query_affordable(billing_qqid)
         async with break_billing(billing_qqid):
             result = await coro
+            # 仅成功出图扣功能费；纯文本错误提示不扣
+            if (
+                feature_charge
+                and not isinstance(result, str)
+                and is_valid_image_result(result)
+            ):
+                settle_feature_if_uncharged(billing_qqid, feature_charge)
     else:
         result = await coro
     return result, time.perf_counter() - t0
@@ -141,6 +162,7 @@ async def finish_timed(
     extra: str = '',
     reply_message: bool = True,
     billing_qqid: Optional[int] = None,
+    feature_charge: Optional[str] = None,
     event=None,
 ) -> None:
     """计时执行生成协程，成功时追加 ⏱️ 耗时后 finish。"""
@@ -151,7 +173,9 @@ async def finish_timed(
 
     reply = resolve_reply_message(event, reply_message=reply_message)
     try:
-        result, total = await run_timed(coro, billing_qqid=billing_qqid)
+        result, total = await run_timed(
+            coro, billing_qqid=billing_qqid, feature_charge=feature_charge
+        )
     except BreakInsufficientError as e:
         clear_fetch_meta()
         await plugin_finish(matcher, str(e), event=event, reply_message=reply_message)

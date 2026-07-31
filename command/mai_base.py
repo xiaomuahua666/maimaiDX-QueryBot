@@ -135,7 +135,9 @@ async def _(event: MessageEvent, match = RegexMatched()):
                 pass
         return await draw_music_info(music, event.user_id, user)
 
-    await finish_timed(mai_what, _gen(), billing_qqid=event.user_id, event=event)
+    await finish_timed(
+        mai_what, _gen(), billing_qqid=event.user_id, feature_charge='search', event=event
+    )
 
 
 @random_song.handle()
@@ -163,7 +165,13 @@ async def _(event: MessageEvent, match = RegexMatched()):
         await random_song.finish('随机命令错误，请检查语法', reply_message=True)
     if len(music_data) == 0:
         await random_song.finish('没有这样的乐曲哦。', reply_message=True)
-    await finish_timed(random_song, draw_music_info(music_data.random()), billing_qqid=event.user_id, event=event)
+    await finish_timed(
+        random_song,
+        draw_music_info(music_data.random()),
+        billing_qqid=event.user_id,
+        feature_charge='search',
+        event=event,
+    )
 
 
 @rating_ranking.handle()

@@ -2259,6 +2259,20 @@ def charge_session_extra(qqid: Optional[int], cost: int, service: str) -> bool:
     return True
 
 
+def settle_feature_if_uncharged(qqid: Optional[int], service: str = 'search') -> None:
+    """本地功能（谱面详情等）成功后：若本会话尚未因 API/缓存扣过，则按 query_cost 结算（享每日首免）。"""
+    if not qqid or is_superuser_exempt(qqid):
+        return
+    session = _charge_session.get()
+    if session and (session.spent > 0 or session.used_free):
+        return
+    cost = query_cost()
+    if cost <= 0:
+        return
+    if not charge_session_extra(qqid, cost, service):
+        raise BreakInsufficientError(cost, break_db.get_balance(qqid), qqid=qqid)
+
+
 @asynccontextmanager
 async def break_billing(qqid: Optional[int]):
     """指令级扣费上下文：查分器/落雪成绩 API 成功后会在此 qq 上结算 BREAK。"""
