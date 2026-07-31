@@ -54,6 +54,8 @@ def _draw_card(
     side_label: str,
     side_color: tuple,
     reveal_value: Optional[str] = None,
+    hide_level: bool = False,
+    hide_diff_badge: bool = False,
 ) -> None:
     card_w, card_h = 580, 620
     dr = ImageDraw.Draw(im)
@@ -85,19 +87,30 @@ def _draw_card(
             (220, 220, 220, 255), 'mm',
         )
 
-    # 难度色条
+    # 难度色条：作答阶段按题型隐藏等级/难度，避免题面直接泄答案
     diff = _DIFF_NAMES[ref.level_index] if 0 <= ref.level_index < len(_DIFF_NAMES) else '?'
-    diff_color = _color_for_level(ref.level_index)
     diff_x = cover_x
     diff_y = cover_y + 220
-    dr.rounded_rectangle(
-        (diff_x, diff_y, diff_x + 220, diff_y + 30),
-        radius=6, fill=diff_color,
-    )
-    dt.draw(
-        diff_x + 110, diff_y + 15, 18,
-        f'{diff}  {ref.level}', (40, 40, 40, 255), 'mm',
-    )
+    if hide_diff_badge:
+        dr.rounded_rectangle(
+            (diff_x, diff_y, diff_x + 220, diff_y + 30),
+            radius=6, fill=(90, 96, 112, 255),
+        )
+        dt.draw(
+            diff_x + 110, diff_y + 15, 18,
+            '谱面 · ?', (220, 220, 220, 255), 'mm',
+        )
+    else:
+        diff_color = _color_for_level(ref.level_index)
+        badge = diff if hide_level else f'{diff}  {ref.level}'
+        dr.rounded_rectangle(
+            (diff_x, diff_y, diff_x + 220, diff_y + 30),
+            radius=6, fill=diff_color,
+        )
+        dt.draw(
+            diff_x + 110, diff_y + 15, 18,
+            badge, (40, 40, 40, 255), 'mm',
+        )
 
     # 标题
     title_y = diff_y + 50
@@ -121,7 +134,7 @@ def _draw_card(
         )
     else:
         dt.draw(
-            x + card_w // 2, info_y, 18, '点击「左/右」作答',
+            x + card_w // 2, info_y, 18, '发送「左/右」作答',
             _HINT, 'mm',
         )
 
@@ -181,18 +194,26 @@ def render_duel_board(
 
     left_value = _format_answer(round_obj.left, round_obj.question_type) if reveal else None
     right_value = _format_answer(round_obj.right, round_obj.question_type) if reveal else None
+    # 定数/等级题：作答阶段不显示等级数字；等级题连难度色条也藏，避免看图秒答
+    qtype = round_obj.question_type
+    hide_level = (not reveal) and qtype in ('ds', 'level')
+    hide_diff_badge = (not reveal) and qtype == 'level'
 
     _draw_card(
         im, round_obj.left,
         x=start_x, y=y,
         side_label='左', side_color=_LEFT,
         reveal_value=left_value,
+        hide_level=hide_level,
+        hide_diff_badge=hide_diff_badge,
     )
     _draw_card(
         im, round_obj.right,
         x=start_x + card_w + gap, y=y,
         side_label='右', side_color=_RIGHT,
         reveal_value=right_value,
+        hide_level=hide_level,
+        hide_diff_badge=hide_diff_badge,
     )
 
     # 揭晓时高亮正确侧

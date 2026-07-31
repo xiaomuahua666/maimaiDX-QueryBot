@@ -423,7 +423,11 @@ class _Draw:
         border_layer.alpha_composite(cover, (border, border))
         self.paste(border_layer, (x + 30 - border, y + 28 - border))
         tx = x + 220
-        tf, title = self.fit_line(str(song.get("title") or ""), 580, 24, 18)
+        is_push = label == "推分"
+        raw_title = str(song.get("title") or "")
+        sid = str(mid).lstrip("0") or str(mid)
+        display_title = f"{sid} {raw_title}" if is_push and sid else raw_title
+        tf, title = self.fit_line(display_title, 580, 24, 18)
         self.d.text((tx, y + 18), title, font=tf, fill=(51, 51, 51))
         line_y = y + 55
         self.d.line((tx, line_y, x + w - 30, line_y), fill=border_color + (255,), width=7)
@@ -464,7 +468,6 @@ class _Draw:
             ol_text = f"重合{_f(song.get('overlap')):.2f}%"
             self.d.text((icon_x, info_y + ds_y_offset), ol_text, font=self.font("cn", 20), fill=(66, 133, 244))
             icon_x += self.font("cn", 20).getbbox(ol_text)[2] + 8
-        is_push = label == "推分"
         fc_img = self.icon(FC_ICON.get(str(song.get("fc_label") or ""), ""), (72, 72))
         row2_y = y + 152
         target = str(song.get("target") or "SSS+").upper()
@@ -604,7 +607,9 @@ class _Draw:
             self.d.text((left_x + 10, left_cy), f"推荐{len(route_songs)}首 · {gain_range}", font=self.font("cn", 20), fill=(120, 100, 80))
             left_cy += 28
             for i, song in enumerate(route_songs):
-                title = str(song.get("title") or "")[:22]
+                sid = str(song.get("music_id") or song.get("song_id") or "").lstrip("0")
+                raw_title = str(song.get("title") or "")
+                title = (f"{sid} {raw_title}" if sid else raw_title)[:26]
                 gain = route_gain(song)
                 target = str(song.get("target") or "SSS+")
                 level_idx = _i(song.get("level_index"), -1)

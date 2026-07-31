@@ -4,7 +4,7 @@
 - 出题时排除数值相同的组合
 - 局内不显示选择人数；提交后不可改
 - 首轮可加入，第二轮后禁止中途参赛
-- 题目开局一次性生成并预渲染
+- 开局生成全部题目，按轮投放题图（不提前甩出）
 - 全部通关时按最终轮正确作答时间排位
 """
 
@@ -242,40 +242,51 @@ def _candidate_charts() -> List[ChartRef]:
 # ─────────────────────── 出题 ───────────────────────
 
 def _type_for_round(round_no: int) -> List[str]:
+    # 等级题已从轮次池移除（题面曾直接印等级，属于废题）；
+    # 定数题保留，作答阶段不显示等级数字。
     if round_no == 1:
-        return [TYPE_DS]
+        return [TYPE_BPM, TYPE_NOTES]
     if round_no == 2:
-        return [TYPE_BPM, TYPE_NOTES, TYPE_DS]
+        return [TYPE_BPM, TYPE_NOTES, TYPE_BREAK]
     if round_no == 3:
         return [TYPE_VERSION]
     if round_no == 4:
-        return [TYPE_DS, TYPE_LEVEL]
+        return [TYPE_DS, TYPE_BREAK, TYPE_TOUCH]
     if round_no == 5:
-        return [TYPE_BREAK, TYPE_NOTES, TYPE_TOUCH, TYPE_LEVEL]
+        return [TYPE_BREAK, TYPE_NOTES, TYPE_TOUCH, TYPE_DS]
     return [TYPE_DS]
 
 
 def _round_filters(round_no: int) -> Dict[str, object]:
     """每轮额外的差异要求 + 题目约束。"""
     if round_no == 1:
-        return {'ds_min_gap': 0.5, 'exclude_types': []}
+        # 入门轮：比 BPM / 物量，拉开差距
+        return {
+            'strong_gap': True,
+            'exclude_types': [TYPE_LEVEL, TYPE_DS],
+        }
     if round_no == 2:
         return {
-            'ds_min_gap': 0.0,
-            'strong_gap': True,  # BPM 或物量有明显差距
-            'exclude_types': [],
+            'strong_gap': True,
+            'exclude_types': [TYPE_LEVEL, TYPE_DS],
         }
     if round_no == 3:
-        return {'ds_min_gap': 0.0, 'version_adjacent': True, 'exclude_types': []}
-    if round_no == 4:
         return {
-            'ds_min_gap': 0.1, 'ds_max_gap': 0.2,
-            'exclude_types': [TYPE_VERSION],
+            'version_adjacent': True,
+            'exclude_types': [TYPE_LEVEL],
+        }
+    if round_no == 4:
+        # 定数接近才考得出记忆
+        return {
+            'ds_min_gap': 0.1,
+            'ds_max_gap': 0.3,
+            'exclude_types': [TYPE_VERSION, TYPE_LEVEL],
         }
     if round_no == 5:
         return {
-            'same_level': True, 'same_type': True,
-            'exclude_types': [TYPE_VERSION, TYPE_BPM, TYPE_DS],
+            'same_level': True,
+            'same_type': True,
+            'exclude_types': [TYPE_VERSION, TYPE_BPM, TYPE_LEVEL],
         }
     return {}
 

@@ -2206,9 +2206,6 @@ async def _(event: MessageEvent):
 
 # ─────────────────────── 舞萌极限二选一 ───────────────────────
 
-# 暂时禁用开局；设为 True 可重新开放。重置指令仍可用以清理残留对局。
-DUEL_TEMPORARILY_DISABLED = True
-
 
 def _duel_choice_from_text(text: str) -> Optional[int]:
     s = text.strip()
@@ -2230,24 +2227,52 @@ def _format_duel_round_summary(round_obj) -> str:
 async def _duel_intro_text() -> str:
     return dedent(f'''\
         ⚔️ 舞萌极限二选一开始！
-        每轮展示两张谱面和一个唯一答案问题，发送 左/右 即可作答。
+        每轮投放一张对比图和一个问题，发送 左/右 作答。
         答错或超时即淘汰，坚持到最后者获胜。
         规则要点：
         · 5 轮累计积分：{"/".join(str(s) for s in DUEL_ROUND_SCORES)} = {sum(DUEL_ROUND_SCORES)} 分
         · 全通关前三额外 BREAK 奖励：2 / 1 / 0
         · 首轮开始后中途参赛需发送「加入」，第二轮后禁止加入
         · 作答不可修改；每轮仅可答一次
-        正在为你预渲染本局题目…
     ''')
+
+
+async def _duel_send_round_prompt(
+    event: MessageEvent,
+    gid: int,
+    round_obj,
+    *,
+    r_idx: int,
+    total: int,
+    fatal: bool,
+) -> None:
+    """按轮投放：题图 + 提问一起发，避免开局甩多图还要往上翻。"""
+    text = (
+        f'⏱ 第 {r_idx}/{total} 轮开始！\n'
+        f'{round_obj.prompt}\n'
+        f'请在 {DUEL_ROUND_DURATION} 秒内发送「左」或「右」。'
+    )
+    try:
+        seg = await asyncio.to_thread(duel_image_segment, round_obj, reveal=False)
+        await _safe_matcher_send(
+            guess_duel_start,
+            event,
+            MessageSegment.text(text + '\n') + seg,
+            gid,
+            media=True,
+            fatal=fatal,
+        )
+    except Exception:
+        if fatal:
+            raise
+        await _safe_matcher_send(
+            guess_duel_start, event, text, gid, fatal=False,
+        )
 
 
 @guess_duel_start.handle()
 async def _(event: MessageEvent):
     await _gate_guess_group_entry(guess_duel_start, event)
-    if DUEL_TEMPORARILY_DISABLED:
-        await guess_duel_start.finish(
-            '舞萌极限二选一玩法暂时关闭，请稍后再试。', reply_message=True,
-        )
     gid = get_event_group_id(event)
     if gid is None:
         await guess_duel_start.finish('请在群内使用。', reply_message=True)
@@ -2285,31 +2310,20 @@ async def _(event: MessageEvent):
         await _guess_notify(
             guess_duel_start, event, await _duel_intro_text(), reply=True,
         )
-        for r in rounds:
-            seg = await asyncio.to_thread(duel_image_segment, r, reveal=False)
-            await _safe_matcher_send(
-                guess_duel_start, event, seg, gid, media=True, fatal=True,
-            )
+        data.current_round = 1
+        data.start_round_at = time.time()
+        await _duel_send_round_prompt(
+            event, gid, data.rounds[0],
+            r_idx=1, total=len(data.rounds), fatal=True,
+        )
     except Exception as e:
-        log.warning(f'[Duel] 预渲染/发送失败 gid={gid}: {type(e).__name__}: {e}')
+        log.warning(f'[Duel] 首轮发题失败 gid={gid}: {type(e).__name__}: {e}')
         duel_guess.end(gid)
         await guess_duel_start.finish(
             '题目图片生成失败，本局已结束。', reply_message=True,
         )
 
-    bot = resolve_event_bot(event)
     try:
-        first_round = data.rounds[0]
-        data.current_round = 1
-        data.start_round_at = time.time()
-        # 提示本轮时间限制
-        await _guess_notify(
-            guess_duel_start, event,
-            f'⏱ 第 1/{len(data.rounds)} 轮已开始！'
-            f'{first_round.prompt}\n'
-            f'请在 {DUEL_ROUND_DURATION} 秒内发送「左」或「右」。',
-        )
-
         for r_idx in range(1, len(data.rounds) + 1):
             remaining = data.round_durations
             while remaining > 0:
@@ -2364,15 +2378,12 @@ async def _(event: MessageEvent):
             if r_idx >= len(data.rounds) or not survivors:
                 break
 
-            # 进入下一轮
+            # 进入下一轮：再发当轮题图
             data.current_round = r_idx + 1
             data.start_round_at = time.time()
-            next_round = data.rounds[r_idx]
-            await _guess_notify(
-                guess_duel_start, event,
-                f'⏱ 第 {r_idx + 1}/{len(data.rounds)} 轮开始！\n'
-                f'{next_round.prompt}\n'
-                f'请在 {DUEL_ROUND_DURATION} 秒内发送「左」或「右」。',
+            await _duel_send_round_prompt(
+                event, gid, data.rounds[r_idx],
+                r_idx=r_idx + 1, total=len(data.rounds), fatal=False,
             )
 
         # 最终结算
