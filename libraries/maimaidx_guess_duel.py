@@ -367,6 +367,9 @@ def _try_make_round(
         left, right = random.sample(pool, 2)
         if not _meets_constraints(left, right, filters):
             continue
+        # 定数题必须同难度档（都是 Master 等），避免 Advanced vs Basic 一眼废题
+        if qtype == TYPE_DS and left.level_index != right.level_index:
+            continue
         answer, ok = _diff_pair(left, right, qtype)
         if not ok:
             continue

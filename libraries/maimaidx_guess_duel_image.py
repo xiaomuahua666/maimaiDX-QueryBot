@@ -194,10 +194,10 @@ def render_duel_board(
 
     left_value = _format_answer(round_obj.left, round_obj.question_type) if reveal else None
     right_value = _format_answer(round_obj.right, round_obj.question_type) if reveal else None
-    # 定数/等级题：作答阶段不显示等级数字；等级题连难度色条也藏，避免看图秒答
+    # 定数/等级题：作答阶段连难度色条一起藏（黄/绿/紫一眼就能比高低）
     qtype = round_obj.question_type
     hide_level = (not reveal) and qtype in ('ds', 'level')
-    hide_diff_badge = (not reveal) and qtype == 'level'
+    hide_diff_badge = (not reveal) and qtype in ('ds', 'level')
 
     _draw_card(
         im, round_obj.left,
