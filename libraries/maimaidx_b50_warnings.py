@@ -31,9 +31,14 @@ WARN_NO_DATA_LXNS = (
     '您可以使用 maiul 来上传游戏数据！'
 )
 
+WARN_INCOMPLETE_AWMCNET = (
+    '⚠️ 您的成绩不完整\n'
+    '您可以直接发送SGWCMAID或二维码图片来更新您的准确成绩。'
+)
+
 
 def resolve_b50_source(qqid: Optional[int], username: Optional[str] = None) -> str:
-    """返回 'divingfish' 或 'lxns'。"""
+    """返回 'divingfish'、'lxns' 或 'awmcnet'。"""
     if username:
         return 'divingfish'
     if qqid:
@@ -74,6 +79,13 @@ def compute_b50_warning_text(userinfo: UserInfo, source: str) -> str:
     if source == 'lxns':
         if is_empty_b50(userinfo):
             return WARN_NO_DATA_LXNS
+        return ''
+
+    if source == 'awmcnet':
+        # AWMCNET 成绩来自镜像同步，空数据或被掩码的成绩都视为不完整，
+        # 引导用户直接发送 SGWCMAID / 二维码更新准确成绩。
+        if is_empty_b50(userinfo) or is_masked_b50(userinfo):
+            return WARN_INCOMPLETE_AWMCNET
         return ''
 
     # 水鱼

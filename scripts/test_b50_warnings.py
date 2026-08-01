@@ -62,4 +62,22 @@ assert is_masked_b50(make_userinfo([100.5001] * 50)) is False
 # 100.4951 末位 1 → 不报警
 assert is_masked_b50(make_userinfo([100.4951] * 50)) is False
 
+# --- AWMCNET 数据源：掩码或空成绩都显示「成绩不完整」，水鱼掩码文案不出现 ---
+compute = bw.compute_b50_warning_text
+
+awmcnet_masked = compute(make_userinfo([100.4950] * 50), 'awmcnet')
+assert awmcnet_masked == bw.WARN_INCOMPLETE_AWMCNET
+assert '掩码' not in awmcnet_masked
+assert 'SGWCMAID' in awmcnet_masked
+
+awmcnet_empty = compute(make_userinfo([]), 'awmcnet')
+assert awmcnet_empty == bw.WARN_INCOMPLETE_AWMCNET
+
+# AWMCNET 正常成绩 → 不报警
+assert compute(make_userinfo([100.4951] * 50), 'awmcnet') == ''
+
+# 水鱼数据源保持原掩码文案
+fish_masked = compute(make_userinfo([100.4950] * 50), 'divingfish')
+assert fish_masked == bw.WARN_MASKED_FISH
+
 print("b50 masked warning tests: ok")
