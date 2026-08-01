@@ -1812,7 +1812,7 @@ async def _(event: MessageEvent, matched=RegexMatched()):
         难度 {difficulty} · 展示 {len(selected)} 首 / 共 {data.total_chart_count} 首
         ⏱ {duration}秒作答时间，发送数字猜Rating（可修改）
         最接近者获胜 🏆
-        题主不能作答或参与奖励；难度越高积分与BREAK略高。
+        题主不能作答或参与奖励；难度越高积分与BREAK越高。
     ''')
 
     compact = bool(getattr(maiconfig, 'maimaidx_compact_messages', True))
