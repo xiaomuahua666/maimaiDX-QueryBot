@@ -2355,3 +2355,96 @@ async def generate(
         log.error(traceback.format_exc())
         msg = format_command_error(e)
     return msg
+
+
+# 鸟/鸟加达成率阈值（达成率百分比）
+_BIRD_THRESHOLD = 100.0       # 鸟 SSS
+_BIRD_PLUS_THRESHOLD = 100.5  # 鸟加 SSS+
+
+
+def _classify_chart_records(userinfo: UserInfo) -> List[ChartInfo]:
+    """汇总 B35(sd) + B15(dx) 的全部成绩记录，过滤空记录。"""
+    records: List[ChartInfo] = []
+    charts = getattr(userinfo, 'charts', None)
+    if charts is None:
+        return records
+    for group in (getattr(charts, 'sd', None) or [], getattr(charts, 'dx', None) or []):
+        for rec in group:
+            if rec is not None:
+                records.append(rec)
+    return records
+
+
+def _format_bird_rate_record(rec: ChartInfo) -> str:
+    """格式化单条未达成记录：标题 [类型] 定数 达成率%。"""
+    song_type = str(getattr(rec, 'type', '') or '').upper()
+    type_tag = ' [DX]' if song_type == 'DX' else (' [SD]' if song_type in ('SD', 'STD') else '')
+    title = getattr(rec, 'title', '未知') or '未知'
+    ds = getattr(rec, 'ds', 0) or 0
+    ach = float(getattr(rec, 'achievements', 0) or 0)
+    return f'· {title}{type_tag} {ds:g} {ach:.4f}%'
+
+
+async def _generate_bird_rate_common(
+    qqid: Optional[int],
+    username: Optional[str],
+    threshold: float,
+    label: str,
+) -> str:
+    """
+    统计 B50（B35+B15）中达成率 >= threshold 的曲目比例，返回纯文本汇总。
+    """
+    try:
+        if username:
+            qqid = None
+        from .maimaidx_datasource import get_user_b50
+        userinfo = await get_user_b50(qqid=qqid, username=username)
+
+        records = _classify_chart_records(userinfo)
+        total = len(records)
+        if total == 0:
+            return '没有获取到 B50 成绩数据。'
+
+        hit = [r for r in records if float(getattr(r, 'achievements', 0) or 0) >= threshold]
+        miss = [r for r in records if float(getattr(r, 'achievements', 0) or 0) < threshold]
+        hit_count = len(hit)
+        rate = hit_count / total * 100.0
+
+        # 未达成曲目按达成率从高到低排列，方便挑差一点就达标的
+        miss.sort(key=lambda r: float(getattr(r, 'achievements', 0) or 0), reverse=True)
+
+        nick = getattr(userinfo, 'nickname', None) or getattr(userinfo, 'username', None) or str(qqid or username or '未知')
+        rating = int(getattr(userinfo, 'rating', 0) or 0)
+
+        lines = [
+            f'【B50 {label}率】 {nick}',
+            f'Rating: {rating}',
+            f'{label}达成: {hit_count}/{total}（{rate:.2f}%）',
+        ]
+        if miss:
+            lines.append(f'未达成 {label}（{len(miss)} 首）:')
+            lines.extend(_format_bird_rate_record(r) for r in miss)
+        else:
+            lines.append(f'太强了！B50 全部达成 {label}，{label}满贯喵～')
+        return '\n'.join(lines)
+    except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
+        return str(e)
+    except Exception as e:
+        log.error(traceback.format_exc())
+        return format_command_error(e)
+
+
+async def generate_b50_bird_rate(
+    qqid: Optional[int] = None,
+    username: Optional[str] = None,
+) -> str:
+    """B50 鸟率：达成率 >= 100.0000% (SSS) 的曲目比例。"""
+    return await _generate_bird_rate_common(qqid, username, _BIRD_THRESHOLD, '鸟')
+
+
+async def generate_b50_bird_plus_rate(
+    qqid: Optional[int] = None,
+    username: Optional[str] = None,
+) -> str:
+    """B50 鸟加率：达成率 >= 100.5000% (SSS+) 的曲目比例。"""
+    return await _generate_bird_rate_common(qqid, username, _BIRD_PLUS_THRESHOLD, '鸟加')

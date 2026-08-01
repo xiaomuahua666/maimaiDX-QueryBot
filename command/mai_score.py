@@ -50,6 +50,8 @@ from ..libraries.maimaidx_best_50 import (
     generate_difficulty_all_b50,
     generate_ideal_b50,
     generate_ideal_all_b50,
+    generate_b50_bird_rate,
+    generate_b50_bird_plus_rate,
 )
 from ..libraries.maimaidx_data_storage import data_storage
 from ..libraries.maimaidx_data_scheduler import fetch_and_store_user_scores
@@ -88,6 +90,8 @@ from ..libraries.maimaidx_update_plate import *
 
 best50       = on_command('b50', aliases={'B50'})
 best_all50   = on_command('ab50', aliases={'a50', 'allb50'})
+b50_bird_rate      = on_command('b50鸟率', aliases={'B50鸟率', 'b50鳥率'})
+b50_bird_plus_rate = on_command('b50鸟加率', aliases={'B50鸟加率', 'b50鳥加率', 'b50鸟+率'})
 refresh_b50  = on_command('刷新b50', aliases={'刷新成绩', '更新b50', '刷新B50'})
 coop_b50     = on_command('合作b50', aliases={'合作B50'})
 coop_ab50    = on_command('合作a50', aliases={'合作A50'})
@@ -379,6 +383,58 @@ async def _best_all50(
         best_all50, generate_all(qqid, username), None if username else qqid, username=username or None,
         billing_qqid=event.user_id,
     )
+
+
+async def _handle_bird_rate(
+    matcher,
+    event: MessageEvent,
+    message: Message,
+    user_id: Optional[int],
+    generator,
+):
+    """b50鸟率 / b50鸟加率 共用处理：拉 B50 统计文本，附带数据源与耗时 footer。"""
+    from ..libraries.maimaidx_timing import run_timed
+    from ..libraries.maimaidx_player_cache import clear_fetch_meta
+    if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
+        raise IgnoredException('功能已禁用')
+    try:
+        qqid = resolve_score_qqid(event, user_id)
+    except QBindRequiredError as e:
+        await plugin_finish(matcher, str(e), event=event)
+        return
+    username = message.extract_plain_text().strip() or None
+    target_qq = None if username else qqid
+    try:
+        result, total = await run_timed(
+            generator(qqid=target_qq, username=username),
+            billing_qqid=event.user_id,
+        )
+    except (QBindRequiredError, BreakInsufficientError) as e:
+        clear_fetch_meta()
+        await plugin_finish(matcher, str(e), event=event)
+        return
+    clear_fetch_meta()
+    footer = _build_footer(target_qq, total)
+    text = str(result).rstrip()
+    await plugin_finish(matcher, text, footer=footer, event=event)
+
+
+@b50_bird_rate.handle()
+async def _b50_bird_rate(
+    event: MessageEvent,
+    message: Message = CommandArg(),
+    user_id: Optional[int] = Depends(get_at_qq),
+):
+    await _handle_bird_rate(b50_bird_rate, event, message, user_id, generate_b50_bird_rate)
+
+
+@b50_bird_plus_rate.handle()
+async def _b50_bird_plus_rate(
+    event: MessageEvent,
+    message: Message = CommandArg(),
+    user_id: Optional[int] = Depends(get_at_qq),
+):
+    await _handle_bird_rate(b50_bird_plus_rate, event, message, user_id, generate_b50_bird_plus_rate)
 
 
 def _display_name_from_sender(sender) -> str:
