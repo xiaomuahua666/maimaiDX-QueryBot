@@ -276,6 +276,7 @@ async def _sync_sdgb_qrcode(
         pc_db.get_user_play_counts(qqid),
         nickname=binding.user_name if binding else '',
         rating=binding.rating if binding else None,
+        play_count=pc_db.get_user_total_plays(qqid),
     )
     from ..libraries.maimaidx_player_cache import invalidate_player_cache
     invalidate_player_cache(qqid)

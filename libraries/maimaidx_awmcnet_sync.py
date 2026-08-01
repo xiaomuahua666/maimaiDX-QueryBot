@@ -110,6 +110,7 @@ async def sync_awmcnet(
     records: Sequence[Any],
     *,
     source: str,
+    play_count: int | None = None,
 ) -> dict | None:
     payload = {
         "qq": int(qqid),
@@ -120,6 +121,8 @@ async def sync_awmcnet(
         "new_rating": _chart_rating(userinfo, "dx"),
         "records": [_record_payload(record) for record in records],
     }
+    if play_count is not None:
+        payload["play_count"] = int(play_count)
     return await _post_sync(payload)
 
 
@@ -130,6 +133,7 @@ async def sync_awmcnet_pc_records(
     nickname: str = "",
     rating: int | None = None,
     source: str = "sega",
+    play_count: int | None = None,
 ) -> dict | None:
     payload = {
         "qq": int(qqid),
@@ -138,6 +142,8 @@ async def sync_awmcnet_pc_records(
         "rating": rating,
         "records": [_record_payload(record) for record in records],
     }
+    if play_count is not None:
+        payload["play_count"] = int(play_count)
     return await _post_sync(payload)
 
 
@@ -147,10 +153,16 @@ async def sync_awmcnet_arcade_scores(
     *,
     nickname: str = "",
     rating: int | None = None,
+    play_count: int | None = None,
 ) -> dict | None:
     """上传由机台接口转换出的成绩；字段兼容落雪 Score 格式。"""
     return await sync_awmcnet_pc_records(
-        qqid, scores, nickname=nickname, rating=rating, source="sega"
+        qqid,
+        scores,
+        nickname=nickname,
+        rating=rating,
+        source="sega",
+        play_count=play_count,
     )
 
 

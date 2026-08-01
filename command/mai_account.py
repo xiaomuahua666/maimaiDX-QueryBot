@@ -1794,6 +1794,7 @@ async def _upload(
                     pc_db.get_user_play_counts(qqid),
                     nickname=binding.user_name,
                     rating=binding.rating,
+                    play_count=pc_db.get_user_total_plays(qqid),
                 )
                 if awmc_result is None:
                     raise RuntimeError('AWMCNET 同步失败，请检查 Bot-Token 与服务地址')
@@ -1918,7 +1919,11 @@ async def _upload(
         )
         if fresh_pc:
             awmc_result = await sync_awmcnet_pc_records(
-                qqid, pc_records, nickname=binding.user_name, rating=binding.rating
+                qqid,
+                pc_records,
+                nickname=binding.user_name,
+                rating=binding.rating,
+                play_count=pc_db.get_user_total_plays(qqid),
             )
         elif not fish and not lxns:
             music_timeout = float(
