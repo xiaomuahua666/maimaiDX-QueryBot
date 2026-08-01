@@ -79,6 +79,10 @@ class Config(BaseModel):
     awmc_ticket_settlement_delay_seconds: float = 2.0
     # 合并后的账号功能总开关；关闭时不注册外部调用，但本地查分不受影响。
     awmc_account_enabled: bool = True
+    # AWMC NET 默认成绩库：站点地址内置，可通过环境变量覆盖；填写 Bot Token 后启用。
+    awmcnet_sync_url: str = "https://net.wmc.pub"
+    awmcnet_bot_token: Optional[str] = None
+    awmcnet_sync_timeout_seconds: float = 8.0
     # 账号二维码本地缓存时间。0 表示永久保留，单位秒。
     awmc_qrcode_cache_seconds: int = 0
     # mymai/成绩上传复用最近一次已验证 SGID 的时长；0 表示每次重新询问。

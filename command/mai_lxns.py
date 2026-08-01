@@ -242,22 +242,23 @@ async def _source_cmd(event: MessageEvent, message: Message = CommandArg()):
     args = message.extract_plain_text().strip().lower()
 
     source_map = {
+        'awmcnet': 'awmcnet', 'awmc': 'awmcnet',
         '水鱼': 'divingfish', 'divingfish': 'divingfish', 'df': 'divingfish',
         '落雪': 'lxns', 'lxns': 'lxns', 'lx': 'lxns',
     }
 
     if not args:
         current = lxns_db.get_source(qqid)
-        label = '落雪' if current == 'lxns' else '水鱼'
+        label = {'awmcnet': 'AWMCNET', 'lxns': '落雪'}.get(current, '水鱼')
         await source_cmd.finish(
             f'当前数据源：{label}\n'
-            f'可选：水鱼 / 落雪\n'
-            f'用法：数据源 落雪',
+            f'可选：AWMCNET / 水鱼 / 落雪\n'
+            f'用法：数据源 AWMCNET',
             reply_message=True,
         )
 
     if args not in source_map:
-        await source_cmd.finish('未知数据源，可选：水鱼 / 落雪', reply_message=True)
+        await source_cmd.finish('未知数据源，可选：AWMCNET / 水鱼 / 落雪', reply_message=True)
 
     target = source_map[args]
 
@@ -273,7 +274,7 @@ async def _source_cmd(event: MessageEvent, message: Message = CommandArg()):
             )
 
     lxns_db.set_source(qqid, target)
-    label = '落雪' if target == 'lxns' else '水鱼'
+    label = {'awmcnet': 'AWMCNET', 'lxns': '落雪'}.get(target, '水鱼')
     await source_cmd.finish(f'数据源已切换为：{label}', reply_message=True)
 
 
@@ -330,7 +331,7 @@ async def _lxb50(event: MessageEvent):
             '3. Bot 是否配置了开发者 Token',
             reply_message=True,
         )
-    sections = [['📊 数据源：落雪 | 可使用 数据源 水鱼/落雪 修改']]
+    sections = [['📊 数据源：落雪 | 可使用 数据源 AWMCNET/水鱼/落雪 修改']]
     freshness = pop_data_freshness_footer_lines()
     if freshness:
         sections.append(freshness)

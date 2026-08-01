@@ -10,7 +10,7 @@
     token_type      TEXT DEFAULT 'Bearer'
     expires_at      REAL           -- access_token 过期时间戳（秒）
     scope           TEXT
-    source          TEXT DEFAULT 'divingfish'  -- b50 数据源：divingfish / lxns
+    source          TEXT DEFAULT 'awmcnet'  -- b50 数据源：awmcnet / divingfish / lxns
     created_at      REAL
     updated_at      REAL
 """
@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS lxns_users (
     token_type      TEXT DEFAULT 'Bearer',
     expires_at      REAL,
     scope           TEXT,
-    source          TEXT DEFAULT 'divingfish',
+    source          TEXT DEFAULT 'awmcnet',
     theme           TEXT DEFAULT 'default',
     created_at      REAL,
     updated_at      REAL
@@ -87,10 +87,29 @@ class LxnsDatabase:
         """处理旧版 DB 缺少 source/theme 列的情况。"""
         cols = {row[1] for row in self._conn.execute('PRAGMA table_info(lxns_users)')}
         if 'source' not in cols:
-            self._conn.execute("ALTER TABLE lxns_users ADD COLUMN source TEXT DEFAULT 'divingfish'")
+            self._conn.execute("ALTER TABLE lxns_users ADD COLUMN source TEXT DEFAULT 'awmcnet'")
             self._conn.commit()
         if 'theme' not in cols:
             self._conn.execute("ALTER TABLE lxns_users ADD COLUMN theme TEXT DEFAULT 'default'")
+            self._conn.commit()
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS lxns_migrations "
+            "(name TEXT PRIMARY KEY, applied_at REAL NOT NULL)"
+        )
+        migration = 'awmcnet_default_v1'
+        applied = self._conn.execute(
+            'SELECT 1 FROM lxns_migrations WHERE name = ?', (migration,)
+        ).fetchone()
+        if not applied:
+            # AWMCNET 上线时将既有用户统一迁移到新默认；之后仍可手动切回上游。
+            self._conn.execute(
+                "UPDATE lxns_users SET source = 'awmcnet', updated_at = ?",
+                (time.time(),),
+            )
+            self._conn.execute(
+                'INSERT INTO lxns_migrations (name, applied_at) VALUES (?, ?)',
+                (migration, time.time()),
+            )
             self._conn.commit()
 
     def upsert_user(
@@ -130,13 +149,13 @@ class LxnsDatabase:
         return dict(row) if row else None
 
     def get_source(self, qqid: int) -> str:
-        """获取用户的 b50 数据源，默认 'divingfish'。"""
+        """获取用户的 b50 数据源，默认 'awmcnet'。"""
         row = self._conn.execute(
             'SELECT source FROM lxns_users WHERE qqid = ?', (qqid,)
         ).fetchone()
         if row and row['source']:
             return row['source']
-        return 'divingfish'
+        return 'awmcnet'
 
     def set_source(self, qqid: int, source: str):
         """设置用户的 b50 数据源。如果用户不存在则先创建记录。"""

@@ -97,6 +97,11 @@ CREATE TABLE IF NOT EXISTS account_operation_log (
 );
 CREATE INDEX IF NOT EXISTS idx_account_log_user
     ON account_operation_log(user_key, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS awmcnet_first_notice (
+    user_key    TEXT PRIMARY KEY,
+    notified_at REAL NOT NULL
+);
 """
 
 
@@ -371,6 +376,17 @@ class AccountDatabase:
                 (now, now, str(user_key)),
             )
             self._conn.commit()
+
+    def mark_awmcnet_notified_once(self, user_key: str) -> bool:
+        """Atomically remember the first successful AWMC NET sync per QQ."""
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT OR IGNORE INTO awmcnet_first_notice (user_key, notified_at) "
+                "VALUES (?, ?)",
+                (str(user_key), time.time()),
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
 
     def list_accounts(
         self, *, limit: int = 100, offset: int = 0, search: str = ""

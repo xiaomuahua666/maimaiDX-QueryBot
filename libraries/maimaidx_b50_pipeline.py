@@ -62,7 +62,7 @@ async def _fetch_user_data(
     if username:
         qqid = None
 
-    from .maimaidx_datasource import get_user_records
+    from .maimaidx_datasource import get_user_records, get_user_source
     userinfo, records = await get_user_records(qqid=qqid, username=username)
     log.debug(f"[b50_pipeline] 获取到 userinfo: nickname={userinfo.nickname}, rating={userinfo.rating}")
     log.debug(f"[b50_pipeline] 获取到 {len(records)} 条成绩记录")
@@ -70,6 +70,18 @@ async def _fetch_user_data(
     # 过滤掉宴谱成绩
     records = filter_utage_records(records)
     log.debug(f"[b50_pipeline] 过滤宴谱后剩余 {len(records)} 条成绩记录")
+
+    # 已有水鱼/落雪查询保持原样；配置 AWMCNET 后追加一次可信镜像同步。
+    # 同步失败只记录日志，不会让用户的 B50 命令失败。
+    if qqid and get_user_source(int(qqid)) != 'awmcnet':
+        from .maimaidx_awmcnet_sync import sync_awmcnet
+
+        await sync_awmcnet(
+            int(qqid),
+            userinfo,
+            records,
+            source=get_user_source(int(qqid)),
+        )
 
     return userinfo, records
 

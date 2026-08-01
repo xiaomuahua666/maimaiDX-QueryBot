@@ -8,6 +8,7 @@
   - 拟合难度（fit_diff）、全服 rating 排行为水鱼独有，相关功能不切换。
 """
 
+import asyncio
 from typing import List, Optional, Tuple
 
 from ..config import log
@@ -36,11 +37,112 @@ _LEVEL_LABELS = ['Basic', 'Advanced', 'Expert', 'Master', 'Re:Master']
 
 
 def get_user_source(qqid: int) -> str:
-    """获取用户的数据源偏好：'divingfish' 或 'lxns'。"""
+    """获取用户的数据源偏好；新用户默认使用 AWMCNET。"""
     try:
         return lxns_db.get_source(qqid)
     except Exception:
-        return 'divingfish'
+        return 'awmcnet'
+
+
+def _records_to_userinfo(player: dict, records: List[PlayInfoDev]) -> UserInfo:
+    """把 AWMCNET 的统一成绩响应还原为 QueryBot 的 B50 结构。"""
+    from .maimaidx_best_50 import regroup_b50_userinfo
+
+    return regroup_b50_userinfo(UserInfo(
+        nickname=str(player.get('nickname') or 'AWMCNET 用户'),
+        rating=int(player.get('rating') or 0),
+        additional_rating=0,
+        username=str(player.get('username') or ''),
+        charts=Data(sd=list(records), dx=[]),
+    ))
+
+
+def _awmcnet_records(player: dict) -> List[PlayInfoDev]:
+    records: List[PlayInfoDev] = []
+    for raw in player.get('records') or []:
+        try:
+            records.append(PlayInfoDev(**raw))
+        except Exception as exc:
+            log.warning(f'[datasource] AWMCNET record ignored: {exc}')
+    return records
+
+
+def _merge_upstream_records(results: list) -> Tuple[Optional[UserInfo], List[PlayInfoDev]]:
+    """合并水鱼/落雪成绩；同谱面保留达成率和 DX 分更高的一条。"""
+    best: dict[tuple[int, int], PlayInfoDev] = {}
+    users: list[UserInfo] = []
+    for result in results:
+        if isinstance(result, Exception):
+            continue
+        userinfo, records = result
+        users.append(userinfo)
+        for record in records:
+            key = (int(record.song_id), int(record.level_index))
+            current = best.get(key)
+            candidate_rank = (float(record.achievements), int(record.dxScore or 0))
+            current_rank = (
+                (float(current.achievements), int(current.dxScore or 0))
+                if current else (-1.0, -1)
+            )
+            if candidate_rank > current_rank:
+                best[key] = record
+    if not users:
+        return None, []
+    userinfo = max(users, key=lambda item: int(item.rating or 0))
+    return userinfo, list(best.values())
+
+
+async def _refresh_awmcnet_from_upstreams(
+    qqid: int, *, force_refresh: bool = False
+) -> Tuple[Optional[UserInfo], List[PlayInfoDev]]:
+    """并行拉取可用上游并写入 AWMCNET，实现首次查询自动迁移。"""
+    attempts = await asyncio.gather(
+        get_user_records(
+            qqid=qqid, force_source='divingfish', force_refresh=force_refresh
+        ),
+        get_user_records(qqid=qqid, force_source='lxns', force_refresh=force_refresh),
+        return_exceptions=True,
+    )
+    for source, result in zip(('divingfish', 'lxns'), attempts):
+        if isinstance(result, Exception):
+            log.info(f'[datasource] AWMCNET migration skipped {source} qq={qqid}: {result}')
+    userinfo, records = _merge_upstream_records(attempts)
+    if userinfo and records:
+        from .maimaidx_awmcnet_sync import sync_awmcnet
+        await sync_awmcnet(qqid, userinfo, records, source='auto-migrate')
+    return userinfo, records
+
+
+async def _get_awmcnet_records(
+    qqid: int, *, force_refresh: bool = False
+) -> Tuple[UserInfo, List[PlayInfoDev]]:
+    from .maimaidx_awmcnet_sync import fetch_awmcnet_player
+
+    player = await fetch_awmcnet_player(qqid)
+    if player and player.get('records') and not force_refresh:
+        records = _awmcnet_records(player)
+        return _records_to_userinfo(player, records), records
+
+    # AWMC NET 没有成绩时才自动探测水鱼和落雪；强制刷新时也执行探测。
+    upstream_user, upstream_records = await _refresh_awmcnet_from_upstreams(
+        qqid, force_refresh=force_refresh
+    )
+    if upstream_user and upstream_records:
+        refreshed = await fetch_awmcnet_player(qqid)
+        if refreshed and refreshed.get('records'):
+            records = _awmcnet_records(refreshed)
+            return _records_to_userinfo(refreshed, records), records
+    if player:
+        records = _awmcnet_records(player)
+        if records:
+            return _records_to_userinfo(player, records), records
+    if upstream_user and upstream_records:
+        return _records_to_userinfo({
+            'nickname': upstream_user.nickname,
+            'username': upstream_user.username,
+            'rating': upstream_user.rating,
+        }, upstream_records), upstream_records
+    raise LxnsDataError('用户不存在：AWMC NET.、水鱼和落雪均未找到可用成绩。')
 
 
 # 不支持落雪的功能名 -> 用于提示文案
@@ -285,6 +387,18 @@ async def get_user_b50(
     source = force_source or (get_user_source(qqid) if qqid and not username else 'divingfish')
     clear_fetch_meta()
 
+    if source == 'awmcnet' and qqid and not username:
+        async def _fetch_awmcnet_b50():
+            userinfo, _ = await _get_awmcnet_records(
+                qqid, force_refresh=force_refresh
+            )
+            return userinfo
+
+        return await resolve_player_b50(
+            qqid, username, source, _fetch_awmcnet_b50,
+            force_refresh=force_refresh,
+        )
+
     if source == 'lxns' and qqid and not username:
 
         async def _fetch_lxns_b50():
@@ -344,6 +458,15 @@ async def get_user_records(
     """
     source = force_source or (get_user_source(qqid) if qqid and not username else 'divingfish')
     clear_fetch_meta()
+
+    if source == 'awmcnet' and qqid and not username:
+        async def _fetch_awmcnet_records():
+            return await _get_awmcnet_records(qqid, force_refresh=force_refresh)
+
+        return await resolve_player_records(
+            qqid, username, source, _fetch_awmcnet_records,
+            force_refresh=force_refresh,
+        )
 
     if source == 'lxns' and qqid and not username:
 

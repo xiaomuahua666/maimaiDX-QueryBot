@@ -280,12 +280,14 @@ class Source(str):
     """数据源标识。"""
     DIVINGFISH = 'divingfish'
     LXNS = 'lxns'
+    AWMCNET = 'awmcnet'
 
     @classmethod
     def get_by_name(cls, name: str) -> str:
         _map = {
             '水鱼': cls.DIVINGFISH, 'divingfish': cls.DIVINGFISH, 'df': cls.DIVINGFISH,
             '落雪': cls.LXNS, 'lxns': cls.LXNS, 'lx': cls.LXNS,
+            'awmcnet': cls.AWMCNET, 'awmc': cls.AWMCNET,
         }
         return _map.get(name.lower(), cls.DIVINGFISH)
 
@@ -310,6 +312,16 @@ SOURCE_CAPABILITIES = {
         'gold_water': False,
         'pc_data': False,
         'minfo': False,
+        'friend_battle': False,
+    },
+    Source.AWMCNET: {
+        'b50': True,
+        'records': True,
+        'fit_diff': False,
+        'rating_ranking': False,
+        'gold_water': False,
+        'pc_data': True,
+        'minfo': True,
         'friend_battle': False,
     },
 }

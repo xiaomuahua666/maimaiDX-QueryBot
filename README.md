@@ -18,7 +18,8 @@
 - **数据存储**：开启本地成绩快照，支持存档查询与进步报告
 - **群功能**：我在群里有多菜、群 rating 排行、群单曲排行、友人对战（含段位 CP）、对战战绩 Head-to-Head
 - **PC 数系统**：机台登录、曲目 PC 数统计、PC 数排行榜
-- **查分器上传**：水鱼查分器、落雪查分器 b50 上传；支持切换数据源
+- **AWMCNET 默认数据源**：首次查分自动合并水鱼/落雪可用成绩并迁移到 AWMCNET
+- **查分器上传**：二维码始终写入 AWMCNET；已绑定水鱼/落雪时额外同步对应平台
 - **统一账号**：原 maibot 的账号绑定、Token、上传、票券与状态功能已合并，无需单独运行 Koishi Bot
 - **管理审计**：统一 REF_ID 请求链路、敏感信息脱敏、用户封禁与内置管理 WebUI
 - **倍率票 / 道具**：获取倍率票、查询票券、添加收藏品
@@ -170,6 +171,22 @@ LX_CLIENT_ID=your_oauth_client_id
 LX_CLIENT_SECRET=your_oauth_client_secret
 # 留空 = 无回调模式（用户在落雪页面直接看到授权码）
 LX_REDIRECT_URI=
+```
+
+### AWMCNET（默认数据源）
+
+AWMC NET. 默认服务地址为 `https://net.wmc.pub`（可用 `AWMCNET_SYNC_URL`
+覆盖，正常部署无需写入环境文件）。未绑定水鱼或落雪的用户发送
+舞萌二维码后也会自动建立 AWMCNET 档案；外部平台绑定不再是上传前置条件。
+
+```env
+AWMCNET_BOT_TOKEN=replace_with_a_shared_random_secret
+```
+
+AWMCNET 服务端配置相同密钥：
+
+```env
+AWWC_BOT_TOKENS=replace_with_a_shared_random_secret
 ```
 
 ### 谱面标签（dxrating，可选）
@@ -371,6 +388,20 @@ BOTNAME=maimai
 
 绑定后执行 `更新pc数` 会直接使用已保存账号，不再要求重复发送二维码。
 落雪上传优先复用 `lxbind` OAuth；仅未授权 OAuth 时才需要落雪导入 Token。
+
+### AWMCNET 自动同步与认领
+
+配置 `AWMCNET_BOT_TOKEN` 后，用户通过 QQ 查询 B50 时会优先读取 AWMC NET.；
+只有 AWMC NET. 尚无账号/成绩或用户执行「刷新b50」时，Bot 才探测水鱼和落雪，
+并把可用的全量成绩镜像到 AWMC NET.。尚未注册的 QQ 会创建
+不可公开的临时玩家；以后使用对应的 `QQ号@qq.com` 作为 AWMC 论坛邮箱登录时，
+系统会自动认领临时玩家及其全部成绩。同步不会发送 SGWCMAID、街机 UID、水鱼
+Token 或落雪 Token，AWMCNET 暂时不可用也不会影响原有 Bot 查分。
+
+直接发送以 `SGWCMAID` 开头的凭据会自动绑定并同步 AWMC NET.。首次同步成功
+只提示一次注册地址；水鱼、落雪是可选附加平台，分别通过 `maibindfish`、
+`maibindlx` 绑定。发送 `成绩趋势 [天数]`（默认 30 天）可读取 AWMC NET.
+按日记录的 Rating、B35/B15 和谱面数量趋势。
 
 直接发送 `SGWCMAID...`、舞萌官方二维码链接或含二维码的图片时，Bot 会自动识别并先尝试撤回敏感消息。
 没有账号记录时自动验真绑定，已有记录时更新凭据；随后同步 PC，并按用户已绑定的水鱼 Token / 落雪

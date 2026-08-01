@@ -143,6 +143,9 @@ store_data_now = on_command(
 )
 storage_history = on_command('存储历史', aliases={'查询存储历史', '存储记录'})
 storage_snapshot = on_command('查看存档', aliases={'查看存储快照', '存档详情'})
+awmcnet_trend = on_command(
+    '成绩趋势', aliases={'rating趋势', 'mai趋势', 'awmc趋势', 'AWMC趋势'}
+)
 weekly_report = on_command('周报', aliases={'成绩周报', 'maimai周报'})
 monthly_report = on_command('月报', aliases={'成绩月报', 'maimai月报'})
 annual_report = on_command('年报', aliases={'成绩年报', 'maimai年报'})
@@ -186,7 +189,7 @@ def _source_label(qqid: Optional[int]) -> str:
     if qqid is None:
         return '水鱼'
     from ..libraries.maimaidx_datasource import get_user_source
-    return '落雪' if get_user_source(qqid) == 'lxns' else '水鱼'
+    return {'awmcnet': 'AWMCNET', 'lxns': '落雪'}.get(get_user_source(qqid), '水鱼')
 
 
 def _build_footer(
@@ -201,7 +204,7 @@ def _build_footer(
     from ..libraries.maimaidx_player_cache import footer_join_sections, pop_data_freshness_footer_lines
     source = forced_source or _source_label(qqid)
     sections: list[list[str]] = [
-        [f'📊 数据源：{source} | 可使用 数据源 水鱼/落雪 修改'],
+        [f'📊 数据源：{source} | 可使用 数据源 AWMCNET/水鱼/落雪 修改'],
     ]
     freshness = pop_data_freshness_footer_lines()
     if freshness:
@@ -352,7 +355,9 @@ async def _refresh_b50(
         return
     await _finish_score(
         refresh_b50,
-        generate(qqid, username, force_refresh=True),
+        # 上面已经强制拉取并写入 AWMC NET；生成阶段直接读取刚同步的结果，
+        # 避免同一次“刷新 b50”重复请求水鱼和落雪。
+        generate(qqid, username, force_refresh=False),
         None if username else qqid,
         username=username or None,
         billing_qqid=event.user_id,
@@ -1257,6 +1262,34 @@ async def _storage_snapshot(event: MessageEvent, message: Message = CommandArg()
     for i, r in enumerate(top_records, 1):
         lines.append(f'{i}. {r.title} [{r.level}] {r.achievements:.4f}% {r.ds:.1f}->{r.ra} {r.rate}')
     await storage_snapshot.finish('\n'.join(lines), reply_message=True)
+
+
+@awmcnet_trend.handle()
+async def _awmcnet_trend(event: MessageEvent, message: Message = CommandArg()):
+    """Read the server-side daily trend; no local storage opt-in is required."""
+    qqid = resolve_score_qqid(event)
+    raw = message.extract_plain_text().strip()
+    try:
+        days = max(1, min(365, int(raw))) if raw else 30
+    except ValueError:
+        await awmcnet_trend.finish(
+            '用法：成绩趋势 [天数]，例如「成绩趋势 30」。',
+            reply_message=True,
+        )
+        return
+    from ..libraries.maimaidx_awmcnet_sync import (
+        fetch_awmcnet_trend,
+        format_awmcnet_trend,
+    )
+
+    payload = await fetch_awmcnet_trend(qqid, days)
+    if payload is None:
+        await awmcnet_trend.finish(
+            '暂时无法读取 AWMC NET. 趋势。请确认已发送 SGWCMAID 完成同步，或稍后重试。',
+            reply_message=True,
+        )
+        return
+    await awmcnet_trend.finish(format_awmcnet_trend(payload), reply_message=True)
 
 
 @weekly_report.handle()

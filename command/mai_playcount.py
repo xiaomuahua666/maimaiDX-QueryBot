@@ -268,6 +268,15 @@ async def _sync_sdgb_qrcode(
     if not success:
         raise RuntimeError('凭据保存失败')
     count = await playcount_fetcher.fetch_via_sdgb_with_retry(qqid)
+    from ..libraries.maimaidx_awmcnet_sync import sync_awmcnet_pc_records
+    from ..libraries.maimaidx_account_db import account_db
+    binding = account_db.get(str(qqid))
+    await sync_awmcnet_pc_records(
+        qqid,
+        pc_db.get_user_play_counts(qqid),
+        nickname=binding.user_name if binding else '',
+        rating=binding.rating if binding else None,
+    )
     from ..libraries.maimaidx_player_cache import invalidate_player_cache
     invalidate_player_cache(qqid)
     return count
@@ -470,20 +479,10 @@ async def _process_auto_qrcode(
         except Exception:
             pass
 
-    from .mai_announcement import enforce_current_announcement
-
-    if not await enforce_current_announcement(bot, event):
-        return
-
-    from .mai_agreement import agreement_prompt, has_user_agreed
-
     recall_warning = (
         '⚠️ Bot 无法撤回原凭据消息，请立即手动撤回。\n'
         if not recalled else ''
     )
-    if not has_user_agreed(event):
-        await bot.send(event, recall_warning + agreement_prompt())
-        return
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'query'):
         if recall_warning:
             await bot.send(event, recall_warning.strip())
@@ -522,6 +521,7 @@ async def _process_auto_qrcode_for_account(
         _has_lxns_oauth,
         auto_upload_channels,
         continue_ticket_with_qrcode,
+        take_awmcnet_first_sync_notice,
         take_pending_ticket_retry,
     )
 
@@ -590,16 +590,14 @@ async def _process_auto_qrcode_for_account(
                 actual_workflow_key = auto_qrcode_workflow_key(
                     pc=pc_enabled, fish=fish, lxns=lxns
                 )
-                upload_result: Optional[str] = None
-                if fish or lxns:
-                    upload_result = await _upload(
-                        event,
-                        fish=fish,
-                        lxns=lxns,
-                        qrcode_arg=qrcode_data,
-                        _machine_locked=True,
-                        _qrcode_verified=True,
-                    )
+                upload_result: Optional[str] = await _upload(
+                    event,
+                    fish=fish,
+                    lxns=lxns,
+                    qrcode_arg=qrcode_data,
+                    _machine_locked=True,
+                    _qrcode_verified=True,
+                )
         except MachineBusyError as exc:
             from .mai_account import _log
 
@@ -679,8 +677,13 @@ async def _process_auto_qrcode_for_account(
             lines.append('AWMC PC 服务尚未配置，本次已跳过 PC 同步。')
         if upload_result is not None:
             lines.append(upload_result)
+            first_notice = take_awmcnet_first_sync_notice(
+                str(qqid), upload_result
+            )
+            if first_notice:
+                lines.append(first_notice)
         else:
-            lines.append('未绑定水鱼 Token 或落雪 OAuth，本次未上传查分器。')
+            lines.append('AWMCNET 上传未完成，请检查服务配置后重试。')
         ref = _log(
             str(qqid),
             'auto_qrcode',

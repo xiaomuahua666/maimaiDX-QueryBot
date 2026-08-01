@@ -114,10 +114,25 @@ _post_upload_tasks: set[asyncio.Task] = set()
 _FISH_TOKEN_MAX_LENGTH = 132
 _ACCOUNT_SETUP_GUIDE = (
     "尚未建立账号记录，请按以下步骤完成：\n"
-    "1. 发送「mai绑定」，再提交最新的 SGWCMAID 字符串；\n"
-    "2. 按需发送「mai绑定水鱼 <Token>」或「mai绑定落雪 <导入Token>」；\n"
-    "3. 使用 maiu / maiul / maiua 上传水鱼 / 落雪 / 两边。"
+    "1. 发送最新的 SGWCMAID 字符串，Bot 会自动建档并上传 AWMCNET；\n"
+    "2. 水鱼 Token / 落雪 OAuth 均为可选，绑定后会额外同步对应平台；\n"
+    "3. 之后再次发送二维码即可更新全部已绑定平台。"
 )
+
+_AWMCNET_FIRST_SYNC_NOTICE = (
+    "AWMC NET. 已同步您的信息，您无需其他操作\n\n"
+    "您可以在 https://net.wmc.pub 注册查询（使用您的QQ邮箱注册）\n\n"
+    "如果需要水鱼或落雪，还需要绑定 maibindfish / maibindlx"
+)
+
+
+def take_awmcnet_first_sync_notice(user_key: str, upload_result: str) -> str:
+    """Return the onboarding notice exactly once after a successful sync."""
+    if "AWMCNET：" not in str(upload_result or ""):
+        return ""
+    if not account_db.mark_awmcnet_notified_once(str(user_key)):
+        return ""
+    return _AWMCNET_FIRST_SYNC_NOTICE
 
 
 def _user_key(event: MessageEvent) -> str:
@@ -1020,6 +1035,13 @@ def _result_text(result: dict) -> str:
         return str(message)
     if result.get("done") is True:
         return "异步任务已完成"
+    if result.get("status") == "ok" and (
+        "imported" in result or "updated" in result
+    ):
+        return (
+            f"已同步（新增 {int(result.get('imported') or 0)}，"
+            f"更新 {int(result.get('updated') or 0)}）"
+        )
     task_id = result.get("task_id")
     if task_id:
         return f"任务已提交，任务 ID：{task_id}"
@@ -1327,7 +1349,8 @@ async def _():
         "舞萌状态 / mais：AWMC 全局失败率分类图（空分类省略）+ 实时状态\n"
         "mai绑定水鱼 [Token] / maibindfish：无参数时交互引导，最多重试 3 次\n"
         "lxbind：落雪 OAuth（推荐）；maibindlx <导入Token> 为兼容方式\n"
-        "maiu：仅水鱼；maiul：仅落雪；maiua：水鱼和落雪全部上传\n"
+        "发送二维码：始终上传 AWMCNET；已绑定水鱼/落雪时同时同步对应平台\n"
+        "maiu / maiul / maiua：AWMCNET + 指定且已绑定的外部平台\n"
         f"发票 / fp <{ticket_multipliers}> / mai查票 / mai地图 / maiping\n"
         f"当前上传价格：水鱼 {fish_cost} / 落雪 {lx_cost} / 同时 {all_cost} BREAK\n"
         f"发票价格：倍率 × {ticket_unit} BREAK（例：2倍=20，3倍=30，5倍=50）\n"
@@ -1415,6 +1438,28 @@ async def _(
     except Exception as exc:
         pc_status = f"error:{type(exc).__name__}"
         pc_note = "\nPC 凭据同步暂未完成，可稍后发送「更新pc数」。"
+
+    # 显式 mai绑定 与直发 SGWCMAID 使用相同规则：AWMC NET. 必传，
+    # 用户已绑定的水鱼/落雪作为附加目标一并上传。
+    fish, lxns = auto_upload_channels(
+        fish_token=binding.fish_token,
+        lxns_token=binding.lxns_token,
+        has_lxns_oauth=_has_lxns_oauth(event),
+    )
+    upload_note = ""
+    first_notice = ""
+    try:
+        upload_note = await _upload(
+            event,
+            fish=fish,
+            lxns=lxns,
+            qrcode_arg=qrcode,
+            _qrcode_verified=True,
+        )
+        first_notice = take_awmcnet_first_sync_notice(key, upload_note)
+    except Exception as exc:
+        log.warning(f"[bind] AWMC NET. 首次同步失败 user={key}: {type(exc).__name__}")
+        upload_note = "AWMC NET. 暂未同步成功，可重新发送 SGWCMAID 重试。"
     operation = "claim" if claimed_keys else "bind"
     ref = _log(
         key, operation, "success",
@@ -1429,7 +1474,10 @@ async def _(
     finish_pending(pending_key)
     await account_bind.finish(
         recall_notice
-        + f"{action}：{label}\nRating：{rating}{claim_note}{pc_note}\nRef_ID: {ref}"
+        + f"{action}：{label}\nRating：{rating}{claim_note}{pc_note}\n"
+        + upload_note
+        + (f"\n\n{first_notice}" if first_notice else "")
+        + f"\nRef_ID: {ref}"
     )
 
 
@@ -1693,35 +1741,33 @@ async def _upload(
     _qrcode_verified: bool = False,
 ) -> str:
     if bool(getattr(maiconfig, "maimaidx_user_agreement_required", True)):
-        if not has_user_agreed(event):
+        if not _qrcode_verified and not has_user_agreed(event):
             return agreement_prompt()
     key = _user_key(event)
     binding = account_db.get(key)
     if not binding:
         return _ACCOUNT_SETUP_GUIDE
 
-    oauth_token = await _lxns_oauth_access_token(event) if lxns else None
-    has_lxns_oauth = _has_lxns_oauth(event) if lxns else False
+    requested_lxns = lxns
+    external_warnings: list[str] = []
+    oauth_token = await _lxns_oauth_access_token(event) if requested_lxns else None
+    has_lxns_oauth = _has_lxns_oauth(event) if requested_lxns else False
     has_lxns_upload = bool(oauth_token or binding.lxns_token)
-    if lxns and not oauth_token and _lxns_oauth_missing_write_scope(event):
-        return (
-            "落雪 OAuth 授权缺少 write_player 写入权限。"
-            "请让管理员在落雪 OAuth 应用中启用该权限，然后重新发送 lxbind 授权。"
+    if requested_lxns and has_lxns_oauth and not oauth_token and _lxns_oauth_missing_write_scope(event):
+        external_warnings.append(
+            "落雪：OAuth 缺少 write_player 权限，本次仅同步 AWMCNET"
         )
-    if lxns and has_lxns_oauth and not oauth_token:
-        return (
-            "落雪 OAuth Token 已失效且自动刷新失败。"
-            "请重新发送「lxbind」完成授权后再上传。"
+        if not binding.lxns_token:
+            requested_lxns = False
+    if requested_lxns and has_lxns_oauth and not oauth_token:
+        external_warnings.append(
+            "落雪 OAuth Token 已失效且自动刷新失败，本次仍会同步 AWMCNET；请重新 lxbind"
         )
-    if fish and lxns and not binding.fish_token and not has_lxns_upload:
-        return (
-            "水鱼和落雪上传均未绑定。\n"
-            "请使用「mai绑定水鱼 <Token>」，并发送「lxbind」完成落雪 OAuth。"
-        )
-    if fish and not binding.fish_token:
-        return "未绑定水鱼 Token，请使用「mai绑定水鱼 <Token>」。"
-    if lxns and not has_lxns_upload:
-        return "未绑定落雪上传，请先发送「lxbind」完成 OAuth。"
+        if not binding.lxns_token:
+            requested_lxns = False
+    # AWMCNET 永远上传；外部平台仅在用户已绑定时参与，不再阻塞建档。
+    fish = bool(fish and binding.fish_token)
+    lxns = bool(requested_lxns and has_lxns_upload)
 
     # 最优路径：仅落雪 + OAuth + 新鲜 PC 缓存 → 直连个人 API，不占机台锁、不验二维码。
     # 文档：POST /api/v0/user/maimai/player/scores（Bearer OAuth）。
@@ -1740,6 +1786,15 @@ async def _upload(
                 log.info(
                     f"[upload] 落雪 OAuth：使用 PC 缓存 {len(pc_scores)} 条，跳过机台 user={key}"
                 )
+                from ..libraries.maimaidx_awmcnet_sync import sync_awmcnet_pc_records
+                awmc_result = await sync_awmcnet_pc_records(
+                    qqid,
+                    pc_db.get_user_play_counts(qqid),
+                    nickname=binding.user_name,
+                    rating=binding.rating,
+                )
+                if awmc_result is None:
+                    raise RuntimeError('AWMCNET 同步失败，请检查 Bot-Token 与服务地址')
                 result = await _oauth_upload_lxns_with_refresh(
                     event, oauth_token, pc_scores, source="PC缓存"
                 )
@@ -1760,6 +1815,7 @@ async def _upload(
                 )
                 return (
                     "上传完成\n"
+                    f"AWMCNET：{_result_text(awmc_result)}\n"
                     f"落雪（OAuth/PC缓存）：{_result_text(result)}\n"
                     f"{_charge_text(charge)}\nRef_ID: {ref}"
                 )
@@ -1813,12 +1869,73 @@ async def _upload(
         ref = _log(key, "upload", "error", f"sgid_preview={type(exc).__name__}")
         return f"上传失败：二维码验证失败（{type(exc).__name__}）\nRef_ID: {ref}"
 
-    operation = "upload_all" if fish and lxns else "upload_fish" if fish else "upload_lx"
-    billing_service = "upload"
-    cost = _service_cost(operation)
-    results: list[str] = []
+    operation = (
+        "upload_all" if fish and lxns
+        else "upload_fish" if fish
+        else "upload_lx" if lxns
+        else "upload_awmcnet"
+    )
+    # AWMC NET 是 Bot 的默认成绩库，单独同步不应占用外部查分器的
+    # 每日免费次数，也不收取 BREAK；只有同时上传水鱼/落雪时才计费。
+    billing_service = "upload" if (fish or lxns) else "awmcnet_sync"
+    cost = _service_cost(operation) if (fish or lxns) else 0
+    results: list[str] = list(external_warnings)
     try:
         break_db.ensure_service_affordable(int(key), billing_service, cost)
+        try:
+            qqid = int(key)
+        except ValueError:
+            qqid = 0
+        pc_records = pc_db.get_user_play_counts(qqid) if qqid else []
+        fresh_seconds = float(getattr(maiconfig, 'awmc_lxns_pc_cache_seconds', 600) or 600)
+        fresh_pc = bool(
+            pc_records
+            and time.time() - max(float(r.updated_at or 0) for r in pc_records) <= fresh_seconds
+        )
+        from ..libraries.maimaidx_awmcnet_sync import (
+            sync_awmcnet_arcade_scores,
+            sync_awmcnet_pc_records,
+        )
+        awmc_result = None
+        if fresh_pc:
+            awmc_result = await sync_awmcnet_pc_records(
+                qqid, pc_records, nickname=binding.user_name, rating=binding.rating
+            )
+        elif not fish and not lxns:
+            music_timeout = float(
+                getattr(maiconfig, "awmc_user_music_timeout_seconds", 15.0)
+            )
+            raw_scores = await asyncio.wait_for(
+                sw_api.get_user_music(qrcode, timeout=music_timeout, retry_count=0),
+                timeout=music_timeout + 1.0,
+            )
+            converted = convert_sega_music_scores(raw_scores)
+            awmc_result = await sync_awmcnet_arcade_scores(
+                qqid, converted, nickname=binding.user_name, rating=binding.rating
+            )
+        else:
+            # 外部上传会消耗一次性二维码；先把现有上游快照写入 AWMCNET，
+            # 上传成功后的维护任务会再拉取最新结果覆盖。
+            from ..libraries.maimaidx_awmcnet_sync import sync_awmcnet
+            from ..libraries.maimaidx_datasource import get_user_records
+            for source in ('divingfish', 'lxns'):
+                if (source == 'divingfish' and not fish) or (source == 'lxns' and not lxns):
+                    continue
+                try:
+                    upstream_user, upstream_records = await get_user_records(
+                        qqid=qqid, force_source=source
+                    )
+                    awmc_result = await sync_awmcnet(
+                        qqid, upstream_user, upstream_records, source=source
+                    )
+                    if awmc_result:
+                        break
+                except Exception as exc:
+                    log.info(f'[upload] AWMCNET 上游预同步跳过 source={source}: {exc}')
+        if awmc_result is None and not (fish or lxns):
+            raise RuntimeError('AWMCNET 同步失败，请检查 Bot-Token 与服务地址')
+        if awmc_result is not None:
+            results.append("AWMCNET：" + _result_text(awmc_result))
         if fish:
             result = await sw_api.update_fish(qrcode, binding.fish_token)
             result = await _await_upload_success(result, lxns=False)
@@ -1880,6 +1997,26 @@ async def _upload(
                 result = await sw_api.update_lx(qrcode, binding.lxns_token)
                 result = await _await_upload_success(result, lxns=True)
                 results.append("落雪（兼容 Token）：" + _result_text(result))
+        if awmc_result is None:
+            from ..libraries.maimaidx_awmcnet_sync import sync_awmcnet
+            from ..libraries.maimaidx_datasource import get_user_records
+            for source in ('divingfish', 'lxns'):
+                if (source == 'divingfish' and not fish) or (source == 'lxns' and not lxns):
+                    continue
+                try:
+                    upstream_user, upstream_records = await get_user_records(
+                        qqid=qqid, force_source=source, force_refresh=True
+                    )
+                    awmc_result = await sync_awmcnet(
+                        qqid, upstream_user, upstream_records, source=source
+                    )
+                    if awmc_result:
+                        results.insert(0, "AWMCNET：" + _result_text(awmc_result))
+                        break
+                except Exception as exc:
+                    log.warning(f'[upload] 外部上传后同步 AWMCNET 失败 source={source}: {exc}')
+        if awmc_result is None:
+            raise RuntimeError('外部平台已处理，但 AWMCNET 同步失败，请稍后重试')
         account_db.mark_uploaded(key)
         charge = break_db.settle_service_success(
             int(key), billing_service, cost,
@@ -1942,21 +2079,7 @@ def _upload_preflight_error(
     if not binding:
         return _ACCOUNT_SETUP_GUIDE
 
-    has_lxns_upload = bool(binding.lxns_token or _has_lxns_oauth(event))
-    if lxns and _lxns_oauth_missing_write_scope(event):
-        return (
-            "落雪 OAuth 授权缺少 write_player 写入权限。"
-            "请让管理员在落雪 OAuth 应用中启用该权限，然后重新发送 lxbind 授权。"
-        )
-    if fish and lxns and not binding.fish_token and not has_lxns_upload:
-        return (
-            "水鱼和落雪上传均未绑定。\n"
-            "请使用「mai绑定水鱼 <Token>」，并发送「lxbind」完成落雪 OAuth。"
-        )
-    if fish and not binding.fish_token:
-        return "未绑定水鱼 Token，请使用「mai绑定水鱼 <Token>」。"
-    if lxns and not has_lxns_upload:
-        return "未绑定落雪上传，请先发送「lxbind」完成 OAuth。"
+    # 外部平台授权问题由 _upload 降级处理，不能阻塞 AWMCNET 建档。
     return None
 
 
@@ -2041,7 +2164,8 @@ async def _notify_upload_accepted(
         timing_key,
         fallback_seconds=upload_fallback_seconds(fish=fish, lxns=lxns),
     )
-    targets = "水鱼 + 落雪" if fish and lxns else ("水鱼" if fish else "落雪")
+    external = " + 水鱼 + 落雪" if fish and lxns else (" + 水鱼" if fish else " + 落雪" if lxns else "")
+    targets = "AWMCNET" + external
     message = (
         f"📤 已受理，正在上传到{targets}。\n"
         f"{format_processing_estimate(seconds, samples)}\n"
@@ -2079,9 +2203,11 @@ async def _refresh_b50_cache_after_upload(
         # 即使全量成绩暂时拉取失败，也继续刷新 charts，使新的 SQLite 缓存行
         # 阻止后续查询回退到统一存储里的旧快照。
         try:
-            await get_user_records(
+            userinfo, records = await get_user_records(
                 qqid=qqid, force_source=source, force_refresh=True
             )
+            from ..libraries.maimaidx_awmcnet_sync import sync_awmcnet
+            await sync_awmcnet(qqid, userinfo, records, source=source)
             log.info(
                 f"[upload] 上传后已静默刷新全量成绩缓存 "
                 f"user={user_key},source={source}"
