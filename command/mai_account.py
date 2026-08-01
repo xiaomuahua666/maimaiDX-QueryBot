@@ -124,11 +124,12 @@ _AWMCNET_FIRST_SYNC_NOTICE = (
     "您可以在 https://net.wmc.pub 注册查询（使用您的QQ邮箱注册）\n\n"
     "如果需要水鱼或落雪，还需要绑定 maibindfish / maibindlx"
 )
+_AWMCNET_SYNCED_LINE = "已同步到 AWMC NET."
 
 
 def take_awmcnet_first_sync_notice(user_key: str, upload_result: str) -> str:
     """Return the onboarding notice exactly once after a successful sync."""
-    if "AWMCNET：" not in str(upload_result or ""):
+    if _AWMCNET_SYNCED_LINE not in str(upload_result or ""):
         return ""
     if not account_db.mark_awmcnet_notified_once(str(user_key)):
         return ""
@@ -1781,6 +1782,7 @@ async def _upload(
             operation = "upload_lx"
             billing_service = "upload"
             cost = _service_cost(operation)
+            awmc_result = None
             try:
                 break_db.ensure_service_affordable(int(key), billing_service, cost)
                 log.info(
@@ -1815,11 +1817,28 @@ async def _upload(
                 )
                 return (
                     "上传完成\n"
-                    f"AWMCNET：{_result_text(awmc_result)}\n"
+                    f"{_AWMCNET_SYNCED_LINE}\n"
                     f"落雪（OAuth/PC缓存）：{_result_text(result)}\n"
                     f"{_charge_text(charge)}\nRef_ID: {ref}"
                 )
             except Exception as exc:
+                if awmc_result is not None:
+                    # AWMC NET 已先写入成功时，落雪超时只能算外部平台部分失败，
+                    # 不能把整次同步错误地回复成“上传失败”。
+                    account_db.mark_uploaded(key)
+                    detail = _lxns_upload_failure_text(
+                        exc, stage='向落雪写入成绩'
+                    )
+                    ref = _log(
+                        key, "upload_awmcnet", "success",
+                        f"awmcnet=success,lxns=error:{type(exc).__name__}",
+                    )
+                    return (
+                        f"{_AWMCNET_SYNCED_LINE}\n"
+                        f"⚠️ 落雪同步失败：{detail}\n"
+                        "您可以稍后重新 lxbind 后再同步落雪。\n"
+                        f"Ref_ID: {ref}"
+                    )
                 failure_message = f"上传失败：{_lxns_upload_failure_text(exc, stage='向落雪写入成绩')}"
                 ref = _log(key, "upload", "error", _exception_detail(exc))
                 return failure_message + f"\nRef_ID: {ref}"
@@ -1880,6 +1899,7 @@ async def _upload(
     billing_service = "upload" if (fish or lxns) else "awmcnet_sync"
     cost = _service_cost(operation) if (fish or lxns) else 0
     results: list[str] = list(external_warnings)
+    awmc_result = None
     try:
         break_db.ensure_service_affordable(int(key), billing_service, cost)
         try:
@@ -1896,7 +1916,6 @@ async def _upload(
             sync_awmcnet_arcade_scores,
             sync_awmcnet_pc_records,
         )
-        awmc_result = None
         if fresh_pc:
             awmc_result = await sync_awmcnet_pc_records(
                 qqid, pc_records, nickname=binding.user_name, rating=binding.rating
@@ -1935,7 +1954,7 @@ async def _upload(
         if awmc_result is None and not (fish or lxns):
             raise RuntimeError('AWMCNET 同步失败，请检查 Bot-Token 与服务地址')
         if awmc_result is not None:
-            results.append("AWMCNET：" + _result_text(awmc_result))
+            results.append(_AWMCNET_SYNCED_LINE)
         if fish:
             result = await sw_api.update_fish(qrcode, binding.fish_token)
             result = await _await_upload_success(result, lxns=False)
@@ -2011,7 +2030,7 @@ async def _upload(
                         qqid, upstream_user, upstream_records, source=source
                     )
                     if awmc_result:
-                        results.insert(0, "AWMCNET：" + _result_text(awmc_result))
+                        results.insert(0, _AWMCNET_SYNCED_LINE)
                         break
                 except Exception as exc:
                     log.warning(f'[upload] 外部上传后同步 AWMCNET 失败 source={source}: {exc}')
@@ -2031,6 +2050,21 @@ async def _upload(
         ref = _log(key, operation, "success", f"charged={charge.charged},free={charge.free}")
         return "上传完成\n" + "\n".join(results) + f"\n{_charge_text(charge)}\nRef_ID: {ref}"
     except Exception as exc:
+        if awmc_result is not None:
+            # 水鱼/落雪失败不回滚已经成功的 AWMC NET 同步。
+            account_db.mark_uploaded(key)
+            detail = _exception_detail(exc)
+            shown = list(dict.fromkeys(results))
+            if _AWMCNET_SYNCED_LINE not in shown:
+                shown.insert(0, _AWMCNET_SYNCED_LINE)
+            ref = _log(
+                key, "upload_awmcnet", "success",
+                f"awmcnet=success,external=error:{type(exc).__name__}",
+            )
+            return (
+                "\n".join(shown)
+                + f"\n⚠️ 其他查分平台同步失败：{detail}\nRef_ID: {ref}"
+            )
         failure_message = _upload_failure_message(exc)
         if _upload_retryable(failure_message):
             account_db.mark_qrcode_result(key, False)

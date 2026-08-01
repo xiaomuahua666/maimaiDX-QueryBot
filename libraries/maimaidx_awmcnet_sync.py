@@ -84,9 +84,19 @@ async def _post_sync(payload: dict) -> dict | None:
             )
             return None
         result = response.json()
+        sent_count = len(payload.get("records") or [])
+        stored_count = result.get("stored_records")
+        if sent_count and stored_count is not None and int(stored_count) <= 0:
+            errors = result.get("errors") or []
+            log.warning(
+                f"[AWMCNET] QQ={payload['qq']} 收到 {sent_count} 条但未落库 "
+                f"skipped={result.get('skipped', 0)} errors={errors[:2]}"
+            )
+            return None
         log.info(
             f"[AWMCNET] QQ={payload['qq']} source={payload.get('source')} "
-            f"imported={result.get('imported', 0)} updated={result.get('updated', 0)}"
+            f"imported={result.get('imported', 0)} updated={result.get('updated', 0)} "
+            f"stored={stored_count if stored_count is not None else 'unknown'}"
         )
         return result
     except Exception as exc:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import nonebot
 
@@ -103,7 +103,31 @@ def test_trend_text() -> None:
     assert "14509" in text and "+29" in text and "B35 / B15" in text
 
 
+async def test_empty_sync_is_not_reported_as_success() -> None:
+    original_connection = awmcnet._connection
+    try:
+        awmcnet._connection = lambda: ("https://net.wmc.pub", "test", 8.0)
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {
+            "status": "ok", "imported": 0, "updated": 0,
+            "skipped": 1, "stored_records": 0,
+            "errors": ["找不到歌曲"],
+        }
+        client = AsyncMock()
+        client.post.return_value = response
+        context = MagicMock()
+        context.__aenter__ = AsyncMock(return_value=client)
+        context.__aexit__ = AsyncMock(return_value=None)
+        with patch.object(awmcnet.httpx, 'AsyncClient', return_value=context):
+            result = await awmcnet._post_sync({"qq": 12345, "records": [RECORD]})
+        assert result is None
+    finally:
+        awmcnet._connection = original_connection
+
+
 asyncio.run(test_datasource())
+asyncio.run(test_empty_sync_is_not_reported_as_success())
 test_first_notice()
 test_trend_text()
 print("AWMC NET integration tests: ok")

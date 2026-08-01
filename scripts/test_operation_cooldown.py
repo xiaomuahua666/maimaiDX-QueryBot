@@ -92,11 +92,15 @@ assert "fish=fish," in account_source and "lxns=lxns," in account_source
 assert 'else "upload_awmcnet"' in account_source
 assert 'billing_service = "upload" if (fish or lxns) else "awmcnet_sync"' in account_source
 assert 'cost = _service_cost(operation) if (fish or lxns) else 0' in account_source
+assert '_AWMCNET_SYNCED_LINE = "已同步到 AWMC NET."' in account_source
+assert 'awmcnet=success,lxns=error:' in account_source
+assert '水鱼/落雪失败不回滚已经成功的 AWMC NET 同步' in account_source
 assert "async def _post_upload_maintenance(" in account_source
 assert "task.add_done_callback(_post_upload_tasks.discard)" in account_source
 assert "二维码缓存已过期，请重新发送最新 SGWCMAID" in account_source
 assert "maiu_cache_listener" not in playcount_source
 assert "_MAIU_UPLOAD_GRACE_SECONDS" not in playcount_source
+assert "if not (upload_result and 'Ref_ID:' in str(upload_result))" in playcount_source
 
 letter_source = (ROOT / "command" / "mai_letter.py").read_text(encoding="utf-8")
 assert "正在结算本局贡献" not in letter_source

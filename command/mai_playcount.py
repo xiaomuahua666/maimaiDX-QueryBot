@@ -690,7 +690,9 @@ async def _process_auto_qrcode_for_account(
             'success',
             f'source={source},auto_bound={not had_binding},pc={count is not None}',
         )
-        lines.append(f'Ref_ID: {ref}')
+        # _upload 已带自己的审计 Ref_ID 时不重复展示；扫码流程仍保留独立审计记录。
+        if not (upload_result and 'Ref_ID:' in str(upload_result)):
+            lines.append(f'Ref_ID: {ref}')
         msg = '\n'.join(lines)
         record_label = str(count) if count is not None else 'skipped'
         log.info(
