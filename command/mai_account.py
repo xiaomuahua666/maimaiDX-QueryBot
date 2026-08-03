@@ -3273,7 +3273,11 @@ async def _(matcher: Matcher, message: Message = Arg("edit_song")):
 
 @account_music_upsert.got(
     "edit_difficulty",
-    prompt="请选择难度：BASIC / ADV / EXP / MAS / Re:MAS（也可发送绿/黄/红/紫/白；宴谱发送宴）：",
+    prompt=(
+        "请选择难度（数字 0 BASIC / 1 ADVANCED / 2 EXPERT / 3 MASTER / "
+        "4 Re:MASTER；没有 Re:MASTER 的歌曲只能选 0-3；也可发送绿/黄/红/紫/白；"
+        "宴谱发送宴）："
+    ),
 )
 async def _(matcher: Matcher, message: Message = Arg("edit_difficulty")):
     music = matcher.state["edit_music"]
@@ -3360,7 +3364,11 @@ async def _(matcher: Matcher, message: Message = Arg("delete_song")):
 
 @account_music_delete.got(
     "delete_difficulty",
-    prompt="请选择要删除的难度：BASIC / ADV / EXP / MAS / Re:MAS（或绿/黄/红/紫/白；宴谱发送宴）：",
+    prompt=(
+        "请选择要删除的难度（数字 0 BASIC / 1 ADVANCED / 2 EXPERT / 3 MASTER / "
+        "4 Re:MASTER；没有 Re:MASTER 的歌曲只能选 0-3；或绿/黄/红/紫/白；"
+        "宴谱发送宴）："
+    ),
 )
 async def _(matcher: Matcher, event: MessageEvent, message: Message = Arg("delete_difficulty")):
     music = matcher.state["delete_music"]
