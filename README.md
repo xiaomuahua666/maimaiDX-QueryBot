@@ -123,7 +123,7 @@ AWMC_PUBLIC_GATEWAY_TOKEN=gw_xxx
 # public 模式无需 SDGBT_CLIENT_ID（keychip 由网关注入）
 ```
 
-路径前缀：`/v1/...`，请求头：`Authorization: Bearer <令牌>`，JSON Body 只传业务参数（如 `qrcode`）。成功且业务 `code === 0` 时按接口扣 Token（余额不足返回 403）。
+路径前缀：`/v1/...`，请求头：`Authorization: Bearer <令牌>`，JSON Body 只传业务参数（如 `qrcode`）。健康检查成功为 `returnCode === 0`，其余业务成功为 `returnCode === 1`；兼容字段同时返回 `code === 0`（余额不足返回 403）。
 
 | 接口 | 消耗 |
 |------|------|
@@ -132,7 +132,6 @@ AWMC_PUBLIC_GATEWAY_TOKEN=gw_xxx
 | `POST /v1/user/region` | 1 |
 | `POST /v1/user/music` | 2 |
 | `POST /v1/user/charge` | 1 |
-| `GET /v1/charge/queue` | 0 |
 | `POST /v1/charge` | 10 |
 | `POST /v1/update-lx` | 5 |
 | `POST /v1/update-fish` | 5 |
@@ -145,12 +144,10 @@ AWMC_MACHINE_LOCK_TIMEOUT_SECONDS=60
 AWMC_API_SUCCESS_COOLDOWN_SECONDS=1
 # 发票允许倍率，默认仅 2、3、5 倍。
 AWMC_TICKET_ALLOWED_MULTIPLIERS=2,3,5
-# 发票基础超时 120 秒；首次按每个待处理请求约 80 秒，后续根据近期真实耗时动态估算，最多 10 分钟。
-# 队列成功后只查一次票券库存，确认到账后才扣 BREAK。
-AWMC_TICKET_POLL_INTERVAL_SECONDS=3
-AWMC_TICKET_POLL_TIMEOUT_SECONDS=120
-AWMC_TICKET_MAX_POLL_TIMEOUT_SECONDS=600
-AWMC_TICKET_SECONDS_PER_REQUEST=80
+# AWMC v2 发票为同步接口；首次预计 80 秒，后续根据近期真实耗时动态估算。
+AWMC_TICKET_TIMEOUT_SECONDS=120
+AWMC_TICKET_ESTIMATE_SECONDS=80
+# 同步接口成功后只查一次票券库存，确认到账后才扣 BREAK。
 AWMC_TICKET_SETTLEMENT_DELAY_SECONDS=2
 # mais：全局失败率分类数据（默认即此地址）
 AWMC_FAILURE_RATE_URL=https://api.wmc.pub/usage/failure-rate
@@ -383,6 +380,11 @@ BOTNAME=maimai
 | `maiua` | 同时上传水鱼与落雪 |
 | `发票` / `fp <2/3/5>` / `mai查票` | 票券操作（默认倍率 × 10 BREAK；3 倍票消耗 30 BREAK） |
 | `mai地图` / `maiping` | 游玩地区 / API 健康检查 |
+| `mai预览` / `mai道具` | 查询账号预览 / 道具列表（成功查询每次 5 BREAK） |
+| `mai改成绩 [歌曲 难度 达成率 DX分 FC FS]` | 交互或一步编辑单条成绩（成功 75 BREAK） |
+| `mai删成绩 [歌曲 难度]` | 交互或一步删除单条成绩（成功 50 BREAK） |
+| `mai清票` | 交互确认后清空 Charge 票券（成功 10 BREAK） |
+| `mai改道具 [itemKind itemId add/del]` | 高风险交互式道具修改（成功 100 BREAK；未经测试，风险自负） |
 | `舞萌状态` / `mais` | AWMC 全局失败率分类图与服务器实时状态（空时段、空分类省略） |
 | `迁移Koishi 检查/确认 <数据库>` | 超级管理员预检/导入 Koishi maiBot 数据 |
 

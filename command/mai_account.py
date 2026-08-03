@@ -35,6 +35,7 @@ from ..libraries.maimaidx_machine_session import (
     MachineBusyError,
     machine_session,
 )
+from ..libraries.maimaidx_music import mai
 from ..libraries.maimaidx_platform import billing_user_id, resolve_score_qqid
 from ..libraries.maimaidx_playcount_db import pc_db
 from ..libraries.maimaidx_qrcode_util import (
@@ -76,9 +77,13 @@ account_ping = on_command("maiping", aliases={"mai连接测试"})
 account_ticket = on_command("mai发票", aliases={"发票", "fp", "拿票"})
 account_ticket_status = on_command("mai查票", aliases={"查票"})
 account_region = on_command("mai地图", aliases={"游玩地图"})
+account_preview = on_command("mai预览")
+account_items = on_command("mai道具")
+account_music_upsert = on_command("mai改成绩", aliases={"修改成绩"})
+account_music_delete = on_command("mai删成绩", aliases={"删除成绩"})
+account_ticket_clear = on_command("mai清票", aliases={"清空票券"})
+account_item_upsert = on_command("mai改道具", aliases={"修改道具"})
 account_opt = on_command("mai查询opt", aliases={"查询opt"})
-account_queue = on_command("maiqueue", aliases={"mai队列"})
-
 # 涉及账号状态、外部上传或机台会话的命令按用户串行执行。
 # 同一账号并发提交时静默拒绝后到的请求，不发送过程确认消息。
 for _serial_account_matcher in (
@@ -96,8 +101,13 @@ for _serial_account_matcher in (
     account_ticket,
     account_ticket_status,
     account_region,
+    account_preview,
+    account_items,
+    account_music_upsert,
+    account_music_delete,
+    account_ticket_clear,
+    account_item_upsert,
     account_opt,
-    account_queue,
 ):
     setattr(_serial_account_matcher, '_maimaidx_serial_user_operation', True)
 # 舞萌状态只读公开 Uptime 与全局失败率 API，不占用机台串行锁。
@@ -105,7 +115,8 @@ for _serial_account_matcher in (
 _RECALL_FAILED_NOTICE = "⚠️ Bot 无法撤回该凭据消息，请立即手动撤回。\n"
 _QRCODE_RECALL_TIMEOUT_SECONDS = 3.0
 _TICKET_QRCODE_RETRY_SECONDS = 180
-_TICKET_QUEUE_UNIT_TIMING_KEY = "ticket_queue:seconds_per_request"
+_TICKET_TIMING_KEY = "ticket:processing_seconds"
+_LEGACY_TICKET_TIMING_KEY = "ticket_queue:seconds_per_request"
 _TICKET_AUTO_RETRIES = 2
 _pending_ticket_retries: dict[str, tuple[int, float]] = {}
 _DIVING_FISH_PROBER_URL = "https://www.diving-fish.com/maimaidx/prober/"
@@ -374,135 +385,6 @@ def clear_pending_ticket_retry(user_key: str) -> None:
     _pending_ticket_retries.pop(str(user_key), None)
 
 
-def _matching_charge_task(
-    payload: dict, charge_id: int, mai_uid: str, task_id: str = ""
-) -> Optional[dict]:
-    """从服务端发票队列中找当前账号、当前倍率最新的一笔任务。"""
-    tasks = payload.get("tasks") if isinstance(payload, dict) else None
-    if not isinstance(tasks, list):
-        return None
-    matches = []
-    id_matches = []
-    for task in tasks:
-        if not isinstance(task, dict):
-            continue
-        current_task_id = str(
-            _pick(task, "taskId", "TaskId", "task_id", "id", default="") or ""
-        )
-        if task_id and current_task_id == str(task_id):
-            id_matches.append(task)
-        try:
-            same_charge = int(_pick(task, "chargeId", "ChargeId")) == int(charge_id)
-        except (TypeError, ValueError):
-            same_charge = False
-        task_uid = str(_pick(task, "userId", "UserID", default="") or "")
-        if same_charge and task_uid == str(mai_uid):
-            matches.append(task)
-    candidates = id_matches or matches
-    return max(candidates, key=lambda task: str(task.get("ts") or ""), default=None)
-
-
-def _ticket_submission_task_id(payload: dict) -> str:
-    """从发票 200 响应中提取队列任务 ID。"""
-    if not isinstance(payload, dict):
-        return ""
-    containers = [payload]
-    for key in ("data", "result", "task", "msg"):
-        value = payload.get(key)
-        if isinstance(value, dict):
-            containers.append(value)
-        elif isinstance(value, str):
-            try:
-                decoded = json.loads(value)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(decoded, dict):
-                containers.append(decoded)
-    for row in containers:
-        value = _pick(row, "taskId", "TaskId", "task_id", "id", default="")
-        if value not in (None, ""):
-            return str(value)
-    return ""
-
-
-def _ticket_queue_ahead(payload: dict) -> Optional[int]:
-    """从发票 200 响应中提取前方排队数，兼容常见字段与文本。"""
-    if not isinstance(payload, dict):
-        return None
-    containers = [payload]
-    for key in ("data", "result", "task", "msg"):
-        value = payload.get(key)
-        if isinstance(value, dict):
-            containers.append(value)
-        elif isinstance(value, str):
-            try:
-                decoded = json.loads(value)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(decoded, dict):
-                containers.append(decoded)
-    direct_keys = (
-        "ahead", "aheadCount", "ahead_count", "waitingAhead", "waiting_ahead",
-        "queueAhead", "queue_ahead", "waitCount", "wait_count", "waiting",
-        "queueSize", "queue_size", "queueLength", "queue_length",
-    )
-    for row in containers:
-        for key in direct_keys:
-            if key not in row:
-                continue
-            try:
-                return max(0, int(row[key]))
-            except (TypeError, ValueError):
-                continue
-        for key in ("position", "queuePosition", "queue_position"):
-            if key not in row:
-                continue
-            try:
-                return max(0, int(row[key]) - 1)
-            except (TypeError, ValueError):
-                continue
-    texts = [str(payload.get(key) or "") for key in ("msg", "message")]
-    for text in texts:
-        for pattern in (
-            r"(?:前方|ahead)\D{0,8}(\d+)",
-            r"(?:排队|队列|等待人数)(?:人数|数量|长度|中有|已有|剩余)?\D{0,8}(\d+)",
-        ):
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                return max(0, int(match.group(1)))
-    return None
-
-
-def _ticket_task_result_code(task: dict) -> Optional[int]:
-    """解析队列 msg 中嵌套的 ``result={...returnCode...}``。"""
-    containers = [task]
-    for key in ("result", "data"):
-        value = task.get(key)
-        if isinstance(value, dict):
-            containers.append(value)
-    message = task.get("msg") or task.get("message")
-    if isinstance(message, dict):
-        containers.append(message)
-    elif isinstance(message, str):
-        match = re.search(r"result\s*=\s*(\{.*\})\s*$", message, re.DOTALL)
-        if match:
-            try:
-                decoded = json.loads(match.group(1))
-            except json.JSONDecodeError:
-                decoded = None
-            if isinstance(decoded, dict):
-                containers.append(decoded)
-    for row in containers:
-        value = _pick(row, "returnCode", "ReturnCode")
-        if value is None:
-            continue
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            continue
-    return None
-
-
 def _charge_payload_user_id(payload: dict) -> str:
     """提取 /user/charge 返回的 UID，用于防止跨账号误判到账。"""
     if not isinstance(payload, dict):
@@ -515,39 +397,20 @@ def _charge_payload_user_id(payload: dict) -> str:
     return str(value) if value not in (None, "") else ""
 
 
-def _ticket_queue_units(queue_ahead: Optional[int]) -> int:
-    """API 的排队数已包含当前待处理量；0/缺失时至少算1笔。"""
-    return max(1, int(queue_ahead or 0))
-
-
-def _ticket_wait_plan(queue_ahead: Optional[int]) -> tuple[int, float, int]:
-    """根据前方排队数计算预计时间和动态超时。"""
-    fallback_per_request = max(
+def _ticket_estimate() -> tuple[int, int]:
+    """估算同步发票耗时；新计时键无样本时复用旧队列历史。"""
+    fallback_seconds = max(
         1.0,
-        float(getattr(maiconfig, "awmc_ticket_seconds_per_request", 80.0) or 80.0),
+        float(getattr(maiconfig, "awmc_ticket_estimate_seconds", 80.0) or 80.0),
     )
-    per_request, samples = processing_time_estimator.estimate(
-        _TICKET_QUEUE_UNIT_TIMING_KEY,
-        fallback_seconds=fallback_per_request,
+    estimated, samples = processing_time_estimator.estimate(
+        _TICKET_TIMING_KEY, fallback_seconds=fallback_seconds
     )
-    base_timeout = min(
-        600.0,
-        max(
-            1.0,
-            float(getattr(maiconfig, "awmc_ticket_poll_timeout_seconds", 120.0) or 120.0),
-        ),
+    if samples:
+        return estimated, samples
+    return processing_time_estimator.estimate(
+        _LEGACY_TICKET_TIMING_KEY, fallback_seconds=fallback_seconds
     )
-    max_timeout = min(
-        600.0,
-        max(
-            base_timeout,
-            float(getattr(maiconfig, "awmc_ticket_max_poll_timeout_seconds", 600.0) or 600.0),
-        ),
-    )
-    requests = _ticket_queue_units(queue_ahead)
-    estimated = max(1, int(round(requests * per_request)))
-    timeout = min(max_timeout, max(base_timeout, estimated + 40.0))
-    return estimated, timeout, samples
 
 
 def _format_wait_duration(seconds: int) -> str:
@@ -559,144 +422,25 @@ def _format_wait_duration(seconds: int) -> str:
     return f"{remain} 秒"
 
 
-def _ticket_wait_message(
-    queue_ahead: Optional[int], estimated: int, timeout: float, samples: int
-) -> str:
-    queue_text = (
-        f"队列预计有 {queue_ahead} 个请求待处理"
-        if queue_ahead is not None
-        else "API 未返回明确的排队数"
-    )
+def _ticket_wait_message(estimated: int, samples: int) -> str:
     estimate_source = (
         f"根据最近 {samples} 次真实处理时间估算"
         if samples
         else "按单个请求约 80 秒估算"
     )
-    timeout_note = (
-        "\n当前队列较长，Bot 最多等待 10 分钟。"
-        if timeout >= 600
-        else ""
-    )
     return (
-        f"🎫 发票请求已进入队列，{queue_text}，"
+        "🎫 发票请求正在处理，"
         f"预计约 {_format_wait_duration(estimated)} 完成"
         f"（{estimate_source}）。\n"
-        "Bot 会等待队列处理，并在确认票券到账后才扣 BREAK。"
-        + timeout_note
+        "Bot 会在接口返回并确认票券到账后才扣 BREAK。"
     )
-
-
-def _ticket_task_state(task: dict) -> str:
-    if task.get("success") is False or task.get("error"):
-        return "failed"
-    status = str(_pick(task, "status", "Status", "state", "State", default="") or "").lower()
-    if status in {"failed", "failure", "error", "cancelled", "canceled", "失败", "已取消"}:
-        return "failed"
-    if status in {"pending", "queued", "waiting", "processing", "running", "排队中", "处理中"}:
-        return "active"
-    terminal = (
-        task.get("done") is True
-        or task.get("success") is True
-        or status in {
-            "done", "success", "succeeded", "completed", "finished",
-            "成功", "已完成", "完成",
-        }
-    )
-    if terminal:
-        result_code = _ticket_task_result_code(task)
-        # UpsertUserChargelogApi 的返回码语义与 /user/charge 不同：
-        # 队列内层 returnCode=1 成功，其他已知返回码均为失败。
-        if result_code is not None and result_code != 1:
-            return "failed"
-        return "success"
-    return status or "unknown"
-
-
-async def _await_ticket_delivery(
+async def _confirm_ticket_delivery(
     qrcode: str,
     charge_id: int,
     mai_uid: str,
     baseline_stock: int,
-    previous_task_ts: Optional[str] = "",
-    *,
-    task_id: str = "",
-    timeout: float = 120.0,
-    timing_started_at: Optional[float] = None,
-    timing_units: int = 1,
 ) -> int:
-    """先轮询队列；队列成功后只查一次真实票券库存。"""
-    interval = max(
-        1.0, float(getattr(maiconfig, "awmc_ticket_poll_interval_seconds", 3.0))
-    )
-    timeout = max(interval, min(600.0, float(timeout)))
-    deadline = time.monotonic() + timeout
-    saw_current_task = False
-    last_task_status = ""
-    last_query_error = ""
-    completed_result_code: Optional[int] = None
-    timing_recorded = False
-
-    def record_terminal_timing() -> None:
-        nonlocal timing_recorded
-        if timing_recorded or timing_started_at is None:
-            return
-        elapsed = max(0.001, time.perf_counter() - timing_started_at)
-        processing_time_estimator.record(
-            _TICKET_QUEUE_UNIT_TIMING_KEY,
-            elapsed / max(1, int(timing_units)),
-        )
-        timing_recorded = True
-
-    log.info(
-        f"[ticket] 开始确认到账 uid={mai_uid} charge={charge_id} "
-        f"baseline={baseline_stock} timeout={timeout:.0f}s interval={interval:.0f}s"
-    )
-    while time.monotonic() < deadline:
-        await asyncio.sleep(interval)
-        try:
-            queue = await sw_api.get_charge_queue()
-            _ensure_business_success(queue)
-            task = _matching_charge_task(queue, charge_id, mai_uid, task_id)
-            if (
-                task is not None
-                and bool(previous_task_ts)
-                and str(task.get("ts") or "") == previous_task_ts
-            ):
-                # 提交前已经存在的同账号同倍率历史任务，不属于本次请求。
-                task = None
-            if task is not None:
-                saw_current_task = True
-                last_task_status = _ticket_task_state(task)
-                if last_task_status == "failed":
-                    record_terminal_timing()
-                    result_code = _ticket_task_result_code(task)
-                    detail = (
-                        f"上游 returnCode={result_code}，票券未发放"
-                        if result_code is not None
-                        else str(task.get("msg") or "队列任务失败")
-                    )
-                    raise TicketRetryableError(
-                        f"发票队列任务执行失败（{detail}）；本次不扣 BREAK"
-                    )
-                if last_task_status == "success":
-                    record_terminal_timing()
-                    completed_result_code = _ticket_task_result_code(task)
-                    break
-        except RuntimeError:
-            raise
-        except Exception as exc:
-            last_query_error = _exception_detail(exc)
-            log.warning(f"[ticket] 查询发票队列失败，继续等待：{last_query_error}")
-    else:
-        queue_hint = f"，队列末次状态 {last_task_status}" if last_task_status else ""
-        active_hint = "，已识别本次队列任务" if saw_current_task else ""
-        error_hint = f"，末次查询错误：{last_query_error}" if last_query_error else ""
-        raise RuntimeError(
-            f"发票队列超时（{timeout:.0f} 秒），未收到任务成功状态"
-            f"{queue_hint}{active_hint}{error_hint}；本次不扣 BREAK"
-        )
-
-    # 队列明确成功后，留出短暂落库时间，再只查询一次库存。
+    """同步发票成功后等待落库，并只查询一次真实票券库存。"""
     settlement_delay = max(
         0.0,
         float(getattr(maiconfig, "awmc_ticket_settlement_delay_seconds", 2.0) or 0.0),
@@ -711,18 +455,13 @@ async def _await_ticket_delivery(
     charge_ok, rows, free_rows = _normalize_charge_payload(current)
     stock = _ticket_stock(rows + free_rows, charge_id) if charge_ok else baseline_stock
     if stock <= baseline_stock:
-        result_note = (
-            f"returnCode={completed_result_code}"
-            if completed_result_code is not None
-            else "未返回 returnCode"
-        )
         raise RuntimeError(
-            f"发票队列任务已完成（{result_note}），但到账复核未增加："
+            "发票接口已返回成功，但到账复核未增加："
             f"{charge_id} 倍票库存 {baseline_stock}→{stock}；"
             "可能是上游落库延迟，本次不扣 BREAK"
         )
     log.info(
-        f"[ticket] 队列成功后已确认到账 uid={mai_uid} charge={charge_id} "
+        f"[ticket] 同步接口成功后已确认到账 uid={mai_uid} charge={charge_id} "
         f"stock={stock} baseline={baseline_stock}"
     )
     return stock
@@ -834,7 +573,7 @@ async def _read_verified_preview(
     *,
     save_qrcode: bool,
 ) -> tuple[AccountBinding, dict]:
-    payload = await sw_api.get_user_preview(qrcode)
+    payload = await sw_api.get_user_data(qrcode)
     mai_uid, name, rating, data = _normalize_preview(payload)
     if binding.mai_uid and str(binding.mai_uid) != str(mai_uid):
         raise RuntimeError("二维码与当前绑定的舞萌账号不一致")
@@ -866,7 +605,7 @@ async def _bind_verified_account(
     user_key: str, qrcode: str
 ) -> tuple[AccountBinding, list[str]]:
     """验真并绑定/认领账号，供显式绑定和直发二维码共用。"""
-    preview = await sw_api.get_user_preview(qrcode)
+    preview = await sw_api.get_user_data(qrcode)
     mai_uid, name, rating, preview_data = _normalize_preview(preview)
     binding, claimed_keys = account_db.bind_verified(
         user_key,
@@ -973,6 +712,330 @@ async def _render_account_status(
             log.warning(f"[AccountStatus] 获取票券失败：{type(exc).__name__}: {exc}")
             lines.append("🎫 票券情况：暂时无法获取")
     return "\n".join(lines)
+
+
+_ITEM_KIND_LABELS = {
+    1: "姓名框",
+    2: "称号",
+    3: "头像",
+    4: "收藏品(高风险类型)",
+    5: "乐曲解锁",
+    6: "乐曲解锁",
+    7: "乐曲解锁",
+    8: "乐曲解锁(高风险类型)",
+    9: "角色",
+    10: "搭档",
+    11: "边框",
+    12: "票券",
+    15: "钥匙(高风险类型)",
+}
+
+
+def _format_user_preview(payload: dict) -> str:
+    """格式化只读 preview，避免输出 userId、二维码等账号标识。"""
+    data = _merged_preview(payload)
+    lines = ["👤 舞萌账号预览"]
+    fields = (
+        ("用户名", ("userName", "UserName")),
+        ("Rating", ("playerRating", "PlayerRating", "rating", "Rating")),
+        ("友人对战等级", ("classRank", "ClassRank")),
+        ("段位", ("courseRank", "CourseRank")),
+        ("总游玩次数", ("playCount", "PlayCount")),
+        ("当前版本游玩次数", ("currentPlayCount", "CurrentPlayCount")),
+        ("上次游玩", ("lastPlayDate", "LastPlayDate")),
+        ("上次游玩区域", ("lastRegionName", "LastRegionName")),
+    )
+    for label, keys in fields:
+        line = _preview_line(data, label, *keys)
+        if line:
+            lines.append(line)
+    if len(lines) == 1:
+        lines.append("API 未返回可展示的预览字段。")
+    return "\n".join(lines)
+
+
+def _flatten_user_items(payload: Any) -> list[dict]:
+    rows: list[dict] = []
+
+    def walk(value: Any, inherited_kind: Any = None) -> None:
+        if isinstance(value, list):
+            for item in value:
+                walk(item, inherited_kind)
+            return
+        if not isinstance(value, dict):
+            return
+        kind = _pick(value, "itemKind", "ItemKind", default=inherited_kind)
+        item_id = _pick(value, "itemId", "ItemId", "itemID", "ItemID")
+        if item_id is not None:
+            row = dict(value)
+            if _pick(row, "itemKind", "ItemKind") is None and kind is not None:
+                row["itemKind"] = kind
+            rows.append(row)
+            return
+        for nested in value.values():
+            if isinstance(nested, (dict, list)):
+                walk(nested, kind)
+
+    walk(payload)
+    return rows
+
+
+def _format_user_items(payload: Any) -> str:
+    rows = _flatten_user_items(payload)
+    if not rows:
+        return "🎒 舞萌道具\n当前没有可展示的道具记录。"
+
+    grouped: dict[int, list[dict]] = {}
+    for row in rows:
+        try:
+            kind = int(_pick(row, "itemKind", "ItemKind", default=-1))
+        except (TypeError, ValueError):
+            kind = -1
+        grouped.setdefault(kind, []).append(row)
+
+    lines = [f"🎒 舞萌道具 · 共 {len(rows)} 条"]
+    for kind in sorted(grouped):
+        items = grouped[kind]
+        label = _ITEM_KIND_LABELS.get(kind, f"未知类型 {kind}")
+        ids = []
+        for row in items[:12]:
+            item_id = _pick(row, "itemId", "ItemId", "itemID", "ItemID")
+            stock = _pick(row, "stock", "Stock")
+            ids.append(f"{item_id}×{stock}" if stock not in (None, 1, "1") else str(item_id))
+        suffix = f" 等 {len(items)} 项" if len(items) > len(ids) else ""
+        lines.append(f"{label}（kind={kind}）：" + "、".join(ids) + suffix)
+    return "\n".join(lines)
+
+
+_DIFFICULTY_LABELS = {
+    0: "BASIC",
+    1: "ADVANCED",
+    2: "EXPERT",
+    3: "MASTER",
+    4: "Re:MASTER",
+    10: "宴会场",
+}
+_DIFFICULTY_ALIASES = {
+    "0": 0, "basic": 0, "bas": 0, "绿": 0, "绿色": 0,
+    "1": 1, "advanced": 1, "adv": 1, "黄": 1, "黄色": 1,
+    "2": 2, "expert": 2, "exp": 2, "红": 2, "红色": 2,
+    "3": 3, "master": 3, "mas": 3, "紫": 3, "紫色": 3,
+    "4": 4, "remaster": 4, "re:master": 4, "remas": 4, "白": 4, "白色": 4,
+    "10": 10, "utage": 10, "宴": 10, "宴会场": 10,
+}
+_COMBO_ALIASES = {
+    "none": "none", "无fc": "none", "fc": "fc", "fcp": "fcp",
+    "fc+": "fcp", "ap": "ap", "app": "app", "ap+": "app",
+}
+_SYNC_ALIASES = {
+    "none": "none", "无fs": "none", "fs": "fs", "fsp": "fsp",
+    "fs+": "fsp", "fsd": "fsd", "fdx": "fsd", "fsdp": "fsdp",
+    "fdxp": "fsdp", "sync": "sync",
+}
+
+
+def _parse_difficulty(value: str) -> Optional[int]:
+    normalized = re.sub(r"[\s_-]+", "", str(value or "").strip().lower())
+    return _DIFFICULTY_ALIASES.get(normalized)
+
+
+def _resolve_account_music(query: str):
+    text = str(query or "").strip()
+    if not text:
+        raise ValueError("请输入歌曲名、别名或歌曲 ID")
+    if music := mai.total_list.by_id(text):
+        return music
+    if music := mai.total_list.by_title(text):
+        return music
+    lowered = text.lower()
+    exact_titles = [m for m in mai.total_list if str(m.title).lower() == lowered]
+    if len(exact_titles) == 1:
+        return exact_titles[0]
+    aliases = mai.total_alias_list.by_alias(lowered) or mai.total_alias_list.by_alias(text)
+    song_ids = sorted({str(alias.SongID) for alias in (aliases or [])})
+    matches = [mai.total_list.by_id(song_id) for song_id in song_ids]
+    matches = [music for music in matches if music is not None]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        choices = "、".join(f"{music.id} {music.title}" for music in matches[:8])
+        raise ValueError(f"歌曲别名不唯一，请改用歌曲 ID：{choices}")
+    partial = [m for m in mai.total_list if lowered in str(m.title).lower()]
+    if len(partial) == 1:
+        return partial[0]
+    if len(partial) > 1:
+        choices = "、".join(f"{music.id} {music.title}" for music in partial[:8])
+        raise ValueError(f"歌曲名不唯一，请改用歌曲 ID：{choices}")
+    raise ValueError(f"未找到歌曲：{text}")
+
+
+def _validate_music_difficulty(music, level: int) -> None:
+    is_utage = (
+        int(music.id) >= 100000
+        or str(getattr(music.basic_info, "genre", "")) in {"宴会場", "宴会场"}
+    )
+    if level == 10 and not is_utage:
+        raise ValueError(f"《{music.title}》不是宴会场曲目")
+    if level != 10 and is_utage:
+        raise ValueError(f"《{music.title}》是宴会场曲目，难度请填写“宴”")
+    index = 0 if level == 10 else level
+    if index < 0 or index >= len(music.charts):
+        available = " / ".join(
+            _DIFFICULTY_LABELS.get(i, str(i)) for i in range(len(music.charts))
+        )
+        raise ValueError(f"《{music.title}》没有该难度；可选：{available}")
+
+
+def _parse_achievement(value: str) -> float:
+    text = str(value or "").strip().replace("％", "%")
+    if text.endswith("%"):
+        text = text[:-1].strip()
+    try:
+        achievement = float(text)
+    except ValueError as exc:
+        raise ValueError("达成率格式错误，例如：100.5%") from exc
+    if 0 < achievement <= 1:
+        achievement *= 100
+    if not 0 <= achievement <= 101:
+        raise ValueError("达成率必须在 0%～101% 之间")
+    return round(achievement, 4)
+
+
+def _parse_dx_score(value: str) -> int:
+    text = re.sub(r"^(?:dx(?:分|score)?)[：:=]?", "", str(value).strip(), flags=re.I)
+    try:
+        score = int(text)
+    except ValueError as exc:
+        raise ValueError("DX 分必须是整数；简单模式填写星级 0～5") from exc
+    if score < 0:
+        raise ValueError("DX 分不能小于 0")
+    return score
+
+
+def _chart_max_dx_score(music, level: int) -> int:
+    index = 0 if level == 10 else level
+    return sum(int(value) for value in music.charts[index].notes) * 3
+
+
+def _parse_score_options(tokens: list[str], music, level: int) -> dict:
+    if len(tokens) < 2:
+        raise ValueError("请提供达成率和 DX 分，例如：100.5% 5 FC FS")
+    achievement = _parse_achievement(tokens[0])
+    dx_score = _parse_dx_score(tokens[1])
+    mode: Optional[str] = None
+    combo, sync = "none", "none"
+    for token in tokens[2:]:
+        normalized = token.strip().lower()
+        if normalized in {"简单", "简单模式", "simple", "模糊", "fuzzy"}:
+            mode = "simple"
+        elif normalized in {"专业", "专业模式", "pro", "professional", "精确", "exact"}:
+            mode = "professional"
+        elif normalized in _COMBO_ALIASES:
+            combo = _COMBO_ALIASES[normalized]
+        elif normalized in _SYNC_ALIASES:
+            sync = _SYNC_ALIASES[normalized]
+        else:
+            raise ValueError(f"无法识别的成绩选项：{token}")
+    inferred_mode = "simple" if dx_score <= 5 else "professional"
+    mode = mode or inferred_mode
+    if mode == "simple" and not 0 <= dx_score <= 5:
+        raise ValueError("简单模式的 DX 分表示星级，只能填写 0～5")
+    max_dx = _chart_max_dx_score(music, level)
+    if mode == "professional" and dx_score > max_dx:
+        raise ValueError(f"专业模式实际 DX 分不能超过该谱面满分 {max_dx}")
+    return {
+        "musicId": int(music.id),
+        "level": level,
+        "achievement": achievement,
+        "dxScore": dx_score,
+        "comboStatus": combo,
+        "syncStatus": sync,
+        "fuzzy": mode == "simple",
+    }
+
+
+def _parse_music_upsert_command(raw: str) -> tuple[Any, int, dict]:
+    tokens = str(raw or "").split()
+    last_error: Optional[ValueError] = None
+    for index in range(len(tokens) - 2, 0, -1):
+        level = _parse_difficulty(tokens[index])
+        if level is None:
+            continue
+        try:
+            music = _resolve_account_music(" ".join(tokens[:index]))
+            _validate_music_difficulty(music, level)
+            score = _parse_score_options(tokens[index + 1 :], music, level)
+            return music, level, score
+        except ValueError as exc:
+            last_error = exc
+            continue
+    if last_error is not None:
+        raise last_error
+    raise ValueError(
+        "格式错误：mai改成绩 <歌曲> <难度> <达成率> <DX分> [FC] [FS] [简单/专业]"
+    )
+
+
+def _parse_music_delete_command(raw: str) -> tuple[Any, int]:
+    tokens = str(raw or "").split()
+    if len(tokens) < 2:
+        raise ValueError("格式错误：mai删成绩 <歌曲> <难度>")
+    level = _parse_difficulty(tokens[-1])
+    if level is None:
+        raise ValueError("无法识别难度，请使用 BASIC/ADV/EXP/MAS/Re:MAS 或颜色")
+    music = _resolve_account_music(" ".join(tokens[:-1]))
+    _validate_music_difficulty(music, level)
+    return music, level
+
+
+_ITEM_KIND_INPUTS = {
+    "姓名框": 1, "nameplate": 1,
+    "称号": 2, "title": 2,
+    "头像": 3, "icon": 3,
+    "收藏品": 4,
+    "乐曲": 5, "乐曲解锁": 5, "music": 5,
+    "角色": 9, "character": 9,
+    "搭档": 10, "partner": 10,
+    "边框": 11, "frame": 11,
+    "票券": 12, "ticket": 12,
+    "钥匙": 15, "key": 15,
+}
+
+
+def _parse_item_kind(value: str) -> int:
+    text = str(value or "").strip().lower()
+    if text in _ITEM_KIND_INPUTS:
+        return _ITEM_KIND_INPUTS[text]
+    try:
+        kind = int(text)
+    except ValueError as exc:
+        raise ValueError("itemKind 必须是正整数或已知类型名称") from exc
+    if kind <= 0:
+        raise ValueError("itemKind 必须大于 0")
+    return kind
+
+
+def _parse_item_operation(value: str) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"add", "添加", "增加", "新增"}:
+        return "add"
+    if normalized in {"del", "delete", "删除", "移除"}:
+        return "del"
+    raise ValueError("操作只能选择 add（添加）或 del（删除）")
+
+
+def _parse_item_upsert_command(raw: str) -> tuple[int, int, str]:
+    tokens = str(raw or "").split()
+    if len(tokens) != 3:
+        raise ValueError("格式错误：mai改道具 <itemKind> <itemId> <add/del>")
+    kind = _parse_item_kind(tokens[0])
+    try:
+        item_id = int(tokens[1])
+    except ValueError as exc:
+        raise ValueError("itemId 必须是正整数") from exc
+    if item_id <= 0:
+        raise ValueError("itemId 必须大于 0")
+    return kind, item_id, _parse_item_operation(tokens[2])
 
 
 def _forward_image_node(user_id: str, nickname: str, image_b64: str, caption: str = "") -> dict:
@@ -1257,6 +1320,15 @@ def _ensure_business_success(result: dict) -> None:
     code = result.get("code")
     if code not in (None, 0, "0"):
         raise RuntimeError(str(result.get("msg") or f"外部操作失败（code={code}）"))
+    return_code = result.get("returnCode", result.get("ReturnCode"))
+    if return_code is not None and return_code not in (1, "1"):
+        raise RuntimeError(
+            str(
+                result.get("returnMessage")
+                or result.get("msg")
+                or f"外部操作失败（returnCode={return_code}）"
+            )
+        )
 
 
 async def _await_upload_success(result: dict, *, lxns: bool) -> dict:
@@ -1309,6 +1381,16 @@ def _service_cost(service: str, *, multiple: int = 1) -> int:
     if service == "ticket":
         unit = int(break_db.get_config("ticket_cost_per_multiplier", "10"))
         return max(0, unit) * max(1, multiple)
+    if service in {"awmc_preview", "awmc_items"}:
+        return max(0, int(break_db.get_config("awmc_read_cost", "5")))
+    if service == "awmc_music_upsert":
+        return max(0, int(break_db.get_config("awmc_music_upsert_cost", "75")))
+    if service == "awmc_music_delete":
+        return max(0, int(break_db.get_config("awmc_music_delete_cost", "50")))
+    if service == "awmc_ticket_clear":
+        return max(0, int(break_db.get_config("awmc_ticket_clear_cost", "10")))
+    if service == "awmc_item_upsert":
+        return max(0, int(break_db.get_config("awmc_item_upsert_cost", "100")))
     defaults = {"upload_fish": "2", "upload_lx": "2", "upload_all": "3"}
     return max(0, int(break_db.get_config(f"{service}_cost", defaults[service])))
 
@@ -1331,7 +1413,16 @@ def _allowed_ticket_multipliers() -> tuple[int, ...]:
 
 
 def _charge_text(result) -> str:
-    labels = {"upload": "成绩上传", "ticket": "发票"}
+    labels = {
+        "upload": "成绩上传",
+        "ticket": "发票",
+        "awmc_preview": "账号预览查询",
+        "awmc_items": "道具查询",
+        "awmc_music_upsert": "成绩编辑",
+        "awmc_music_delete": "成绩删除",
+        "awmc_ticket_clear": "清空票券",
+        "awmc_item_upsert": "道具修改",
+    }
     label = labels.get(result.service, result.service)
     if result.free:
         return f"💳 {label}今日首次成功，免费 · 余额 {result.balance} BREAK"
@@ -1351,6 +1442,11 @@ async def _():
     lx_cost = break_db.get_config("upload_lx_cost", "2")
     all_cost = break_db.get_config("upload_all_cost", "3")
     ticket_unit = break_db.get_config("ticket_cost_per_multiplier", "10")
+    read_cost = break_db.get_config("awmc_read_cost", "5")
+    edit_cost = break_db.get_config("awmc_music_upsert_cost", "75")
+    delete_cost = break_db.get_config("awmc_music_delete_cost", "50")
+    clear_cost = break_db.get_config("awmc_ticket_clear_cost", "10")
+    item_cost = break_db.get_config("awmc_item_upsert_cost", "100")
     ticket_multipliers = "/".join(map(str, _allowed_ticket_multipliers()))
     await account_help.finish(
         "AWMC 账号功能（已合并到 QueryBot）\n"
@@ -1362,8 +1458,15 @@ async def _():
         "发送二维码：始终上传 AWMCNET；已绑定水鱼/落雪时同时同步对应平台\n"
         "maiu / maiul / maiua：AWMCNET + 指定且已绑定的外部平台\n"
         f"发票 / fp <{ticket_multipliers}> / mai查票 / mai地图 / maiping\n"
+        "mai预览：查询账号预览；mai道具：查询全部道具\n"
+        "mai改成绩 [歌曲 难度 达成率 DX分 FC FS]：交互或一步编辑成绩\n"
+        "mai删成绩 [歌曲 难度]：交互或一步删除成绩\n"
+        "mai清票：确认后清空 Charge；mai改道具：高风险交互式道具修改\n"
         f"当前上传价格：水鱼 {fish_cost} / 落雪 {lx_cost} / 同时 {all_cost} BREAK\n"
         f"发票价格：倍率 × {ticket_unit} BREAK（例：2倍=20，3倍=30，5倍=50）\n"
+        f"AWMC 只读新功能：每次成功查询 {read_cost} BREAK，失败不扣费\n"
+        f"成绩编辑 {edit_cost} BREAK / 条；成绩删除 {delete_cost} BREAK / 条，失败不扣费\n"
+        f"清票 {clear_cost} BREAK / 次；道具修改 {item_cost} BREAK / 次（未经测试，风险自负）\n"
         "已有 2/3/5 倍票未使用时重复发票，将拦截并扣除 20 BREAK。\n"
         "成绩上传每日首次成功免费；发票每次按价扣费，失败不扣费；"
         "明确失败会自动重试 2 次。\n"
@@ -2500,55 +2603,40 @@ async def _execute_ticket(
             raise UnusedTicketPenaltyError(unused_stocks)
         baseline_stock = _ticket_stock(before_rows + before_free_rows, multiple)
     async def execute_attempt(attempt: int) -> int:
-        previous_task_ts: Optional[str] = ""
+        estimated, timing_samples = _ticket_estimate()
+        if notify is not None:
+            try:
+                await notify(_ticket_wait_message(estimated, timing_samples))
+            except Exception as exc:
+                log.warning(
+                    f"[ticket] 发送第 {attempt} 次预计消息失败，"
+                    f"继续执行：{_exception_detail(exc)}"
+                )
+
+        timing_started_at = time.perf_counter()
         async with machine_session():
             try:
-                before_queue = await sw_api.get_charge_queue()
-                previous_task = _matching_charge_task(
-                    before_queue, multiple, binding.mai_uid
-                )
-                if previous_task is not None:
-                    previous_task_ts = str(previous_task.get("ts") or "")
+                result = await sw_api.charge_ticket(binding.qrcode, multiple)
             except Exception as exc:
-                previous_task_ts = None
-                log.warning(
-                    f"[ticket] 第 {attempt} 次提交前队列快照失败，"
-                    f"将依赖任务 ID 与库存确认：{_exception_detail(exc)}"
-                )
-            result = await sw_api.charge_ticket(binding.qrcode, multiple)
+                # 网络超时无法判断上游是否已执行，不能自动重试。
+                raise RuntimeError(
+                    f"发票请求状态未知：{_exception_detail(exc)}；"
+                    "为避免重复发票，本次不会自动重试或扣 BREAK"
+                ) from exc
+            elapsed = max(0.001, time.perf_counter() - timing_started_at)
+            processing_time_estimator.record(_TICKET_TIMING_KEY, elapsed)
             try:
                 _ensure_business_success(result)
             except Exception as exc:
                 raise TicketRetryableError(
-                    f"发票入队被上游明确拒绝：{_exception_detail(exc)}"
+                    f"发票被上游明确拒绝：{_exception_detail(exc)}"
                 ) from exc
-            task_id = _ticket_submission_task_id(result)
-            queue_ahead = _ticket_queue_ahead(result)
 
-        estimated, poll_timeout, timing_samples = _ticket_wait_plan(queue_ahead)
-        queue_started_at = time.perf_counter()
-        if notify is not None:
-            try:
-                await notify(
-                    _ticket_wait_message(
-                        queue_ahead, estimated, poll_timeout, timing_samples
-                    )
-                )
-            except Exception as exc:
-                log.warning(
-                    f"[ticket] 发送第 {attempt} 次排队预计消息失败，"
-                    f"继续确认任务：{_exception_detail(exc)}"
-                )
-        return await _await_ticket_delivery(
+        return await _confirm_ticket_delivery(
             binding.qrcode,
             multiple,
             binding.mai_uid,
             baseline_stock,
-            previous_task_ts,
-            task_id=task_id,
-            timeout=poll_timeout,
-            timing_started_at=queue_started_at,
-            timing_units=_ticket_queue_units(queue_ahead),
         )
 
     verified_stock, attempts = await _run_ticket_with_retries(
@@ -2705,6 +2793,473 @@ async def _(event: MessageEvent):
     await account_ticket_status.finish(text, reply_message=True)
 
 
+async def _run_paid_awmc_read(
+    event: MessageEvent,
+    *,
+    service: str,
+    fetch: Callable[[str], Awaitable[Any]],
+    formatter: Callable[[Any], str],
+) -> str:
+    key, binding, error = _binding_or_error(event)
+    if error or binding is None:
+        raise RuntimeError(error or "账号未绑定")
+    cost = _service_cost(service)
+    break_db.ensure_service_affordable(int(key), service, cost)
+    async with machine_session():
+        result = await fetch(binding.qrcode)
+    text = formatter(result)
+    charge = break_db.settle_service_success(
+        int(key), service, cost, meta={"operation": service}
+    )
+    ref = _log(key, service, "success", f"charged={charge.charged}")
+    return f"{text}\n\n{_charge_text(charge)}\nRef_ID: {ref}"
+
+
+async def _run_music_write(
+    event: MessageEvent,
+    *,
+    service: str,
+    music,
+    level: int,
+    score: Optional[dict] = None,
+) -> str:
+    key, binding, error = _binding_or_error(event)
+    if error or binding is None:
+        raise RuntimeError(error or "账号未绑定")
+    cost = _service_cost(service)
+    break_db.ensure_service_affordable(int(key), service, cost)
+    async with machine_session():
+        if service == "awmc_music_upsert":
+            if score is None:
+                raise RuntimeError("缺少成绩数据")
+            await sw_api.upsert_music(binding.qrcode, score)
+        elif service == "awmc_music_delete":
+            await sw_api.delete_music(binding.qrcode, int(music.id), level)
+        else:
+            raise RuntimeError(f"不支持的成绩写入服务：{service}")
+
+    try:
+        from ..libraries.maimaidx_player_cache import invalidate_player_cache
+        invalidate_player_cache(int(key))
+    except (TypeError, ValueError):
+        pass
+
+    charge = break_db.settle_service_success(
+        int(key),
+        service,
+        cost,
+        meta={"music_id": int(music.id), "level": level},
+    )
+    mode = "简单模式" if score and score.get("fuzzy") else "专业模式"
+    action = "已写入" if score is not None else "已删除"
+    detail = f"music_id={music.id},level={level},charged={charge.charged}"
+    ref = _log(key, service, "success", detail)
+    lines = [
+        f"✅ {action}《{music.title}》 {_DIFFICULTY_LABELS[level]} 成绩"
+    ]
+    if score is not None:
+        dx_label = "DX 星级" if score["fuzzy"] else "实际 DX 分"
+        lines.append(
+            f"{mode} · {score['achievement']}% · {dx_label} {score['dxScore']} · "
+            f"{str(score['comboStatus']).upper()} / {str(score['syncStatus']).upper()}"
+        )
+    lines.extend([_charge_text(charge), f"Ref_ID: {ref}"])
+    return "\n".join(lines)
+
+
+async def _finish_music_write_error(matcher, event: MessageEvent, service: str, exc: Exception):
+    detail = _exception_detail(exc)
+    ref = _log(_user_key(event), service, "error", detail)
+    await matcher.finish(
+        f"操作失败：{detail}\n本次不扣 BREAK\nRef_ID: {ref}",
+        reply_message=True,
+    )
+
+
+async def _run_account_dangerous_write(
+    event: MessageEvent,
+    *,
+    service: str,
+    item_kind: Optional[int] = None,
+    item_id: Optional[int] = None,
+    operation: str = "",
+) -> str:
+    key, binding, error = _binding_or_error(event)
+    if error or binding is None:
+        raise RuntimeError(error or "账号未绑定")
+    cost = _service_cost(service)
+    break_db.ensure_service_affordable(int(key), service, cost)
+    async with machine_session():
+        if service == "awmc_ticket_clear":
+            await sw_api.clear_tickets(binding.qrcode)
+            meta = {"operation": "clear"}
+            result_text = "✅ 已清空账号内的 Charge 票券"
+        elif service == "awmc_item_upsert":
+            if item_kind is None or item_id is None:
+                raise RuntimeError("缺少道具参数")
+            await sw_api.upsert_item(
+                binding.qrcode, item_kind, item_id, operation
+            )
+            meta = {
+                "item_kind": item_kind,
+                "item_id": item_id,
+                "operation": operation,
+            }
+            action = "添加" if operation == "add" else "删除"
+            label = _ITEM_KIND_LABELS.get(item_kind, f"未知类型 {item_kind}")
+            result_text = f"✅ 已提交{action}道具：{label} · itemId={item_id}"
+        else:
+            raise RuntimeError(f"不支持的账号写入服务：{service}")
+    charge = break_db.settle_service_success(int(key), service, cost, meta=meta)
+    ref = _log(
+        key,
+        service,
+        "success",
+        ",".join(f"{name}={value}" for name, value in meta.items())
+        + f",charged={charge.charged}",
+    )
+    return f"{result_text}\n{_charge_text(charge)}\nRef_ID: {ref}"
+
+
+@account_preview.handle()
+async def _(event: MessageEvent):
+    await _require_agreement(account_preview, event)
+    try:
+        text = await _run_paid_awmc_read(
+            event,
+            service="awmc_preview",
+            fetch=sw_api.get_user_preview,
+            formatter=_format_user_preview,
+        )
+    except Exception as exc:
+        detail = _exception_detail(exc)
+        ref = _log(_user_key(event), "awmc_preview", "error", detail)
+        await account_preview.finish(
+            f"账号预览查询失败：{detail}\n本次不扣 BREAK\nRef_ID: {ref}",
+            reply_message=True,
+        )
+    await account_preview.finish(text, reply_message=True)
+
+
+@account_items.handle()
+async def _(event: MessageEvent):
+    await _require_agreement(account_items, event)
+    try:
+        text = await _run_paid_awmc_read(
+            event,
+            service="awmc_items",
+            fetch=sw_api.get_user_items,
+            formatter=_format_user_items,
+        )
+    except Exception as exc:
+        detail = _exception_detail(exc)
+        ref = _log(_user_key(event), "awmc_items", "error", detail)
+        await account_items.finish(
+            f"道具查询失败：{detail}\n本次不扣 BREAK\nRef_ID: {ref}",
+            reply_message=True,
+        )
+    await account_items.finish(text, reply_message=True)
+
+
+@account_music_upsert.handle()
+async def _(matcher: Matcher, event: MessageEvent, args: Message = CommandArg()):
+    await _require_agreement(account_music_upsert, event)
+    raw = _arg_text(args)
+    if not raw:
+        try:
+            key, binding, error = _binding_or_error(event)
+            if error or binding is None:
+                raise RuntimeError(error or "账号未绑定")
+            break_db.ensure_service_affordable(
+                int(key), "awmc_music_upsert", _service_cost("awmc_music_upsert")
+            )
+        except Exception as exc:
+            await _finish_music_write_error(
+                account_music_upsert, event, "awmc_music_upsert", exc
+            )
+        await matcher.send(
+            "成绩编辑为高价写操作，成功后消耗 75 BREAK。\n"
+            "默认简单模式：DX 分填写星级 0～5；填写大于 5 的实际 DX 分会自动使用专业模式。",
+            reply_message=True,
+        )
+        return
+    try:
+        music, level, score = _parse_music_upsert_command(raw)
+        text = await _run_music_write(
+            event,
+            service="awmc_music_upsert",
+            music=music,
+            level=level,
+            score=score,
+        )
+    except Exception as exc:
+        await _finish_music_write_error(
+            account_music_upsert, event, "awmc_music_upsert", exc
+        )
+    await account_music_upsert.finish(text, reply_message=True)
+
+
+@account_music_upsert.got("edit_song", prompt="请输入歌曲名、别名或歌曲 ID：")
+async def _(matcher: Matcher, message: Message = Arg("edit_song")):
+    try:
+        music = _resolve_account_music(_arg_text(message))
+    except ValueError as exc:
+        await matcher.reject(str(exc))
+    matcher.state["edit_music"] = music
+
+
+@account_music_upsert.got(
+    "edit_difficulty",
+    prompt="请选择难度：BASIC / ADV / EXP / MAS / Re:MAS（也可发送绿/黄/红/紫/白；宴谱发送宴）：",
+)
+async def _(matcher: Matcher, message: Message = Arg("edit_difficulty")):
+    music = matcher.state["edit_music"]
+    level = _parse_difficulty(_arg_text(message))
+    if level is None:
+        await matcher.reject("无法识别难度，请重新发送。")
+    try:
+        _validate_music_difficulty(music, level)
+    except ValueError as exc:
+        await matcher.reject(str(exc))
+    matcher.state["edit_level"] = level
+
+
+@account_music_upsert.got(
+    "edit_score",
+    prompt=(
+        "请输入：<达成率> <DX分> [FC] [FS] [简单/专业]\n"
+        "例如：100.5% 5 AP FDX（自动简单模式）\n"
+        "或：100.5% 2100 AP FDX 专业"
+    ),
+)
+async def _(matcher: Matcher, event: MessageEvent, message: Message = Arg("edit_score")):
+    music = matcher.state["edit_music"]
+    level = matcher.state["edit_level"]
+    try:
+        score = _parse_score_options(_arg_text(message).split(), music, level)
+        text = await _run_music_write(
+            event,
+            service="awmc_music_upsert",
+            music=music,
+            level=level,
+            score=score,
+        )
+    except ValueError as exc:
+        await matcher.reject(str(exc))
+    except Exception as exc:
+        await _finish_music_write_error(
+            account_music_upsert, event, "awmc_music_upsert", exc
+        )
+    await account_music_upsert.finish(text, reply_message=True)
+
+
+@account_music_delete.handle()
+async def _(matcher: Matcher, event: MessageEvent, args: Message = CommandArg()):
+    await _require_agreement(account_music_delete, event)
+    raw = _arg_text(args)
+    if not raw:
+        try:
+            key, binding, error = _binding_or_error(event)
+            if error or binding is None:
+                raise RuntimeError(error or "账号未绑定")
+            break_db.ensure_service_affordable(
+                int(key), "awmc_music_delete", _service_cost("awmc_music_delete")
+            )
+        except Exception as exc:
+            await _finish_music_write_error(
+                account_music_delete, event, "awmc_music_delete", exc
+            )
+        await matcher.send(
+            "成绩删除成功后消耗 50 BREAK。删除后无法由 Bot 自动恢复。",
+            reply_message=True,
+        )
+        return
+    try:
+        music, level = _parse_music_delete_command(raw)
+        text = await _run_music_write(
+            event, service="awmc_music_delete", music=music, level=level
+        )
+    except Exception as exc:
+        await _finish_music_write_error(
+            account_music_delete, event, "awmc_music_delete", exc
+        )
+    await account_music_delete.finish(text, reply_message=True)
+
+
+@account_music_delete.got("delete_song", prompt="请输入要删除成绩的歌曲名、别名或歌曲 ID：")
+async def _(matcher: Matcher, message: Message = Arg("delete_song")):
+    try:
+        music = _resolve_account_music(_arg_text(message))
+    except ValueError as exc:
+        await matcher.reject(str(exc))
+    matcher.state["delete_music"] = music
+
+
+@account_music_delete.got(
+    "delete_difficulty",
+    prompt="请选择要删除的难度：BASIC / ADV / EXP / MAS / Re:MAS（或绿/黄/红/紫/白；宴谱发送宴）：",
+)
+async def _(matcher: Matcher, event: MessageEvent, message: Message = Arg("delete_difficulty")):
+    music = matcher.state["delete_music"]
+    level = _parse_difficulty(_arg_text(message))
+    if level is None:
+        await matcher.reject("无法识别难度，请重新发送。")
+    try:
+        _validate_music_difficulty(music, level)
+        text = await _run_music_write(
+            event, service="awmc_music_delete", music=music, level=level
+        )
+    except ValueError as exc:
+        await matcher.reject(str(exc))
+    except Exception as exc:
+        await _finish_music_write_error(
+            account_music_delete, event, "awmc_music_delete", exc
+        )
+    await account_music_delete.finish(text, reply_message=True)
+
+
+@account_ticket_clear.handle()
+async def _(matcher: Matcher, event: MessageEvent, args: Message = CommandArg()):
+    await _require_agreement(account_ticket_clear, event)
+    try:
+        key, binding, error = _binding_or_error(event)
+        if error or binding is None:
+            raise RuntimeError(error or "账号未绑定")
+        break_db.ensure_service_affordable(
+            int(key), "awmc_ticket_clear", _service_cost("awmc_ticket_clear")
+        )
+    except Exception as exc:
+        await _finish_music_write_error(
+            account_ticket_clear, event, "awmc_ticket_clear", exc
+        )
+    raw = _arg_text(args)
+    if raw:
+        matcher.set_arg("ticket_clear_confirm", Message(raw))
+    else:
+        await matcher.send(
+            "⚠️ 清票会清空账号内的 Charge 票券，成功后消耗 10 BREAK。",
+            reply_message=True,
+        )
+
+
+@account_ticket_clear.got(
+    "ticket_clear_confirm",
+    prompt="确认继续请发送“确认清票”；发送其他内容取消：",
+)
+async def _(event: MessageEvent, message: Message = Arg("ticket_clear_confirm")):
+    if _arg_text(message) != "确认清票":
+        await account_ticket_clear.finish("已取消清票，本次不扣 BREAK。")
+    try:
+        text = await _run_account_dangerous_write(
+            event, service="awmc_ticket_clear"
+        )
+    except Exception as exc:
+        await _finish_music_write_error(
+            account_ticket_clear, event, "awmc_ticket_clear", exc
+        )
+    await account_ticket_clear.finish(text, reply_message=True)
+
+
+@account_item_upsert.handle()
+async def _(matcher: Matcher, event: MessageEvent, args: Message = CommandArg()):
+    await _require_agreement(account_item_upsert, event)
+    try:
+        key, binding, error = _binding_or_error(event)
+        if error or binding is None:
+            raise RuntimeError(error or "账号未绑定")
+        break_db.ensure_service_affordable(
+            int(key), "awmc_item_upsert", _service_cost("awmc_item_upsert")
+        )
+    except Exception as exc:
+        await _finish_music_write_error(
+            account_item_upsert, event, "awmc_item_upsert", exc
+        )
+    raw = _arg_text(args)
+    if raw:
+        try:
+            kind, item_id, operation = _parse_item_upsert_command(raw)
+        except ValueError as exc:
+            await account_item_upsert.finish(str(exc), reply_message=True)
+        matcher.set_arg("item_kind", Message(str(kind)))
+        matcher.set_arg("item_id", Message(str(item_id)))
+        matcher.set_arg("item_operation", Message(operation))
+    await matcher.send(
+        "⚠️ 道具修改功能未经实际账号测试，可能造成数据异常或不可逆后果。\n"
+        "继续操作即表示风险由用户自行承担；成功后消耗 100 BREAK。",
+        reply_message=True,
+    )
+
+
+@account_item_upsert.got(
+    "item_kind",
+    prompt=(
+        "请输入 itemKind 数字或类型名称：\n"
+        "1姓名框 / 2称号 / 3头像 / 4收藏品 / 5乐曲 / 9角色 / "
+        "10搭档 / 11边框 / 12票券 / 15钥匙"
+    ),
+)
+async def _(matcher: Matcher, message: Message = Arg("item_kind")):
+    try:
+        kind = _parse_item_kind(_arg_text(message))
+    except ValueError as exc:
+        await matcher.reject(str(exc))
+    matcher.state["item_kind_value"] = kind
+
+
+@account_item_upsert.got("item_id", prompt="请输入要操作的 itemId（正整数）：")
+async def _(matcher: Matcher, message: Message = Arg("item_id")):
+    try:
+        item_id = int(_arg_text(message))
+        if item_id <= 0:
+            raise ValueError
+    except ValueError:
+        await matcher.reject("itemId 必须是正整数，请重新发送。")
+    matcher.state["item_id_value"] = item_id
+
+
+@account_item_upsert.got(
+    "item_operation",
+    prompt="请选择操作：add（添加）或 del（删除）：",
+)
+async def _(matcher: Matcher, message: Message = Arg("item_operation")):
+    try:
+        operation = _parse_item_operation(_arg_text(message))
+    except ValueError as exc:
+        await matcher.reject(str(exc))
+    matcher.state["item_operation_value"] = operation
+    kind = matcher.state["item_kind_value"]
+    item_id = matcher.state["item_id_value"]
+    action = "添加" if operation == "add" else "删除"
+    label = _ITEM_KIND_LABELS.get(kind, f"未知类型 {kind}")
+    await matcher.send(
+        f"即将{action}：{label}（itemKind={kind}），itemId={item_id}。\n"
+        "该功能未经测试，风险由用户自行承担。",
+        reply_message=True,
+    )
+
+
+@account_item_upsert.got(
+    "item_risk_confirm",
+    prompt="确认承担风险并继续，请发送“我已知晓风险”；发送其他内容取消：",
+)
+async def _(matcher: Matcher, event: MessageEvent, message: Message = Arg("item_risk_confirm")):
+    if _arg_text(message) != "我已知晓风险":
+        await account_item_upsert.finish("已取消道具修改，本次不扣 BREAK。")
+    try:
+        text = await _run_account_dangerous_write(
+            event,
+            service="awmc_item_upsert",
+            item_kind=matcher.state["item_kind_value"],
+            item_id=matcher.state["item_id_value"],
+            operation=matcher.state["item_operation_value"],
+        )
+    except Exception as exc:
+        await _finish_music_write_error(
+            account_item_upsert, event, "awmc_item_upsert", exc
+        )
+    await account_item_upsert.finish(text, reply_message=True)
+
+
 @account_region.handle()
 async def _(event: MessageEvent):
     _, binding, error = _binding_or_error(event)
@@ -2728,12 +3283,3 @@ async def _(args: Message = CommandArg()):
     except Exception as exc:
         await account_opt.finish(f"查询失败：{exc}")
     await account_opt.finish(json.dumps(result, ensure_ascii=False, indent=2)[:3000])
-
-
-@account_queue.handle()
-async def _():
-    try:
-        result = await sw_api.get_charge_queue()
-    except Exception as exc:
-        await account_queue.finish(f"查询失败：{exc}")
-    await account_queue.finish(json.dumps(result, ensure_ascii=False, indent=2)[:3000])

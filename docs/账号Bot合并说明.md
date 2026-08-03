@@ -29,7 +29,10 @@ NoneBot/Python 插件，因此本次采用业务移植，而不是在一个进�
 | `更新pc数` | 已绑定后可直接刷新，不必再次发送二维码 |
 | `发票` / `fp <2/3/5>` / `mai查票` | 发放及查询票券（倍率可由 ENV 配置；public 模式按网关 Token 计费） |
 | `mai地图` | 查询游玩地区 |
-| `maiping` / `maiqueue` | 健康检查 / 队列状态 |
+| `mai预览` / `mai道具` | 查询账号预览 / 道具列表（每次成功查询 5 BREAK） |
+| `mai改成绩` / `mai删成绩` | 交互或一步编辑 / 删除单条成绩（75 / 50 BREAK） |
+| `mai清票` / `mai改道具` | 清空 Charge（10 BREAK）/ 高风险道具修改（100 BREAK，未经测试） |
+| `maiping` | AWMC API 健康检查 |
 
 `maiul` 和 `maiua` 会优先使用 `lxbind` 的 OAuth 授权直接上传；没有 OAuth
 时才使用 `mai绑定落雪` 保存的导入 Token。

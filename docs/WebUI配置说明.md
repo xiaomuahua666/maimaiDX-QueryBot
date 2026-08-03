@@ -161,6 +161,11 @@ https://bot.example.com/ops/maimai/api/...
 | `upload_lx_cost` | 2 | 上传落雪价格 |
 | `upload_all_cost` | 3 | 同时上传价格 |
 | `ticket_cost_per_multiplier` | 10 | 发票每倍率单价 |
+| `awmc_read_cost` | 5 | AWMC 只读新功能每次成功查询价格 |
+| `awmc_music_upsert_cost` | 75 | 单条成绩编辑成功价格 |
+| `awmc_music_delete_cost` | 50 | 单条成绩删除成功价格 |
+| `awmc_ticket_clear_cost` | 10 | 清空 Charge 票券成功价格 |
+| `awmc_item_upsert_cost` | 100 | 高风险道具修改成功价格 |
 | `transfer_fee` | 0 | BREAK 转账手续费 |
 | `lottery_cost` | 2 | BREAK 抽奖每次成本 |
 | `weekly_report_cost` | 1 | 周报功能费 |

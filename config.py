@@ -70,12 +70,10 @@ class Config(BaseModel):
     awmc_api_success_cooldown_seconds: float = 1.0
     # 发票允许倍率，使用英文逗号分隔，例如 2,3,5。
     awmc_ticket_allowed_multipliers: str = '2,3,5'
-    # 发票提交仅代表进入服务端队列；轮询队列与票券库存，确认到账后才结算 BREAK。
-    awmc_ticket_poll_interval_seconds: float = 3.0
-    awmc_ticket_poll_timeout_seconds: float = 120.0
-    awmc_ticket_max_poll_timeout_seconds: float = 600.0
-    awmc_ticket_seconds_per_request: float = 80.0
-    # 队列 done 后等待票券数据落库，随后只查一次 /user/charge。
+    # AWMC v2 发票为同步接口：请求超时、无历史样本时的预计耗时。
+    awmc_ticket_timeout_seconds: float = 120.0
+    awmc_ticket_estimate_seconds: float = 80.0
+    # 同步成功后等待票券数据落库，随后只查一次 /user/charge。
     awmc_ticket_settlement_delay_seconds: float = 2.0
     # 合并后的账号功能总开关；关闭时不注册外部调用，但本地查分不受影响。
     awmc_account_enabled: bool = True

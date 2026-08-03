@@ -36,7 +36,6 @@ account = load_functions(
         "_normalize_charge_payload",
         "_ticket_stock",
         "_unused_ticket_stocks",
-        "_matching_charge_task",
         "_ticket_valid_timestamp",
         "_format_ticket_status",
         "_allowed_ticket_multipliers",
@@ -102,19 +101,6 @@ ok, tickets, free_tickets = account["_normalize_charge_payload"](
 assert ok
 assert tickets[0]["chargeId"] == 2
 assert free_tickets[0]["stock"] == 2
-assert account["_matching_charge_task"](
-    {
-        "code": 0,
-        "tasks": [
-            {"chargeId": 2, "userId": "123", "status": "pending", "ts": "1"},
-            {"chargeId": 2, "userId": "123", "status": "done", "ts": "2"},
-            {"chargeId": 3, "userId": "123", "status": "processing", "ts": "3"},
-        ],
-    },
-    2,
-    "123",
-)["status"] == "done"
-
 # 新接口无票时列表可能为 null，但 userId + list 字段仍代表有效响应。
 ok, tickets, free_tickets = account["_normalize_charge_payload"](
     {"userId": 123456, "length": 0, "userChargeList": None}
@@ -233,7 +219,7 @@ assert "convert_pc_records_to_lxns_scores" in upload_src
 assert "PC缓存" in upload_src
 assert "binding, _ = await _read_verified_preview(" in upload_src
 assert "before_charge = await sw_api.get_user_charge(binding.qrcode)" in upload_src
-assert "return await _await_ticket_delivery(" in upload_src
+assert "return await _confirm_ticket_delivery(" in upload_src
 assert "verified_stock, attempts = await _run_ticket_with_retries(" in upload_src
 assert "raise UnusedTicketPenaltyError(unused_stocks)" in upload_src
 assert '"ticket_unused_penalty"' in upload_src

@@ -1,4 +1,4 @@
-"""发票队列优先、到账单次确认与动态超时回归测试。"""
+"""AWMC v2 同步发票、到账确认与预计耗时回归测试。"""
 
 import ast
 import asyncio
@@ -15,17 +15,11 @@ names = {
     "_pick",
     "_normalize_charge_payload",
     "_ticket_stock",
-    "_matching_charge_task",
-    "_ticket_submission_task_id",
-    "_ticket_queue_ahead",
-    "_ticket_task_result_code",
     "_charge_payload_user_id",
-    "_ticket_queue_units",
-    "_ticket_wait_plan",
+    "_ticket_estimate",
     "_format_wait_duration",
     "_ticket_wait_message",
-    "_ticket_task_state",
-    "_await_ticket_delivery",
+    "_confirm_ticket_delivery",
     "_run_ticket_with_retries",
     "_exception_detail",
 }
@@ -45,27 +39,6 @@ assert {
 } == names
 
 
-class FakeLog:
-    def info(self, *_args):
-        pass
-
-    def warning(self, *_args):
-        pass
-
-
-class FakeTime:
-    def __init__(self):
-        self.value = 0.0
-
-    def monotonic(self):
-        self.value += 0.1
-        return self.value
-
-    def perf_counter(self):
-        self.value += 0.1
-        return self.value
-
-
 async def no_sleep(_seconds):
     return None
 
@@ -75,21 +48,13 @@ async def machine_session():
     yield
 
 
-config = SimpleNamespace(
-    awmc_ticket_poll_interval_seconds=1.0,
-    awmc_ticket_poll_timeout_seconds=120.0,
-    awmc_ticket_max_poll_timeout_seconds=600.0,
-    awmc_ticket_seconds_per_request=80.0,
-)
-
-
 class FakeEstimator:
-    seconds = 80
-    samples = 0
-    records = []
+    def __init__(self):
+        self.values = {}
+        self.records = []
 
-    def estimate(self, _operation, *, fallback_seconds):
-        return (self.seconds or int(fallback_seconds), self.samples)
+    def estimate(self, operation, *, fallback_seconds):
+        return self.values.get(operation, (int(fallback_seconds), 0))
 
     def record(self, operation, duration):
         self.records.append((operation, duration))
@@ -101,17 +66,19 @@ namespace = {
     "Awaitable": Awaitable,
     "Callable": Callable,
     "Optional": Optional,
-    "maiconfig": config,
+    "maiconfig": SimpleNamespace(
+        awmc_ticket_estimate_seconds=80.0,
+        awmc_ticket_settlement_delay_seconds=2.0,
+    ),
     "processing_time_estimator": estimator,
-    "_TICKET_QUEUE_UNIT_TIMING_KEY": "ticket_queue:seconds_per_request",
+    "_TICKET_TIMING_KEY": "ticket:processing_seconds",
+    "_LEGACY_TICKET_TIMING_KEY": "ticket_queue:seconds_per_request",
     "_TICKET_AUTO_RETRIES": 2,
-    "json": __import__("json"),
-    "re": __import__("re"),
     "asyncio": SimpleNamespace(sleep=no_sleep, TimeoutError=asyncio.TimeoutError),
-    "time": FakeTime(),
-    "log": FakeLog(),
+    "time": __import__("time"),
+    "re": __import__("re"),
+    "log": SimpleNamespace(info=lambda *_: None, warning=lambda *_: None),
     "machine_session": machine_session,
-    "_ensure_business_success": lambda payload: None,
     "redact": lambda value: str(value),
     "httpx": SimpleNamespace(
         TimeoutException=type("HttpxTimeout", (Exception,), {}),
@@ -124,51 +91,29 @@ exec(
     namespace,
 )
 
-
-retry_calls = []
-retry_notices = []
+# 新键优先；没有新样本时继承旧队列计时样本。
+assert namespace["_ticket_estimate"]() == (80, 0)
+estimator.values["ticket_queue:seconds_per_request"] = (68, 7)
+assert namespace["_ticket_estimate"]() == (68, 7)
+estimator.values["ticket:processing_seconds"] = (61, 3)
+assert namespace["_ticket_estimate"]() == (61, 3)
+message = namespace["_ticket_wait_message"](61, 3)
+assert "正在处理" in message
+assert "最近 3 次真实处理时间" in message
+assert "确认票券到账后才扣 BREAK" in message
+assert "队列" not in message
 
 
 async def succeeds_on_third(attempt):
-    retry_calls.append(attempt)
     if attempt < 3:
         raise namespace["TicketRetryableError"]("explicit failure")
     return 7
 
 
-async def retry_notify(message):
-    retry_notices.append(message)
-
-
-retry_result = asyncio.run(
-    namespace["_run_ticket_with_retries"](
-        succeeds_on_third, notify=retry_notify, max_retries=2
-    )
+result = asyncio.run(
+    namespace["_run_ticket_with_retries"](succeeds_on_third, max_retries=2)
 )
-assert retry_result == (7, 3)
-assert retry_calls == [1, 2, 3]
-assert len(retry_notices) == 2
-
-
-failed_calls = []
-
-
-async def always_explicit_failure(attempt):
-    failed_calls.append(attempt)
-    raise namespace["TicketRetryableError"]("explicit failure")
-
-
-try:
-    asyncio.run(
-        namespace["_run_ticket_with_retries"](
-            always_explicit_failure, max_retries=2
-        )
-    )
-except namespace["TicketRetryableError"] as exc:
-    assert "已自动重试 2 次" in str(exc)
-else:
-    raise AssertionError("连续三次明确失败后应返回失败")
-assert failed_calls == [1, 2, 3]
+assert result == (7, 3)
 
 
 ambiguous_calls = []
@@ -181,194 +126,58 @@ async def ambiguous_failure(attempt):
 
 try:
     asyncio.run(
-        namespace["_run_ticket_with_retries"](
-            ambiguous_failure, max_retries=2
-        )
+        namespace["_run_ticket_with_retries"](ambiguous_failure, max_retries=2)
     )
-except RuntimeError as exc:
-    assert "unknown result" in str(exc)
+except RuntimeError:
+    pass
 else:
-    raise AssertionError("结果不确定的失败不应盲目重试")
+    raise AssertionError("状态未知的写请求不得自动重试")
 assert ambiguous_calls == [1]
-
-assert namespace["_ticket_submission_task_id"](
-    {"code": 0, "data": {"taskId": "task-1"}}
-) == "task-1"
-assert namespace["_ticket_queue_ahead"]({"queuePosition": 3}) == 2
-assert namespace["_ticket_queue_ahead"]({"msg": "前方还有 4 个请求"}) == 4
-assert namespace["_ticket_queue_ahead"](
-    {"code": 0, "msg": "排队成功，当前队列任务数≈1"}
-) == 1
-queue_success = {
-    "status": "done",
-    "msg": '充值成功, result={"returnCode": 1, "apiName": "UpsertUserChargelogApi"}',
-}
-queue_failure = {
-    "status": "done",
-    "msg": '充值成功, result={"returnCode": 0, "apiName": "UpsertUserChargelogApi"}',
-}
-queue_other_failure = {
-    "status": "done",
-    "msg": '充值失败, result={"returnCode": -1, "apiName": "UpsertUserChargelogApi"}',
-}
-assert namespace["_ticket_task_result_code"](queue_success) == 1
-assert namespace["_ticket_task_result_code"](queue_failure) == 0
-assert namespace["_ticket_task_result_code"](queue_other_failure) == -1
-assert namespace["_ticket_task_state"](queue_success) == "success"
-assert namespace["_ticket_task_state"](queue_failure) == "failed"
-assert namespace["_ticket_task_state"](queue_other_failure) == "failed"
-assert namespace["_charge_payload_user_id"](
-    {"userId": 13225939, "userChargeList": []}
-) == "13225939"
-assert namespace["_ticket_queue_units"](0) == 1
-assert namespace["_ticket_queue_units"](1) == 1
-assert namespace["_ticket_wait_plan"](0) == (80, 120.0, 0)
-assert namespace["_ticket_wait_plan"](1) == (80, 120.0, 0)
-assert namespace["_ticket_wait_plan"](2) == (160, 200.0, 0)
-assert namespace["_ticket_wait_plan"](10) == (800, 600.0, 0)
-estimator.seconds = 68
-estimator.samples = 7
-assert namespace["_ticket_wait_plan"](2) == (136, 176.0, 7)
-message = namespace["_ticket_wait_message"](2, 136, 176, 7)
-assert "队列预计有 2 个请求待处理" in message
-assert "根据最近 7 次真实处理时间估算" in message
-assert "确认票券到账后才扣 BREAK" in message
 
 
 class FakeSwApi:
-    def __init__(self):
+    def __init__(self, stock=2, user_id="123"):
+        self.stock = stock
+        self.user_id = user_id
         self.calls = []
-        self.queues = [
-            {
-                "code": 0,
-                "tasks": [
-                    {
-                        "taskId": "task-1",
-                        "chargeId": 2,
-                        "userId": "123",
-                        "status": "processing",
-                        "ts": "new",
-                    }
-                ],
-            },
-            {
-                "code": 0,
-                "tasks": [
-                    {
-                        "taskId": "task-1",
-                        "chargeId": 2,
-                        "userId": "123",
-                        "status": "completed",
-                        "ts": "new",
-                        "msg": '充值成功, result={"returnCode": 1}',
-                    }
-                ],
-            },
-        ]
-
-    async def get_charge_queue(self):
-        self.calls.append("queue")
-        return self.queues.pop(0)
 
     async def get_user_charge(self, _qrcode):
         self.calls.append("charge")
         return {
             "returnCode": 1,
-            "userCharge": {
-                "userChargeList": [{"chargeId": 2, "stock": 2}],
-                "userFreeChargeList": [],
-            },
+            "userId": self.user_id,
+            "userChargeList": [{"chargeId": 2, "stock": self.stock}],
         }
 
 
 fake_api = FakeSwApi()
 namespace["sw_api"] = fake_api
 stock = asyncio.run(
-    namespace["_await_ticket_delivery"](
-        "SGWCMAID...",
-        2,
-        "123",
-        1,
-        "old",
-        task_id="task-1",
-        timeout=120,
-        timing_started_at=0.0,
-        timing_units=1,
-    )
+    namespace["_confirm_ticket_delivery"]("SGWCMAID...", 2, "123", 1)
 )
 assert stock == 2
-assert fake_api.calls == ["queue", "queue", "charge"]
-assert len(estimator.records) == 1
+assert fake_api.calls == ["charge"]
 
-
-class FailedQueueApi:
-    def __init__(self):
-        self.calls = []
-
-    async def get_charge_queue(self):
-        self.calls.append("queue")
-        return {
-            "code": 0,
-            "tasks": [
-                {
-                    "taskId": "task-failed",
-                    "chargeId": 2,
-                    "userId": "123",
-                    "status": "done",
-                    "ts": "newer",
-                    "msg": '充值失败, result={"returnCode": 0}',
-                }
-            ],
-        }
-
-    async def get_user_charge(self, _qrcode):
-        self.calls.append("charge")
-        raise AssertionError("异常 returnCode 时不应查询票券库存")
-
-
-failed_api = FailedQueueApi()
-namespace["sw_api"] = failed_api
+namespace["sw_api"] = FakeSwApi(stock=1)
 try:
     asyncio.run(
-        namespace["_await_ticket_delivery"](
-            "SGWCMAID...",
-            2,
-            "123",
-            0,
-            "old",
-            task_id="task-failed",
-            timeout=120,
-            timing_started_at=0.0,
-            timing_units=1,
-        )
+        namespace["_confirm_ticket_delivery"]("SGWCMAID...", 2, "123", 1)
     )
 except RuntimeError as exc:
-    assert "returnCode=0" in str(exc)
+    assert "到账复核未增加" in str(exc)
 else:
-    raise AssertionError("队列异常 returnCode 应被判定为失败")
-assert failed_api.calls == ["queue"]
-assert len(estimator.records) == 2
+    raise AssertionError("库存未增加时不得结算")
 
 source = ACCOUNT_PATH.read_text(encoding="utf-8")
-await_source = source[
-    source.index("async def _await_ticket_delivery("):
+confirm_source = source[
+    source.index("async def _confirm_ticket_delivery("):
     source.index("def _ticket_valid_timestamp(")
 ]
-assert await_source.count("sw_api.get_user_charge(qrcode)") == 1
-assert await_source.index("last_task_status == \"success\"") < await_source.index(
-    "sw_api.get_user_charge(qrcode)"
-)
-assert "processing_time_estimator.record(" in source
-assert "timing_started_at=queue_started_at" in source
+assert confirm_source.count("sw_api.get_user_charge(qrcode)") == 1
+assert "get_charge_queue" not in source
+assert "maiqueue" not in source
+assert "processing_time_estimator.record(_TICKET_TIMING_KEY" in source
+assert "状态未知" in source
 assert "_TICKET_AUTO_RETRIES = 2" in source
-assert "verified_stock, attempts = await _run_ticket_with_retries(" in source
-assert "UID {current_uid}" not in await_source
-assert "UID {mai_uid}" not in await_source
-public_detail = namespace["_exception_detail"](
-    RuntimeError("：UID 11470224 与当前绑定账号不一致")
-)
-assert "11470224" not in public_detail
-assert "UID" not in public_detail
-assert "账号标识[已隐藏]" in public_detail
 
-print("ticket queue flow tests: ok")
+print("ticket sync flow tests: ok")

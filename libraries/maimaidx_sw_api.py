@@ -193,6 +193,28 @@ class SwApiClient:
         if "error" in data:
             raise SwApiError(str(data["error"]))
 
+        return_code = data.get("returnCode", data.get("ReturnCode"))
+        if return_code is not None:
+            try:
+                business_ok = int(return_code) == 1
+            except (TypeError, ValueError):
+                business_ok = False
+            if not business_ok:
+                raise SwApiError(
+                    str(
+                        data.get("returnMessage")
+                        or data.get("msg")
+                        or f"AWMC 业务失败（returnCode={return_code}）"
+                    )
+                )
+
+        business_data = data.get("businessData")
+        if business_data is not None:
+            return business_data
+
+        if "returnMessage" in data:
+            return SwApiClient._parse_msg_payload(data.get("returnMessage"))
+
         code = data.get("code")
         if code == -1:
             raise SwApiError(str(data.get("msg", "未知错误")))
@@ -427,14 +449,17 @@ class SwApiClient:
         )
 
     async def charge_ticket(self, qrcode: str, charge_id: int) -> dict:
-        # /charge 是异步入队接口。保留 code/msg 原始信封，不能把 code=0 的
-        # 文本 msg 解析成 {"raw": ...}，否则调用方无法区分入队成功与最终到账。
-        # public 消耗 10 Token；入队成功后网关会绑定 mai userId。
+        # AWMC v2 同步执行发票，上游通常需要约 60 秒。写接口禁止网络层重试，
+        # 避免客户端超时后重复提交。
+        timeout = max(
+            1.0,
+            float(getattr(maiconfig, "awmc_ticket_timeout_seconds", 120.0)),
+        )
         return await self._request(
             "POST",
             self._api_path("charge"),
             json_body=self._machine_body(qrcode, charge=charge_id),
-            timeout=60,
+            timeout=timeout,
             retry_count=0,
         )
 
@@ -447,17 +472,11 @@ class SwApiClient:
         )
         return self._parse_envelope(data)
 
-    async def get_charge_queue(self) -> dict:
-        # public：仅返回当前网关账号已绑定 userId 的任务，且不含 qrToken。
-        return await self._request(
-            "GET", self._api_path("charge/queue"), timeout=15
-        )
-
     async def health(self) -> dict:
         return await self._request("GET", self._api_path("health"), timeout=10)
 
-    async def get_user_preview(self, qrcode: str) -> dict:
-        """读取绑定账号摘要（POST /user/data）；兼容公共网关与自建 sw-api。"""
+    async def get_user_data(self, qrcode: str) -> dict:
+        """读取账号基础数据；绑定验码依赖完整的 user data。"""
         # 上传前验码也会走这里；显式短超时，避免沿用默认 120s×重试。
         # public 消耗 1 Token；msg 常为 JSON 字符串，由 _parse_envelope 二次解析。
         data = await self._request(
@@ -465,6 +484,77 @@ class SwApiClient:
             self._api_path("user/data"),
             json_body=self._machine_body(qrcode),
             timeout=15,
+            retry_count=0,
+        )
+        return self._parse_envelope(data)
+
+    async def get_user_preview(self, qrcode: str) -> dict:
+        """读取用户预览（POST /user/preview）。"""
+        data = await self._request(
+            "POST",
+            self._api_path("user/preview"),
+            json_body=self._machine_body(qrcode),
+            timeout=15,
+            retry_count=0,
+        )
+        return self._parse_envelope(data)
+
+    async def get_user_items(self, qrcode: str) -> dict:
+        """读取用户道具列表（POST /user/item-list）。"""
+        data = await self._request(
+            "POST",
+            self._api_path("user/item-list"),
+            json_body=self._machine_body(qrcode),
+            timeout=30,
+            retry_count=0,
+        )
+        return self._parse_envelope(data)
+
+    async def upsert_music(self, qrcode: str, music: dict) -> Any:
+        data = await self._request(
+            "POST",
+            self._api_path("music/upsert"),
+            json_body=self._machine_body(qrcode, musicList=[music]),
+            timeout=60,
+            retry_count=0,
+        )
+        return self._parse_envelope(data)
+
+    async def delete_music(self, qrcode: str, music_id: int, level: int) -> Any:
+        data = await self._request(
+            "POST",
+            self._api_path("music/delete"),
+            json_body=self._machine_body(
+                qrcode, musicList=[{"musicId": music_id, "level": level}]
+            ),
+            timeout=60,
+            retry_count=0,
+        )
+        return self._parse_envelope(data)
+
+    async def clear_tickets(self, qrcode: str) -> Any:
+        data = await self._request(
+            "POST",
+            self._api_path("ticket/clear"),
+            json_body=self._machine_body(qrcode),
+            timeout=60,
+            retry_count=0,
+        )
+        return self._parse_envelope(data)
+
+    async def upsert_item(
+        self, qrcode: str, item_kind: int, item_id: int, operation: str
+    ) -> Any:
+        data = await self._request(
+            "POST",
+            self._api_path("item/upsert"),
+            json_body=self._machine_body(
+                qrcode,
+                itemKind=item_kind,
+                itemId=item_id,
+                operation=operation,
+            ),
+            timeout=60,
             retry_count=0,
         )
         return self._parse_envelope(data)
