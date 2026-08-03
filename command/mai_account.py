@@ -1071,6 +1071,15 @@ def _exception_detail(exc: BaseException) -> str:
         "账号标识[已隐藏]",
         detail,
     )
+    # 截断上游 httpx 错误中附带的内部 URL 和 Server Error 细节，
+    # 只保留冒号前有意义的错误前缀（如"拉取 Sega 成绩失败"）。
+    url_match = re.match(
+        r"^(.+?)\s*[:：]\s*.*\bfor url\b.*$",
+        detail,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if url_match:
+        detail = url_match.group(1).strip()
     if detail:
         return detail
 

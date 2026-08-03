@@ -58,6 +58,20 @@ class UnifiedCursor:
                 sql = re.sub(rf'\b{t}\b', f'{self._prefix}{t}', sql)
         # `key` 列是 MySQL 保留字，需要加反引号（仅匹配小写 key，避免误匹配 DUPLICATE KEY）
         sql = re.sub(r'(?<!\w)key(?=[,\s)=])', '`key`', sql)
+        # SQLite date(<col>, 'unixepoch', 'localtime') → MySQL DATE(FROM_UNIXTIME(<col>))
+        # 同时兼容 datetime() 变体
+        sql = re.sub(
+            r"\bdate\(\s*([^,)]+?)\s*,\s*'unixepoch'(?:\s*,\s*'localtime')?\s*\)",
+            r"DATE(FROM_UNIXTIME(\1))",
+            sql,
+            flags=re.IGNORECASE,
+        )
+        sql = re.sub(
+            r"\bdatetime\(\s*([^,)]+?)\s*,\s*'unixepoch'(?:\s*,\s*'localtime')?\s*\)",
+            r"FROM_UNIXTIME(\1)",
+            sql,
+            flags=re.IGNORECASE,
+        )
         # ? → %s
         sql = sql.replace('?', '%s')
         return sql
@@ -125,6 +139,7 @@ class UnifiedConnection:
                 connect_timeout=5,
                 read_timeout=10,
                 write_timeout=10,
+                init_command="SET time_zone = '+08:00'",
             )
         else:
             db_path = kwargs.get('db_path', ':memory:')

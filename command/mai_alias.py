@@ -2,6 +2,7 @@ import asyncio
 import json
 import re
 import traceback
+from itertools import product
 from textwrap import dedent
 
 import httpx
@@ -29,21 +30,44 @@ from ..libraries.maimaidx_model import Alias, PushAliasStatus
 from ..libraries.maimaidx_music import alias, mai, update_local_alias
 from ..libraries.maimaidx_music_info import draw_music_info
 
-update_alias        = on_command('更新别名库', permission=SUPERUSER)
-alias_local_apply   = on_command(
+update_alias = on_command('更新别名库', permission=SUPERUSER)
+alias_local_apply = on_command(
     '添加本地别名',
     aliases={'添加本地别称'},
     permission=GUESS_GROUP_MANAGER,
 )
-alias_apply         = on_command('添加别名', aliases={'申请别名', '增加别名', '增添别名', '添加别称'})
-alias_agree         = on_command('同意别名', aliases={'同意别称'})
-alias_status        = on_command('当前投票', aliases={'当前别名投票', '当前别称投票'})
-alias_switch        = on_regex(
+alias_apply = on_command('添加别名', aliases={'申请别名', '增加别名', '增添别名', '添加别称'})
+alias_agree = on_command('同意别名', aliases={'同意别称'})
+alias_status = on_command('当前投票', aliases={'当前别名投票', '当前别称投票'})
+alias_switch = on_regex(
     r'^([开启关闭]+)别名推送$',
     permission=SUPERUSER | GROUP_OWNER | GROUP_ADMIN
 )
 alias_global_switch = on_regex(r'^全局([开启关闭]+)别名推送$', permission=SUPERUSER)
-alias_song          = on_regex(r'^(id)?\s?(.+)\s?有什么别[名称]$', re.IGNORECASE)
+alias_song = on_regex(r'^(id)?\s?(.+)\s?有什么别[名称]$', re.IGNORECASE)
+
+
+def find_alias_ignore_case(alias_name: str):
+    """Query aliases without considering ASCII letter case."""
+    options = [
+        (char.lower(), char.upper())
+        if char.isascii() and char.isalpha()
+        else (char,)
+        for char in alias_name
+    ]
+
+    result = []
+    song_ids = set()
+
+    for chars in product(*options):
+        songs = mai.total_alias_list.by_alias(''.join(chars))
+
+        for song in songs:
+            if song.SongID not in song_ids:
+                song_ids.add(song.SongID)
+                result.append(song)
+
+    return result
 
 
 @update_alias.handle()
@@ -65,26 +89,26 @@ async def _(event: MessageEvent, message: Message = CommandArg()):
     song_id, alias_name = args
     if not mai.total_list.by_id(song_id):
         await alias_local_apply.finish(f'未找到ID「{song_id}」的曲目', reply_message=True)
-    
+
     server_exist = await maiApi.get_songs_alias(song_id)
     if isinstance(server_exist, Alias) and alias_name.lower() in server_exist.Alias:
         await alias_local_apply.finish(
-            f'该曲目的别名「{alias_name}」已存在别名服务器', 
+            f'该曲目的别名「{alias_name}」已存在别名服务器',
             reply_message=True
         )
 
     local_exist = mai.total_alias_list.by_id(song_id)
     if local_exist and alias_name.lower() in local_exist[0].Alias:
         await alias_local_apply.finish(f'本地别名库已存在该别名', reply_message=True)
-    
+
     issave = await update_local_alias(song_id, alias_name)
     if not issave:
         msg = '添加本地别名失败'
     else:
         msg = f'已成功为ID「{song_id}」添加别名「{alias_name}」到本地别名库'
     await alias_local_apply.send(msg, reply_message=True)
-    
-    
+
+
 @alias_apply.handle()
 async def _(event: GroupMessageEvent, message: Message = CommandArg()):
     try:
@@ -101,7 +125,7 @@ async def _(event: GroupMessageEvent, message: Message = CommandArg()):
         isexist = await maiApi.get_songs_alias(song_id)
         if isinstance(isexist, Alias) and alias_name.lower() in isexist.Alias:
             await alias_apply.finish(
-                f'该曲目的别名「{alias_name}」已存在别名服务器', 
+                f'该曲目的别名「{alias_name}」已存在别名服务器',
                 reply_message=True
             )
 
@@ -129,7 +153,7 @@ async def _(message: Message = CommandArg()):
         status = await maiApi.get_alias_status()
         if not status:
             await alias_status.finish('未查询到正在进行的别名投票', reply_message=True)
-        
+
         page = max(min(int(args), len(status) // SONGS_PER_PAGE + 1), 1) if args else 1
         result = []
         for num, _s in enumerate(status):
@@ -157,43 +181,48 @@ async def _(message: Message = CommandArg()):
 
 
 @alias_song.handle()
-async def _(match = RegexMatched()):
+async def _(match=RegexMatched()):
     findid = bool(match.group(1))
     name = match.group(2)
     aliases = None
+
     if findid and name.isdigit():
         alias_id = mai.total_alias_list.by_id(name)
         if not alias_id:
             await alias_song.finish(
-                '未找到此歌曲\n可以使用「添加别名」指令给该乐曲添加别名', 
+                '未找到此歌曲\n可以使用「添加别名」指令给该乐曲添加别名',
                 reply_message=True
             )
         else:
             aliases = alias_id
-    else:            
-        aliases = mai.total_alias_list.by_alias(name)
+    else:
+        # Generate all ASCII letter case combinations before querying the
+        # existing case-sensitive alias index.
+        aliases = find_alias_ignore_case(name)
+
         if not aliases:
             if name.isdigit():
                 alias_id = mai.total_alias_list.by_id(name)
                 if not alias_id:
                     await alias_song.finish(
-                        '未找到此歌曲\n可以使用「添加别名」指令给该乐曲添加别名', 
+                        '未找到此歌曲\n可以使用「添加别名」指令给该乐曲添加别名',
                         reply_message=True
                     )
                 else:
                     aliases = alias_id
             else:
                 await alias_song.finish(
-                    '未找到此歌曲\n可以使用「添加别名」指令给该乐曲添加别名', 
+                    '未找到此歌曲\n可以使用「添加别名」指令给该乐曲添加别名',
                     reply_message=True
                 )
+
     if len(aliases) != 1:
         msg = []
         for songs in aliases:
             alias_list = '\n'.join(songs.Alias)
             msg.append(f'ID：{songs.SongID}\n{alias_list}')
         await alias_song.finish(
-            f'找到{len(aliases)}个相同别名的曲目：\n' + '\n======\n'.join(msg), 
+            f'找到{len(aliases)}个相同别名的曲目：\n' + '\n======\n'.join(msg),
             reply_message=True
         )
 
@@ -206,7 +235,7 @@ async def _(match = RegexMatched()):
 
 
 @alias_switch.handle()
-async def _(event: GroupMessageEvent, match = RegexMatched()):
+async def _(event: GroupMessageEvent, match=RegexMatched()):
     if match.group(1) == '开启':
         msg = await alias.on(event.group_id)
     elif match.group(1) == '关闭':
@@ -218,7 +247,7 @@ async def _(event: GroupMessageEvent, match = RegexMatched()):
 
 
 @alias_global_switch.handle()
-async def _(bot: Bot, match = RegexMatched()):
+async def _(bot: Bot, match=RegexMatched()):
     group = await bot.get_group_list()
     group_id = [g['group_id'] for g in group]
     if match.group(1) == '开启':
@@ -236,7 +265,7 @@ async def push_alias(push: PushAliasStatus):
     song_id = str(push.Status.SongID)
     alias_name = push.Status.ApplyAlias
     music = mai.total_list.by_id(song_id)
-    
+
     if push.Type == 'Approved':
         message = MessageSegment.at(push.Status.ApplyUID) + '\n' + dedent(f'''\
             您申请的别名已通过审核
@@ -250,6 +279,7 @@ async def push_alias(push: PushAliasStatus):
         ''').strip() + await draw_music_info(music)
         await bot.send_group_msg(group_id=push.Status.GroupID, message=message)
         return
+
     if push.Type == 'Reject':
         message = MessageSegment.at(push.Status.ApplyUID) + '\n' + dedent(f'''\
             您申请的别名被拒绝
@@ -264,9 +294,11 @@ async def push_alias(push: PushAliasStatus):
     if not maiconfig.maimaidxaliaspush:
         await mai.get_music_alias(force=True)
         return
+
     group_list = await bot.get_group_list()
     group_ids: list[int] = list({g['group_id'] for g in group_list})
     message = ''
+
     if push.Type == 'Apply':
         message = dedent(f'''\
             检测到新的别名申请
@@ -277,6 +309,7 @@ async def push_alias(push: PushAliasStatus):
             别名：{alias_name}
             浏览{vote_url}查看详情
         ''').strip() + await draw_music_info(music)
+
     if push.Type == 'End':
         message = dedent(f'''\
             检测到新增别名
@@ -285,7 +318,7 @@ async def push_alias(push: PushAliasStatus):
             标题：{music.title}
             别名：{alias_name}
         ''').strip() + await draw_music_info(music)
-    
+
     for gid in group_ids:
         if gid in alias.push.disable:
             continue
@@ -302,6 +335,7 @@ async def ws_alias_server():
         wsapi = 'proxy.yuzuchan.site/maimaidxaliases'
     else:
         wsapi = 'www.yuzuchan.moe/api/maimaidx'
+
     while True:
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(60)) as session:
