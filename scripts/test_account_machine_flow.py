@@ -2,6 +2,7 @@
 
 import ast
 import asyncio
+import json
 import re
 import time
 from pathlib import Path
@@ -42,6 +43,7 @@ account = load_functions(
         "auto_upload_channels",
         "_exception_detail",
         "_upload_failure_message",
+        "_result_text",
     },
     {
         "Any": Any,
@@ -51,11 +53,15 @@ account = load_functions(
         "time": time,
         "httpx": __import__("httpx"),
         "re": re,
+        "json": json,
         "redact": lambda value: value,
     },
 )
 
 assert "请求超时" in account["_upload_failure_message"](TimeoutError())
+assert account["_result_text"](
+    {"count": 28, "skipped": [{"musicId": 181, "reason": "missing"}]}
+) == "已处理 28 条成绩"
 assert "RuntimeError（上游服务未返回错误详情）" in account[
     "_upload_failure_message"
 ](RuntimeError())

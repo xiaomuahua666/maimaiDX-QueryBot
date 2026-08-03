@@ -79,6 +79,7 @@ account_ticket_status = on_command("mai查票", aliases={"查票"})
 account_region = on_command("mai地图", aliases={"游玩地图"})
 account_preview = on_command("mai预览")
 account_items = on_command("mai道具")
+account_gate_status = on_command("mai门状态", aliases={"mai查门"})
 account_music_upsert = on_command("mai改成绩", aliases={"修改成绩"})
 account_music_delete = on_command("mai删成绩", aliases={"删除成绩"})
 account_ticket_clear = on_command("mai清票", aliases={"清空票券"})
@@ -103,6 +104,7 @@ for _serial_account_matcher in (
     account_region,
     account_preview,
     account_items,
+    account_gate_status,
     account_music_upsert,
     account_music_delete,
     account_ticket_clear,
@@ -807,6 +809,53 @@ def _format_user_items(payload: Any) -> str:
     return "\n".join(lines)
 
 
+def _flatten_gate_status(payload: Any) -> list[dict]:
+    rows: list[dict] = []
+
+    def walk(value: Any) -> None:
+        if isinstance(value, list):
+            for item in value:
+                walk(item)
+            return
+        if not isinstance(value, dict):
+            return
+        if _pick(value, "gateId", "GateId", "gateID", "GateID") is not None:
+            rows.append(value)
+            return
+        for nested in value.values():
+            if isinstance(nested, (dict, list)):
+                walk(nested)
+
+    walk(payload)
+    return rows
+
+
+def _format_gate_status(payload: Any) -> str:
+    rows = _flatten_gate_status(payload)
+    if not rows:
+        return "🚪 Kaleidx 门状态\n当前没有可展示的门状态记录。"
+
+    def yes_no(value: Any) -> str:
+        return "是" if value in (True, 1, "1", "true", "True") else "否"
+
+    rows.sort(
+        key=lambda row: int(
+            _pick(row, "gateId", "GateId", "gateID", "GateID", default=0)
+        )
+    )
+    lines = [f"🚪 Kaleidx 门状态 · 共 {len(rows)} 门"]
+    for row in rows:
+        gate_id = _pick(row, "gateId", "GateId", "gateID", "GateID")
+        found = _pick(row, "isGateFound", "IsGateFound")
+        key_found = _pick(row, "isKeyFound", "IsKeyFound")
+        cleared = _pick(row, "isClear", "IsClear")
+        lines.append(
+            f"Gate {gate_id}：发现 {yes_no(found)} · "
+            f"钥匙 {yes_no(key_found)} · 通关 {yes_no(cleared)}"
+        )
+    return "\n".join(lines)
+
+
 _DIFFICULTY_LABELS = {
     0: "BASIC",
     1: "ADVANCED",
@@ -1116,9 +1165,6 @@ def _result_text(result: dict) -> str:
         return f"任务已提交，任务 ID：{task_id}"
     count = result.get("count")
     if count is not None:
-        skipped = result.get("skipped")
-        if skipped:
-            return f"已处理 {count} 条成绩（跳过 {skipped} 条无效谱面）"
         return f"已处理 {count} 条成绩"
     return "操作已完成"
 
@@ -1386,7 +1432,7 @@ def _service_cost(service: str, *, multiple: int = 1) -> int:
     if service == "ticket":
         unit = int(break_db.get_config("ticket_cost_per_multiplier", "10"))
         return max(0, unit) * max(1, multiple)
-    if service in {"awmc_preview", "awmc_items"}:
+    if service in {"awmc_preview", "awmc_items", "awmc_gate_status"}:
         return max(0, int(break_db.get_config("awmc_read_cost", "5")))
     if service == "awmc_music_upsert":
         return max(0, int(break_db.get_config("awmc_music_upsert_cost", "75")))
@@ -1423,6 +1469,7 @@ def _charge_text(result) -> str:
         "ticket": "发票",
         "awmc_preview": "账号预览查询",
         "awmc_items": "道具查询",
+        "awmc_gate_status": "门状态查询",
         "awmc_music_upsert": "成绩编辑",
         "awmc_music_delete": "成绩删除",
         "awmc_ticket_clear": "清空票券",
@@ -1463,7 +1510,7 @@ async def _():
         "发送二维码：始终上传 AWMCNET；已绑定水鱼/落雪时同时同步对应平台\n"
         "maiu / maiul / maiua：AWMCNET + 指定且已绑定的外部平台\n"
         f"发票 / fp <{ticket_multipliers}> / mai查票 / mai地图 / maiping\n"
-        "mai预览：查询账号预览；mai道具：查询全部道具\n"
+        "mai预览：查询账号预览；mai道具：查询全部道具；mai门状态：查询 Kaleidx Gate\n"
         "mai改成绩 [歌曲 难度 达成率 DX分 FC FS]：交互或一步编辑成绩\n"
         "mai删成绩 [歌曲 难度]：交互或一步删除成绩\n"
         "mai清票：确认后清空 Charge；mai改道具：高风险交互式道具修改\n"
@@ -2966,6 +3013,26 @@ async def _(event: MessageEvent):
             reply_message=True,
         )
     await account_items.finish(text, reply_message=True)
+
+
+@account_gate_status.handle()
+async def _(event: MessageEvent):
+    await _require_agreement(account_gate_status, event)
+    try:
+        text = await _run_paid_awmc_read(
+            event,
+            service="awmc_gate_status",
+            fetch=sw_api.get_user_kaleidx_scope,
+            formatter=_format_gate_status,
+        )
+    except Exception as exc:
+        detail = _exception_detail(exc)
+        ref = _log(_user_key(event), "awmc_gate_status", "error", detail)
+        await account_gate_status.finish(
+            f"门状态查询失败：{detail}\n本次不扣 BREAK\nRef_ID: {ref}",
+            reply_message=True,
+        )
+    await account_gate_status.finish(text, reply_message=True)
 
 
 @account_music_upsert.handle()

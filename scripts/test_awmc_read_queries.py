@@ -17,6 +17,8 @@ names = {
     "_format_user_preview",
     "_flatten_user_items",
     "_format_user_items",
+    "_flatten_gate_status",
+    "_format_gate_status",
 }
 selected = [
     node
@@ -65,14 +67,28 @@ assert "称号（kind=2）：100" in items
 assert "角色（kind=9）：200、201" in items
 assert "钥匙(高风险类型)（kind=15）：300" in items
 
+gates = namespace["_format_gate_status"](
+    {
+        "userKaleidxScopeList": [
+            {"gateId": 7, "isGateFound": True, "isKeyFound": 1, "isClear": False},
+            {"gateId": 3, "isGateFound": False, "isKeyFound": 0, "isClear": True},
+        ]
+    }
+)
+assert "Gate 3：发现 否 · 钥匙 否 · 通关 是" in gates
+assert "Gate 7：发现 是 · 钥匙 是 · 通关 否" in gates
+
 client_source = (ROOT / "libraries" / "maimaidx_sw_api.py").read_text(encoding="utf-8")
 assert 'self._api_path("user/preview")' in client_source
 assert 'self._api_path("user/item-list")' in client_source
+assert 'self._api_path("user/kaleidx-scope")' in client_source
 assert "async def get_user_data(" in client_source
 
 account_source = ACCOUNT_PATH.read_text(encoding="utf-8")
 assert 'account_preview = on_command("mai预览")' in account_source
 assert 'account_items = on_command("mai道具")' in account_source
+assert 'account_gate_status = on_command("mai门状态"' in account_source
+assert 'service="awmc_gate_status"' in account_source
 assert 'break_db.get_config("awmc_read_cost", "5")' in account_source
 assert account_source.index("result = await fetch(binding.qrcode)") < account_source.index(
     "charge = break_db.settle_service_success(",

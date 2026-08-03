@@ -510,6 +510,17 @@ class SwApiClient:
         )
         return self._parse_envelope(data)
 
+    async def get_user_kaleidx_scope(self, qrcode: str) -> dict:
+        """读取 Kaleidx Gate 状态（POST /user/kaleidx-scope）。"""
+        data = await self._request(
+            "POST",
+            self._api_path("user/kaleidx-scope"),
+            json_body=self._machine_body(qrcode),
+            timeout=30,
+            retry_count=0,
+        )
+        return self._parse_envelope(data)
+
     async def upsert_music(self, qrcode: str, music: dict) -> Any:
         data = await self._request(
             "POST",

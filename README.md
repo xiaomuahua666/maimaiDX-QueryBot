@@ -381,6 +381,7 @@ BOTNAME=maimai
 | `发票` / `fp <2/3/5>` / `mai查票` | 票券操作（默认倍率 × 10 BREAK；3 倍票消耗 30 BREAK） |
 | `mai地图` / `maiping` | 游玩地区 / API 健康检查 |
 | `mai预览` / `mai道具` | 查询账号预览 / 道具列表（成功查询每次 5 BREAK） |
+| `mai门状态` / `mai查门` | 查询 Kaleidx Gate 发现、钥匙与通关状态（成功 5 BREAK） |
 | `mai改成绩 [歌曲 难度 达成率 DX分 FC FS]` | 交互或一步编辑单条成绩（成功 75 BREAK） |
 | `mai删成绩 [歌曲 难度]` | 交互或一步删除单条成绩（成功 50 BREAK） |
 | `mai清票` | 交互确认后清空 Charge 票券（成功 10 BREAK） |
