@@ -380,12 +380,12 @@ BOTNAME=maimai
 | `maiua` | 同时上传水鱼与落雪 |
 | `发票` / `fp <2/3/5>` / `mai查票` | 票券操作（默认倍率 × 10 BREAK；3 倍票消耗 30 BREAK） |
 | `mai地图` / `maiping` | 游玩地区 / API 健康检查 |
-| `mai预览` / `mai道具` | 查询账号预览 / 道具列表（成功查询每次 5 BREAK） |
-| `mai门状态` / `mai查门` | 查询 Kaleidx Gate 发现、钥匙与通关状态（成功 5 BREAK） |
-| `mai改成绩 [歌曲 难度 达成率 DX分 FC FS]` | 交互或一步编辑单条成绩（成功 75 BREAK） |
-| `mai删成绩 [歌曲 难度]` | 交互或一步删除单条成绩（成功 50 BREAK） |
-| `mai清票` | 交互确认后清空 Charge 票券（成功 10 BREAK） |
-| `mai改道具 [itemKind itemId add/del]` | 高风险交互式道具修改（成功 100 BREAK；未经测试，风险自负） |
+| `mai预览` / `预览`；`mai道具` / `道具` | 查询账号预览 / 道具列表（成功查询每次 5 BREAK） |
+| `mai门状态` / `查门` / `门状态` | 查询 Kaleidx Gate 发现、钥匙与通关状态（成功 5 BREAK） |
+| `mai改成绩` / `改分 [歌曲 难度 达成率 DX分 FC FS]` | 交互或一步编辑单条成绩（成功 75 BREAK） |
+| `mai删成绩` / `删分 [歌曲 难度]` | 交互或一步删除单条成绩（成功 50 BREAK） |
+| `mai清票` / `清票` | 交互确认后清空 Charge 票券（成功 10 BREAK） |
+| `mai改道具` / `改道具 [itemKind itemId add/del]` | 高风险交互式道具修改（成功 100 BREAK；未经测试，风险自负） |
 | `舞萌状态` / `mais` | AWMC 全局失败率分类图与服务器实时状态（空时段、空分类省略） |
 | `迁移Koishi 检查/确认 <数据库>` | 超级管理员预检/导入 Koishi maiBot 数据 |
 

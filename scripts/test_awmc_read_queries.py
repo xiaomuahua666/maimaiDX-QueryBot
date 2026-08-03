@@ -85,9 +85,42 @@ assert 'self._api_path("user/kaleidx-scope")' in client_source
 assert "async def get_user_data(" in client_source
 
 account_source = ACCOUNT_PATH.read_text(encoding="utf-8")
-assert 'account_preview = on_command("mai预览")' in account_source
-assert 'account_items = on_command("mai道具")' in account_source
-assert 'account_gate_status = on_command("mai门状态"' in account_source
+assert 'account_preview = on_command("mai预览", aliases={"预览"})' in account_source
+assert 'account_items = on_command("mai道具", aliases={"道具"})' in account_source
+assert 'account_gate_status = on_command(' in account_source
+assert '"mai门状态", aliases=' in account_source
+for alias in ('"查门"', '"门状态"'):
+    assert alias in account_source
+assert "cache_valid, cache_label = _sgid_cache_state(binding)" in account_source
+assert "请直接发送最新 SGWCMAID" in account_source
+
+cache_nodes = [
+    node
+    for node in tree.body
+    if isinstance(node, ast.FunctionDef)
+    and node.name in {"_binding_or_error", "_sgid_cache_seconds", "_sgid_cache_state"}
+]
+stale_binding = SimpleNamespace(
+    qrcode="SGWCMAID-stale",
+    qrcode_updated_at=1,
+    last_qrcode_success=1,
+)
+cache_namespace = {
+    "MessageEvent": Any,
+    "AccountBinding": Any,
+    "Optional": __import__("typing").Optional,
+    "account_db": SimpleNamespace(get=lambda key: stale_binding),
+    "_user_key": lambda event: "123",
+    "maiconfig": SimpleNamespace(awmc_sgid_cache_seconds=600),
+    "time": SimpleNamespace(time=lambda: 1000),
+}
+exec(
+    compile(ast.Module(body=cache_nodes, type_ignores=[]), str(ACCOUNT_PATH), "exec"),
+    cache_namespace,
+)
+key, binding, error = cache_namespace["_binding_or_error"](object())
+assert key == "123" and binding is None
+assert "请直接发送最新 SGWCMAID" in error
 assert 'service="awmc_gate_status"' in account_source
 assert 'break_db.get_config("awmc_read_cost", "5")' in account_source
 assert account_source.index("result = await fetch(binding.qrcode)") < account_source.index(

@@ -77,13 +77,19 @@ account_ping = on_command("maiping", aliases={"mai连接测试"})
 account_ticket = on_command("mai发票", aliases={"发票", "fp", "拿票"})
 account_ticket_status = on_command("mai查票", aliases={"查票"})
 account_region = on_command("mai地图", aliases={"游玩地图"})
-account_preview = on_command("mai预览")
-account_items = on_command("mai道具")
-account_gate_status = on_command("mai门状态", aliases={"mai查门"})
-account_music_upsert = on_command("mai改成绩", aliases={"修改成绩"})
-account_music_delete = on_command("mai删成绩", aliases={"删除成绩"})
-account_ticket_clear = on_command("mai清票", aliases={"清空票券"})
-account_item_upsert = on_command("mai改道具", aliases={"修改道具"})
+account_preview = on_command("mai预览", aliases={"预览"})
+account_items = on_command("mai道具", aliases={"道具"})
+account_gate_status = on_command(
+    "mai门状态", aliases={"mai查门", "查门", "门状态"}
+)
+account_music_upsert = on_command(
+    "mai改成绩", aliases={"修改成绩", "改成绩", "改分"}
+)
+account_music_delete = on_command(
+    "mai删成绩", aliases={"删除成绩", "删成绩", "删分"}
+)
+account_ticket_clear = on_command("mai清票", aliases={"清空票券", "清票"})
+account_item_upsert = on_command("mai改道具", aliases={"修改道具", "改道具"})
 account_opt = on_command("mai查询opt", aliases={"查询opt"})
 # 涉及账号状态、外部上传或机台会话的命令按用户串行执行。
 # 同一账号并发提交时静默拒绝后到的请求，不发送过程确认消息。
@@ -535,9 +541,12 @@ def _binding_or_error(event: MessageEvent) -> tuple[str, Optional[AccountBinding
     binding = account_db.get(key)
     if not binding or not binding.qrcode:
         return key, None, "尚未绑定舞萌账号，请先使用：mai绑定 SGWCMAID..."
-    ttl = max(0, int(getattr(maiconfig, "awmc_qrcode_cache_seconds", 0) or 0))
-    if ttl and time.time() - binding.qrcode_updated_at > ttl:
-        return key, None, "已保存的二维码凭据过期，请重新使用 mai绑定 提交最新二维码。"
+    cache_valid, cache_label = _sgid_cache_state(binding)
+    if not cache_valid:
+        return key, None, (
+            f"二维码缓存{cache_label}，请直接发送最新 SGWCMAID、官方二维码链接或"
+            "二维码图片，验证刷新后重新执行原命令。"
+        )
     return key, binding, None
 
 
@@ -1510,10 +1519,11 @@ async def _():
         "发送二维码：始终上传 AWMCNET；已绑定水鱼/落雪时同时同步对应平台\n"
         "maiu / maiul / maiua：AWMCNET + 指定且已绑定的外部平台\n"
         f"发票 / fp <{ticket_multipliers}> / mai查票 / mai地图 / maiping\n"
-        "mai预览：查询账号预览；mai道具：查询全部道具；mai门状态：查询 Kaleidx Gate\n"
-        "mai改成绩 [歌曲 难度 达成率 DX分 FC FS]：交互或一步编辑成绩\n"
-        "mai删成绩 [歌曲 难度]：交互或一步删除成绩\n"
-        "mai清票：确认后清空 Charge；mai改道具：高风险交互式道具修改\n"
+        "mai预览 / 预览：查询账号预览；mai道具 / 道具：查询全部道具\n"
+        "mai门状态 / 查门：查询 Kaleidx Gate\n"
+        "mai改成绩 / 改分 [歌曲 难度 达成率 DX分 FC FS]：交互或一步编辑成绩\n"
+        "mai删成绩 / 删分 [歌曲 难度]：交互或一步删除成绩\n"
+        "mai清票 / 清票：确认后清空 Charge；mai改道具 / 改道具：高风险道具修改\n"
         f"当前上传价格：水鱼 {fish_cost} / 落雪 {lx_cost} / 同时 {all_cost} BREAK\n"
         f"发票价格：倍率 × {ticket_unit} BREAK（例：2倍=20，3倍=30，5倍=50）\n"
         f"AWMC 只读新功能：每次成功查询 {read_cost} BREAK，失败不扣费\n"

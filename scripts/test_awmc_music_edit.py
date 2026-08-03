@@ -116,12 +116,14 @@ for cancel_word in ("取消", "cancel", "Q", "退出", "00"):
     assert namespace["_is_interaction_cancel"](cancel_word)
 
 source = PATH.read_text(encoding="utf-8")
-assert 'account_music_upsert = on_command("mai改成绩"' in source
-assert 'account_music_delete = on_command("mai删成绩"' in source
+assert 'account_music_upsert = on_command(' in source and '"mai改成绩", aliases=' in source
+assert 'account_music_delete = on_command(' in source and '"mai删成绩", aliases=' in source
 assert 'break_db.get_config("awmc_music_upsert_cost", "75")' in source
 assert 'break_db.get_config("awmc_music_delete_cost", "50")' in source
 assert 'account_ticket_clear = on_command("mai清票"' in source
 assert 'account_item_upsert = on_command("mai改道具"' in source
+for alias in ('"改成绩"', '"改分"', '"删成绩"', '"删分"', '"清票"', '"改道具"'):
+    assert alias in source
 assert 'break_db.get_config("awmc_ticket_clear_cost", "10")' in source
 assert 'break_db.get_config("awmc_item_upsert_cost", "100")' in source
 assert "我已知晓风险" in source
