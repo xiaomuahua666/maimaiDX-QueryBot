@@ -421,6 +421,17 @@ class DrawBest(ScoreBaseImage):
         return f'UI_DNM_DaniPlate_{num}.png'
 
     async def draw(self) -> Image.Image:
+        """异步取头像，再把 Pillow 重绘交给独立图片线程池。"""
+        qq_logo_bytes: Optional[bytes] = None
+        if self.qqid:
+            try:
+                qq_logo_bytes = await maiApi.qqlogo(qqid=self.qqid)
+            except Exception:
+                pass
+        from .maimaidx_image_executor import run_image_cpu
+        return await run_image_cpu(self._draw_sync, qq_logo_bytes)
+
+    def _draw_sync(self, qq_logo_bytes: Optional[bytes] = None) -> Image.Image:
         from .maimaidx_theme import resolve_theme_path as _rtp
         _t = self._theme
         _tp = lambda f: _rtp(maimaidir, _t, f)
@@ -442,9 +453,9 @@ class DrawBest(ScoreBaseImage):
         self._im.alpha_composite(plate, (300, 60))
         icon = Image.open(_tp('UI_Icon_509506.png')).resize((120, 120))
         self._im.alpha_composite(icon, (305, 65))
-        if self.qqid:
+        if qq_logo_bytes:
             try:
-                qqLogo = Image.open(BytesIO(await maiApi.qqlogo(qqid=self.qqid)))
+                qqLogo = Image.open(BytesIO(qq_logo_bytes))
                 self._im.alpha_composite(qqLogo.convert('RGBA').resize((120, 120)), (305, 65))
             except Exception:
                 pass
