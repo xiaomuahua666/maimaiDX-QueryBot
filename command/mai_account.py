@@ -127,6 +127,7 @@ _TICKET_TIMING_KEY = "ticket:processing_seconds"
 _LEGACY_TICKET_TIMING_KEY = "ticket_queue:seconds_per_request"
 _TICKET_AUTO_RETRIES = 2
 _pending_ticket_retries: dict[str, tuple[int, float]] = {}
+_pending_account_retries: dict[str, tuple[str, dict[str, Any], float]] = {}
 _DIVING_FISH_PROBER_URL = "https://www.diving-fish.com/maimaidx/prober/"
 _FISH_TOKEN_MIN_LENGTH = 127
 _post_upload_tasks: set[asyncio.Task] = set()
@@ -321,6 +322,10 @@ class TicketRetryableError(RuntimeError):
     """上游已明确本次未发票，可以安全重新提交。"""
 
 
+class QrcodeRefreshRequiredError(RuntimeError):
+    """账号操作已挂起，等待用户提交新的二维码凭据。"""
+
+
 async def _run_ticket_with_retries(
     operation: Callable[[int], Awaitable[int]],
     *,
@@ -391,6 +396,33 @@ def take_pending_ticket_retry(
 
 def clear_pending_ticket_retry(user_key: str) -> None:
     _pending_ticket_retries.pop(str(user_key), None)
+
+
+def remember_pending_account_retry(
+    user_key: str,
+    operation: str,
+    payload: Optional[dict[str, Any]] = None,
+    *,
+    expires_at: Optional[float] = None,
+) -> float:
+    now = time.time()
+    deadline = float(expires_at or (now + _TICKET_QRCODE_RETRY_SECONDS))
+    if deadline > now:
+        _pending_account_retries[str(user_key)] = (
+            operation,
+            dict(payload or {}),
+            deadline,
+        )
+    return deadline
+
+
+def take_pending_account_retry(
+    user_key: str,
+) -> Optional[tuple[str, dict[str, Any], float]]:
+    pending = _pending_account_retries.pop(str(user_key), None)
+    if pending is None or pending[2] <= time.time():
+        return None
+    return pending
 
 
 def _charge_payload_user_id(payload: dict) -> str:
@@ -543,10 +575,18 @@ def _binding_or_error(event: MessageEvent) -> tuple[str, Optional[AccountBinding
         return key, None, "尚未绑定舞萌账号，请先使用：mai绑定 SGWCMAID..."
     cache_valid, cache_label = _sgid_cache_state(binding)
     if not cache_valid:
-        return key, None, (
-            f"二维码缓存{cache_label}，请直接发送最新 SGWCMAID、官方二维码链接或"
-            "二维码图片，验证刷新后重新执行原命令。"
-        )
+        return key, None, _pending_qrcode_prompt(cache_label)
+    return key, binding, None
+
+
+def _binding_for_write_preflight(
+    event: MessageEvent,
+) -> tuple[str, Optional[AccountBinding], Optional[str]]:
+    """交互写操作先允许用户填完参数，二维码新鲜度在最终提交时检查。"""
+    key = _user_key(event)
+    binding = account_db.get(key)
+    if not binding or not binding.qrcode:
+        return key, None, "尚未绑定舞萌账号，请先使用：mai绑定 SGWCMAID..."
     return key, binding, None
 
 
@@ -575,6 +615,14 @@ def _status_qrcode_prompt(reason: str) -> str:
         "请打开微信中的「舞萌DX | 中二节奏」玩家二维码，\n"
         "长按二维码并选择「识别图中二维码」，复制识别出的字符或网页地址发送给 Bot。\n"
         "支持 SGWCMAID、wq.wahlap.net 的 img/req 链接；发送「取消」可查看缓存资料。"
+    )
+
+
+def _pending_qrcode_prompt(reason: str, operation_label: str = "原操作") -> str:
+    return (
+        f"🔄 二维码缓存{reason}\n"
+        "请直接发送最新 SGWCMAID、官方二维码链接或二维码图片（180 秒内有效）。\n"
+        f"验证并同步成绩后，Bot 会自动继续本次{operation_label}。"
     )
 
 
@@ -855,14 +903,33 @@ def _format_gate_status(payload: Any) -> str:
     lines = [f"🚪 Kaleidx 门状态 · 共 {len(rows)} 门"]
     for row in rows:
         gate_id = _pick(row, "gateId", "GateId", "gateID", "GateID")
+        try:
+            gate_number = int(gate_id)
+        except (TypeError, ValueError):
+            gate_number = 0
+        gate_name = _GATE_NAMES.get(gate_number, f"未知之门")
         found = _pick(row, "isGateFound", "IsGateFound")
         key_found = _pick(row, "isKeyFound", "IsKeyFound")
         cleared = _pick(row, "isClear", "IsClear")
         lines.append(
-            f"Gate {gate_id}：发现 {yes_no(found)} · "
+            f"{gate_name}（Gate {gate_id}）：发现 {yes_no(found)} · "
             f"钥匙 {yes_no(key_found)} · 通关 {yes_no(cleared)}"
         )
     return "\n".join(lines)
+
+
+_GATE_NAMES = {
+    1: "蓝色之门",
+    2: "白色之门",
+    3: "紫色之门",
+    4: "黑色之门",
+    5: "黄色之门",
+    6: "红色之门",
+    7: "棱镜塔",
+    8: "表门",
+    9: "希望之门",
+    10: "里门",
+}
 
 
 _DIFFICULTY_LABELS = {
@@ -2412,41 +2479,45 @@ async def _refresh_b50_cache_after_upload(
     if lxns:
         sources.append("lxns")
 
-    invalidate_player_cache(qqid)
-    for source in sources:
-        # 变种 B50 读取全量 records，普通 B50 读取 charts；两者必须同时更新。
-        # 即使全量成绩暂时拉取失败，也继续刷新 charts，使新的 SQLite 缓存行
-        # 阻止后续查询回退到统一存储里的旧快照。
-        try:
-            userinfo, records = await get_user_records(
-                qqid=qqid, force_source=source, force_refresh=True
-            )
-            from ..libraries.maimaidx_awmcnet_sync import sync_awmcnet
-            await sync_awmcnet(qqid, userinfo, records, source=source)
-            log.info(
-                f"[upload] 上传后已静默刷新全量成绩缓存 "
-                f"user={user_key},source={source}"
-            )
-        except Exception as exc:
-            log.warning(
-                f"[upload] 上传已成功，但静默刷新全量成绩缓存失败 "
-                f"user={user_key},source={source}: {_exception_detail(exc)}"
-            )
-        try:
-            await get_user_b50(
-                qqid=qqid, force_source=source, force_refresh=True
-            )
-            log.info(
-                f"[upload] 上传后已静默刷新 B50 缓存 "
-                f"user={user_key},source={source}"
-            )
-        except Exception as exc:
-            log.warning(
-                f"[upload] 上传已成功，但静默刷新 B50 缓存失败 "
-                f"user={user_key},source={source}: {_exception_detail(exc)}"
-            )
-        finally:
-            clear_fetch_meta()
+    # 查分器上传接口返回成功后仍可能有短暂的最终一致性窗口。每轮都先清理
+    # 本地缓存，避免第一次读到旧成绩后把旧 B50 固化 15 分钟；最后一轮结果留在缓存。
+    for attempt, delay in enumerate((0.0, 8.0, 12.0), start=1):
+        if delay:
+            await asyncio.sleep(delay)
+        invalidate_player_cache(qqid)
+        for source in sources:
+            try:
+                userinfo, records = await get_user_records(
+                    qqid=qqid, force_source=source, force_refresh=True
+                )
+                from ..libraries.maimaidx_awmcnet_sync import sync_awmcnet
+                await sync_awmcnet(qqid, userinfo, records, source=source)
+                log.info(
+                    f"[upload] 上传后已静默刷新全量成绩缓存 "
+                    f"user={user_key},source={source},attempt={attempt}"
+                )
+            except Exception as exc:
+                log.warning(
+                    f"[upload] 上传已成功，但静默刷新全量成绩缓存失败 "
+                    f"user={user_key},source={source},attempt={attempt}: "
+                    f"{_exception_detail(exc)}"
+                )
+            try:
+                await get_user_b50(
+                    qqid=qqid, force_source=source, force_refresh=True
+                )
+                log.info(
+                    f"[upload] 上传后已静默刷新 B50 缓存 "
+                    f"user={user_key},source={source},attempt={attempt}"
+                )
+            except Exception as exc:
+                log.warning(
+                    f"[upload] 上传已成功，但静默刷新 B50 缓存失败 "
+                    f"user={user_key},source={source},attempt={attempt}: "
+                    f"{_exception_detail(exc)}"
+                )
+            finally:
+                clear_fetch_meta()
 
 
 async def _post_upload_maintenance(
@@ -2804,6 +2875,17 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
     await _require_agreement(account_ticket, event)
     key, binding, error = _binding_or_error(event)
     if error or binding is None:
+        if error and "二维码缓存" in error:
+            raw_multiple = _arg_text(args) or "2"
+            try:
+                pending_multiple = int(raw_multiple)
+            except ValueError:
+                pending_multiple = 2
+            remember_pending_ticket_retry(key, pending_multiple)
+            await account_ticket.finish(
+                _pending_qrcode_prompt("已过期，需刷新", "发票操作"),
+                reply_message=True,
+            )
         await account_ticket.finish(error or "账号未绑定")
     raw = _arg_text(args) or "2"
     try:
@@ -2843,6 +2925,12 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
 async def _(event: MessageEvent):
     key, binding, error = _binding_or_error(event)
     if error or binding is None:
+        if error and "二维码缓存" in error:
+            remember_pending_account_retry(key, "ticket_status")
+            await account_ticket_status.finish(
+                _pending_qrcode_prompt("已过期，需刷新", "票券查询"),
+                reply_message=True,
+            )
         await account_ticket_status.finish(error or "账号未绑定")
     try:
         async with machine_session():
@@ -2866,6 +2954,14 @@ async def _run_paid_awmc_read(
 ) -> str:
     key, binding, error = _binding_or_error(event)
     if error or binding is None:
+        if error and "二维码缓存" in error:
+            remember_pending_account_retry(key, service)
+            label = {
+                "awmc_preview": "账号预览查询",
+                "awmc_items": "道具查询",
+                "awmc_gate_status": "门状态查询",
+            }.get(service, "查询")
+            raise QrcodeRefreshRequiredError(_pending_qrcode_prompt("已过期，需刷新", label))
         raise RuntimeError(error or "账号未绑定")
     cost = _service_cost(service)
     break_db.ensure_service_affordable(int(key), service, cost)
@@ -2879,6 +2975,60 @@ async def _run_paid_awmc_read(
     return f"{text}\n\n{_charge_text(charge)}\nRef_ID: {ref}"
 
 
+async def continue_pending_account_retry(
+    event: MessageEvent,
+    qrcode: str,
+    pending: tuple[str, dict[str, Any], float],
+) -> str:
+    """验证新二维码后继续一个已挂起的账号 API 操作。"""
+    operation, payload, expires_at = pending
+    key = _user_key(event)
+    if expires_at <= time.time():
+        return "二维码续跑窗口已结束，请重新发送原命令。"
+    binding = account_db.get(key)
+    if binding is None:
+        return "尚未绑定舞萌账号，请先使用 mai绑定。"
+    try:
+        async with machine_session():
+            await _read_verified_preview(binding, qrcode, save_qrcode=True)
+    except Exception as exc:
+        remember_pending_account_retry(key, operation, payload, expires_at=expires_at)
+        return _pending_qrcode_prompt("验证失败，请重新获取", "原操作")
+
+    if operation in {"awmc_preview", "awmc_items", "awmc_gate_status"}:
+        fetchers = {
+            "awmc_preview": (sw_api.get_user_preview, _format_user_preview),
+            "awmc_items": (sw_api.get_user_items, _format_user_items),
+            "awmc_gate_status": (sw_api.get_user_kaleidx_scope, _format_gate_status),
+        }
+        fetch, formatter = fetchers[operation]
+        return await _run_paid_awmc_read(
+            event, service=operation, fetch=fetch, formatter=formatter
+        )
+    if operation == "ticket_status":
+        result = await sw_api.get_user_charge(qrcode)
+        return _format_ticket_status(result)
+    if operation == "region":
+        return format_user_region_block(await sw_api.get_user_region(qrcode))
+    if operation in {"awmc_music_upsert", "awmc_music_delete"}:
+        return await _run_music_write(
+            event,
+            service=operation,
+            music=payload.get("music"),
+            level=int(payload.get("level")),
+            score=payload.get("score"),
+        )
+    if operation in {"awmc_ticket_clear", "awmc_item_upsert"}:
+        return await _run_account_dangerous_write(
+            event,
+            service=operation,
+            item_kind=payload.get("item_kind"),
+            item_id=payload.get("item_id"),
+            operation=str(payload.get("operation") or ""),
+        )
+    return "二维码已刷新，但原操作类型已失效，请重新发送原命令。"
+
+
 async def _run_music_write(
     event: MessageEvent,
     *,
@@ -2889,6 +3039,16 @@ async def _run_music_write(
 ) -> str:
     key, binding, error = _binding_or_error(event)
     if error or binding is None:
+        if error and "二维码缓存" in error:
+            remember_pending_account_retry(
+                key,
+                service,
+                {"music": music, "level": level, "score": score},
+            )
+            label = "成绩编辑" if score is not None else "成绩删除"
+            raise QrcodeRefreshRequiredError(
+                _pending_qrcode_prompt("已过期，需刷新", label)
+            )
         raise RuntimeError(error or "账号未绑定")
     cost = _service_cost(service)
     break_db.ensure_service_affordable(int(key), service, cost)
@@ -2932,6 +3092,8 @@ async def _run_music_write(
 
 
 async def _finish_music_write_error(matcher, event: MessageEvent, service: str, exc: Exception):
+    if isinstance(exc, QrcodeRefreshRequiredError):
+        await matcher.finish(str(exc), reply_message=True)
     detail = _exception_detail(exc)
     ref = _log(_user_key(event), service, "error", detail)
     await matcher.finish(
@@ -2950,6 +3112,17 @@ async def _run_account_dangerous_write(
 ) -> str:
     key, binding, error = _binding_or_error(event)
     if error or binding is None:
+        if error and "二维码缓存" in error:
+            payload = {
+                "item_kind": item_kind,
+                "item_id": item_id,
+                "operation": operation,
+            }
+            remember_pending_account_retry(key, service, payload)
+            label = "清票" if service == "awmc_ticket_clear" else "道具修改"
+            raise QrcodeRefreshRequiredError(
+                _pending_qrcode_prompt("已过期，需刷新", label)
+            )
         raise RuntimeError(error or "账号未绑定")
     cost = _service_cost(service)
     break_db.ensure_service_affordable(int(key), service, cost)
@@ -2996,6 +3169,8 @@ async def _(event: MessageEvent):
             formatter=_format_user_preview,
         )
     except Exception as exc:
+        if isinstance(exc, QrcodeRefreshRequiredError):
+            await account_preview.finish(str(exc), reply_message=True)
         detail = _exception_detail(exc)
         ref = _log(_user_key(event), "awmc_preview", "error", detail)
         await account_preview.finish(
@@ -3016,6 +3191,8 @@ async def _(event: MessageEvent):
             formatter=_format_user_items,
         )
     except Exception as exc:
+        if isinstance(exc, QrcodeRefreshRequiredError):
+            await account_items.finish(str(exc), reply_message=True)
         detail = _exception_detail(exc)
         ref = _log(_user_key(event), "awmc_items", "error", detail)
         await account_items.finish(
@@ -3036,6 +3213,8 @@ async def _(event: MessageEvent):
             formatter=_format_gate_status,
         )
     except Exception as exc:
+        if isinstance(exc, QrcodeRefreshRequiredError):
+            await account_gate_status.finish(str(exc), reply_message=True)
         detail = _exception_detail(exc)
         ref = _log(_user_key(event), "awmc_gate_status", "error", detail)
         await account_gate_status.finish(
@@ -3051,7 +3230,7 @@ async def _(matcher: Matcher, event: MessageEvent, args: Message = CommandArg())
     raw = _arg_text(args)
     if not raw:
         try:
-            key, binding, error = _binding_or_error(event)
+            key, binding, error = _binding_for_write_preflight(event)
             if error or binding is None:
                 raise RuntimeError(error or "账号未绑定")
             break_db.ensure_service_affordable(
@@ -3143,7 +3322,7 @@ async def _(matcher: Matcher, event: MessageEvent, args: Message = CommandArg())
     raw = _arg_text(args)
     if not raw:
         try:
-            key, binding, error = _binding_or_error(event)
+            key, binding, error = _binding_for_write_preflight(event)
             if error or binding is None:
                 raise RuntimeError(error or "账号未绑定")
             break_db.ensure_service_affordable(
@@ -3206,7 +3385,7 @@ async def _(matcher: Matcher, event: MessageEvent, message: Message = Arg("delet
 async def _(matcher: Matcher, event: MessageEvent, args: Message = CommandArg()):
     await _require_agreement(account_ticket_clear, event)
     try:
-        key, binding, error = _binding_or_error(event)
+        key, binding, error = _binding_for_write_preflight(event)
         if error or binding is None:
             raise RuntimeError(error or "账号未绑定")
         break_db.ensure_service_affordable(
@@ -3248,7 +3427,7 @@ async def _(event: MessageEvent, message: Message = Arg("ticket_clear_confirm"))
 async def _(matcher: Matcher, event: MessageEvent, args: Message = CommandArg()):
     await _require_agreement(account_item_upsert, event)
     try:
-        key, binding, error = _binding_or_error(event)
+        key, binding, error = _binding_for_write_preflight(event)
         if error or binding is None:
             raise RuntimeError(error or "账号未绑定")
         break_db.ensure_service_affordable(
@@ -3361,8 +3540,14 @@ async def _(matcher: Matcher, event: MessageEvent, message: Message = Arg("item_
 
 @account_region.handle()
 async def _(event: MessageEvent):
-    _, binding, error = _binding_or_error(event)
+    key, binding, error = _binding_or_error(event)
     if error or binding is None:
+        if error and "二维码缓存" in error:
+            remember_pending_account_retry(key, "region")
+            await account_region.finish(
+                _pending_qrcode_prompt("已过期，需刷新", "地区查询"),
+                reply_message=True,
+            )
         await account_region.finish(error or "账号未绑定")
     try:
         result = await sw_api.get_user_region(binding.qrcode)

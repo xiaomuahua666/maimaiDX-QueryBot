@@ -47,6 +47,9 @@ class PlayerFetchMeta:
 _FETCH_META: contextvars.ContextVar[Optional[PlayerFetchMeta]] = contextvars.ContextVar(
     "player_fetch_meta", default=None
 )
+# A cache invalidation must also block the long-lived storage snapshot fallback;
+# otherwise a just-cleared SQLite row can immediately resurrect stale scores.
+_INVALIDATED_QQIDS: set[int] = set()
 
 REFRESH_B50_HINT = '💡 刚打完机台？发送「刷新b50」可从查分器获取最新成绩'
 
@@ -447,7 +450,7 @@ def _bundle_from_snapshot(snap: DailySnapshot) -> CachedPlayerBundle:
 
 
 def _try_storage_snapshot(qqid: int, max_age: int) -> Optional[CachedPlayerBundle]:
-    if not _use_storage_fallback() or max_age <= 0:
+    if int(qqid) in _INVALIDATED_QQIDS or not _use_storage_fallback() or max_age <= 0:
         return None
     metas = data_storage.list_snapshots(qqid, limit=1)
     if not metas:
@@ -470,7 +473,9 @@ def _try_storage_snapshot(qqid: int, max_age: int) -> Optional[CachedPlayerBundl
 def invalidate_player_cache(qqid: int) -> None:
     """清除某 QQ 的所有玩家缓存（各数据源），下次查询强制走查分器。"""
     try:
-        removed = player_cache_db.delete_by_qqid(int(qqid))
+        qqid = int(qqid)
+        _INVALIDATED_QQIDS.add(qqid)
+        removed = player_cache_db.delete_by_qqid(qqid)
         if removed:
             log.info(f"[PlayerCache] 已清除 qq={qqid} 的 {removed} 条缓存")
     except Exception as e:
@@ -534,6 +539,8 @@ def save_cached_player(
         if not records and prev.records:
             records = prev.records
     player_cache_db.set(qqid, username, source, userinfo, records)
+    if qqid:
+        _INVALIDATED_QQIDS.discard(int(qqid))
     if qqid and len(records) >= 30:
         try:
             from .maimaidx_rank_course import invalidate_course_stats

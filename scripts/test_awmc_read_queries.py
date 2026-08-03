@@ -35,6 +35,11 @@ namespace = {
         9: "角色",
         15: "钥匙(高风险类型)",
     },
+    "_GATE_NAMES": {
+        1: "蓝色之门", 2: "白色之门", 3: "紫色之门", 4: "黑色之门",
+        5: "黄色之门", 6: "红色之门", 7: "棱镜塔", 8: "表门",
+        9: "希望之门", 10: "里门",
+    },
 }
 exec(compile(ast.Module(body=selected, type_ignores=[]), str(ACCOUNT_PATH), "exec"), namespace)
 
@@ -75,8 +80,8 @@ gates = namespace["_format_gate_status"](
         ]
     }
 )
-assert "Gate 3：发现 否 · 钥匙 否 · 通关 是" in gates
-assert "Gate 7：发现 是 · 钥匙 是 · 通关 否" in gates
+assert "紫色之门（Gate 3）：发现 否 · 钥匙 否 · 通关 是" in gates
+assert "棱镜塔（Gate 7）：发现 是 · 钥匙 是 · 通关 否" in gates
 
 client_source = (ROOT / "libraries" / "maimaidx_sw_api.py").read_text(encoding="utf-8")
 assert 'self._api_path("user/preview")' in client_source
@@ -98,7 +103,10 @@ cache_nodes = [
     node
     for node in tree.body
     if isinstance(node, ast.FunctionDef)
-    and node.name in {"_binding_or_error", "_sgid_cache_seconds", "_sgid_cache_state"}
+    and node.name in {
+        "_binding_or_error", "_binding_for_write_preflight", "_sgid_cache_seconds",
+        "_sgid_cache_state", "_pending_qrcode_prompt",
+    }
 ]
 stale_binding = SimpleNamespace(
     qrcode="SGWCMAID-stale",

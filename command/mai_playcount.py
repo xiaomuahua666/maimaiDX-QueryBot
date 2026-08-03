@@ -521,8 +521,12 @@ async def _process_auto_qrcode_for_account(
     from .mai_account import (
         _has_lxns_oauth,
         auto_upload_channels,
+        continue_pending_account_retry,
         continue_ticket_with_qrcode,
+        remember_pending_account_retry,
+        remember_pending_ticket_retry,
         take_awmcnet_first_sync_notice,
+        take_pending_account_retry,
         take_pending_ticket_retry,
     )
 
@@ -537,18 +541,10 @@ async def _process_auto_qrcode_for_account(
         else '⚠️ Bot 无法撤回原凭据消息，请立即手动撤回。'
     )
     pending_ticket = take_pending_ticket_retry(str(qqid))
-    if pending_ticket is not None:
-        async def notify(message: str) -> None:
-            await bot.send(event, message=prefix + MessageSegment.text(message))
-
-        result = await continue_ticket_with_qrcode(
-            event, qrcode_data, pending_ticket, notify=notify
-        )
-        await bot.send(event, message=prefix + MessageSegment.text(result))
-        return
+    pending_account = take_pending_account_retry(str(qqid))
     if qqid in _waiting_qrcode:
         _waiting_qrcode.pop(qqid, None)
-    if _qrcode_dedupe_hit(qqid, qrcode_data):
+    if pending_ticket is None and pending_account is None and _qrcode_dedupe_hit(qqid, qrcode_data):
         log.info(
             f'[QrcodeAuto] 跳过重复请求 group={getattr(event, "group_id", "private")} qq={qqid} '
             f'qrcode={qrcode_log_preview(qrcode_data)}'
@@ -600,6 +596,12 @@ async def _process_auto_qrcode_for_account(
                     _qrcode_verified=True,
                 )
         except MachineBusyError as exc:
+            if pending_ticket is not None:
+                remember_pending_ticket_retry(str(qqid), pending_ticket[0], expires_at=pending_ticket[1])
+            if pending_account is not None:
+                remember_pending_account_retry(
+                    str(qqid), pending_account[0], pending_account[1], expires_at=pending_account[2]
+                )
             from .mai_account import _log
 
             ref = _log(
@@ -621,6 +623,12 @@ async def _process_auto_qrcode_for_account(
             )
             return
         except Exception as exc:
+            if pending_ticket is not None:
+                remember_pending_ticket_retry(str(qqid), pending_ticket[0], expires_at=pending_ticket[1])
+            if pending_account is not None:
+                remember_pending_account_retry(
+                    str(qqid), pending_account[0], pending_account[1], expires_at=pending_account[2]
+                )
             _qrcode_retry_release_dedupe(qqid, qrcode_data)
             account_db.mark_qrcode_result(str(qqid), False)
             attempt, exhausted = _qrcode_retry_failed(qqid)
@@ -685,6 +693,19 @@ async def _process_auto_qrcode_for_account(
                 lines.append(first_notice)
         else:
             lines.append('AWMCNET 上传未完成，请检查服务配置后重试。')
+        if pending_ticket is not None:
+            async def notify(message: str) -> None:
+                await bot.send(event, message=prefix + MessageSegment.text(message))
+
+            ticket_result = await continue_ticket_with_qrcode(
+                event, qrcode_data, pending_ticket, notify=notify
+            )
+            lines.append('📨 自动继续发票：\n' + ticket_result)
+        if pending_account is not None:
+            account_result = await continue_pending_account_retry(
+                event, qrcode_data, pending_account
+            )
+            lines.append('🔁 自动继续原操作：\n' + account_result)
         ref = _log(
             str(qqid),
             'auto_qrcode',
