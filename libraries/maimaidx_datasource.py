@@ -105,7 +105,11 @@ async def _refresh_awmcnet_from_upstreams(
     )
     for source, result in zip(('divingfish', 'lxns'), attempts):
         if isinstance(result, Exception):
-            log.info(f'[datasource] AWMCNET migration skipped {source} qq={qqid}: {result}')
+            # 上游无用户/OAuth 未绑定是自动探测的正常结果；保留 DEBUG
+            # 便于排障，避免群批量查询或定时补存刷满生产日志。
+            log.debug(
+                f'[datasource] AWMCNET migration skipped {source} qq={qqid}: {result}'
+            )
     userinfo, records = _merge_upstream_records(attempts)
     if userinfo and records:
         from .maimaidx_awmcnet_sync import sync_awmcnet

@@ -191,6 +191,32 @@ async def fetch_awmcnet_player(qqid: int) -> dict | None:
         return None
 
 
+async def fetch_awmcnet_summary(qqid: int) -> dict | None:
+    """读取轻量玩家摘要，供群排行批量查询使用。"""
+    connection = _connection()
+    if connection is None:
+        return None
+    base_url, token, timeout = connection
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(
+                f"{base_url}/api/bot/player/{int(qqid)}/summary",
+                headers={"Bot-Token": token},
+            )
+        if response.status_code == 404:
+            return None
+        if response.status_code != 200:
+            log.warning(
+                f"[AWMCNET] 摘要读取失败 status={response.status_code} "
+                f"body={response.text[:120]}"
+            )
+            return None
+        return response.json()
+    except Exception as exc:
+        log.warning(f"[AWMCNET] 摘要读取异常: {type(exc).__name__}: {exc}")
+        return None
+
+
 async def fetch_awmcnet_trend(qqid: int, days: int = 30) -> dict | None:
     connection = _connection()
     if connection is None:

@@ -20,6 +20,7 @@ from nonebot_plugin_apscheduler import scheduler
 
 from ..libraries.maimaidx_data_storage import data_storage, DailySnapshot
 from ..libraries.maimaidx_datasource import get_user_records
+from ..libraries.maimaidx_error import LxnsDataError
 
 
 async def fetch_and_store_user_scores(
@@ -77,6 +78,10 @@ async def fetch_and_store_user_scores(
             )
         return success
         
+    except LxnsDataError as e:
+        # 用户没有 AWMCNET/水鱼/落雪成绩属于预期状态，不应以 ERROR 刷屏。
+        log.debug(f"[DataScheduler] 用户 {qqid} 暂无可存储成绩: {e}")
+        return False
     except Exception as e:
         log.error(f"[DataScheduler] 获取并存储用户 {qqid} 成绩失败: {e}")
         return False
@@ -210,8 +215,14 @@ async def on_startup_storage():
 # 注册启动任务
 from nonebot import get_driver
 driver = get_driver()
+_startup_storage_started = False
 
 @driver.on_bot_connect
 async def _(bot):
     """Bot 连接时触发启动补存"""
+    global _startup_storage_started
+    if _startup_storage_started:
+        log.info("[DataScheduler] 启动补存已调度，本次重连跳过")
+        return
+    _startup_storage_started = True
     asyncio.create_task(on_startup_storage())

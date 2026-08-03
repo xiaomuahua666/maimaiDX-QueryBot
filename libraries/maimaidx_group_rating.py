@@ -26,7 +26,7 @@ from ..config import maiconfig
 from ..config import log
 from .maimaidx_data_storage import data_storage
 from .maimaidx_api_data import maiApi
-from .maimaidx_datasource import get_user_b50, get_user_records
+from .maimaidx_datasource import get_user_b50, get_user_records, get_user_source
 from .maimaidx_player_cache import get_cached_rating_for_friend_battle
 from .maimaidx_error import UserDisabledQueryError, UserNotFoundError, UserNotExistsError, MusicNotPlayError
 from .maimaidx_score_formatter import (
@@ -112,8 +112,8 @@ def _display_name(member: dict) -> str:
     return (member.get("nickname") or str(member.get("user_id", ""))).strip() or "未知"
 
 
-# 群成员 rating 并发数上限，避免同时请求过多压垮查分器
-_GROUP_RATING_CONCURRENCY = 15
+# 群成员 rating 并发数上限。AWMCNET 单机后端需要为正常查分保留余量。
+_GROUP_RATING_CONCURRENCY = 5
 
 
 async def get_group_member_ratings(
@@ -169,6 +169,19 @@ async def get_group_member_ratings(
                 return None
             async with sem:
                 try:
+                    # 群排名是批量读取，不应为每个陌生群成员触发水鱼/落雪
+                    # 自动迁移。AWMCNET 用户只读取轻量摘要；个人主动查分仍
+                    # 继续使用 datasource 的完整自动迁移流程。
+                    if get_user_source(int(uid)) == 'awmcnet':
+                        from .maimaidx_awmcnet_sync import fetch_awmcnet_summary
+
+                        summary = await fetch_awmcnet_summary(int(uid))
+                        if not summary:
+                            return None
+                        ra = int(summary.get('rating') or 0)
+                        if ra <= 0:
+                            return None
+                        return (int(uid), _display_name(m), ra)
                     userinfo = await get_user_b50(qqid=int(uid))
                     ra = int(userinfo.rating or 0)
                     if ra <= 0:
