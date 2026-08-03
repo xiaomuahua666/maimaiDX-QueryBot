@@ -425,6 +425,10 @@ def take_pending_account_retry(
     return pending
 
 
+def clear_pending_account_retry(user_key: str) -> None:
+    _pending_account_retries.pop(str(user_key), None)
+
+
 def _charge_payload_user_id(payload: dict) -> str:
     """提取 /user/charge 返回的 UID，用于防止跨账号误判到账。"""
     if not isinstance(payload, dict):
@@ -645,6 +649,9 @@ async def _read_verified_preview(
             rating=rating,
             preview=data,
         )
+        # Any successful explicit refresh supersedes older, unrelated pending work.
+        clear_pending_account_retry(binding.user_key)
+        clear_pending_ticket_retry(binding.user_key)
     else:
         account_db.refresh_preview(
             binding.user_key,
