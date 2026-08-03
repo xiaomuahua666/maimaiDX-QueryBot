@@ -491,7 +491,17 @@ async def _process_auto_qrcode(
 
     qqid = int(billing_user_id(event))
     if not try_begin_account_operation(qqid):
+        await bot.send(
+            event,
+            message=MessageSegment.text(
+                recall_warning
+                + '⏳ 账号操作仍在处理中，请稍候查看上一条结果后再发送二维码。'
+            ),
+        )
         return
+    await _send_progress(
+        bot, event, recall_warning + '✅ 已收到二维码，正在验证并处理，请稍候。'
+    )
     try:
         await _process_auto_qrcode_for_account(
             bot,

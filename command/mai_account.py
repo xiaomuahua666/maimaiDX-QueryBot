@@ -2995,38 +2995,45 @@ async def continue_pending_account_retry(
         remember_pending_account_retry(key, operation, payload, expires_at=expires_at)
         return _pending_qrcode_prompt("验证失败，请重新获取", "原操作")
 
-    if operation in {"awmc_preview", "awmc_items", "awmc_gate_status"}:
-        fetchers = {
-            "awmc_preview": (sw_api.get_user_preview, _format_user_preview),
-            "awmc_items": (sw_api.get_user_items, _format_user_items),
-            "awmc_gate_status": (sw_api.get_user_kaleidx_scope, _format_gate_status),
-        }
-        fetch, formatter = fetchers[operation]
-        return await _run_paid_awmc_read(
-            event, service=operation, fetch=fetch, formatter=formatter
+    try:
+        if operation in {"awmc_preview", "awmc_items", "awmc_gate_status"}:
+            fetchers = {
+                "awmc_preview": (sw_api.get_user_preview, _format_user_preview),
+                "awmc_items": (sw_api.get_user_items, _format_user_items),
+                "awmc_gate_status": (sw_api.get_user_kaleidx_scope, _format_gate_status),
+            }
+            fetch, formatter = fetchers[operation]
+            return await _run_paid_awmc_read(
+                event, service=operation, fetch=fetch, formatter=formatter
+            )
+        if operation == "ticket_status":
+            result = await sw_api.get_user_charge(qrcode)
+            return _format_ticket_status(result)
+        if operation == "region":
+            return format_user_region_block(await sw_api.get_user_region(qrcode))
+        if operation in {"awmc_music_upsert", "awmc_music_delete"}:
+            return await _run_music_write(
+                event,
+                service=operation,
+                music=payload.get("music"),
+                level=int(payload.get("level")),
+                score=payload.get("score"),
+            )
+        if operation in {"awmc_ticket_clear", "awmc_item_upsert"}:
+            return await _run_account_dangerous_write(
+                event,
+                service=operation,
+                item_kind=payload.get("item_kind"),
+                item_id=payload.get("item_id"),
+                operation=str(payload.get("operation") or ""),
+            )
+        return "二维码已刷新，但原操作类型已失效，请重新发送原命令。"
+    except Exception as exc:
+        ref = _log(key, operation, "error", _exception_detail(exc))
+        return (
+            f"❌ 自动继续{operation}失败：{_exception_detail(exc)}\n"
+            f"本次不扣 BREAK，请重新发送原命令。\nRef_ID: {ref}"
         )
-    if operation == "ticket_status":
-        result = await sw_api.get_user_charge(qrcode)
-        return _format_ticket_status(result)
-    if operation == "region":
-        return format_user_region_block(await sw_api.get_user_region(qrcode))
-    if operation in {"awmc_music_upsert", "awmc_music_delete"}:
-        return await _run_music_write(
-            event,
-            service=operation,
-            music=payload.get("music"),
-            level=int(payload.get("level")),
-            score=payload.get("score"),
-        )
-    if operation in {"awmc_ticket_clear", "awmc_item_upsert"}:
-        return await _run_account_dangerous_write(
-            event,
-            service=operation,
-            item_kind=payload.get("item_kind"),
-            item_id=payload.get("item_id"),
-            operation=str(payload.get("operation") or ""),
-        )
-    return "二维码已刷新，但原操作类型已失效，请重新发送原命令。"
 
 
 async def _run_music_write(
