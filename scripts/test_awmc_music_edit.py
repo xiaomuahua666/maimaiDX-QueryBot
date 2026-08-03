@@ -23,6 +23,7 @@ names = {
     "_parse_item_kind",
     "_parse_item_operation",
     "_parse_item_upsert_command",
+    "_is_interaction_cancel",
 }
 selected = [
     node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names
@@ -68,6 +69,7 @@ namespace = {
     "_COMBO_ALIASES": {"none": "none", "fc": "fc", "ap": "ap"},
     "_SYNC_ALIASES": {"none": "none", "fs": "fs", "fdx": "fsd"},
     "_ITEM_KIND_INPUTS": {"称号": 2, "角色": 9, "钥匙": 15},
+    "_INTERACTION_CANCEL_WORDS": {"取消", "cancel", "q", "退出", "00"},
 }
 exec(compile(ast.Module(body=selected, type_ignores=[]), str(PATH), "exec"), namespace)
 
@@ -110,6 +112,8 @@ deleted_music, deleted_level = namespace["_parse_music_delete_command"](
 assert deleted_music is music and deleted_level == 4
 assert namespace["_parse_item_upsert_command"]("称号 123 add") == (2, 123, "add")
 assert namespace["_parse_item_upsert_command"]("15 456 删除") == (15, 456, "del")
+for cancel_word in ("取消", "cancel", "Q", "退出", "00"):
+    assert namespace["_is_interaction_cancel"](cancel_word)
 
 source = PATH.read_text(encoding="utf-8")
 assert 'account_music_upsert = on_command("mai改成绩"' in source
@@ -121,6 +125,7 @@ assert 'account_item_upsert = on_command("mai改道具"' in source
 assert 'break_db.get_config("awmc_ticket_clear_cost", "10")' in source
 assert 'break_db.get_config("awmc_item_upsert_cost", "100")' in source
 assert "我已知晓风险" in source
+assert source.count("已取消道具修改，本次不扣 BREAK") >= 4
 assert "未经实际账号测试" in source
 assert 'on_command("mai批量' not in source
 write_block = source[

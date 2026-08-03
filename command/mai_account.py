@@ -1000,6 +1000,11 @@ _ITEM_KIND_INPUTS = {
     "票券": 12, "ticket": 12,
     "钥匙": 15, "key": 15,
 }
+_INTERACTION_CANCEL_WORDS = {"取消", "cancel", "q", "退出", "00"}
+
+
+def _is_interaction_cancel(value: str) -> bool:
+    return str(value or "").strip().lower() in _INTERACTION_CANCEL_WORDS
 
 
 def _parse_item_kind(value: str) -> int:
@@ -1478,6 +1483,8 @@ async def _():
 async def _(matcher: Matcher, event: MessageEvent, args: Message = CommandArg()):
     await _require_agreement(account_bind, event)
     raw = _arg_text(args)
+    if _is_interaction_cancel(raw):
+        await account_item_upsert.finish("已取消道具修改，本次不扣 BREAK。")
     if raw:
         matcher.set_arg("qrcode", Message(raw))
     else:
@@ -3195,21 +3202,30 @@ async def _(matcher: Matcher, event: MessageEvent, args: Message = CommandArg())
     prompt=(
         "请输入 itemKind 数字或类型名称：\n"
         "1姓名框 / 2称号 / 3头像 / 4收藏品 / 5乐曲 / 9角色 / "
-        "10搭档 / 11边框 / 12票券 / 15钥匙"
+        "10搭档 / 11边框 / 12票券 / 15钥匙\n"
+        "发送“取消”或 00 退出"
     ),
 )
 async def _(matcher: Matcher, message: Message = Arg("item_kind")):
+    raw = _arg_text(message)
+    if _is_interaction_cancel(raw):
+        await account_item_upsert.finish("已取消道具修改，本次不扣 BREAK。")
     try:
-        kind = _parse_item_kind(_arg_text(message))
+        kind = _parse_item_kind(raw)
     except ValueError as exc:
         await matcher.reject(str(exc))
     matcher.state["item_kind_value"] = kind
 
 
-@account_item_upsert.got("item_id", prompt="请输入要操作的 itemId（正整数）：")
+@account_item_upsert.got(
+    "item_id", prompt="请输入要操作的 itemId（正整数）；发送“取消”或 00 退出："
+)
 async def _(matcher: Matcher, message: Message = Arg("item_id")):
+    raw = _arg_text(message)
+    if _is_interaction_cancel(raw):
+        await account_item_upsert.finish("已取消道具修改，本次不扣 BREAK。")
     try:
-        item_id = int(_arg_text(message))
+        item_id = int(raw)
         if item_id <= 0:
             raise ValueError
     except ValueError:
@@ -3219,11 +3235,14 @@ async def _(matcher: Matcher, message: Message = Arg("item_id")):
 
 @account_item_upsert.got(
     "item_operation",
-    prompt="请选择操作：add（添加）或 del（删除）：",
+    prompt="请选择操作：add（添加）或 del（删除）；发送“取消”或 00 退出：",
 )
 async def _(matcher: Matcher, message: Message = Arg("item_operation")):
+    raw = _arg_text(message)
+    if _is_interaction_cancel(raw):
+        await account_item_upsert.finish("已取消道具修改，本次不扣 BREAK。")
     try:
-        operation = _parse_item_operation(_arg_text(message))
+        operation = _parse_item_operation(raw)
     except ValueError as exc:
         await matcher.reject(str(exc))
     matcher.state["item_operation_value"] = operation
@@ -3240,7 +3259,10 @@ async def _(matcher: Matcher, message: Message = Arg("item_operation")):
 
 @account_item_upsert.got(
     "item_risk_confirm",
-    prompt="确认承担风险并继续，请发送“我已知晓风险”；发送其他内容取消：",
+    prompt=(
+        "确认承担风险并继续，请发送“我已知晓风险”；"
+        "发送“取消”、00 或其他内容取消："
+    ),
 )
 async def _(matcher: Matcher, event: MessageEvent, message: Message = Arg("item_risk_confirm")):
     if _arg_text(message) != "我已知晓风险":
