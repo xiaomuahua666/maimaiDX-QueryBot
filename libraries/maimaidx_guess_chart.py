@@ -108,7 +108,7 @@ def _default_ffmpeg_threads() -> int:
 
 def _default_cpu_pool_workers() -> int:
     """ffmpeg 线程池：与 bot 错峰，默认保守。"""
-    return max(2, min(6, _cpu_count() // 8 or 2))
+    return max(2, min(4, _cpu_count() // 8 or 2))
 
 
 def _default_bg_fill_workers() -> int:
@@ -117,11 +117,11 @@ def _default_bg_fill_workers() -> int:
 
 
 def _default_render_max() -> int:
-    return 4 if _cpu_count() >= 16 else 2
+    return 3 if _cpu_count() >= 16 else 2
 
 
 def _default_bg_fill_max() -> int:
-    return 2 if _cpu_count() >= 16 else 1
+    return 1
 
 
 # 环境变量：
@@ -216,6 +216,7 @@ _prepare_status_lock = threading.Lock()
 _batch_cancel = threading.Event()
 _render_sem: Optional['_AdjustableSemaphore'] = None
 _bg_fill_sem: Optional['_AdjustableSemaphore'] = None
+_batch_song_sem: Optional['_AdjustableSemaphore'] = None
 _cpu_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
 _bg_fill_task: Optional[asyncio.Task] = None
 _adaptive_task: Optional[asyncio.Task] = None
@@ -295,6 +296,20 @@ def _get_bg_fill_sem() -> _AdjustableSemaphore:
     if _bg_fill_sem is None:
         _bg_fill_sem = _AdjustableSemaphore(max(0, BG_FILL_WORKERS))
     return _bg_fill_sem
+
+
+def _get_batch_song_sem() -> _AdjustableSemaphore:
+    global _batch_song_sem
+    if _batch_song_sem is None:
+        _batch_song_sem = _AdjustableSemaphore(BATCH_SONG_WORKERS)
+    return _batch_song_sem
+
+
+def _format_duration(seconds: float) -> str:
+    value = max(0, int(seconds))
+    hours, value = divmod(value, 3600)
+    minutes, secs = divmod(value, 60)
+    return f'{hours:02d}:{minutes:02d}:{secs:02d}'
 
 
 def _get_cpu_executor() -> concurrent.futures.ThreadPoolExecutor:
@@ -417,10 +432,13 @@ async def _apply_adaptive_workers(
 
     rsem = _get_render_sem()
     bsem = _get_bg_fill_sem()
+    ssem = _get_batch_song_sem()
     if rsem.capacity != render:
         await rsem.set_capacity(render)
     if bsem.capacity != bg_fill:
         await bsem.set_capacity(bg_fill)
+    if ssem.capacity != batch:
+        await ssem.set_capacity(batch)
 
     msg = (
         f'[GuessChart] 自适应档位={tier} load={load:.2f} lag={lag_ms:.0f}ms '
@@ -1846,9 +1864,12 @@ async def build_hot_chart_cache(
         if len(todo) >= build_limit:
             break
 
-    song_sem = asyncio.Semaphore(BATCH_SONG_WORKERS)
+    song_sem = _get_batch_song_sem()
     done_count = 0
     done_lock = asyncio.Lock()
+    batch_started = time.perf_counter()
+    initial_seconds_per_song = _env_int('MAIMAIDX_CHART_ESTIMATE_SECONDS', 180)
+    initial_eta = len(todo) * initial_seconds_per_song / max(1, BATCH_SONG_WORKERS)
 
     set_chart_prepare_status(
         f'热门池预制开始（待建 {len(todo)}，并发曲目 {BATCH_SONG_WORKERS}，'
@@ -1858,7 +1879,8 @@ async def build_hot_chart_cache(
         f'[GuessChart] 热门池并行预制 todo={len(todo)} skip={len(skip_ids)} '
         f'bgm_filled={bgm_filled} batch_songs={BATCH_SONG_WORKERS} '
         f'render_workers={RENDER_WORKERS} cpu_pool={CPU_POOL_WORKERS} '
-        f'ffmpeg_threads={FFMPEG_THREADS} cpu={_cpu_count()}'
+        f'ffmpeg_threads={FFMPEG_THREADS} cpu={_cpu_count()} '
+        f'estimated_total={_format_duration(initial_eta)}'
     )
 
     async def _build_one(music, idx: int) -> Tuple[str, bool, str, dict]:
@@ -1908,6 +1930,20 @@ async def build_hot_chart_cache(
                 ok, msg, entry = False, str(e), {}
             async with done_lock:
                 done_count += 1
+                elapsed_now = time.perf_counter() - batch_started
+                remaining = max(0, len(todo) - done_count)
+                eta = elapsed_now / done_count * remaining
+                estimated_total = elapsed_now + eta
+                progress = (done_count / len(todo) * 100.0) if todo else 100.0
+                progress_msg = (
+                    f'预制谱面 {done_count}/{len(todo)} ({progress:.1f}%) '
+                    f'elapsed={_format_duration(elapsed_now)} ETA={_format_duration(eta)} '
+                    f'estimated_total={_format_duration(estimated_total)} '
+                    f'batch={song_sem.capacity}/{BATCH_SONG_MAX} '
+                    f'render={RENDER_WORKERS}/{RENDER_MAX}'
+                )
+                set_chart_prepare_status(progress_msg)
+                log.info(f'[GuessChart] {progress_msg}')
             return mid, ok, msg, entry if isinstance(entry, dict) else {}
 
     results = await asyncio.gather(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import threading
@@ -46,6 +47,49 @@ _batch_cancel = threading.Event()
 _shutdown_hook_registered = False
 _prepare_status = ''
 _prepare_status_lock = threading.Lock()
+
+
+def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
+    try:
+        return max(minimum, int(os.environ.get(name, default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _cpu_count() -> int:
+    return max(1, int(os.cpu_count() or 4))
+
+
+AUDIO_CPU_THREADS_MIN = _env_int('MAIMAIDX_AUDIO_CPU_THREADS_MIN', 2)
+AUDIO_CPU_THREADS_MAX = _env_int(
+    'MAIMAIDX_AUDIO_CPU_THREADS_MAX', min(4, max(2, _cpu_count() // 8)),
+)
+AUDIO_CPU_THREADS_MAX = max(AUDIO_CPU_THREADS_MIN, AUDIO_CPU_THREADS_MAX)
+AUDIO_ESTIMATE_SECONDS = _env_int('MAIMAIDX_AUDIO_ESTIMATE_SECONDS', 150)
+
+
+def _system_load_ratio() -> float:
+    try:
+        return float(os.getloadavg()[0]) / float(_cpu_count())
+    except (AttributeError, OSError, ZeroDivisionError):
+        return 0.0
+
+
+def _dynamic_cpu_threads() -> int:
+    """按整机 load 动态限制 Demucs/BLAS，始终为在线 Bot 留出大部分 CPU。"""
+    load = _system_load_ratio()
+    if load >= 0.50:
+        return AUDIO_CPU_THREADS_MIN
+    if load >= 0.30:
+        return min(AUDIO_CPU_THREADS_MAX, AUDIO_CPU_THREADS_MIN + 1)
+    return AUDIO_CPU_THREADS_MAX
+
+
+def _format_duration(seconds: float) -> str:
+    value = max(0, int(seconds))
+    hours, value = divmod(value, 3600)
+    minutes, secs = divmod(value, 60)
+    return f'{hours:02d}:{minutes:02d}:{secs:02d}'
 
 
 def set_audio_prepare_status(msg: str) -> None:
@@ -237,15 +281,26 @@ def list_stage_files(music_id: str) -> List[Path]:
     return [_stage_path(mid, i) for i in range(1, stages + 1)]
 
 
-def _run(cmd: List[str], *, timeout: int = 600) -> None:
+def _run(
+    cmd: List[str], *, timeout: int = 600, cpu_threads: Optional[int] = None,
+) -> None:
     global _active_subprocess
     if _batch_cancel.is_set():
         raise GuessAudioCancelled('烘焙任务已取消')
+    threads = cpu_threads or _dynamic_cpu_threads()
+    env = os.environ.copy()
+    for name in (
+        'OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS',
+        'NUMEXPR_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS',
+    ):
+        env[name] = str(threads)
+    run_cmd = cmd if os.name == 'nt' else ['nice', '-n', '15', *cmd]
     proc = subprocess.Popen(
-        cmd,
+        run_cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        env=env,
     )
     _active_subprocess = proc
     try:
@@ -460,9 +515,11 @@ def _demucs_device() -> str:
 def _separate_demucs(clip: Path, work_dir: Path) -> Dict[str, Path]:
     work_dir.mkdir(parents=True, exist_ok=True)
     device = _demucs_device()
+    threads = _dynamic_cpu_threads()
     log.info(
         f'[GuessAudio] demucs 开始 model=htdemucs device={device} '
-        f'segment={DEMUCS_SEGMENT} output=mp3 input={clip.name}'
+        f'segment={DEMUCS_SEGMENT} threads={threads}/{AUDIO_CPU_THREADS_MAX} '
+        f'load={_system_load_ratio():.2f} output=mp3 input={clip.name}'
     )
     t0 = time.perf_counter()
     cmd = [
@@ -474,7 +531,7 @@ def _separate_demucs(clip: Path, work_dir: Path) -> Dict[str, Path]:
         '-o', str(work_dir),
         str(clip),
     ]
-    _run(cmd, timeout=900)
+    _run(cmd, timeout=900, cpu_threads=threads)
     base = work_dir / 'htdemucs' / clip.stem
     stems = _demucs_stem_paths(base)
     missing = [k for k in ('drums', 'bass', 'other', 'vocals') if k not in stems]
@@ -754,11 +811,17 @@ async def build_hot_audio_cache(*, force: bool = False) -> str:
 
     demucs_on = _demucs_available()
     cache_stats = summarize_pool_cache(pool)
+    todo_count = len(pool) if force else sum(
+        1 for music in pool if not is_audio_ready(str(music.id))
+    )
+    initial_estimate = todo_count * AUDIO_ESTIMATE_SECONDS
     log.info(
         f'[GuessAudio] 热门池烘焙开始 total={len(pool)} force={force} '
         f'demucs={"yes" if demucs_on else "no"} device={_demucs_device() if demucs_on else "-"} '
         f'cache_ready={cache_stats["ready"]} stale_files={cache_stats["stale"]} '
-        f'partial={cache_stats["partial"]} empty={cache_stats["empty"]} mix_rev={STAGE_MIX_REV}'
+        f'partial={cache_stats["partial"]} empty={cache_stats["empty"]} mix_rev={STAGE_MIX_REV} '
+        f'todo={todo_count} cpu_threads={AUDIO_CPU_THREADS_MIN}-{AUDIO_CPU_THREADS_MAX} '
+        f'estimated_total={_format_duration(initial_estimate)}'
     )
     batch_t0 = time.perf_counter()
 
@@ -807,6 +870,21 @@ async def build_hot_audio_cache(*, force: bool = False) -> str:
         else:
             fail_lines.append(f'{mid} {music.title}: {msg}')
             log.warning(f'[GuessAudio] 热门池 [{idx}/{len(pool)}] 失败 {mid}: {msg}')
+
+        processed = len(ok_ids) + len(fail_lines)
+        elapsed_now = time.perf_counter() - batch_t0
+        remaining = max(0, todo_count - processed)
+        eta = (elapsed_now / processed * remaining) if processed else initial_estimate
+        estimated_total = elapsed_now + eta
+        progress = (processed / todo_count * 100.0) if todo_count else 100.0
+        progress_msg = (
+            f'预制音频 {processed}/{todo_count} ({progress:.1f}%) '
+            f'elapsed={_format_duration(elapsed_now)} ETA={_format_duration(eta)} '
+            f'estimated_total={_format_duration(estimated_total)} '
+            f'threads={_dynamic_cpu_threads()}/{AUDIO_CPU_THREADS_MAX}'
+        )
+        set_audio_prepare_status(progress_msg)
+        log.info(f'[GuessAudio] {progress_msg}')
 
     elapsed = time.perf_counter() - batch_t0
     log.info(
