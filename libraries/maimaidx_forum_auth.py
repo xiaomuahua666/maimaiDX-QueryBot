@@ -206,8 +206,14 @@ def _callback_state(raw: str) -> str:
     return str((query.get('state') or [''])[0]).strip()
 
 
-def begin_forum_login(platform_id: str) -> str:
-    """Create a short-lived PKCE transaction and return the provider URL."""
+def begin_forum_login(
+    platform_id: str, *, claimed_qq: Optional[int] = None
+) -> str:
+    """Create a short-lived PKCE transaction and return the provider URL.
+
+    ``claimed_qq`` is optional: when set, OAuth completion must return the same
+    QQ from the forum ``数字@qq.com`` email before the bind is accepted.
+    """
     if not forum_client_id():
         raise ForumOAuthError(
             "论坛 OAuth 尚未配置 client_id，请联系管理员设置 AWMC_XF_CLIENT_ID。"
@@ -223,6 +229,7 @@ def begin_forum_login(platform_id: str) -> str:
         state=state,
         verifier=verifier,
         redirect_uri=redirect_uri,
+        claimed_qq=claimed_qq,
     )
     return forum_authorize_url(
         state=state, challenge=challenge, redirect_uri=redirect_uri
@@ -360,6 +367,35 @@ async def complete_forum_login(platform_id: str, raw_code: str) -> dict[str, str
             "论坛没有返回用户 ID，无法完成绑定。请检查 OAuth 应用的 user scope。"
         )
     qq = int(profile["legacy_qq"]) if profile["legacy_qq"] else None
+    claimed_raw = pending.get("claimed_qq")
+    claimed = int(claimed_raw) if claimed_raw not in (None, "") else None
+    if claimed is not None:
+        if qq is None:
+            qq_bind_db.clear_forum_pending(platform_id)
+            raise ForumOAuthError(
+                f"你填写了 QQ {claimed}，但论坛邮箱不是数字@qq.com，无法完成 OAuth 校验。\n"
+                "请把论坛邮箱改成 你的QQ号@qq.com 后重新发送 qbind。"
+            )
+        if qq != claimed:
+            qq_bind_db.clear_forum_pending(platform_id)
+            raise ForumOAuthError(
+                f"OAuth 校验失败：论坛邮箱对应 QQ {qq}，与你填写的 {claimed} 不一致。\n"
+                "请确认水鱼查分 QQ、论坛邮箱一致后重试。"
+            )
+    if qq is None:
+        qq_bind_db.bind_forum(
+            str(platform_id),
+            xf_user_id=profile["xf_user_id"],
+            username=profile["username"],
+            email=profile["email"],
+            legacy_qq=None,
+        )
+        qq_bind_db.clear_forum_pending(platform_id)
+        raise ForumOAuthError(
+            "论坛授权成功，但邮箱不是数字@qq.com，无法自动关联查分 QQ。\n"
+            "请把论坛邮箱改成 你的QQ号@qq.com 后重新发送 qbind；\n"
+            "或联系管理员使用「强制绑定QQ」。"
+        )
     qq_bind_db.bind_forum(
         str(platform_id),
         xf_user_id=profile["xf_user_id"],
@@ -367,19 +403,19 @@ async def complete_forum_login(platform_id: str, raw_code: str) -> dict[str, str
         email=profile["email"],
         legacy_qq=qq,
     )
-    if qq is not None:
-        # OneBot continues to use event.user_id directly; keeping this mapping
-        # is harmless there and lets a deployment switch modes without losing
-        # the forum identity link.
-        qq_bind_db.bind(str(platform_id), qq)
+    # OneBot continues to use event.user_id directly; keeping this mapping
+    # is harmless there and lets a deployment switch modes without losing
+    # the forum identity link.
+    qq_bind_db.bind(str(platform_id), qq)
     qq_bind_db.clear_forum_pending(platform_id)
+    profile["legacy_qq"] = str(qq)
     return profile
 
 
 def forum_binding_text(platform_id: str) -> str:
     row = qq_bind_db.get_forum_binding(platform_id)
     if not row:
-        return "尚未绑定论坛账号。发送「论坛绑定」获取授权链接。"
+        return "尚未绑定论坛账号。发送「qbind」获取授权链接。"
     name = row.get("username") or row.get("xf_user_id") or "未知"
     email = row.get("email") or "未返回"
     qq = row.get("legacy_qq")
@@ -387,5 +423,5 @@ def forum_binding_text(platform_id: str) -> str:
     if qq:
         lines.append(f"查分 QQ：{qq}")
     else:
-        lines.append("查分 QQ：未从邮箱识别（请改为 数字@qq.com，或联系管理员强制绑定）")
+        lines.append("查分 QQ：未从邮箱识别（请改为 数字@qq.com 后重新 qbind，或联系管理员强制绑定）")
     return "\n".join(lines)

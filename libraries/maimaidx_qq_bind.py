@@ -53,6 +53,7 @@ class QqBindDatabase:
                     state         TEXT NOT NULL,
                     verifier      TEXT NOT NULL,
                     redirect_uri  TEXT NOT NULL,
+                    claimed_qq    INTEGER,
                     created_at    REAL NOT NULL
                 );
 
@@ -66,6 +67,14 @@ class QqBindDatabase:
                     ON qq_group_bind(legacy_group_id);
                 '''
             )
+            cols = {
+                str(row[1])
+                for row in self._conn.execute('PRAGMA table_info(forum_oauth_pending)')
+            }
+            if 'claimed_qq' not in cols:
+                self._conn.execute(
+                    'ALTER TABLE forum_oauth_pending ADD COLUMN claimed_qq INTEGER'
+                )
             self._conn.commit()
 
     def bind(self, platform_id: str, legacy_qq: int) -> None:
@@ -118,22 +127,25 @@ class QqBindDatabase:
         state: str,
         verifier: str,
         redirect_uri: str,
+        claimed_qq: Optional[int] = None,
         created_at: Optional[float] = None,
     ) -> None:
         now = float(created_at or time.time())
+        qq = int(claimed_qq) if claimed_qq is not None else None
         with self._lock:
             self._conn.execute(
                 '''
                 INSERT INTO forum_oauth_pending
-                    (platform_id, state, verifier, redirect_uri, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                    (platform_id, state, verifier, redirect_uri, claimed_qq, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(platform_id) DO UPDATE SET
                     state = excluded.state,
                     verifier = excluded.verifier,
                     redirect_uri = excluded.redirect_uri,
+                    claimed_qq = excluded.claimed_qq,
                     created_at = excluded.created_at
                 ''',
-                (str(platform_id).strip(), state, verifier, redirect_uri, now),
+                (str(platform_id).strip(), state, verifier, redirect_uri, qq, now),
             )
             self._conn.commit()
 

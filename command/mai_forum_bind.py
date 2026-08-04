@@ -1,4 +1,4 @@
-"""论坛 OAuth 绑定，以及官方 QQ 的管理员映射命令。"""
+"""论坛 OAuth 管理员映射命令；用户绑定入口已合并到 qbind。"""
 
 from __future__ import annotations
 
@@ -10,12 +10,6 @@ from nonebot.adapters.onebot.v11 import Message, MessageEvent
 from nonebot.params import CommandArg
 
 from ..libraries.maimaidx_bot_admin import GUESS_GROUP_MANAGER
-from ..libraries.maimaidx_forum_auth import (
-    ForumOAuthError,
-    begin_forum_login,
-    complete_forum_login,
-    forum_binding_text,
-)
 from ..libraries.maimaidx_platform import (
     get_event_group_id,
     parse_at_target_id,
@@ -24,19 +18,6 @@ from ..libraries.maimaidx_platform import (
 )
 from ..libraries.maimaidx_qq_bind import qq_bind_db
 
-
-forum_bind = on_command(
-    '论坛绑定', aliases={'论坛登录', 'AWMC论坛绑定', 'awmc论坛绑定'}
-)
-forum_bind_status = on_command(
-    '论坛绑定状态', aliases={'论坛账号状态', '论坛状态'}
-)
-forum_bind_cancel = on_command('取消论坛绑定', aliases={'论坛绑定取消'})
-
-for _forum_matcher in (forum_bind, forum_bind_status, forum_bind_cancel):
-    setattr(_forum_matcher, '_maimaidx_announcement_exempt', True)
-    setattr(_forum_matcher, '_maimaidx_debt_exempt', True)
-    setattr(_forum_matcher, '_maimaidx_busy_surcharge_exempt', True)
 
 group_bind_qq = on_command(
     '群绑定QQ', aliases={'绑定群QQ', '强制绑定群', '群绑定'},
@@ -55,6 +36,16 @@ force_user_bind = on_command(
     permission=GUESS_GROUP_MANAGER,
 )
 
+for _admin_matcher in (
+    group_bind_qq,
+    group_unbind_qq,
+    group_bind_status,
+    force_user_bind,
+):
+    setattr(_admin_matcher, '_maimaidx_announcement_exempt', True)
+    setattr(_admin_matcher, '_maimaidx_debt_exempt', True)
+    setattr(_admin_matcher, '_maimaidx_busy_surcharge_exempt', True)
+
 
 def _parse_qq(raw: str) -> Optional[int]:
     match = re.search(r'(?<!\d)(\d{5,12})(?!\d)', str(raw or ''))
@@ -66,60 +57,6 @@ def _parse_qq(raw: str) -> Optional[int]:
 
 def _tokens(args: Message) -> list[str]:
     return [x for x in args.extract_plain_text().strip().split() if x]
-
-
-@forum_bind.handle()
-async def _(event: MessageEvent, args: Message = CommandArg()):
-    pid = platform_user_id(event)
-    raw = args.extract_plain_text().strip()
-    if not raw:
-        try:
-            url = begin_forum_login(pid)
-        except ForumOAuthError as exc:
-            await plugin_finish(forum_bind, str(exc), event=event)
-        await plugin_finish(
-            forum_bind,
-            '请在浏览器打开下面的论坛授权链接并登录：\n'
-            f'{url}\n\n'
-            '授权完成后，把回调地址中的 code=...（或完整回调 URL）发送：\n'
-            '论坛绑定 授权码\n'
-            '授权码仅一次有效，10 分钟内有效。',
-            event=event,
-        )
-
-    try:
-        profile = await complete_forum_login(pid, raw)
-    except ForumOAuthError as exc:
-        await plugin_finish(forum_bind, str(exc), event=event)
-    qq = profile.get('legacy_qq')
-    lines = [
-        f"论坛绑定成功：{profile.get('username') or profile.get('xf_user_id')}",
-        f"邮箱：{profile.get('email') or '未返回'}",
-    ]
-    if qq:
-        lines.append(f'已关联查分 QQ：{qq}')
-        lines.append('现在可以直接使用查分、B50 和成绩同步功能。')
-    else:
-        lines.append(
-            '论坛邮箱不是数字@qq.com，暂未关联查分 QQ。请修改论坛邮箱后重新绑定，'
-            '或请群管理员使用「强制绑定QQ」协助绑定。'
-        )
-    await plugin_finish(forum_bind, '\n'.join(lines), event=event)
-
-
-@forum_bind_status.handle()
-async def _(event: MessageEvent):
-    await plugin_finish(
-        forum_bind_status,
-        forum_binding_text(platform_user_id(event)),
-        event=event,
-    )
-
-
-@forum_bind_cancel.handle()
-async def _(event: MessageEvent):
-    qq_bind_db.clear_forum_pending(platform_user_id(event))
-    await plugin_finish(forum_bind_cancel, '已取消本次论坛授权。', event=event)
 
 
 @group_bind_qq.handle()
@@ -178,7 +115,8 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
         await plugin_finish(
             force_user_bind,
             '用法：强制绑定QQ @用户 <QQ号>\n'
-            '官方 QQ 可用「强制绑定QQ 平台用户ID QQ号」。',
+            '官方 QQ 可用「强制绑定QQ 平台用户ID QQ号」。\n'
+            '普通用户请使用 qbind 通过论坛 OAuth 绑定。',
             event=event,
         )
     target = target or platform_user_id(event)

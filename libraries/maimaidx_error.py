@@ -60,9 +60,9 @@ class QBindRequiredError(Exception):
     def __str__(self) -> str:
         return (
             '你尚未绑定查分 QQ。\n'
-            '方式一：发送 qbind 你的QQ号\n'
-            '方式二：发送 论坛绑定（论坛 OAuth，用数字@qq.com 邮箱自动关联）\n'
-            '（水鱼/落雪查分器绑定的那个 QQ，用于拉取成绩与数据源设置）'
+            '请发送：qbind（论坛 OAuth，推荐）\n'
+            '论坛邮箱请使用 你的QQ号@qq.com，授权后自动关联查分 QQ。\n'
+            '可选：qbind 你的QQ号（仍须完成 OAuth，邮箱 QQ 必须一致）'
         )
 
 

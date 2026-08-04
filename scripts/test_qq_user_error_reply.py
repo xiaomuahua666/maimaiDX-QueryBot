@@ -1,4 +1,4 @@
-"""官方 QQ 未 qbind 时必须回复提示，不能静默失败。"""
+"""官方 QQ 未绑定时必须回复 OAuth 提示，不能静默失败。"""
 
 from pathlib import Path
 
@@ -21,15 +21,14 @@ assert "payload_to_event" in platform_source
 assert "dependencies.check_field_type = _check_field_type" in platform_source
 assert "Dependent._solve_field" in platform_source
 
-assert "论坛绑定" in error_source
-assert "qbind 你的QQ号" in error_source
-assert "方式一" in error_source
-assert "方式二" in error_source
+assert "qbind（论坛 OAuth" in error_source
+assert "数字@qq.com" in error_source or "你的QQ号@qq.com" in error_source
 
 qq_bind_source = (ROOT / "command" / "mai_qq_bind.py").read_text(encoding="utf-8")
 assert "_maimaidx_announcement_exempt" in qq_bind_source
 assert "_maimaidx_debt_exempt" in qq_bind_source
 assert "'/qbind'" not in qq_bind_source
+assert "begin_forum_login" in qq_bind_source
 
 assert "_account_qqid" in break_source
 assert "require_account_qqid" in break_source
