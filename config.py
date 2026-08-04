@@ -206,7 +206,7 @@ class Config(BaseModel):
     # 必须与 XenForo OAuth 应用登记值完全一致；机器人默认使用论坛域名回调，
     # 让用户可以把带 code 的地址复制回 QQ。已有网页登录回调可用环境变量覆盖。
     awmc_xf_redirect_uri: str = 'https://bbs.wmc.pub/'
-    awmc_xf_authorize_path: str = '/api/audapi/oauth2/authorize'
+    awmc_xf_authorize_path: str = '/audapi/oauth2/authorize'
     awmc_xf_token_url: Optional[str] = None
     awmc_xf_userinfo_url: Optional[str] = None
     awmc_xf_scope: Optional[str] = None

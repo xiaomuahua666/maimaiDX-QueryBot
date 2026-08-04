@@ -102,7 +102,10 @@ def forum_authorize_url(*, state: str, challenge: str, redirect_uri: Optional[st
         "awmc_xf_authorize_path",
         "AWMC_XF_AUTHORIZE_PATH",
         "AWWC_XF_AUTHORIZE_PATH",
-        default="/api/audapi/oauth2/authorize",
+        # ThemeHouse/Audentio's authorize endpoint is mounted without the
+        # ``/api`` prefix.  Keep the old variants in the token/user fallbacks
+        # below because some XenForo installs expose both route layouts.
+        default="/audapi/oauth2/authorize",
     )
     params = {
         "client_id": forum_client_id(),
@@ -235,8 +238,11 @@ def _token_urls() -> list[str]:
     )
     if override:
         return [_absolute_url(forum_base_url(), override)]
-    # Audentio deployments have used both the direct audapi and /api prefix.
+    # The deployed AWMC forum uses ``/api/audapi-oauth2/token``.  Older
+    # Audentio/XenForo installs have exposed the same endpoint under the
+    # ``/api/audapi/oauth2`` or direct ``/audapi/oauth2`` path.
     return [
+        _absolute_url(forum_base_url(), "/api/audapi-oauth2/token"),
         _absolute_url(forum_base_url(), "/api/audapi/oauth2/token"),
         _absolute_url(forum_base_url(), "/api/oauth2/token"),
         _absolute_url(forum_base_url(), "/audapi/oauth2/token"),

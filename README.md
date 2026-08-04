@@ -205,7 +205,8 @@ AWMC_XF_CLIENT_SECRET=your_oauth_client_secret
 # 必须与论坛 OAuth 应用登记值一致。bot 绑定需要一个能把 code 保留在地址栏的回调页；
 # 不要直接使用会在服务端消费 code 的网页登录回调，除非用户能拿到原始 code。
 AWMC_XF_REDIRECT_URI=https://bbs.wmc.pub/
-AWMC_XF_AUTHORIZE_PATH=/api/audapi/oauth2/authorize
+AWMC_XF_AUTHORIZE_PATH=/audapi/oauth2/authorize
+AWMC_XF_TOKEN_URL=https://bbs.wmc.pub/api/audapi-oauth2/token
 ```
 
 用户在官方 QQ 中发送 `论坛绑定`，打开链接登录 `https://bbs.wmc.pub`，再把回调 URL 中的
