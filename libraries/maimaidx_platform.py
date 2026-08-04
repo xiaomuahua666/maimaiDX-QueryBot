@@ -27,8 +27,36 @@ def install_qq_event_compat() -> None:
     """
     try:
         from nonebot.adapters.qq.event import QQMessageEvent
+        from nonebot.adapters.qq.models import GroupMemberAuthor
     except (ImportError, AttributeError):
         return
+
+    # Adapter 1.7.x does not declare ``member_role`` on GroupMemberAuthor and
+    # therefore drops the field from Tencent's payload.  Keep unknown fields so
+    # group owner/admin checks can use the role when the platform sends it.
+    try:
+        GroupMemberAuthor.__annotations__["member_role"] = str | None
+        GroupMemberAuthor.model_config["extra"] = "allow"
+        GroupMemberAuthor.model_rebuild(force=True)
+        author_aliases = {
+            "role": property(
+                lambda author: getattr(author, "member_role", None) or "member"
+            ),
+            "nickname": property(
+                lambda author: getattr(author, "username", None) or ""
+            ),
+            "card": property(lambda author: getattr(author, "username", None) or ""),
+            "user_id": property(
+                lambda author: getattr(author, "member_openid", None)
+                or getattr(author, "id", "")
+            ),
+        }
+        for name, value in author_aliases.items():
+            if not hasattr(GroupMemberAuthor, name):
+                setattr(GroupMemberAuthor, name, value)
+    except Exception as exc:
+        log.debug(f"[platform] QQ 作者字段兼容补丁安装失败: {exc}")
+
     aliases = {
         'user_id': property(lambda event: event.get_user_id()),
         'message_id': property(lambda event: str(getattr(event, 'id', ''))),
