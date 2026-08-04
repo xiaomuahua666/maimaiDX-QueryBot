@@ -1225,9 +1225,9 @@ def _qq_mention_segment(target: UserId, *, username: Optional[str] = None) -> An
     if not tid:
         return QQSeg.text(f'@{username or "你"}')
 
-    # Keep a typed mention segment for duplicate-prefix detection while
-    # overriding only its wire representation.  The latest official QQ text
-    # protocol uses ``<qqbot-at-user id="..." />``.
+    # Keep a typed mention segment for duplicate-prefix detection while using
+    # Tencent's current content markup.  The adapter still serializes the
+    # deprecated ``<@openid>`` form as of 1.7.1.
     global _QQ_MENTION_SEGMENT_CLASS
     from nonebot.adapters.qq.message import MentionUser
 
@@ -1366,6 +1366,14 @@ def resolve_reply_message(event=None, *, reply_message: bool = True) -> bool:
     return not use_qq_mode(event)
 
 
+_QQ_MEDIA_SEGMENT_TYPES = frozenset(
+    {
+        'image', 'audio', 'video', 'file',
+        'file_image', 'file_audio', 'file_video', 'file_file',
+    }
+)
+
+
 def _ensure_qq_media_text(parts: List[Any]) -> List[Any]:
     """官方 QQ 发图/音频时 API 要求 content 非空，补一个空格文本段。"""
     if not parts:
@@ -1373,7 +1381,7 @@ def _ensure_qq_media_text(parts: List[Any]) -> List[Any]:
     from nonebot.adapters.qq.message import MessageSegment as QQSeg
 
     has_media = any(
-        getattr(p, 'type', None) in ('file_image', 'file_audio', 'file_video', 'file_file')
+        getattr(p, 'type', None) in _QQ_MEDIA_SEGMENT_TYPES
         for p in parts
     )
     has_text = any(getattr(p, 'type', None) == 'text' for p in parts)
@@ -1383,14 +1391,14 @@ def _ensure_qq_media_text(parts: List[Any]) -> List[Any]:
 
 
 def _split_qq_media_message(message: Any) -> Optional[tuple[Any, list[Any]]]:
-    """Split only multi-media QQ messages while preserving a single caption.
+    """Build API-safe QQ wire messages without dropping media captions.
 
     The official QQ API uses ``msg_type=7`` for media and exposes one media
-    object per request. A single local image remains beside its caption so
-    existing QQ clients keep the compact image-plus-text layout. When several
-    attachments are present, the first stays with the caption and each extra
-    attachment becomes a separate media request instead of being discarded by
-    the adapter's ``[-1]`` extraction.
+    object per request. It displays ordinary caption text, but does not parse
+    interactive @ markup there. Move mentions into a preceding text request
+    while keeping the ordinary caption beside the first image. Extra media
+    objects each become a follow-up request instead of being discarded by the
+    adapter's ``[-1]`` extraction.
     """
     module = type(message).__module__
     if not module.startswith('nonebot.adapters.qq'):
@@ -1411,10 +1419,39 @@ def _split_qq_media_message(message: Any) -> Optional[tuple[Any, list[Any]]]:
         except TypeError:
             return None
 
-    media_types = {'file_image', 'file_audio', 'file_video', 'file_file'}
+    media_types = _QQ_MEDIA_SEGMENT_TYPES
     text_types = {'text', 'mention_user', 'mention_everyone', 'mention_channel', 'emoji'}
     media = [seg for seg in segments if getattr(seg, 'type', None) in media_types]
-    if len(media) <= 1:
+    if not media:
+        return None
+
+    mention_types = {'mention_user', 'mention_everyone', 'mention_channel'}
+    mentions = [
+        seg for seg in segments if getattr(seg, 'type', None) in mention_types
+    ]
+    if mentions:
+        caption = [
+            seg
+            for seg in segments
+            if getattr(seg, 'type', None) not in media_types | mention_types
+        ]
+        # ensure_sender_mention inserts one newline between the @ prefix and
+        # body.  Once the prefix is its own message that separator must not
+        # become a blank line above the media caption.
+        if caption and getattr(caption[0], 'type', None) == 'text':
+            first_text = str((getattr(caption[0], 'data', None) or {}).get('text') or '')
+            first_text = first_text.lstrip('\n')
+            caption = caption[1:]
+            if first_text:
+                caption.insert(0, QQSeg.text(first_text))
+        first_media = _ensure_qq_media_text([*caption, media[0]])
+        return (
+            QQMessage(mentions),
+            [QQMessage(first_media)]
+            + [QQMessage([QQSeg.text(' '), segment]) for segment in media[1:]],
+        )
+
+    if len(media) == 1:
         return None
     text = [seg for seg in segments if getattr(seg, 'type', None) in text_types]
     first_parts = [*text, media[0]]

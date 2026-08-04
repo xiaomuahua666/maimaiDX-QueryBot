@@ -103,6 +103,23 @@ def main() -> None:
     assert image_part.data["content"] == image_bytes
     _assert_no_serialized_media(image_reply)
 
+    # QQ does not parse @ markup inside a msg_type=7 media caption.  Send the
+    # real mention first, but keep the ordinary caption and image together.
+    mention_message, media_messages = platform._split_qq_media_message(image_reply)
+    assert [part.type for part in mention_message] == ["mention_user"]
+    assert str(mention_message[0]) == '<qqbot-at-user id="user-openid" />'
+    assert len(media_messages) == 1
+    media_parts = list(media_messages[0])
+    assert not any(part.type == "mention_user" for part in media_parts)
+    assert any(part.type == "file_image" for part in media_parts)
+
+    remote_media = QQMessage(
+        [image_parts[0], QQSegment.image("https://example.com/result.png")]
+    )
+    remote_mention, remote_messages = platform._split_qq_media_message(remote_media)
+    assert [part.type for part in remote_mention] == ["mention_user"]
+    assert [part.type for part in remote_messages[0]] == ["text", "image"]
+
     mixed = OneBotMessage([OneBotSegment.text("result"), image])
     mixed_reply = platform.ensure_sender_mention(mixed, event)
     mixed_parts = list(mixed_reply)
