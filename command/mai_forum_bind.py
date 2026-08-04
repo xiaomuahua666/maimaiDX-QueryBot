@@ -33,6 +33,11 @@ forum_bind_status = on_command(
 )
 forum_bind_cancel = on_command('取消论坛绑定', aliases={'论坛绑定取消'})
 
+for _forum_matcher in (forum_bind, forum_bind_status, forum_bind_cancel):
+    setattr(_forum_matcher, '_maimaidx_announcement_exempt', True)
+    setattr(_forum_matcher, '_maimaidx_debt_exempt', True)
+    setattr(_forum_matcher, '_maimaidx_busy_surcharge_exempt', True)
+
 group_bind_qq = on_command(
     '群绑定QQ', aliases={'绑定群QQ', '强制绑定群', '群绑定'},
     permission=GUESS_GROUP_MANAGER,

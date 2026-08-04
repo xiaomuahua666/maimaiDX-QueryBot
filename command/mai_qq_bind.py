@@ -13,11 +13,16 @@ from ..libraries.maimaidx_platform import is_qq_event, platform_user_id, plugin_
 from ..libraries.maimaidx_qq_bind import qq_bind_db
 from ..libraries.maimaidx_qq_member_registry import qq_member_registry, record_from_event
 
-qbind_cmd = on_command('qbind', aliases={'绑定qq', 'QQ绑定', '/qbind', 'mai绑定qq', 'maiqbind'})
+qbind_cmd = on_command('qbind', aliases={'绑定qq', 'QQ绑定', 'mai绑定qq', 'maiqbind'})
 qunbind_cmd = on_command('qunbind', aliases={'解绑qq', 'QQ解绑'})
 qbind_status = on_command('qbind状态', aliases={'查绑定qq', '我的qbind'})
 my_platform_id = on_command('我的id', aliases={'platformid', '平台id', '我的openid'})
 group_member_list = on_command('群成员记录', permission=PLUGIN_ADMIN_ONLY)
+
+for _bind_matcher in (qbind_cmd, qunbind_cmd, qbind_status, my_platform_id):
+    setattr(_bind_matcher, '_maimaidx_announcement_exempt', True)
+    setattr(_bind_matcher, '_maimaidx_debt_exempt', True)
+    setattr(_bind_matcher, '_maimaidx_busy_surcharge_exempt', True)
 
 # 官方 QQ：群消息时登记 member_openid（无全量拉群 API，仅能积累见过的成员）
 _qq_member_recorder = on_message(priority=99, block=False)

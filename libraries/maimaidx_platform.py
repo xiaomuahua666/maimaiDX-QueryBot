@@ -131,6 +131,7 @@ def install_qq_event_compat() -> None:
     # type mismatches still use NoneBot's normal validation and continue to
     # fail fast.
     try:
+        import nonebot.dependencies as dependencies
         import nonebot.dependencies.utils as dependency_utils
         import nonebot.internal.params as internal_params
 
@@ -149,9 +150,12 @@ def install_qq_event_compat() -> None:
 
             _check_field_type._maimaidx_qq_compat = True
             dependency_utils.check_field_type = _check_field_type
-            # ``nonebot.internal.params`` keeps a module-level reference imported
-            # from dependency_utils, so patch it as well for already-loaded classes.
+            # ``nonebot.internal.params`` and ``nonebot.dependencies`` both keep
+            # module-level references imported from dependency_utils.  Patch all
+            # of them; Dependent._solve_field uses the dependencies package copy
+            # and would otherwise TypeMisMatch-skip every CommandArg handler.
             internal_params.check_field_type = _check_field_type
+            dependencies.check_field_type = _check_field_type
     except Exception as exc:
         log.warning(f'[platform] 官方 QQ 依赖注入兼容补丁安装失败: {exc}')
 

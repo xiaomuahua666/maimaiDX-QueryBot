@@ -18,11 +18,21 @@ assert "ensure_context" in platform_source
 assert "raise FinishedException" in platform_source
 assert "require_account_qqid" in platform_source
 assert "payload_to_event" in platform_source
+assert "dependencies.check_field_type = _check_field_type" in platform_source
+assert "Dependent._solve_field" in platform_source
+
+assert "论坛绑定" in error_source
+assert "qbind 你的QQ号" in error_source
+assert "方式一" in error_source
+assert "方式二" in error_source
+
+qq_bind_source = (ROOT / "command" / "mai_qq_bind.py").read_text(encoding="utf-8")
+assert "_maimaidx_announcement_exempt" in qq_bind_source
+assert "_maimaidx_debt_exempt" in qq_bind_source
+assert "'/qbind'" not in qq_bind_source
 
 assert "_account_qqid" in break_source
 assert "require_account_qqid" in break_source
 assert "qqid = _account_qqid(event)" in break_source
-
-assert "请发送：qbind 你的QQ号" in error_source
 
 print("qq user error reply tests: ok")
