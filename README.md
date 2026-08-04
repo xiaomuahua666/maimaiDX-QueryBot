@@ -196,7 +196,9 @@ AWWC_BOT_TOKENS=replace_with_a_shared_random_secret
 ```env
 # onebot（默认）或 qq_official
 MAIMAIDX_PLATFORM=qq_official
-# 官方 QQ adapter 由插件依赖自动安装；NoneBot 项目仍需填写 QQ Bot 的 appid/secret。
+# 官方 QQ adapter 由插件依赖自动安装；NoneBot 项目还需配置 driver 与 QQ_BOTS：
+# DRIVER=~fastapi+~httpx+~websockets
+# QQ_BOTS='[{"id":"AppID","token":"Token","secret":"AppSecret","intent":{"c2c_group_at_messages":true,"at_messages":true},"use_websocket":true}]'
 
 # XenForo ThemeHouse/Audentio OAuth，论坛站点固定为 bbs.wmc.pub
 AWMC_XF_BASE_URL=https://bbs.wmc.pub
@@ -212,6 +214,10 @@ AWMC_XF_TOKEN_URL=https://bbs.wmc.pub/api/audapi-oauth2/token
 用户在官方 QQ 中发送 `论坛绑定`，打开链接登录 `https://bbs.wmc.pub`，再把回调 URL 中的
 `code=...`（或完整 URL）发送为 `论坛绑定 <授权码>`。插件会读取论坛用户 ID、昵称和邮箱；
 邮箱符合 `数字@qq.com` 时自动绑定对应查分 QQ，否则提示用户修改论坛邮箱或联系管理员。
+
+`AWMC_XF_REDIRECT_URI` 必须与论坛 OAuth 应用登记值完全一致。若要让用户在
+`https://bbs.wmc.pub/` 完成后直接复制 code，请在 OAuth 应用中登记该地址；现有网页应用若仍登记
+`http://localhost:8000/api/auth/callback`，也可以继续使用，但用户需要从浏览器地址栏复制回调 URL。
 
 管理员/群管理员命令：
 
