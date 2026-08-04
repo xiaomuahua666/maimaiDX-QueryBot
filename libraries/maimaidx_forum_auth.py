@@ -243,17 +243,19 @@ def _token_urls() -> list[str]:
         "AWWC_XF_TOKEN_URL",
         default="",
     )
-    if override:
-        return [_absolute_url(forum_base_url(), override)]
-    # The deployed AWMC forum uses ``/api/audapi-oauth2/token``.  Older
-    # Audentio/XenForo installs have exposed the same endpoint under the
-    # ``/api/audapi/oauth2`` or direct ``/audapi/oauth2`` path.
-    return [
+    # Prefer the Audentio API route that allows unauthenticated token exchange
+    # (Oauth2::allowUnauthenticatedRequest). Keep older path spellings as
+    # fallbacks; when an override is set, still try the defaults afterwards.
+    defaults = [
         _absolute_url(forum_base_url(), "/api/audapi-oauth2/token"),
         _absolute_url(forum_base_url(), "/api/audapi/oauth2/token"),
-        _absolute_url(forum_base_url(), "/api/oauth2/token"),
         _absolute_url(forum_base_url(), "/audapi/oauth2/token"),
+        _absolute_url(forum_base_url(), "/api/oauth2/token"),
     ]
+    if override:
+        primary = _absolute_url(forum_base_url(), override)
+        return [primary] + [u for u in defaults if u != primary]
+    return defaults
 
 
 def _userinfo_urls() -> list[str]:
@@ -288,10 +290,10 @@ async def complete_forum_login(platform_id: str, raw_code: str) -> dict[str, str
         raise ForumOAuthError("没有读到授权码，请发送论坛回调 URL 或 code 参数。")
     pending = qq_bind_db.get_forum_pending(str(platform_id))
     if pending is None:
-        raise ForumOAuthError("授权码已过期或不存在，请重新发送「论坛绑定」获取链接。")
+        raise ForumOAuthError("授权码已过期或不存在，请重新发送「qbind」获取链接。")
     callback_state = _callback_state(raw_code)
     if callback_state and callback_state != str(pending.get('state') or ''):
-        raise ForumOAuthError('授权回调 state 校验失败，请重新发送「论坛绑定」获取链接。')
+        raise ForumOAuthError('授权回调 state 校验失败，请重新发送「qbind」获取链接。')
     if not forum_client_id():
         qq_bind_db.clear_forum_pending(platform_id)
         raise ForumOAuthError("论坛 OAuth 未配置 client_id。")
@@ -305,8 +307,9 @@ async def complete_forum_login(platform_id: str, raw_code: str) -> dict[str, str
     }
     secret = forum_client_secret()
     if secret:
-        # Support both standard Basic authentication and providers expecting
-        # client credentials in the form body.
+        # ThemeHouse/Audentio expects the confidential client secret in the
+        # form body.  Do NOT send Authorization: Basic — that is interpreted
+        # as Audentio BasicCredential API auth and returns api_key_not_found.
         form["client_secret"] = secret
 
     token_payload: Any = None
@@ -314,12 +317,10 @@ async def complete_forum_login(platform_id: str, raw_code: str) -> dict[str, str
     async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
         for url in _token_urls():
             try:
-                request_headers = {"Accept": "application/json"}
-                if secret:
-                    basic = httpx.BasicAuth(forum_client_id(), secret)
-                    request_headers["Authorization"] = basic._build_auth_header(
-                        forum_client_id(), secret
-                    )
+                request_headers = {
+                    "Accept": "application/json",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                }
                 response = await client.post(url, data=form, headers=request_headers)
                 if response.status_code in (404, 405):
                     continue
@@ -346,7 +347,10 @@ async def complete_forum_login(platform_id: str, raw_code: str) -> dict[str, str
             try:
                 response = await client.get(
                     url,
-                    headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Accept": "application/json",
+                    },
                 )
                 if response.status_code in (404, 405):
                     continue
