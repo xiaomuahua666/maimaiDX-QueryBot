@@ -14,6 +14,8 @@ assert "_maimaidx_user_error_reply" in platform_source
 assert "QBindRequiredError" in platform_source
 assert "format_command_error" in platform_source
 assert "Matcher.simple_run" in platform_source
+assert "ensure_context" in platform_source
+assert "raise FinishedException" in platform_source
 assert "require_account_qqid" in platform_source
 assert "payload_to_event" in platform_source
 

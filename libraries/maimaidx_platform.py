@@ -304,21 +304,23 @@ def install_qq_event_compat() -> None:
                     ).lower()
                     if 'maimaidx' not in module:
                         raise
+                    # original_simple_run's ensure_context() already reset
+                    # current_bot before this except runs; restore it so send works.
                     try:
-                        await plugin_finish(
-                            self,
-                            format_command_error(exc),
-                            event=event,
-                            reply_message=True,
-                        )
-                    except FinishedException:
-                        raise
+                        with self.ensure_context(bot, event):
+                            await bot.send(
+                                event,
+                                adapt_reply_payload(
+                                    format_command_error(exc), event=event
+                                ),
+                            )
                     except Exception as send_exc:
                         log.warning(
                             f'[platform] 业务异常回复失败: '
                             f'{type(send_exc).__name__}: {send_exc}'
                         )
                         raise exc from send_exc
+                    raise FinishedException
 
             _simple_run_with_user_errors._maimaidx_user_error_reply = True
             Matcher.simple_run = _simple_run_with_user_errors
