@@ -528,14 +528,141 @@ def install_qq_event_compat() -> None:
         original_qq_send = QQBot.send
         if not getattr(original_qq_send, '_maimaidx_qq_compat', False):
             async def _qq_aware_bot_send(self, event, message, **kwargs):
+                consumed_extra_reply = False
                 if is_qq_event(event):
                     message = ensure_sender_mention(message, event)
                     if _is_onebot_payload(message):
                         message = adapt_guess_outbound(message, event=event)
-                return await original_qq_send(self, event, message, **kwargs)
+                    # QQ msg_type=7 accepts media only.  Text embedded beside a
+                    # local image/audio/video is rendered as a collapsed raw
+                    # payload (including the <qqbot-at-user ... /> marker), so
+                    # send the text and media as separate messages.  The QQ
+                    # adapter increments _reply_seq once per Bot.send call;
+                    # account for the second wire message here as well.
+                    consumed_extra_reply = _split_qq_media_message(message) is not None
+                result = await original_qq_send(self, event, message, **kwargs)
+                if consumed_extra_reply:
+                    try:
+                        event._reply_seq += 1
+                    except Exception:
+                        pass
+                return result
 
             _qq_aware_bot_send._maimaidx_qq_compat = True
             QQBot.send = _qq_aware_bot_send
+
+        # ``send_to_group``/``send_to_c2c`` are also used by scheduled and
+        # active-message paths, which bypass ``Bot.send``.  Keep the split at
+        # the adapter boundary so those paths cannot leak media-adjacent text.
+        original_qq_send_to_group = getattr(QQBot, 'send_to_group', None)
+        if (
+            original_qq_send_to_group is not None
+            and not getattr(original_qq_send_to_group, '_maimaidx_qq_media_split', False)
+        ):
+            async def _qq_aware_send_to_group(
+                self,
+                group_openid,
+                message,
+                msg_id=None,
+                msg_seq=None,
+                event_id=None,
+                msg_ref_id=None,
+            ):
+                split = _split_qq_media_message(message)
+                if split is None:
+                    return await original_qq_send_to_group(
+                        self,
+                        group_openid=group_openid,
+                        message=message,
+                        msg_id=msg_id,
+                        msg_seq=msg_seq,
+                        event_id=event_id,
+                        msg_ref_id=msg_ref_id,
+                    )
+                text_message, media_message = split
+                await original_qq_send_to_group(
+                    self,
+                    group_openid=group_openid,
+                    message=text_message,
+                    msg_id=msg_id,
+                    msg_seq=msg_seq,
+                    event_id=event_id,
+                    msg_ref_id=msg_ref_id,
+                )
+                media_seq = msg_seq
+                media_event_id = event_id
+                if msg_id is not None:
+                    media_seq = (int(msg_seq) if msg_seq is not None else 1) + 1
+                elif event_id is not None:
+                    # An event id is single-use; the follow-up media is an
+                    # ordinary active message after the text response.
+                    media_event_id = None
+                return await original_qq_send_to_group(
+                    self,
+                    group_openid=group_openid,
+                    message=media_message,
+                    msg_id=msg_id,
+                    msg_seq=media_seq,
+                    event_id=media_event_id,
+                    msg_ref_id=None,
+                )
+
+            _qq_aware_send_to_group._maimaidx_qq_media_split = True
+            QQBot.send_to_group = _qq_aware_send_to_group
+
+        original_qq_send_to_c2c = getattr(QQBot, 'send_to_c2c', None)
+        if (
+            original_qq_send_to_c2c is not None
+            and not getattr(original_qq_send_to_c2c, '_maimaidx_qq_media_split', False)
+        ):
+            async def _qq_aware_send_to_c2c(
+                self,
+                openid,
+                message,
+                msg_id=None,
+                msg_seq=None,
+                event_id=None,
+                msg_ref_id=None,
+            ):
+                split = _split_qq_media_message(message)
+                if split is None:
+                    return await original_qq_send_to_c2c(
+                        self,
+                        openid=openid,
+                        message=message,
+                        msg_id=msg_id,
+                        msg_seq=msg_seq,
+                        event_id=event_id,
+                        msg_ref_id=msg_ref_id,
+                    )
+                text_message, media_message = split
+                await original_qq_send_to_c2c(
+                    self,
+                    openid=openid,
+                    message=text_message,
+                    msg_id=msg_id,
+                    msg_seq=msg_seq,
+                    event_id=event_id,
+                    msg_ref_id=msg_ref_id,
+                )
+                media_seq = msg_seq
+                media_event_id = event_id
+                if msg_id is not None:
+                    media_seq = (int(msg_seq) if msg_seq is not None else 1) + 1
+                elif event_id is not None:
+                    media_event_id = None
+                return await original_qq_send_to_c2c(
+                    self,
+                    openid=openid,
+                    message=media_message,
+                    msg_id=msg_id,
+                    msg_seq=media_seq,
+                    event_id=media_event_id,
+                    msg_ref_id=None,
+                )
+
+            _qq_aware_send_to_c2c._maimaidx_qq_media_split = True
+            QQBot.send_to_c2c = _qq_aware_send_to_c2c
 
         original_qq_call_api = QQBot.call_api
         if not getattr(original_qq_call_api, '_maimaidx_qq_compat', False):
@@ -1196,6 +1323,50 @@ def _ensure_qq_media_text(parts: List[Any]) -> List[Any]:
     if has_media and not has_text:
         return [QQSeg.text(' ')] + parts
     return parts
+
+
+def _split_qq_media_message(message: Any) -> Optional[tuple[Any, Any]]:
+    """Split QQ text/mentions from media into two API-compatible messages.
+
+    The official QQ API defines ``msg_type=7`` as media-only and does not
+    parse ``content`` as a normal text message.  Sending an At marker next to
+    a file therefore shows a raw marker or a collapsed ``...`` bubble.  Keep
+    text-like segments in a first message and media segments in a second one.
+    ``None`` means no split is needed.
+    """
+    module = type(message).__module__
+    if not module.startswith('nonebot.adapters.qq'):
+        return None
+    try:
+        from nonebot.adapters.qq.message import Message as QQMessage
+        from nonebot.adapters.qq.message import MessageSegment as QQSeg
+    except ImportError:
+        return None
+
+    if isinstance(message, QQSeg):
+        segments = [message]
+    elif isinstance(message, QQMessage):
+        segments = list(message)
+    else:
+        try:
+            segments = list(message)
+        except TypeError:
+            return None
+
+    media_types = {'file_image', 'file_audio', 'file_video', 'file_file'}
+    text_types = {'text', 'mention_user', 'mention_everyone', 'mention_channel', 'emoji'}
+    media = [seg for seg in segments if getattr(seg, 'type', None) in media_types]
+    if not media:
+        return None
+    text = [seg for seg in segments if getattr(seg, 'type', None) in text_types]
+    meaningful_text = any(
+        getattr(seg, 'type', None) != 'text'
+        or str((getattr(seg, 'data', None) or {}).get('text') or '').strip()
+        for seg in text
+    )
+    if not meaningful_text:
+        return None
+    return QQMessage(text), QQMessage([QQSeg.text(' '), *media])
 
 
 def resolve_event_bot(event):

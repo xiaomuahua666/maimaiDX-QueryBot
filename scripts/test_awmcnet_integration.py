@@ -103,6 +103,21 @@ def test_trend_text() -> None:
     assert "14509" in text and "+29" in text and "B35 / B15" in text
 
 
+def test_sync_payload_dedupes_duplicate_charts_and_strips_token() -> None:
+    original_token = getattr(awmcnet.maiconfig, "awmcnet_bot_token", None)
+    try:
+        awmcnet.maiconfig.awmcnet_bot_token = "  shared-token\n"
+        assert awmcnet._connection()[1] == "shared-token"
+        weaker = {**RECORD, "achievements": 99.5, "dxScore": 1000}
+        stronger = {**RECORD, "achievements": 100.0, "dxScore": 2200}
+        payload = awmcnet._dedupe_record_payloads([weaker, stronger])
+        assert len(payload) == 1
+        assert payload[0]["achievements"] == 100.0
+        assert payload[0]["dxScore"] == 2200
+    finally:
+        awmcnet.maiconfig.awmcnet_bot_token = original_token
+
+
 async def test_empty_sync_is_not_reported_as_success() -> None:
     original_connection = awmcnet._connection
     try:
@@ -166,4 +181,5 @@ asyncio.run(test_empty_sync_is_not_reported_as_success())
 asyncio.run(test_force_refresh_keeps_newer_awmcnet_snapshot())
 test_first_notice()
 test_trend_text()
+test_sync_payload_dedupes_duplicate_charts_and_strips_token()
 print("AWMC NET integration tests: ok")

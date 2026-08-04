@@ -55,7 +55,7 @@ def _chart_rating(userinfo: Any, key: str) -> int:
 
 def _connection() -> tuple[str, str, float] | None:
     base_url = str(getattr(maiconfig, "awmcnet_sync_url", "") or "").rstrip("/")
-    token = str(getattr(maiconfig, "awmcnet_bot_token", "") or "")
+    token = str(getattr(maiconfig, "awmcnet_bot_token", "") or "").strip()
     if not base_url or not token:
         return None
     timeout = max(
@@ -63,6 +63,42 @@ def _connection() -> tuple[str, str, float] | None:
         float(getattr(maiconfig, "awmcnet_sync_timeout_seconds", 8.0) or 8.0),
     )
     return base_url, token, timeout
+
+
+def _record_key(record: dict) -> tuple[int, int]:
+    """Return the server's score uniqueness key."""
+    return int(record.get("song_id") or 0), int(record.get("level_index") or 0)
+
+
+def _dedupe_record_payloads(records: Sequence[Any]) -> list[dict]:
+    """Collapse duplicate charts before sending a full snapshot.
+
+    AWMCNET stores one score per ``(qq, song_id, level_index)``.  Merged
+    upstream snapshots and repeated arcade rows can contain the same chart
+    more than once; sending those rows makes the server transaction fail on
+    its unique constraint instead of importing the rest of the snapshot.
+    Keep the strongest row deterministically.
+    """
+    best: dict[tuple[int, int], dict] = {}
+    for record in records:
+        payload = _record_payload(record)
+        key = _record_key(payload)
+        current = best.get(key)
+        rank = (
+            float(payload.get("achievements") or 0),
+            int(payload.get("dxScore") or 0),
+        )
+        current_rank = (
+            (
+                float(current.get("achievements") or 0),
+                int(current.get("dxScore") or 0),
+            )
+            if current is not None
+            else (-1.0, -1)
+        )
+        if current is None or rank > current_rank:
+            best[key] = payload
+    return list(best.values())
 
 
 async def _post_sync(payload: dict) -> dict | None:
@@ -78,10 +114,26 @@ async def _post_sync(payload: dict) -> dict | None:
                 json=payload,
             )
         if response.status_code != 200:
-            log.warning(
-                f"[AWMCNET] 成绩同步失败 status={response.status_code} "
-                f"body={response.text[:120]}"
-            )
+            body = response.text[:240]
+            if response.status_code in (401, 403):
+                log.error(
+                    f"[AWMCNET] 成绩同步鉴权失败 status={response.status_code}; "
+                    "请检查 Bot-Token 是否与 AWMCNET 服务端一致"
+                )
+            elif response.status_code == 422:
+                log.error(
+                    f"[AWMCNET] 成绩同步参数校验失败 status=422 body={body}"
+                )
+            elif response.status_code >= 500:
+                log.error(
+                    f"[AWMCNET] 成绩同步服务端错误 status={response.status_code} "
+                    f"body={body}"
+                )
+            else:
+                log.warning(
+                    f"[AWMCNET] 成绩同步失败 status={response.status_code} "
+                    f"body={body}"
+                )
             return None
         result = response.json()
         sent_count = len(payload.get("records") or [])
@@ -119,7 +171,7 @@ async def sync_awmcnet(
         "rating": int(getattr(userinfo, "rating", 0) or 0),
         "old_rating": _chart_rating(userinfo, "sd"),
         "new_rating": _chart_rating(userinfo, "dx"),
-        "records": [_record_payload(record) for record in records],
+        "records": _dedupe_record_payloads(records),
     }
     if play_count is not None:
         payload["play_count"] = int(play_count)
@@ -140,7 +192,7 @@ async def sync_awmcnet_pc_records(
         "nickname": nickname,
         "source": source,
         "rating": rating,
-        "records": [_record_payload(record) for record in records],
+        "records": _dedupe_record_payloads(records),
     }
     if play_count is not None:
         payload["play_count"] = int(play_count)
