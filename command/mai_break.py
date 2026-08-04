@@ -5,8 +5,6 @@ from nonebot import get_bots, on_command, require
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message, MessageEvent, MessageSegment
 from nonebot.matcher import Matcher
 from nonebot.params import Arg, CommandArg, Depends
-from nonebot.permission import SUPERUSER
-
 from ..libraries.maimaidx_break import (
     DEFAULT_CONFIG,
     GAMBLE_ENTRY_COST,
@@ -19,7 +17,9 @@ from ..libraries.maimaidx_break import (
     format_checkin_result,
     format_makeup_checkin_result,
     get_account_profile,
+    normalize_billing_qqid,
 )
+from ..libraries.maimaidx_bot_admin import PLUGIN_ADMIN_ONLY
 from ..libraries.maimaidx_guess_score import guess_score
 from ..libraries.maimaidx_guess_stats_draw import personal_guess_stats_image_b64
 from ..libraries.maimaidx_error import QBindRequiredError
@@ -60,12 +60,12 @@ setattr(awmc_makeup_checkin, '_maimaidx_busy_surcharge_exempt', True)
 my_awmc = on_command(
     '我的AWMC', aliases={'我的awmc', 'AWMC状态', 'awmc状态', '我的账号'}
 )
-awmc_admin_set = on_command('设置BREAK', permission=SUPERUSER)
-awmc_admin_add = on_command('增减BREAK', permission=SUPERUSER)
-awmc_admin_config = on_command('BREAK配置', permission=SUPERUSER)
-awmc_admin_view = on_command('查看AWMC', permission=SUPERUSER)
+awmc_admin_set = on_command('设置BREAK', permission=PLUGIN_ADMIN_ONLY)
+awmc_admin_add = on_command('增减BREAK', permission=PLUGIN_ADMIN_ONLY)
+awmc_admin_config = on_command('BREAK配置', permission=PLUGIN_ADMIN_ONLY)
+awmc_admin_view = on_command('查看AWMC', permission=PLUGIN_ADMIN_ONLY)
 ticket_stats_admin = on_command(
-    '发票统计', aliases={'ticket统计', 'returnCode统计'}, permission=SUPERUSER
+    '发票统计', aliases={'ticket统计', 'returnCode统计'}, permission=PLUGIN_ADMIN_ONLY
 )
 awmc_help = on_command('AWMC帮助', aliases={'BREAK帮助'})
 break_transfer = on_command('转账BREAK', aliases={'BREAK转账'})
@@ -135,7 +135,10 @@ def get_at_qq(message: MessageEvent) -> Optional[int]:
     target = parse_at_target_id(message)
     if target is None:
         return None
-    return resolve_score_qqid(message, target)
+    # BREAK is a platform-local ledger.  A score-query QQ binding is helpful
+    # but must not be mandatory for transfers/admin adjustments: unbound
+    # official-QQ openids receive the same stable billing id used at check-in.
+    return normalize_billing_qqid(target)
 
 
 async def _require_break_agreement(matcher, event: MessageEvent) -> None:

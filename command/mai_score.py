@@ -263,12 +263,19 @@ async def _finish_score(
     from ..libraries.maimaidx_timing import is_valid_image_result, run_timed
     from ..libraries.maimaidx_player_cache import clear_fetch_meta
     from ..libraries.maimaidx_error import BreakInsufficientError
+    from ..libraries.maimaidx_break import normalize_billing_qqid
+
+    if billing_event is None:
+        from nonebot.matcher import current_event
+
+        billing_event = current_event.get(None)
     payer = billing_qqid
     if payer is None and billing_event is not None:
         payer = billing_user_id(billing_event)
+    payer = normalize_billing_qqid(payer)
     if service_name and service_cost > 0 and payer:
         from ..libraries.maimaidx_break import break_db
-        break_db.ensure_service_affordable(int(payer), service_name, service_cost)
+        break_db.ensure_service_affordable(payer, service_name, service_cost)
     try:
         result, total = await run_timed(coro, billing_qqid=payer)
     except BreakInsufficientError as e:
@@ -281,7 +288,7 @@ async def _finish_score(
         return
     if service_name and service_cost > 0 and payer:
         from ..libraries.maimaidx_break import break_db
-        break_db.settle_service_success(int(payer), service_name, service_cost)
+        break_db.settle_service_success(payer, service_name, service_cost)
     if isinstance(result, str):
         clear_fetch_meta()
         await plugin_finish(matcher, result, event=billing_event)
@@ -1343,7 +1350,8 @@ async def _weekly_report(event: MessageEvent):
     from ..libraries.maimaidx_break import break_db
     cost = int(break_db.get_config('weekly_report_cost', '1'))
     await _finish_score(weekly_report, generate_progress_report(qqid, 7), qqid,
-        billing_qqid=event.user_id,
+        billing_qqid=billing_user_id(event),
+        billing_event=event,
         service_name='weekly_report' if cost > 0 else None,
         service_cost=cost,
     )
@@ -1361,7 +1369,8 @@ async def _monthly_report(event: MessageEvent):
     from ..libraries.maimaidx_break import break_db
     cost = int(break_db.get_config('monthly_report_cost', '2'))
     await _finish_score(monthly_report, generate_progress_report(qqid, 30), qqid,
-        billing_qqid=event.user_id,
+        billing_qqid=billing_user_id(event),
+        billing_event=event,
         service_name='monthly_report' if cost > 0 else None,
         service_cost=cost,
     )
@@ -1379,7 +1388,8 @@ async def _annual_report(event: MessageEvent):
     from ..libraries.maimaidx_break import break_db
     cost = int(break_db.get_config('annual_report_cost', '3'))
     await _finish_score(annual_report, generate_progress_report(qqid, 365), qqid,
-        billing_qqid=event.user_id,
+        billing_qqid=billing_user_id(event),
+        billing_event=event,
         service_name='annual_report' if cost > 0 else None,
         service_cost=cost,
     )
@@ -1397,7 +1407,8 @@ async def _daily_report(event: MessageEvent):
     from ..libraries.maimaidx_break import break_db
     cost = int(break_db.get_config('daily_report_cost', '0'))
     await _finish_score(daily_report, generate_daily_report(qqid), qqid,
-        billing_qqid=event.user_id,
+        billing_qqid=billing_user_id(event),
+        billing_event=event,
         service_name='daily_report' if cost > 0 else None,
         service_cost=cost,
     )

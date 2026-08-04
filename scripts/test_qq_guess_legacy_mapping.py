@@ -48,6 +48,7 @@ from nonebot_plugin_maimaidx.libraries.maimaidx_music import (
 from nonebot_plugin_maimaidx.libraries.maimaidx_platform import (
     resolve_group_delivery_id,
 )
+from nonebot_plugin_maimaidx.libraries.maimaidx_guess_sync import GuessSyncManager
 from nonebot_plugin_maimaidx.libraries.maimaidx_qq_bind import QqBindDatabase
 
 
@@ -110,6 +111,10 @@ try:
     assert guess.is_enabled(GROUP_OPENID)
     assert resolve_group_delivery_id(LEGACY_GROUP) == GROUP_OPENID
     assert resolve_group_delivery_id(GROUP_OPENID) == GROUP_OPENID
+
+    sync = object.__new__(GuessSyncManager)
+    assert sync.is_play_group(GROUP_OPENID)
+    assert sync.peer_group(GROUP_OPENID) == 1072033605
 
     global_guess.switch.enable = [LEGACY_GROUP, GROUP_OPENID]
     assert _broadcast_group_ids() == [GROUP_OPENID]

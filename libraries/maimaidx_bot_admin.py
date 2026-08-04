@@ -31,7 +31,24 @@ def get_plugin_admin_ids() -> Set[str]:
 
 
 def is_plugin_admin(user_id: Union[int, str]) -> bool:
-    return str(user_id) in get_plugin_admin_ids()
+    raw = str(user_id).strip()
+    admin_ids = get_plugin_admin_ids()
+    if raw in admin_ids:
+        return True
+    if not raw or raw.isdigit():
+        return False
+    try:
+        from .maimaidx_qq_bind import qq_bind_db
+
+        legacy_qq = qq_bind_db.get_legacy_qq(raw)
+        if legacy_qq is None:
+            forum = qq_bind_db.get_forum_binding(raw) or {}
+            legacy_qq = forum.get('legacy_qq')
+        return legacy_qq is not None and str(int(legacy_qq)) in admin_ids
+    except Exception:
+        # Permission checks must fail closed if the optional binding store is
+        # unavailable or malformed; a database hiccup must not crash dispatch.
+        return False
 
 
 def _qq_group_role(event) -> str | None:

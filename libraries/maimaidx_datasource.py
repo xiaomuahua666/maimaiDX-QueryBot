@@ -93,9 +93,17 @@ def _merge_upstream_records(results: list) -> Tuple[Optional[UserInfo], List[Pla
 
 
 async def _refresh_awmcnet_from_upstreams(
-    qqid: int, *, force_refresh: bool = False
+    qqid: int,
+    *,
+    force_refresh: bool = False,
+    base_result: Optional[Tuple[UserInfo, List[PlayInfoDev]]] = None,
 ) -> Tuple[Optional[UserInfo], List[PlayInfoDev]]:
-    """并行拉取可用上游并写入 AWMCNET，实现首次查询自动迁移。"""
+    """并行拉取可用上游并写入 AWMCNET，实现首次查询自动迁移。
+
+    ``base_result`` is the current AWMCNET snapshot during an explicit refresh.
+    Keeping it in the merge prevents eventually-consistent upstreams from
+    replacing a score that was uploaded to AWMCNET seconds earlier.
+    """
     attempts = await asyncio.gather(
         get_user_records(
             qqid=qqid, force_source='divingfish', force_refresh=force_refresh
@@ -110,7 +118,10 @@ async def _refresh_awmcnet_from_upstreams(
             log.debug(
                 f'[datasource] AWMCNET migration skipped {source} qq={qqid}: {result}'
             )
-    userinfo, records = _merge_upstream_records(attempts)
+    merge_results = list(attempts)
+    if base_result is not None and base_result[1]:
+        merge_results.insert(0, base_result)
+    userinfo, records = _merge_upstream_records(merge_results)
     if userinfo and records:
         from .maimaidx_awmcnet_sync import sync_awmcnet
         await sync_awmcnet(qqid, userinfo, records, source='auto-migrate')
@@ -123,19 +134,29 @@ async def _get_awmcnet_records(
     from .maimaidx_awmcnet_sync import fetch_awmcnet_player
 
     player = await fetch_awmcnet_player(qqid)
-    if player and player.get('records') and not force_refresh:
+    current_result: Optional[Tuple[UserInfo, List[PlayInfoDev]]] = None
+    if player and player.get('records'):
         records = _awmcnet_records(player)
-        return _records_to_userinfo(player, records), records
+        current_result = (_records_to_userinfo(player, records), records)
+        if not force_refresh:
+            return current_result
 
     # AWMC NET 没有成绩时才自动探测水鱼和落雪；强制刷新时也执行探测。
     upstream_user, upstream_records = await _refresh_awmcnet_from_upstreams(
-        qqid, force_refresh=force_refresh
+        qqid,
+        force_refresh=force_refresh,
+        base_result=current_result,
     )
     if upstream_user and upstream_records:
         refreshed = await fetch_awmcnet_player(qqid)
         if refreshed and refreshed.get('records'):
-            records = _awmcnet_records(refreshed)
-            return _records_to_userinfo(refreshed, records), records
+            refreshed_records = _awmcnet_records(refreshed)
+            merged_user, merged_records = _merge_upstream_records([
+                (upstream_user, upstream_records),
+                (_records_to_userinfo(refreshed, refreshed_records), refreshed_records),
+            ])
+            if merged_user and merged_records:
+                return merged_user, merged_records
     if player:
         records = _awmcnet_records(player)
         if records:

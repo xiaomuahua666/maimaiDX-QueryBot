@@ -3,7 +3,7 @@ import re
 from nonebot import on_fullmatch, on_regex
 from nonebot.adapters.onebot.v11 import Message, MessageEvent, PrivateMessageEvent
 from nonebot.params import Depends, RegexMatched
-from nonebot.permission import SUPERUSER
+from ..libraries.maimaidx_bot_admin import PLUGIN_ADMIN_ONLY
 
 from ..libraries.maimaidx_music_info import *
 from ..libraries.maimaidx_player_score import *
@@ -19,8 +19,8 @@ from ..libraries.maimaidx_platform import (
 
 _RISE_SCORE_TIP = "您可以通过开启数据存储 使用「今日吃分推荐」获取更有参考价值的个性化推荐上分曲目。"
 
-update_table            = on_fullmatch('更新定数表', permission=SUPERUSER)
-update_plate            = on_fullmatch('更新完成表', permission=SUPERUSER)
+update_table            = on_fullmatch('更新定数表', permission=PLUGIN_ADMIN_ONLY)
+update_plate            = on_fullmatch('更新完成表', permission=PLUGIN_ADMIN_ONLY)
 rating_table            = on_regex(r'([0-9]+\+?)定数表')
 rating_table_pfm        = on_regex(r'^([0-9]+\+?)(([apfcp]+|\+)+)?完成表$', re.IGNORECASE)
 plate_table_pfm         = on_regex(r'^([真超檄橙暁晓桃櫻樱紫菫堇白雪輝辉舞霸熊華华爽煌星宙祭祝双宴镜彩丸圆])([極极将舞神者]舞?)完成表\s?([0-9]+)?$')

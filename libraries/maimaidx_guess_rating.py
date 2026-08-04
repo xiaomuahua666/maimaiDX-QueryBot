@@ -11,6 +11,7 @@ from typing import Dict, List, Optional, Tuple
 from loguru import logger as log
 
 from .maimaidx_datasource import get_user_b50_or_fallback
+from .maimaidx_group_rating import _get_group_member_list
 from .maimaidx_model import ChartInfo, UserInfo
 
 # ─────────────────────── 常量 ───────────────────────
@@ -298,7 +299,7 @@ rating_guess = GuessRatingManager()
 
 async def pick_random_candidate(
     bot,
-    group_id: int,
+    group_id,
     *,
     min_charts: int = 1,
     weighted: bool = True,
@@ -313,9 +314,11 @@ async def pick_random_candidate(
 
     exclude = {int(x) for x in (exclude_uids or set())}
 
-    # 获取群成员列表
+    # 官方 QQ 没有全量成员列表 API。群成绩模块会从已见成员登记表
+    # 中读取 openid，并通过 qbind/论坛绑定转换为可查询的旧 QQ；OneBot
+    # 则仍调用原生 get_group_member_list，避免改变既有行为。
     try:
-        raw = await bot.call_api('get_group_member_list', group_id=group_id)
+        raw = await _get_group_member_list(bot, group_id)
     except Exception as e:
         log.warning(f'[GuessRating] 获取群成员失败 gid={group_id}: {e}')
         return None

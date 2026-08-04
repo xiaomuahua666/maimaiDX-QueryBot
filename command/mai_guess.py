@@ -87,6 +87,7 @@ from ..libraries.maimaidx_platform import (
     adapt_guess_outbound,
     billing_user_id,
     build_mention_message,
+    ensure_sender_mention,
     format_forward_nodes_as_text,
     get_event_group_id,
     get_sender_display_name,
@@ -99,6 +100,7 @@ from ..libraries.maimaidx_platform import (
     rank_text_image,
     resolve_event_bot,
     resolve_reply_message,
+    send_group_message,
     use_qq_mode,
 )
 from ..libraries.maimaidx_qq_member_registry import qq_member_registry
@@ -479,17 +481,35 @@ async def _guess_notify(
     message,
     *,
     reply: bool = False,
+    mention_sender: Optional[bool] = None,
     timeout: int = GUESS_SEND_TIMEOUT_TEXT,
 ) -> None:
     """尽力发送通知，不修改游戏状态。"""
     try:
-        await asyncio.wait_for(
-            matcher.send(
-                adapt_guess_outbound(message, event=event),
-                reply_message=resolve_reply_message(event, reply_message=reply),
-            ),
-            timeout=timeout,
-        )
+        if mention_sender is None:
+            mention_sender = reply
+        payload = message
+        if use_qq_mode(event) and mention_sender:
+            payload = ensure_sender_mention(payload, event)
+        payload = adapt_guess_outbound(payload, event=event)
+        if use_qq_mode(event) and not reply:
+            gid = get_event_group_id(event)
+            if gid is None:
+                return
+            await asyncio.wait_for(
+                send_group_message(resolve_event_bot(event), gid, payload),
+                timeout=timeout,
+            )
+        else:
+            await asyncio.wait_for(
+                matcher.send(
+                    payload,
+                    reply_message=resolve_reply_message(
+                        event, reply_message=reply
+                    ),
+                ),
+                timeout=timeout,
+            )
     except Exception as e:
         gid = get_event_group_id(event)
         log.warning(
@@ -504,6 +524,7 @@ async def _safe_matcher_send(
     gid: GroupId,
     *,
     reply: bool = False,
+    mention_sender: Optional[bool] = None,
     media: bool = False,
     fatal: bool = True,
     timeout: Optional[int] = None,
@@ -511,13 +532,27 @@ async def _safe_matcher_send(
     if timeout is None:
         timeout = GUESS_SEND_TIMEOUT_MEDIA if media else GUESS_SEND_TIMEOUT_TEXT
     try:
-        await asyncio.wait_for(
-            matcher.send(
-                adapt_guess_outbound(message, event=event),
-                reply_message=resolve_reply_message(event, reply_message=reply),
-            ),
-            timeout=timeout,
-        )
+        if mention_sender is None:
+            mention_sender = reply
+        payload = message
+        if use_qq_mode(event) and mention_sender:
+            payload = ensure_sender_mention(payload, event)
+        payload = adapt_guess_outbound(payload, event=event)
+        if use_qq_mode(event) and not reply:
+            await asyncio.wait_for(
+                send_group_message(resolve_event_bot(event), gid, payload),
+                timeout=timeout,
+            )
+        else:
+            await asyncio.wait_for(
+                matcher.send(
+                    payload,
+                    reply_message=resolve_reply_message(
+                        event, reply_message=reply
+                    ),
+                ),
+                timeout=timeout,
+            )
     except Exception as e:
         log.warning(
             f'[maimai] 猜歌消息发送失败 gid={gid}: {type(e).__name__}: {e}'
@@ -979,7 +1014,15 @@ async def _(event: MessageEvent):
                     + await draw_music_info(guess.Group[gid].music)
                 )
                 guess.end(gid)
-                await guess_music_start.finish(adapt_guess_outbound(answer, event=event))
+                await _safe_matcher_send(
+                    guess_music_start,
+                    event,
+                    answer,
+                    gid,
+                    media=True,
+                    fatal=False,
+                )
+                await guess_music_start.finish()
     except GuessSendAborted:
         await guess_music_start.finish()
 
@@ -1609,6 +1652,32 @@ async def _resolve_guess_stats_target(event: MessageEvent) -> tuple[str, str, bo
     return at_uid, (name or at_uid), True
 
 
+def _legacy_guess_identity_hint(event: MessageEvent, gid: GroupId, uid: str) -> str:
+    """Explain an empty migrated-group result when the user is not qbound.
+
+    Group migration and user migration are independent.  The former lets us
+    read the old group key, but the latter is still required to match a
+    person's old score row.  Keep this diagnostic at the empty-result boundary
+    so normal OneBot users and users with no migrated group never see it.
+    """
+    if not use_qq_mode(event) or str(uid).strip().isdigit():
+        return ''
+    try:
+        from ..libraries.maimaidx_qq_bind import qq_bind_db
+
+        legacy_group = qq_bind_db.get_group_legacy_id(str(gid))
+        if legacy_group is None:
+            return ''
+        if qq_bind_db.get_legacy_qq(str(uid)) is not None:
+            return ''
+    except Exception:
+        return ''
+    return (
+        f'\n检测到本群已绑定旧 QQ 群号 {int(legacy_group)}，但你的官方 QQ 身份尚未 qbind；'
+        '旧个人猜歌记录暂时无法匹配，数据没有因此被清空。请发送「qbind」完成绑定后再试。'
+    )
+
+
 @guess_my_stats.handle()
 async def _(event: MessageEvent):
     gid = get_event_group_id(event)
@@ -1634,7 +1703,10 @@ async def _(event: MessageEvent):
         empty = (
             f'{display_name} 在本群还没有猜歌积分记录。'
             if is_other
-            else '你在本群还没有猜歌积分记录。猜对 / 开字母结算后会累计到「我的猜歌」。'
+            else (
+                '你在本群还没有猜歌积分记录。猜对 / 开字母结算后会累计到「我的猜歌」。'
+                + _legacy_guess_identity_hint(event, gid, self_uid)
+            )
         )
         await guess_my_stats.finish(empty, reply_message=True)
     b64 = await asyncio.to_thread(personal_guess_stats_image_b64, stats)
@@ -1998,7 +2070,9 @@ async def _(event: MessageEvent):
         bot = resolve_event_bot(event)
         reacted = await react_processing(bot, event, emoji_id=REACT_EMOJI_CHECK)
         if not reacted:
-            await _guess_notify(guess_rating_start, event, msg)
+            await _guess_notify(
+                guess_rating_start, event, msg, mention_sender=True
+            )
 
 
 @guess_rating_reset.handle()
@@ -2229,7 +2303,9 @@ async def _(event: MessageEvent):
         bot = resolve_event_bot(event)
         reacted = await react_processing(bot, event, emoji_id=REACT_EMOJI_CHECK)
         if not reacted:
-            await _guess_notify(guess_impostor_start, event, msg)
+            await _guess_notify(
+                guess_impostor_start, event, msg, mention_sender=True
+            )
 
 
 @guess_impostor_reset.handle()
@@ -2569,9 +2645,12 @@ async def _(event: MessageEvent):
             label = '左' if choice == 1 else '右'
             await _guess_notify(
                 guess_duel_solve, event, f'✅ 已选择「{label}」',
+                mention_sender=True,
             )
     elif msg:
-        await _guess_notify(guess_duel_solve, event, msg)
+        await _guess_notify(
+            guess_duel_solve, event, msg, mention_sender=True
+        )
 
 
 @guess_duel_reset.handle()

@@ -2,7 +2,7 @@ from nonebot import on_command, on_regex
 from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message, MessageEvent, PrivateMessageEvent
 from nonebot.exception import IgnoredException
 from nonebot.params import CommandArg, RegexMatched
-from nonebot.permission import SUPERUSER
+from ..libraries.maimaidx_bot_admin import PLUGIN_ADMIN_ONLY
 
 from ..config import project_attribution_message
 from ..libraries.maimaidx_break import break_db, calculate_luck_break
@@ -15,7 +15,7 @@ from ..libraries.maimaidx_timing import finish_timed, finish_timed_sync
 from ..libraries.maimaidx_update_plate import *
 from ..libraries.tool import qqhash
 
-update_data         = on_command('更新maimai数据', permission=SUPERUSER)
+update_data         = on_command('更新maimai数据', permission=PLUGIN_ADMIN_ONLY)
 maimaidxhelp        = on_command('帮助maimaiDX', aliases={'帮助maimaidx'})
 maimaidxrepo        = on_command('项目地址maimaiDX', aliases={'项目地址maimaidx'})
 mai_today           = on_command('今日mai', aliases={'今日舞萌', '今日运势'})

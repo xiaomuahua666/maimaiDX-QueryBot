@@ -68,8 +68,8 @@ class Config(BaseModel):
     awmc_machine_lock_timeout_seconds: float = 60.0
     # AWMC 账号 API 成功返回后的静默冷却（秒）。
     awmc_api_success_cooldown_seconds: float = 1.0
-    # 发票允许倍率，使用英文逗号分隔，例如 2,3,5。
-    awmc_ticket_allowed_multipliers: str = '2,3,5'
+    # 发票允许倍率固定为 2、3 倍；保留配置字段兼容旧环境变量。
+    awmc_ticket_allowed_multipliers: str = '2,3'
     # AWMC v2 发票为同步接口：请求超时、无历史样本时的预计耗时。
     awmc_ticket_timeout_seconds: float = 120.0
     awmc_ticket_estimate_seconds: float = 80.0

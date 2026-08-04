@@ -66,7 +66,7 @@ assert "RuntimeError（上游服务未返回错误详情）" in account[
     "_upload_failure_message"
 ](RuntimeError())
 
-assert account["_allowed_ticket_multipliers"]() == (2, 3, 5)
+assert account["_allowed_ticket_multipliers"]() == (2, 3)
 assert account["auto_upload_channels"]() == (False, False)
 assert account["auto_upload_channels"](fish_token="fish") == (True, False)
 assert account["auto_upload_channels"](lxns_token="lx") == (False, True)
@@ -75,9 +75,9 @@ assert account["auto_upload_channels"](
     fish_token="fish", has_lxns_oauth=True
 ) == (True, True)
 test_config.awmc_ticket_allowed_multipliers = "3，5, 7,invalid"
-assert account["_allowed_ticket_multipliers"]() == (3, 5, 7)
+assert account["_allowed_ticket_multipliers"]() == (3,)
 test_config.awmc_ticket_allowed_multipliers = ""
-assert account["_allowed_ticket_multipliers"]() == (2, 3, 5)
+assert account["_allowed_ticket_multipliers"]() == (2, 3)
 
 uid, name, rating, preview = account["_normalize_preview"](
     {
@@ -123,7 +123,7 @@ assert account["_unused_ticket_stocks"](
         {"chargeId": 7, "stock": 99},
     ],
     now=time.mktime(time.strptime("2026-01-01", "%Y-%m-%d")),
-) == {2: 1, 5: 2}
+) == {2: 1}
 
 ticket_text = account["_format_ticket_status"](
     {

@@ -42,11 +42,13 @@ from ..libraries.maimaidx_music import guess
 from ..libraries.maimaidx_platform import (
     adapt_guess_outbound,
     billing_user_id,
+    ensure_sender_mention,
     get_event_group_id,
     get_sender_display_name,
     is_group_message_event,
     platform_user_id,
     resolve_reply_message,
+    use_qq_mode,
 )
 
 _RESERVED_PREFIXES = (
@@ -194,16 +196,18 @@ async def _send_board(matcher, event: MessageEvent, board, *, text: str = "") ->
     if board.prefer_text():
         body = format_board_text(board)
         msg = f"{text}{body}" if text else body
+        payload = ensure_sender_mention(msg, event) if use_qq_mode(event) else msg
         await matcher.send(
-            adapt_guess_outbound(msg, event=event),
+            adapt_guess_outbound(payload, event=event),
             reply_message=False,
         )
         return
     msg = await asyncio.to_thread(board_image_segment, board)
     if text:
         msg = text + msg
+    payload = ensure_sender_mention(msg, event) if use_qq_mode(event) else msg
     await matcher.send(
-        adapt_guess_outbound(msg, event=event),
+        adapt_guess_outbound(payload, event=event),
         reply_message=resolve_reply_message(event, reply_message=True),
     )
 
@@ -211,8 +215,9 @@ async def _send_board(matcher, event: MessageEvent, board, *, text: str = "") ->
 async def _send_plain(
     matcher, event: MessageEvent, text: str, *, fast: bool = False
 ) -> None:
+    payload = ensure_sender_mention(text, event) if use_qq_mode(event) else text
     await matcher.send(
-        adapt_guess_outbound(text, event=event),
+        adapt_guess_outbound(payload, event=event),
         reply_message=False
         if fast
         else resolve_reply_message(event, reply_message=True),
@@ -220,8 +225,11 @@ async def _send_plain(
 
 
 async def _send_image(matcher, event: MessageEvent, im) -> None:
+    message = MessageSegment.image(image_b64(im))
+    if use_qq_mode(event):
+        message = ensure_sender_mention(message, event)
     await matcher.send(
-        adapt_guess_outbound(MessageSegment.image(image_b64(im)), event=event),
+        adapt_guess_outbound(message, event=event),
         reply_message=False,
     )
 

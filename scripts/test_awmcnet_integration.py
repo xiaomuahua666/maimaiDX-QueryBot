@@ -126,8 +126,44 @@ async def test_empty_sync_is_not_reported_as_success() -> None:
         awmcnet._connection = original_connection
 
 
+async def test_force_refresh_keeps_newer_awmcnet_snapshot() -> None:
+    """A stale upstream must not overwrite a score uploaded moments ago."""
+    fresh_record = {**RECORD, "achievements": 100.0, "dxScore": 2500}
+    stale_record = {**RECORD, "achievements": 99.0, "dxScore": 1000}
+    fresh_player = {**PLAYER, "records": [fresh_record]}
+    stale_player = {**PLAYER, "records": [stale_record]}
+    original_fetch = awmcnet.fetch_awmcnet_player
+    original_refresh = datasource._refresh_awmcnet_from_upstreams
+    original_upstream_fetch = datasource.get_user_records
+    original_sync = awmcnet.sync_awmcnet
+    try:
+        awmcnet.fetch_awmcnet_player = AsyncMock(
+            side_effect=[fresh_player, stale_player]
+        )
+        stale_user, stale_records = datasource._records_to_userinfo(
+            stale_player, datasource._awmcnet_records(stale_player)
+        ), datasource._awmcnet_records(stale_player)
+        datasource.get_user_records = AsyncMock(
+            return_value=(stale_user, stale_records)
+        )
+        awmcnet.sync_awmcnet = AsyncMock(return_value={"stored_records": 1})
+
+        _userinfo, records = await datasource._get_awmcnet_records(
+            12345, force_refresh=True
+        )
+        assert records
+        assert max(float(row.achievements) for row in records) == 100.0
+        assert awmcnet.sync_awmcnet.await_count == 1
+    finally:
+        awmcnet.fetch_awmcnet_player = original_fetch
+        datasource._refresh_awmcnet_from_upstreams = original_refresh
+        datasource.get_user_records = original_upstream_fetch
+        awmcnet.sync_awmcnet = original_sync
+
+
 asyncio.run(test_datasource())
 asyncio.run(test_empty_sync_is_not_reported_as_success())
+asyncio.run(test_force_refresh_keeps_newer_awmcnet_snapshot())
 test_first_notice()
 test_trend_text()
 print("AWMC NET integration tests: ok")

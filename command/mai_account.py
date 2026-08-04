@@ -280,7 +280,7 @@ def _ticket_stock(rows: list[dict], charge_id: int) -> int:
 def _unused_ticket_stocks(
     rows: list[dict], *, now: Optional[float] = None
 ) -> dict[int, int]:
-    """返回仍未使用的 2/3/5 倍票库存。"""
+    """返回仍未使用的 2/3 倍票库存。"""
     current = float(time.time() if now is None else now)
     valid_rows = [
         row
@@ -293,7 +293,7 @@ def _unused_ticket_stocks(
     ]
     return {
         charge_id: stock
-        for charge_id in (2, 3, 5)
+        for charge_id in _allowed_ticket_multipliers()
         if (stock := _ticket_stock(valid_rows, charge_id)) > 0
     }
 
@@ -1609,11 +1609,11 @@ async def _():
         "mai删成绩 / 删分 [歌曲 难度]：交互或一步删除成绩\n"
         "mai清票 / 清票：确认后清空 Charge；mai改道具 / 改道具：高风险道具修改\n"
         f"当前上传价格：水鱼 {fish_cost} / 落雪 {lx_cost} / 同时 {all_cost} BREAK\n"
-        f"发票价格：倍率 × {ticket_unit} BREAK（例：2倍=20，3倍=30，5倍=50）\n"
+        f"发票价格：倍率 × {ticket_unit} BREAK（当前支持：{ticket_multipliers}）\n"
         f"AWMC 只读新功能：每次成功查询 {read_cost} BREAK，失败不扣费\n"
         f"成绩编辑 {edit_cost} BREAK / 条；成绩删除 {delete_cost} BREAK / 条，失败不扣费\n"
         f"清票 {clear_cost} BREAK / 次；道具修改 {item_cost} BREAK / 次（未经测试，风险自负）\n"
-        "已有 2/3/5 倍票未使用时重复发票，将拦截并扣除 20 BREAK。\n"
+        "已有 2/3 倍票未使用时重复发票，将拦截并扣除 20 BREAK。\n"
         "成绩上传每日首次成功免费；发票每次按价扣费，失败不扣费；"
         "明确失败会自动重试 2 次。\n"
         "发送“用户协议”阅读和确认服务条款。"
@@ -2588,6 +2588,15 @@ def _schedule_post_upload_maintenance(
     lxns: bool,
     archive_qqids: Optional[list[int]] = None,
 ) -> None:
+    # Invalidate synchronously before yielding the successful upload response.
+    # Otherwise an immediate ``b50``/``刷新b50`` command can win the scheduling
+    # race and resurrect the pre-upload SQLite/storage snapshot.
+    try:
+        from ..libraries.maimaidx_player_cache import invalidate_player_cache
+
+        invalidate_player_cache(int(user_key))
+    except (TypeError, ValueError):
+        pass
     task = asyncio.create_task(
         _post_upload_maintenance(
             user_key,
@@ -2726,6 +2735,10 @@ async def _execute_ticket(
     notify: Optional[Callable[[str], Awaitable[Any]]] = None,
 ) -> str:
     """执行并结算发票；直发新二维码时会先更新绑定凭据。"""
+    allowed = _allowed_ticket_multipliers()
+    if multiple not in allowed:
+        allowed_text = " / ".join(map(str, allowed))
+        raise ValueError(f"票券倍率仅支持：{allowed_text}。")
     key = _user_key(event)
     binding = account_db.get(key)
     if binding is None or not (qrcode_override or binding.qrcode):

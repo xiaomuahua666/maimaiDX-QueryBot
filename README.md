@@ -144,8 +144,8 @@ AWMC_PUBLIC_GATEWAY_TOKEN=gw_xxx
 # 机台会话全局串行，AWMC API 成功后静默冷却 1 秒。
 AWMC_MACHINE_LOCK_TIMEOUT_SECONDS=60
 AWMC_API_SUCCESS_COOLDOWN_SECONDS=1
-# 发票允许倍率，默认仅 2、3、5 倍。
-AWMC_TICKET_ALLOWED_MULTIPLIERS=2,3,5
+# 发票允许倍率，当前仅 2、3 倍。
+AWMC_TICKET_ALLOWED_MULTIPLIERS=2,3
 # AWMC v2 发票为同步接口；首次预计 80 秒，后续根据近期真实耗时动态估算。
 AWMC_TICKET_TIMEOUT_SECONDS=120
 AWMC_TICKET_ESTIMATE_SECONDS=80
@@ -423,7 +423,7 @@ BOTNAME=maimai
 | `maiu` / `导` | 仅上传水鱼 |
 | `maiul` | 仅上传落雪 |
 | `maiua` | 同时上传水鱼与落雪 |
-| `发票` / `fp <2/3/5>` / `mai查票` | 票券操作（默认倍率 × 10 BREAK；3 倍票消耗 30 BREAK） |
+| `发票` / `fp <2/3>` / `mai查票` | 票券操作（默认倍率 × 10 BREAK；3 倍票消耗 30 BREAK） |
 | `mai地图` / `maiping` | 游玩地区 / API 健康检查 |
 | `mai预览` / `预览`；`mai道具` / `道具` | 查询账号预览 / 道具列表（成功查询每次 5 BREAK） |
 | `mai门状态` / `查门` / `门状态` | 查询 Kaleidx Gate 发现、钥匙与通关状态（成功 5 BREAK） |
@@ -465,7 +465,7 @@ Koishi 数据迁移时，将完整数据库放进 `MAIMAIDX_KOISHI_MIGRATION_DIR
 
 | 命令 | 说明 |
 |------|------|
-| `发票` / `fp <倍率>` | 获取倍率票（默认允许 2x、3x、5x） |
+| `发票` / `fp <倍率>` | 获取倍率票（当前允许 2x、3x） |
 | `查票 <二维码>` | 查询票券状态 |
 
 ## 开发
