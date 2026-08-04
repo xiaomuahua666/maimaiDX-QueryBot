@@ -27,6 +27,7 @@ from ..libraries.maimaidx_timing import attach_timing, finish_timed_sync, run_ti
 from ..libraries.maimaidx_platform import (
     billing_user_id,
     build_image_message,
+    build_markdown_link_message,
     deliver_forward_messages,
     resolve_score_qqid,
     use_qq_mode,
@@ -69,17 +70,23 @@ def _pmyx_node(self_id: int, nickname: str, text: str) -> dict:
     }
 
 
-async def _build_chart_preview_nodes(music, self_id: int, nickname: str) -> List[dict]:
-    """构建谱面预览链接的合并转发节点列表"""
+def _chart_preview_links(music) -> list[tuple[str, str]]:
+    """Return stable, public preview URLs for every available difficulty."""
     diff_names = ['绿谱', '黄谱', '红谱', '紫谱', '白谱']
     kind = 'standard' if music.type == 'SD' else 'dx'
     song_id = music.id[1:] if music.type == 'DX' and music.id.startswith('1') else music.id
+    return [
+        (diff_names[i], build_preview_url(song_id, kind, i + 2))
+        for i in range(min(len(music.ds), len(diff_names)))
+    ]
+
+
+async def _build_chart_preview_nodes(music, self_id: int, nickname: str) -> List[dict]:
+    """构建谱面预览链接的合并转发节点列表"""
     nodes = []
     nodes.append(_pmyx_node(self_id, nickname, f"ID {music.id} 的谱面预览链接："))
-    for i, diff_name in enumerate(diff_names):
-        if i < len(music.ds):
-            url = f"https://v.wmc.pub/preview?song={song_id}&kind={kind}&diff={i + 2}"
-            nodes.append(_pmyx_node(self_id, nickname, f"{diff_name} {url}"))
+    for diff_name, url in _chart_preview_links(music):
+        nodes.append(_pmyx_node(self_id, nickname, f"{diff_name} {url}"))
     return nodes
 
 
@@ -288,17 +295,44 @@ async def _send_song_info_then_pmyx_forward(
     if chart_img:
         b64 = image_to_base64(chart_img)
         if use_qq_mode(event):
-            await bot.send(event, build_image_message(chart_img, event=event))
-        all_nodes.append(_build_nested_forward_node(
-            event.self_id, "定数变化",
-            [
-                _pmyx_node(event.self_id, nickname, f"这是{music.title}的各谱面难度变化"),
-                _pmyx_node(event.self_id, nickname, f"[CQ:image,file={b64}]"),
-            ]
-        ))
+            # ``draw_multiver_chart`` returns a PIL image.  Convert it to a
+            # real QQ local attachment instead of passing the object through
+            # the OneBot image converter (which produced an empty/"附图" node).
+            from nonebot.adapters.qq.message import Message as QQMessage
+            from nonebot.adapters.qq.message import MessageSegment as QQSeg
+
+            chart_media = build_image_message(b64, event=event)
+            await bot.send(
+                event,
+                QQMessage(
+                    [
+                        QQSeg.text(f'定数变化图：{music.title}\n'),
+                        chart_media,
+                    ]
+                ),
+            )
+        else:
+            all_nodes.append(_build_nested_forward_node(
+                event.self_id, "定数变化",
+                [
+                    _pmyx_node(event.self_id, nickname, f"这是{music.title}的各谱面难度变化"),
+                    _pmyx_node(event.self_id, nickname, f"[CQ:image,file={b64}]"),
+                ]
+            ))
     chart_preview_nodes = await _build_chart_preview_nodes(music, event.self_id, nickname)
-    if chart_preview_nodes:
+    if chart_preview_nodes and not use_qq_mode(event):
         all_nodes.append(_build_nested_forward_node(event.self_id, "谱面预览", chart_preview_nodes))
+    if use_qq_mode(event) and _chart_preview_links(music):
+        # URLs inside a rasterized forward summary are not clickable.  Send a
+        # native Markdown block (and URL buttons when the adapter supports it).
+        await bot.send(
+            event,
+            build_markdown_link_message(
+                f'ID {music.id} 谱面预览',
+                _chart_preview_links(music),
+                event=event,
+            ),
+        )
     await _send_forward(bot, event, all_nodes)
     await matcher.finish()
 
@@ -632,7 +666,26 @@ async def _(event: MessageEvent, match=RegexMatched()):
     if diff_index >= len(music.ds):
         await chart_preview.finish(f'ID「{song_id}」没有{diff_name}谱', reply_message=True)
         return
-    kind = 'standard' if music.type == 'SD' else 'dx'
-    preview_id = music.id[1:] if music.type == 'DX' and music.id.startswith('1') else music.id
-    url = f"https://v.wmc.pub/preview?song={preview_id}&kind={kind}&diff={diff_map[diff_name]}"
+    preview_links = dict(_chart_preview_links(music))
+    url = preview_links.get(
+        {'绿': '绿谱', '黄': '黄谱', '红': '红谱', '紫': '紫谱', '白': '白谱'}[diff_name],
+        build_preview_url(
+            music.id[1:] if music.type == 'DX' and music.id.startswith('1') else music.id,
+            'standard' if music.type == 'SD' else 'dx',
+            diff_map[diff_name],
+        ),
+    )
+    if use_qq_mode(event):
+        # Keep the preview URL in QQ Markdown.  A URL embedded in a rendered
+        # text image (or sent as a bare line in a forward summary) cannot be
+        # opened from the client.
+        await chart_preview.finish(
+            build_markdown_link_message(
+                f'{music.title} {diff_name}谱预览',
+                [('打开预览', url)],
+                event=event,
+            ),
+            reply_message=True,
+        )
+        return
     await chart_preview.finish(f"{music.title} {diff_name}谱预览：\n{url}", reply_message=True)

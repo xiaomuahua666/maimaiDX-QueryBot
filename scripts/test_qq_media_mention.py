@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 import importlib.util
 import sys
 import types
@@ -111,6 +112,96 @@ def main() -> None:
     )
     assert any(part.type == "file_image" for part in mixed_parts)
     _assert_no_serialized_media(mixed_reply)
+
+    # A single local image may keep its caption/mention in one QQ payload.
+    single_caption = QQMessage(
+        [QQSegment.text("说明 😀"), QQSegment.file_image(b"single-image")]
+    )
+    assert platform._split_qq_media_message(single_caption) is None
+
+    # Multiple local attachments must use separate requests because the
+    # official API has only one ``media`` field; the first remains beside the
+    # caption.
+    two_images = QQMessage(
+        [
+            QQSegment.text("贡献图"),
+            QQSegment.file_image(b"first-image"),
+            QQSegment.file_image(b"second-image"),
+        ]
+    )
+    split = platform._split_qq_media_message(two_images)
+    assert split is not None
+    first_payload, followups = split
+    assert [part.type for part in first_payload].count("file_image") == 1
+    assert next(part for part in first_payload if part.type == "file_image").data[
+        "content"
+    ] == b"first-image"
+    assert len(followups) == 1
+    assert next(part for part in followups[0] if part.type == "file_image").data[
+        "content"
+    ] == b"second-image"
+
+    markdown = QQMessage([QQSegment.markdown("**😀 可复制文字**")])
+    markdown_reply = platform.ensure_sender_mention(markdown, event)
+    markdown_content = markdown_reply[0].data["markdown"].content
+    assert markdown_reply[0].type == "markdown"
+    assert markdown_content.startswith('<qqbot-at-user id="user-openid" />')
+    assert "😀" in markdown_content
+
+    forward = platform.qq_forward_markdown(
+        [
+            {
+                "type": "node",
+                "data": {
+                    "user_id": "1",
+                    "nickname": "bot",
+                    "content": "绿谱 https://v.wmc.pub/?song=1 🎵",
+                },
+            },
+        ],
+        title="查歌补充信息",
+    )
+    assert "[绿谱](https://v.wmc.pub/?song=1)" in forward
+    assert "🎵" in forward
+
+    link_message = platform.build_markdown_link_message(
+        "谱面预览",
+        [("绿谱", "https://v.wmc.pub/?song=1")],
+        event=event,
+    )
+    assert [part.type for part in link_message] == ["markdown", "keyboard"]
+    assert "[绿谱](https://v.wmc.pub/?song=1)" in (
+        link_message[0].data["markdown"].content
+    )
+
+    class _FakeBot:
+        def __init__(self):
+            self.sent = []
+
+        async def send(self, _event, payload):
+            self.sent.append(payload)
+
+    fake_bot = _FakeBot()
+    asyncio.run(
+        platform.deliver_forward_messages(
+            fake_bot,
+            event,
+            [
+                {
+                    "type": "node",
+                    "data": {
+                        "user_id": "1",
+                        "nickname": "bot",
+                        "content": "表情 😀",
+                    },
+                }
+            ],
+            title="补充",
+        )
+    )
+    assert len(fake_bot.sent) == 1
+    assert fake_bot.sent[0][0].type == "markdown"
+    assert "😀" in fake_bot.sent[0][0].data["markdown"].content
 
     final_reply = platform.adapt_reply_payload(
         image_reply, footer="\nfooter", event=event

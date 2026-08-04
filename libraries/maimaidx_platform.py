@@ -528,22 +528,23 @@ def install_qq_event_compat() -> None:
         original_qq_send = QQBot.send
         if not getattr(original_qq_send, '_maimaidx_qq_compat', False):
             async def _qq_aware_bot_send(self, event, message, **kwargs):
-                consumed_extra_reply = False
+                extra_reply_count = 0
                 if is_qq_event(event):
                     message = ensure_sender_mention(message, event)
                     if _is_onebot_payload(message):
                         message = adapt_guess_outbound(message, event=event)
-                    # QQ msg_type=7 accepts media only.  Text embedded beside a
-                    # local image/audio/video is rendered as a collapsed raw
-                    # payload (including the <qqbot-at-user ... /> marker), so
-                    # send the text and media as separate messages.  The QQ
+                    # Keep a caption with one local media when the official
+                    # endpoint accepts the combined payload.  The adapter
+                    # still needs a split for multiple media objects because
+                    # its wire format has only one ``media`` slot.  The QQ
                     # adapter increments _reply_seq once per Bot.send call;
-                    # account for the second wire message here as well.
-                    consumed_extra_reply = _split_qq_media_message(message) is not None
+                    # account for every follow-up media wire message here as well.
+                    split = _split_qq_media_message(message)
+                    extra_reply_count = len(split[1]) if split else 0
                 result = await original_qq_send(self, event, message, **kwargs)
-                if consumed_extra_reply:
+                if extra_reply_count:
                     try:
-                        event._reply_seq += 1
+                        event._reply_seq += extra_reply_count
                     except Exception:
                         pass
                 return result
@@ -579,7 +580,7 @@ def install_qq_event_compat() -> None:
                         event_id=event_id,
                         msg_ref_id=msg_ref_id,
                     )
-                text_message, media_message = split
+                text_message, media_messages = split
                 await original_qq_send_to_group(
                     self,
                     group_openid=group_openid,
@@ -589,23 +590,26 @@ def install_qq_event_compat() -> None:
                     event_id=event_id,
                     msg_ref_id=msg_ref_id,
                 )
-                media_seq = msg_seq
-                media_event_id = event_id
-                if msg_id is not None:
-                    media_seq = (int(msg_seq) if msg_seq is not None else 1) + 1
-                elif event_id is not None:
-                    # An event id is single-use; the follow-up media is an
-                    # ordinary active message after the text response.
-                    media_event_id = None
-                return await original_qq_send_to_group(
-                    self,
-                    group_openid=group_openid,
-                    message=media_message,
-                    msg_id=msg_id,
-                    msg_seq=media_seq,
-                    event_id=media_event_id,
-                    msg_ref_id=None,
-                )
+                result = None
+                for index, media_message in enumerate(media_messages, 1):
+                    media_seq = msg_seq
+                    media_event_id = event_id
+                    if msg_id is not None:
+                        media_seq = (int(msg_seq) if msg_seq is not None else 0) + index
+                    elif event_id is not None:
+                        # An event id is single-use; follow-up media is an
+                        # ordinary active message after the text response.
+                        media_event_id = None
+                    result = await original_qq_send_to_group(
+                        self,
+                        group_openid=group_openid,
+                        message=media_message,
+                        msg_id=msg_id,
+                        msg_seq=media_seq,
+                        event_id=media_event_id,
+                        msg_ref_id=None,
+                    )
+                return result
 
             _qq_aware_send_to_group._maimaidx_qq_media_split = True
             QQBot.send_to_group = _qq_aware_send_to_group
@@ -635,7 +639,7 @@ def install_qq_event_compat() -> None:
                         event_id=event_id,
                         msg_ref_id=msg_ref_id,
                     )
-                text_message, media_message = split
+                text_message, media_messages = split
                 await original_qq_send_to_c2c(
                     self,
                     openid=openid,
@@ -645,21 +649,24 @@ def install_qq_event_compat() -> None:
                     event_id=event_id,
                     msg_ref_id=msg_ref_id,
                 )
-                media_seq = msg_seq
-                media_event_id = event_id
-                if msg_id is not None:
-                    media_seq = (int(msg_seq) if msg_seq is not None else 1) + 1
-                elif event_id is not None:
-                    media_event_id = None
-                return await original_qq_send_to_c2c(
-                    self,
-                    openid=openid,
-                    message=media_message,
-                    msg_id=msg_id,
-                    msg_seq=media_seq,
-                    event_id=media_event_id,
-                    msg_ref_id=None,
-                )
+                result = None
+                for index, media_message in enumerate(media_messages, 1):
+                    media_seq = msg_seq
+                    media_event_id = event_id
+                    if msg_id is not None:
+                        media_seq = (int(msg_seq) if msg_seq is not None else 0) + index
+                    elif event_id is not None:
+                        media_event_id = None
+                    result = await original_qq_send_to_c2c(
+                        self,
+                        openid=openid,
+                        message=media_message,
+                        msg_id=msg_id,
+                        msg_seq=media_seq,
+                        event_id=media_event_id,
+                        msg_ref_id=None,
+                    )
+                return result
 
             _qq_aware_send_to_c2c._maimaidx_qq_media_split = True
             QQBot.send_to_c2c = _qq_aware_send_to_c2c
@@ -686,8 +693,10 @@ def install_qq_event_compat() -> None:
                     )
                 if api_name in ('send_group_forward_msg', 'send_private_forward_msg'):
                     nodes = data.get('messages') or data.get('nodes') or []
-                    text = flatten_forward_nodes(nodes, title='合并转发')
-                    payload = rank_text_image(text) if text.strip() else '（无内容）'
+                    # Official QQ has no OneBot forward-message equivalent.
+                    # Keep this fallback as native Markdown so emoji and links
+                    # are rendered by QQ instead of being rasterized by PIL.
+                    payload = build_qq_forward_message(nodes, title='合并转发')
                     if api_name == 'send_group_forward_msg':
                         return await self.send_to_group(
                             group_openid=str(
@@ -1197,11 +1206,13 @@ def _message_starts_with_mention(message: Any) -> bool:
 _QQ_MENTION_SEGMENT_CLASS = None
 
 
+def qq_at_markup(user_id: UserId) -> str:
+    """Return Tencent's current clickable @ markup for message content."""
+    return f'<qqbot-at-user id="{html_escape(str(user_id).strip(), quote=True)}" />'
+
+
 def _qq_mention_segment(target: UserId, *, username: Optional[str] = None) -> Any:
     """Build a real official-QQ mention, resolving old numeric QQ ids when possible."""
-    global _QQ_MENTION_SEGMENT_CLASS
-
-    from nonebot.adapters.qq.message import MentionUser
     from nonebot.adapters.qq.message import MessageSegment as QQSeg
 
     tid = str(target).strip()
@@ -1214,26 +1225,69 @@ def _qq_mention_segment(target: UserId, *, username: Optional[str] = None) -> An
     if not tid:
         return QQSeg.text(f'@{username or "你"}')
 
-    # nonebot-adapter-qq 1.7.1 still serializes MentionUser as ``<@id>``.
-    # Tencent's group-bot API now requires ``<qqbot-at-user id="..." />``;
-    # the legacy form may be delivered as plain text without an actual @.
-    # Keep a mention_user segment (so duplicate-prefix detection still works)
-    # while changing only its outbound wire representation.
+    # Keep a typed mention segment for duplicate-prefix detection while
+    # overriding only its wire representation.  The latest official QQ text
+    # protocol uses ``<qqbot-at-user id="..." />``.
+    global _QQ_MENTION_SEGMENT_CLASS
+    from nonebot.adapters.qq.message import MentionUser
+
     if _QQ_MENTION_SEGMENT_CLASS is None:
         class _QQBotAtUser(MentionUser):
             def __str__(self) -> str:
-                user_id = html_escape(str(self.data['user_id']), quote=True)
-                return f'<qqbot-at-user id="{user_id}" />'
+                return qq_at_markup(self.data['user_id'])
 
-        # Preserve adapter detection for callers that receive the segment
-        # without an enclosing QQ Message object.
         _QQBotAtUser.__module__ = MentionUser.__module__
         _QQ_MENTION_SEGMENT_CLASS = _QQBotAtUser
-
     data = {'user_id': tid}
     if username:
         data['username'] = username
     return _QQ_MENTION_SEGMENT_CLASS('mention_user', data)
+
+
+def _prepend_qq_markdown_mention(message: Any, event: Any) -> Any | None:
+    """Put a sender @ inside Markdown, where QQ parses it as a blue label.
+
+    A standalone ``mention_user`` segment becomes the ``content`` field while
+    a Markdown message is sent through ``markdown.content``.  Mixing the two
+    fields makes the former render as plain text, so Markdown messages need
+    the official ``<qqbot-at-user id="..." />`` token embedded directly in
+    their content.
+    """
+    module = type(message).__module__
+    if not module.startswith('nonebot.adapters.qq'):
+        return None
+    try:
+        from nonebot.adapters.qq.message import Message as QQMessage
+        from nonebot.adapters.qq.message import MessageSegment as QQSeg
+    except ImportError:
+        return None
+    if isinstance(message, QQSeg):
+        segments = [message]
+    elif isinstance(message, QQMessage):
+        segments = list(message)
+    else:
+        return None
+    markdown_segments = [seg for seg in segments if getattr(seg, 'type', None) == 'markdown']
+    if not markdown_segments:
+        return None
+    uid = platform_user_id(event)
+    if not uid:
+        return message
+    markup = qq_at_markup(uid)
+    output: list[Any] = []
+    for segment in segments:
+        if getattr(segment, 'type', None) != 'markdown':
+            output.append(segment)
+            continue
+        model = (getattr(segment, 'data', None) or {}).get('markdown')
+        content = str(getattr(model, 'content', None) or '')
+        if markup not in content:
+            content = f'{markup}\n{content.lstrip()}'
+        output.append(QQSeg.markdown(content))
+    try:
+        return QQMessage(output)
+    except Exception:
+        return message
 
 
 def ensure_sender_mention(message: Any, event) -> Any:
@@ -1270,6 +1324,9 @@ def ensure_sender_mention(message: Any, event) -> Any:
     if use_qq_mode(event):
         from nonebot.adapters.qq.message import Message as QQMessage
         from nonebot.adapters.qq.message import MessageSegment as QQSeg
+        markdown_message = _prepend_qq_markdown_mention(message, event)
+        if markdown_message is not None:
+            return markdown_message
         prefix = _qq_mention_segment(uid, username=nickname or None)
         if 'adapters.qq' in type(message).__module__:
             if isinstance(message, QQSeg):
@@ -1325,14 +1382,15 @@ def _ensure_qq_media_text(parts: List[Any]) -> List[Any]:
     return parts
 
 
-def _split_qq_media_message(message: Any) -> Optional[tuple[Any, Any]]:
-    """Split QQ text/mentions from media into two API-compatible messages.
+def _split_qq_media_message(message: Any) -> Optional[tuple[Any, list[Any]]]:
+    """Split only multi-media QQ messages while preserving a single caption.
 
-    The official QQ API defines ``msg_type=7`` as media-only and does not
-    parse ``content`` as a normal text message.  Sending an At marker next to
-    a file therefore shows a raw marker or a collapsed ``...`` bubble.  Keep
-    text-like segments in a first message and media segments in a second one.
-    ``None`` means no split is needed.
+    The official QQ API uses ``msg_type=7`` for media and exposes one media
+    object per request. A single local image remains beside its caption so
+    existing QQ clients keep the compact image-plus-text layout. When several
+    attachments are present, the first stays with the caption and each extra
+    attachment becomes a separate media request instead of being discarded by
+    the adapter's ``[-1]`` extraction.
     """
     module = type(message).__module__
     if not module.startswith('nonebot.adapters.qq'):
@@ -1356,17 +1414,16 @@ def _split_qq_media_message(message: Any) -> Optional[tuple[Any, Any]]:
     media_types = {'file_image', 'file_audio', 'file_video', 'file_file'}
     text_types = {'text', 'mention_user', 'mention_everyone', 'mention_channel', 'emoji'}
     media = [seg for seg in segments if getattr(seg, 'type', None) in media_types]
-    if not media:
+    if len(media) <= 1:
         return None
     text = [seg for seg in segments if getattr(seg, 'type', None) in text_types]
-    meaningful_text = any(
-        getattr(seg, 'type', None) != 'text'
-        or str((getattr(seg, 'data', None) or {}).get('text') or '').strip()
-        for seg in text
+    first_parts = [*text, media[0]]
+    if not text:
+        first_parts.insert(0, QQSeg.text(' '))
+    return (
+        QQMessage(first_parts),
+        [QQMessage([QQSeg.text(' '), segment]) for segment in media[1:]],
     )
-    if not meaningful_text:
-        return None
-    return QQMessage(text), QQMessage([QQSeg.text(' '), *media])
 
 
 def resolve_event_bot(event):
@@ -1382,11 +1439,51 @@ def format_forward_nodes_as_text(title: str, nodes: List[dict]) -> str:
     return flatten_forward_nodes(nodes, title=title)
 
 
+_FORWARD_URL_RE = re.compile(r"https?://[^\s<>\]）】》]+")
+
+
+def _qq_markdownize_forward_line(line: str) -> str:
+    """Turn URLs in a flattened forward line into clickable Markdown."""
+    match = _FORWARD_URL_RE.search(line)
+    if not match:
+        return line
+    # Preserve links that a node already supplied in Markdown form.
+    if match.start() >= 2 and line[match.start() - 2 : match.start()] == "](":
+        return line
+    url = match.group(0).rstrip('.,!?;:')
+    trailing = match.group(0)[len(url):] + line[match.end():]
+    prefix = line[:match.start()]
+    # Normal preview nodes use ``绿谱 https://...``.  Use the node label as
+    # link text; bare URLs get a short generic label.
+    label = prefix.strip()
+    if label:
+        before = prefix[: len(prefix) - len(prefix.lstrip())]
+        return f"{before}[{label}]({url}){trailing}"
+    return f"[打开链接]({url}){trailing}"
+
+
+def qq_forward_markdown(nodes: List[dict], *, title: str = '') -> str:
+    """Flatten forward nodes into native official-QQ Markdown content."""
+    text = flatten_forward_nodes(nodes, title=title)
+    if not text.strip():
+        return ''
+    return '\n'.join(_qq_markdownize_forward_line(line) for line in text.splitlines())
+
+
+def build_qq_forward_message(nodes: List[dict], *, title: str = '') -> Any:
+    """Build a native QQ Markdown message from OneBot forward nodes."""
+    from nonebot.adapters.qq.message import Message as QQMessage
+    from nonebot.adapters.qq.message import MessageSegment as QQSeg
+
+    content = qq_forward_markdown(nodes, title=title)
+    return QQMessage([QQSeg.markdown(content or '（无内容）')])
+
+
 def flatten_forward_nodes(nodes: List[dict], *, title: str = '') -> str:
     """把 OneBot 合并转发（含嵌套 node）压成可读纯文本。
 
-    注意：官方 QQ 下我们会把这段文本再渲染成一张图片发出去。
-    文本过长/过多会导致 QQ 客户端“消息加载失败”，因此这里做截断保护。
+    官方 QQ 下会在此基础上构建原生 Markdown；文本过长/过多会导致
+    客户端消息加载失败，因此这里做截断保护。
     """
     lines: list[str] = []
     if title:
@@ -1455,15 +1552,53 @@ async def deliver_forward_messages(
     title: str = '',
     reply_message: bool = False,
 ) -> None:
-    """OneBot 发合并转发；官方 QQ 压成单张摘要图，避免刷屏也避免嵌套 node 丢失。"""
+    """OneBot 发合并转发；官方 QQ 用原生 Markdown 保留 Emoji 和可复制内容。
+
+    Official QQ does not expose OneBot's nested forward-node API.  Sending
+    the flattened result as native Markdown keeps Unicode/Emoji intact, makes
+    preview URLs clickable, and avoids turning user-facing text into a PIL
+    image. Long output is split on line boundaries to stay below the platform
+    text limit.
+    """
     if not nodes:
         return
     if use_qq_mode(event):
-        text = flatten_forward_nodes(nodes, title=title)
+        text = qq_forward_markdown(nodes, title=title)
         if not text.strip():
             return
-        payload = adapt_reply_payload(rank_text_image(text), event=event)
-        await bot.send(event, payload)
+        from nonebot.adapters.qq.message import Message as QQMessage
+        from nonebot.adapters.qq.message import MessageSegment as QQSeg
+
+        # Keep each native text payload comfortably below QQ's group-message
+        # limit while preserving complete lines (and therefore Emoji pairs).
+        max_chars = 3500
+        chunks: list[str] = []
+        current: list[str] = []
+        current_len = 0
+        for line in text.splitlines(keepends=True):
+            if current and current_len + len(line) > max_chars:
+                chunks.append(''.join(current).rstrip('\n'))
+                current = []
+                current_len = 0
+            if len(line) > max_chars:
+                if current:
+                    chunks.append(''.join(current).rstrip('\n'))
+                    current = []
+                    current_len = 0
+                for start in range(0, len(line), max_chars):
+                    part = line[start:start + max_chars]
+                    if part:
+                        chunks.append(part.rstrip('\n'))
+                continue
+            current.append(line)
+            current_len += len(line)
+        if current:
+            chunks.append(''.join(current).rstrip('\n'))
+        if not chunks:
+            chunks = [text]
+        for chunk in chunks:
+            if chunk:
+                await bot.send(event, QQMessage([QQSeg.markdown(chunk)]))
         return
     if get_event_group_id(event) is not None:
         await bot.call_api(
@@ -1760,6 +1895,68 @@ def build_image_message(image: Union[bytes, BytesIO, str, Any], *, event=None) -
     if isinstance(image, MessageSegment):
         return image
     return MessageSegment.image(image)
+
+
+def build_markdown_link_message(
+    title: str,
+    links: Iterable[tuple[str, str]],
+    *,
+    event=None,
+) -> Any:
+    """Build a clickable link message on adapters that support Markdown.
+
+    Official QQ renders text embedded in a converted forward/image as pixels,
+    so URLs in that fallback cannot be opened. Keep the link presentation at
+    the platform boundary: QQ gets custom Markdown plus URL buttons, while
+    OneBot callers receive ordinary text and continue using their own message
+    protocol.
+    """
+    normalized = [
+        (str(label).strip(), str(url).strip())
+        for label, url in links
+        if str(label).strip() and str(url).strip()
+    ]
+    if not normalized:
+        return MessageSegment.text(str(title or ''))
+    if not use_qq_mode(event):
+        body = '\n'.join(f'{label}: {url}' for label, url in normalized)
+        return MessageSegment.text(
+            f'{title}\n{body}' if str(title or '').strip() else body
+        )
+
+    from nonebot.adapters.qq.message import Message as QQMessage
+    from nonebot.adapters.qq.message import MessageSegment as QQSeg
+    from nonebot.adapters.qq.models import (
+        Action,
+        Button,
+        InlineKeyboard,
+        InlineKeyboardRow,
+        MessageKeyboard,
+        RenderData,
+    )
+
+    heading = str(title or '').strip()
+    content_lines = [heading] if heading else []
+    content_lines.extend(f'[{label}]({url})' for label, url in normalized)
+    buttons = [
+        Button(
+            id=f'maimaidx-link-{index}',
+            render_data=RenderData(label=label, style=1),
+            action=Action(type=0, data=url),
+        )
+        for index, (label, url) in enumerate(normalized, 1)
+    ]
+    rows = [
+        InlineKeyboardRow(buttons=buttons[start : start + 5])
+        for start in range(0, len(buttons), 5)
+    ]
+    keyboard = MessageKeyboard(content=InlineKeyboard(rows=rows))
+    return QQMessage(
+        [
+            QQSeg.markdown('\n'.join(content_lines)),
+            QQSeg.keyboard(keyboard),
+        ]
+    )
 
 
 async def finish_reply(matcher, payload: Any, *, reply: bool = True, event=None) -> None:
