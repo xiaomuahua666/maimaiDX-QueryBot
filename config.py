@@ -196,6 +196,12 @@ class Config(BaseModel):
     maimaidx_platform: str = 'onebot'
     # 官方 QQ 下是否尝试卡片形态发图（暂以图片消息为主，后续扩展 Ark）
     maimaidx_use_qq_card: bool = False
+    # 官方 QQ 成绩图可选临时托管：配置后用单条 Markdown 发送 At + 图片 + 说明。
+    # 仅显式标记的成绩图会写入该目录；二维码等敏感图片不会使用此路径。
+    maimaidx_qq_media_public_url: str = ''
+    maimaidx_qq_media_dir: str = ''
+    maimaidx_qq_media_ttl_seconds: int = 3600
+    maimaidx_qq_media_max_bytes: int = 16 * 1024 * 1024
     # 插件管理员 platform id（逗号/空格分隔），与 SUPERUSER 等效；官方 QQ 填 openid
     maimaidx_bot_admins: str = ''
     # ---------- AWMC 论坛（ThemeHouse/Audentio OAuth） ----------

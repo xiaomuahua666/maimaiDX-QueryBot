@@ -4,7 +4,10 @@ from pathlib import Path
 import asyncio
 
 from .config import Config, driver, log, maiconfig, plate_tabledir, rating_table_dir
-from .libraries.maimaidx_platform import install_qq_event_compat
+from .libraries.maimaidx_platform import (
+    cleanup_qq_public_images,
+    install_qq_event_compat,
+)
 
 install_qq_event_compat()
 
@@ -39,6 +42,7 @@ async def get_music():
     """
     bot启动时开始获取所有数据
     """
+    cleanup_qq_public_images(force=True)
     _tag_token = _get_dxrating_token()
     log.opt(colors=True).info('谱面标签(combined-tags): ' + ('<g>已配置</g>' if _tag_token else '<y>未配置 token，详情图不显示标签</y>'))
     if maiconfig.maimaidxproberproxy:
@@ -124,3 +128,12 @@ async def get_music():
         log.warning('已配置 b50_llm_key 但未配置 b50_assets_path')
 
 scheduler.add_job(update_daily, 'cron', hour=4)
+scheduler.add_job(
+    cleanup_qq_public_images,
+    'interval',
+    minutes=10,
+    id='maimaidx_qq_media_cleanup',
+    replace_existing=True,
+    coalesce=True,
+    max_instances=1,
+)

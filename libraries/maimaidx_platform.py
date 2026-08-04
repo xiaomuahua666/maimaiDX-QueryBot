@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import os
 import re
+import secrets
+import time
+from contextvars import ContextVar
 from html import escape as html_escape
 from io import BytesIO
 from pathlib import Path
@@ -528,7 +532,7 @@ def install_qq_event_compat() -> None:
         original_qq_send = QQBot.send
         if not getattr(original_qq_send, '_maimaidx_qq_compat', False):
             async def _qq_aware_bot_send(self, event, message, **kwargs):
-                extra_reply_count = 0
+                followup_token = None
                 if is_qq_event(event):
                     message = ensure_sender_mention(message, event)
                     if _is_onebot_payload(message):
@@ -540,14 +544,18 @@ def install_qq_event_compat() -> None:
                     # adapter increments _reply_seq once per Bot.send call;
                     # account for every follow-up media wire message here as well.
                     split = _split_qq_media_message(message)
-                    extra_reply_count = len(split[1]) if split else 0
-                result = await original_qq_send(self, event, message, **kwargs)
-                if extra_reply_count:
-                    try:
-                        event._reply_seq += extra_reply_count
-                    except Exception:
-                        pass
-                return result
+                    if split and split[1]:
+                        followup_token = _QQ_REPLY_FOLLOWUPS_SENT.set(0)
+                try:
+                    return await original_qq_send(self, event, message, **kwargs)
+                finally:
+                    if followup_token is not None:
+                        sent_count = _QQ_REPLY_FOLLOWUPS_SENT.get()
+                        _QQ_REPLY_FOLLOWUPS_SENT.reset(followup_token)
+                        try:
+                            event._reply_seq += sent_count
+                        except Exception:
+                            pass
 
             _qq_aware_bot_send._maimaidx_qq_compat = True
             QQBot.send = _qq_aware_bot_send
@@ -581,7 +589,7 @@ def install_qq_event_compat() -> None:
                         msg_ref_id=msg_ref_id,
                     )
                 text_message, media_messages = split
-                await original_qq_send_to_group(
+                result = await original_qq_send_to_group(
                     self,
                     group_openid=group_openid,
                     message=text_message,
@@ -590,7 +598,6 @@ def install_qq_event_compat() -> None:
                     event_id=event_id,
                     msg_ref_id=msg_ref_id,
                 )
-                result = None
                 for index, media_message in enumerate(media_messages, 1):
                     media_seq = msg_seq
                     media_event_id = event_id
@@ -609,6 +616,9 @@ def install_qq_event_compat() -> None:
                         event_id=media_event_id,
                         msg_ref_id=None,
                     )
+                    sent_count = _QQ_REPLY_FOLLOWUPS_SENT.get()
+                    if sent_count is not None:
+                        _QQ_REPLY_FOLLOWUPS_SENT.set(sent_count + 1)
                 return result
 
             _qq_aware_send_to_group._maimaidx_qq_media_split = True
@@ -640,7 +650,7 @@ def install_qq_event_compat() -> None:
                         msg_ref_id=msg_ref_id,
                     )
                 text_message, media_messages = split
-                await original_qq_send_to_c2c(
+                result = await original_qq_send_to_c2c(
                     self,
                     openid=openid,
                     message=text_message,
@@ -649,7 +659,6 @@ def install_qq_event_compat() -> None:
                     event_id=event_id,
                     msg_ref_id=msg_ref_id,
                 )
-                result = None
                 for index, media_message in enumerate(media_messages, 1):
                     media_seq = msg_seq
                     media_event_id = event_id
@@ -666,6 +675,9 @@ def install_qq_event_compat() -> None:
                         event_id=media_event_id,
                         msg_ref_id=None,
                     )
+                    sent_count = _QQ_REPLY_FOLLOWUPS_SENT.get()
+                    if sent_count is not None:
+                        _QQ_REPLY_FOLLOWUPS_SENT.set(sent_count + 1)
                 return result
 
             _qq_aware_send_to_c2c._maimaidx_qq_media_split = True
@@ -1372,6 +1384,291 @@ _QQ_MEDIA_SEGMENT_TYPES = frozenset(
         'file_image', 'file_audio', 'file_video', 'file_file',
     }
 )
+_QQ_MARKDOWN_IMAGE_TYPES = frozenset({'image', 'file_image'})
+_QQ_PUBLIC_IMAGE_MARKER = '_maimaidx_public_image'
+_QQ_PUBLIC_MARKDOWN_CACHE = '_maimaidx_public_markdown_cache'
+_QQ_PUBLIC_IMAGE_NAME_RE = re.compile(
+    r'^[0-9a-f]{32}\.(?:png|jpe?g|webp|gif)$'
+)
+_QQ_PUBLIC_IMAGE_LAST_CLEANUP = 0.0
+_QQ_REPLY_FOLLOWUPS_SENT: ContextVar[Optional[int]] = ContextVar(
+    'maimaidx_qq_reply_followups_sent',
+    default=None,
+)
+
+
+def _is_qq_public_image_marker(segment: Any) -> bool:
+    data = getattr(segment, 'data', None) or {}
+    return (
+        getattr(segment, 'type', None) == 'text'
+        and data.get(_QQ_PUBLIC_IMAGE_MARKER) is True
+    )
+
+
+def _mark_qq_public_image(parts: List[Any]) -> List[Any]:
+    """Mark an explicitly approved score image for temporary publication."""
+    if not any(
+        getattr(part, 'type', None) in _QQ_MARKDOWN_IMAGE_TYPES
+        for part in parts
+    ):
+        return parts
+    if any(_is_qq_public_image_marker(part) for part in parts):
+        return parts
+    from nonebot.adapters.qq.message import MessageSegment as QQSeg
+
+    marker = QQSeg.text('')
+    marker.data[_QQ_PUBLIC_IMAGE_MARKER] = True
+    return [*parts, marker]
+
+
+def _qq_public_image_settings() -> Optional[tuple[str, Path, int, int]]:
+    public_url = str(
+        getattr(maiconfig, 'maimaidx_qq_media_public_url', '') or ''
+    ).strip().rstrip('/')
+    directory_raw = str(
+        getattr(maiconfig, 'maimaidx_qq_media_dir', '') or ''
+    ).strip()
+    if not public_url or not directory_raw:
+        return None
+    directory = Path(directory_raw).expanduser()
+    if not public_url.startswith('https://') or not directory.is_absolute():
+        log.warning(
+            '[platform] QQ 临时图片配置无效：公开地址必须是 HTTPS，目录必须是绝对路径'
+        )
+        return None
+    ttl = max(
+        300,
+        int(getattr(maiconfig, 'maimaidx_qq_media_ttl_seconds', 3600) or 3600),
+    )
+    max_bytes = max(
+        1024,
+        int(
+            getattr(
+                maiconfig,
+                'maimaidx_qq_media_max_bytes',
+                16 * 1024 * 1024,
+            )
+            or 16 * 1024 * 1024
+        ),
+    )
+    return public_url, directory, ttl, max_bytes
+
+
+def _cleanup_qq_public_images(
+    directory: Path,
+    ttl: int,
+    now: float,
+    *,
+    force: bool = False,
+) -> None:
+    global _QQ_PUBLIC_IMAGE_LAST_CLEANUP
+
+    interval = min(600.0, max(60.0, ttl / 4))
+    if not force and now - _QQ_PUBLIC_IMAGE_LAST_CLEANUP < interval:
+        return
+    _QQ_PUBLIC_IMAGE_LAST_CLEANUP = now
+    if not directory.is_dir():
+        return
+    try:
+        for path in directory.iterdir():
+            if not path.is_file() or not _QQ_PUBLIC_IMAGE_NAME_RE.fullmatch(path.name):
+                continue
+            try:
+                if now - path.stat().st_mtime > ttl:
+                    path.unlink(missing_ok=True)
+            except OSError as exc:
+                log.debug(f'[platform] QQ 临时图片清理失败 path={path.name}: {exc}')
+    except OSError as exc:
+        log.warning(f'[platform] QQ 临时图片目录读取失败: {exc}')
+
+
+def cleanup_qq_public_images(*, force: bool = False) -> None:
+    """Remove expired images even when no later score request is made."""
+    settings = _qq_public_image_settings()
+    if settings is None:
+        return
+    _, directory, ttl, _ = settings
+    _cleanup_qq_public_images(directory, ttl, time.time(), force=force)
+
+
+def _publish_qq_markdown_image(segment: Any) -> Optional[tuple[str, int, int]]:
+    """Publish an approved image and return its HTTPS URL and dimensions."""
+    seg_type = getattr(segment, 'type', None)
+    data = getattr(segment, 'data', None) or {}
+    if seg_type == 'image':
+        url = str(data.get('url') or '').strip()
+        return (url, 0, 0) if url.startswith('https://') else None
+    if seg_type != 'file_image':
+        return None
+
+    settings = _qq_public_image_settings()
+    if settings is None:
+        return None
+    public_url, directory, ttl, max_bytes = settings
+    content = data.get('content')
+    if not isinstance(content, bytes) or not content or len(content) > max_bytes:
+        return None
+
+    try:
+        from PIL import Image
+
+        with Image.open(BytesIO(content)) as image:
+            width, height = image.size
+            extension = {
+                'PNG': 'png',
+                'JPEG': 'jpg',
+                'WEBP': 'webp',
+                'GIF': 'gif',
+            }.get(str(image.format or '').upper())
+        if not extension or width <= 0 or height <= 0:
+            return None
+
+        directory.mkdir(parents=True, exist_ok=True)
+        now = time.time()
+        _cleanup_qq_public_images(directory, ttl, now)
+        token = secrets.token_hex(16)
+        target = directory / f'{token}.{extension}'
+        temporary = directory / f'.{token}.tmp'
+        try:
+            with temporary.open('xb') as file:
+                file.write(content)
+                file.flush()
+                os.fsync(file.fileno())
+            temporary.chmod(0o644)
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return f'{public_url}/{target.name}', int(width), int(height)
+    except Exception as exc:
+        log.warning(
+            f'[platform] QQ Markdown 临时图片发布失败: '
+            f'{type(exc).__name__}: {exc}'
+        )
+        return None
+
+
+_QQ_MARKDOWN_ESCAPE_RE = re.compile(r'([\\`*_\[\]~()#!>\-])')
+
+
+def _escape_qq_markdown_text(value: str) -> str:
+    return _QQ_MARKDOWN_ESCAPE_RE.sub(r'\\\1', str(value))
+
+
+def _qq_media_as_markdown(segments: List[Any]) -> Any | None:
+    """Coalesce an approved QQ score image, mention and caption into one message."""
+    marker = next(
+        (
+            segment
+            for segment in segments
+            if _is_qq_public_image_marker(segment)
+        ),
+        None,
+    )
+    if marker is None:
+        return None
+    marker_data = getattr(marker, 'data', None) or {}
+    if _QQ_PUBLIC_MARKDOWN_CACHE in marker_data:
+        cached = marker_data[_QQ_PUBLIC_MARKDOWN_CACHE]
+        return None if cached is False else cached
+
+    def unavailable() -> None:
+        marker_data[_QQ_PUBLIC_MARKDOWN_CACHE] = False
+        return None
+
+    media = [
+        segment
+        for segment in segments
+        if getattr(segment, 'type', None) in _QQ_MEDIA_SEGMENT_TYPES
+    ]
+    if not media or any(
+        getattr(segment, 'type', None) not in _QQ_MARKDOWN_IMAGE_TYPES
+        for segment in media
+    ):
+        return unavailable()
+
+    allowed_types = {
+        'text', 'emoji', 'mention_user', 'mention_everyone',
+        *_QQ_MARKDOWN_IMAGE_TYPES,
+    }
+    if any(
+        not _is_qq_public_image_marker(segment)
+        and getattr(segment, 'type', None) not in allowed_types
+        for segment in segments
+    ):
+        return unavailable()
+
+    published: dict[int, tuple[str, int, int]] = {}
+    for segment in media:
+        result = _publish_qq_markdown_image(segment)
+        if result is None:
+            return unavailable()
+        published[id(segment)] = result
+
+    blocks: list[str] = []
+    text_buffer: list[str] = []
+
+    def flush_text() -> None:
+        if not text_buffer:
+            return
+        text = ''.join(text_buffer).strip('\n')
+        text_buffer.clear()
+        if text:
+            blocks.append(_escape_qq_markdown_text(text))
+
+    for segment in segments:
+        if _is_qq_public_image_marker(segment):
+            continue
+        seg_type = getattr(segment, 'type', None)
+        data = getattr(segment, 'data', None) or {}
+        if seg_type == 'text':
+            text_buffer.append(str(data.get('text') or ''))
+            continue
+        if seg_type == 'emoji':
+            text_buffer.append(str(segment))
+            continue
+
+        flush_text()
+        if seg_type == 'mention_user':
+            user_id = _segment_user_id(segment)
+            if not user_id:
+                return unavailable()
+            blocks.append(qq_at_markup(user_id))
+        elif seg_type == 'mention_everyone':
+            blocks.append('<qqbot-at-everyone />')
+        elif seg_type in _QQ_MARKDOWN_IMAGE_TYPES:
+            url, width, height = published[id(segment)]
+            dimensions = f' #{width}px #{height}px' if width and height else ''
+            blocks.append(f'![查询结果{dimensions}]({url})')
+    flush_text()
+
+    content = '\n\n'.join(block for block in blocks if block.strip())
+    if not content:
+        return unavailable()
+    from nonebot.adapters.qq.message import Message as QQMessage
+    from nonebot.adapters.qq.message import MessageSegment as QQSeg
+
+    message = QQMessage([QQSeg.markdown(content)])
+    marker_data[_QQ_PUBLIC_MARKDOWN_CACHE] = message
+    return message
+
+
+def _qq_media_mention_fallback(mentions: List[Any]) -> Any:
+    """Use Markdown plus visible text so a standalone fallback @ is parsed."""
+    tags: list[str] = []
+    for segment in mentions:
+        seg_type = getattr(segment, 'type', None)
+        if seg_type == 'mention_user':
+            user_id = _segment_user_id(segment)
+            if user_id:
+                tags.append(qq_at_markup(user_id))
+        elif seg_type == 'mention_everyone':
+            tags.append('<qqbot-at-everyone />')
+    from nonebot.adapters.qq.message import Message as QQMessage
+    from nonebot.adapters.qq.message import MessageSegment as QQSeg
+
+    if tags:
+        return QQMessage([QQSeg.markdown(f'{" ".join(tags)}\n\n查询结果')])
+    return QQMessage([*mentions, QQSeg.text(' 查询结果')])
 
 
 def _ensure_qq_media_text(parts: List[Any]) -> List[Any]:
@@ -1430,10 +1727,14 @@ def _split_qq_media_message(message: Any) -> Optional[tuple[Any, list[Any]]]:
         seg for seg in segments if getattr(seg, 'type', None) in mention_types
     ]
     if mentions:
+        markdown_message = _qq_media_as_markdown(segments)
+        if markdown_message is not None:
+            return markdown_message, []
         caption = [
             seg
             for seg in segments
             if getattr(seg, 'type', None) not in media_types | mention_types
+            and not _is_qq_public_image_marker(seg)
         ]
         # ensure_sender_mention inserts one newline between the @ prefix and
         # body.  Once the prefix is its own message that separator must not
@@ -1446,7 +1747,7 @@ def _split_qq_media_message(message: Any) -> Optional[tuple[Any, list[Any]]]:
                 caption.insert(0, QQSeg.text(first_text))
         first_media = _ensure_qq_media_text([*caption, media[0]])
         return (
-            QQMessage(mentions),
+            _qq_media_mention_fallback(mentions),
             [QQMessage(first_media)]
             + [QQMessage([QQSeg.text(' '), segment]) for segment in media[1:]],
         )
@@ -1850,7 +2151,13 @@ def _iter_onebot_segments(result: Any) -> Iterable[MessageSegment]:
         yield from result
 
 
-def adapt_reply_payload(result: Any, *, footer: str = '', event=None) -> Any:
+def adapt_reply_payload(
+    result: Any,
+    *,
+    footer: str = '',
+    event=None,
+    publish_qq_image: bool = False,
+) -> Any:
     """
     将插件内 OneBot 消息段转为当前平台可发送的形态。
     官方 QQ 需 file_image(bytes)，不能发 base64:// 的 OneBot 图。
@@ -1878,13 +2185,19 @@ def adapt_reply_payload(result: Any, *, footer: str = '', event=None) -> Any:
     # 已是官方 QQ 消息段：直接发送，避免再被当成 OneBot 丢掉 @。
     result_module = type(result).__module__
     if result_module.startswith('nonebot.adapters.qq'):
-        if footer:
+        if footer or publish_qq_image:
             from nonebot.adapters.qq.message import Message as QQMessage
             from nonebot.adapters.qq.message import MessageSegment as QQSeg
 
             if isinstance(result, QQSeg):
-                return QQMessage([result, QQSeg.text(footer)])
-            return QQMessage(list(result) + [QQSeg.text(footer)])
+                parts = [result]
+            else:
+                parts = list(result)
+            if footer:
+                parts.append(QQSeg.text(footer))
+            if publish_qq_image:
+                parts = _mark_qq_public_image(parts)
+            return QQMessage(parts)
         return result
 
     from nonebot.adapters.qq.message import Message as QQMessage
@@ -1909,6 +2222,8 @@ def adapt_reply_payload(result: Any, *, footer: str = '', event=None) -> Any:
     if footer:
         parts.append(QQSeg.text(footer))
     parts = _ensure_qq_media_text(parts)
+    if publish_qq_image:
+        parts = _mark_qq_public_image(parts)
     if not parts:
         return QQMessage([QQSeg.text('成绩图发送失败，请联系管理员。')])
     return QQMessage(parts)
@@ -2003,7 +2318,12 @@ async def finish_reply(matcher, payload: Any, *, reply: bool = True, event=None)
 
 async def finish_with_image(matcher, image_msg, *, footer: str = '', reply: bool = True, event=None) -> None:
     """统一 finish：可选 QQ 卡片形态（当前为图片 + 文本）。"""
-    payload = adapt_reply_payload(image_msg, footer=footer, event=event)
+    payload = adapt_reply_payload(
+        image_msg,
+        footer=footer,
+        event=event,
+        publish_qq_image=True,
+    )
     await plugin_finish(matcher, payload, event=event, reply_message=reply)
 
 
@@ -2099,6 +2419,7 @@ async def plugin_finish(
     event=None,
     reply_message: bool = True,
     mention_sender: Optional[bool] = None,
+    publish_qq_image: bool = False,
 ) -> None:
     if mention_sender is None:
         mention_sender = (
@@ -2113,7 +2434,12 @@ async def plugin_finish(
         await matcher.finish(reply_message=reply)
         return
     await matcher.finish(
-        adapt_reply_payload(message, footer=footer, event=event),
+        adapt_reply_payload(
+            message,
+            footer=footer,
+            event=event,
+            publish_qq_image=publish_qq_image,
+        ),
         reply_message=reply,
     )
 

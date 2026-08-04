@@ -24,6 +24,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+package = types.ModuleType("nonebot_plugin_maimaidx")
+package.__path__ = [str(ROOT)]
+sys.modules["nonebot_plugin_maimaidx"] = package
 
 
 def _install_nonebot_stub():
@@ -52,7 +55,7 @@ def _install_nonebot_stub():
 
 
 _install_nonebot_stub()
-import config as cfg  # noqa: E402
+from nonebot_plugin_maimaidx import config as cfg  # noqa: E402
 
 PASS, FAIL = 0, 0
 

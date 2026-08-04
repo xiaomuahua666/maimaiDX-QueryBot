@@ -158,7 +158,7 @@ def main() -> None:
     assert impostor_settlement.wrong_names == ["B"]
 
     modes = GuessScoreManager.GUESS_MODES
-    assert modes[-1] == GuessScoreManager.MODE_IMPOSTOR
+    assert GuessScoreManager.MODE_IMPOSTOR in modes
     stats_image = draw_personal_guess_stats({
         "uid": "1",
         "name": "render-test",

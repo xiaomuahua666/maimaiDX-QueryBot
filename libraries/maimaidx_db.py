@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Optional
 
 from ..config import maiconfig
+from .maimaidx_sqlite import configure_sqlite_connection
 
 # 需要加前缀的表名（不含前缀的原始名）
 _TABLE_NAMES = (
@@ -145,10 +146,7 @@ class UnifiedConnection:
             db_path = kwargs.get('db_path', ':memory:')
             self._conn = sqlite3.connect(db_path, check_same_thread=False)
             self._conn.row_factory = sqlite3.Row
-            self._conn.execute("PRAGMA busy_timeout=5000")
-            self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.execute("PRAGMA synchronous=NORMAL")
-            self._conn.execute("PRAGMA wal_autocheckpoint=1000")
+            configure_sqlite_connection(self._conn)
         self._last_active = time.time()
 
     def _ping(self):

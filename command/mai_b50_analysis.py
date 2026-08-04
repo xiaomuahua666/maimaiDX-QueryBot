@@ -258,4 +258,5 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
         MessageSegment.image(buf) + MessageSegment.text(footer),
         event=event,
         mention_sender=use_qq_mode(event),
+        publish_qq_image=True,
     )

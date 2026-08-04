@@ -25,7 +25,7 @@ with tempfile.TemporaryDirectory() as td:
 
 for relative in (
     "maimaidx_admin_audit.py",
-    "maimaidx_break.py",
+    "maimaidx_db.py",
     "maimaidx_qq_member_registry.py",
     "maimaidx_account_db.py",
     "maimaidx_processing_time.py",

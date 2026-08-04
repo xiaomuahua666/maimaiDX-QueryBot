@@ -464,25 +464,28 @@ async def _process_auto_qrcode(
     # 图片/文本一旦识别为敏感凭据就优先撤回；OneBot 偶发不返回时最多等 3 秒，
     # 随后立刻告知用户手动撤回，不能让撤回动作卡住整条同步链路。
     recalled = await _recall_sensitive_qrcode_message(bot, event)
-    if not recalled and not use_qq_mode(event):
-        try:
-            await asyncio.wait_for(react_processing(bot, event), timeout=2.0)
-        except asyncio.TimeoutError:
-            log.warning('[QrcodeAuto] 处理表情响应超时（2.00s）')
+    recall_warning = ''
+    if not recalled:
+        if not use_qq_mode(event):
+            try:
+                await asyncio.wait_for(react_processing(bot, event), timeout=2.0)
+            except asyncio.TimeoutError:
+                log.warning('[QrcodeAuto] 处理表情响应超时（2.00s）')
         try:
             await bot.send(event, foreign_recall_notice(event))
         except Exception:
-            pass
+            recall_warning = f'{foreign_recall_notice(event)}\n'
 
-    recall_warning = (
-        f'{foreign_recall_notice(event)}\n'
-        if not recalled and use_qq_mode(event)
-        else (
-            '⚠️ Bot 无法撤回原凭据消息，请立即手动撤回。\n'
-            if not recalled
-            else ''
-        )
-    )
+    from .mai_announcement import enforce_current_announcement
+
+    if not await enforce_current_announcement(bot, event):
+        return
+
+    from .mai_agreement import agreement_prompt, has_user_agreed
+
+    if not has_user_agreed(event):
+        await bot.send(event, recall_warning + agreement_prompt())
+        return
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'query'):
         if recall_warning:
             await bot.send(event, recall_warning.strip())

@@ -6,10 +6,15 @@ from __future__ import annotations
 import base64
 import asyncio
 import importlib.util
+import os
 import sys
+import tempfile
+import time
 import types
+from io import BytesIO
 from pathlib import Path
 
+from PIL import Image
 from nonebot.adapters.onebot.v11 import Message as OneBotMessage
 from nonebot.adapters.onebot.v11 import MessageSegment as OneBotSegment
 from nonebot.adapters.qq.bot import Bot as QQBot
@@ -82,7 +87,9 @@ def _assert_no_serialized_media(message) -> None:
 def main() -> None:
     platform = _load_platform_module()
     event = _event()
-    image_bytes = b"test-image-bytes"
+    image_buffer = BytesIO()
+    Image.new("RGB", (8, 6), "white").save(image_buffer, format="PNG")
+    image_bytes = image_buffer.getvalue()
     image = OneBotSegment.image(
         "base64://" + base64.b64encode(image_bytes).decode("ascii")
     )
@@ -103,11 +110,13 @@ def main() -> None:
     assert image_part.data["content"] == image_bytes
     _assert_no_serialized_media(image_reply)
 
-    # QQ does not parse @ markup inside a msg_type=7 media caption.  Send the
-    # real mention first, but keep the ordinary caption and image together.
+    # Without temporary hosting, use a Markdown @ fallback before the media.
+    # It includes visible text because QQ does not parse a tag-only message.
     mention_message, media_messages = platform._split_qq_media_message(image_reply)
-    assert [part.type for part in mention_message] == ["mention_user"]
-    assert str(mention_message[0]) == '<qqbot-at-user id="user-openid" />'
+    assert [part.type for part in mention_message] == ["markdown"]
+    fallback_content = mention_message[0].data["markdown"].content
+    assert '<qqbot-at-user id="user-openid" />' in fallback_content
+    assert "查询结果" in fallback_content
     assert len(media_messages) == 1
     media_parts = list(media_messages[0])
     assert not any(part.type == "mention_user" for part in media_parts)
@@ -117,8 +126,55 @@ def main() -> None:
         [image_parts[0], QQSegment.image("https://example.com/result.png")]
     )
     remote_mention, remote_messages = platform._split_qq_media_message(remote_media)
-    assert [part.type for part in remote_mention] == ["mention_user"]
+    assert [part.type for part in remote_mention] == ["markdown"]
     assert [part.type for part in remote_messages[0]] == ["text", "image"]
+
+    # An explicitly approved score image can use one native Markdown message:
+    # clickable @ + temporary HTTPS image + ordinary footer.
+    with tempfile.TemporaryDirectory() as directory:
+        platform.maiconfig.maimaidx_qq_media_public_url = (
+            "https://assets.example.com/qqbot-media"
+        )
+        platform.maiconfig.maimaidx_qq_media_dir = directory
+        platform.maiconfig.maimaidx_qq_media_ttl_seconds = 3600
+        platform.maiconfig.maimaidx_qq_media_max_bytes = 1024 * 1024
+        marked_reply = platform.adapt_reply_payload(
+            image_reply,
+            footer="\nfooter | text 😀",
+            event=event,
+            publish_qq_image=True,
+        )
+        markdown_message, followups = platform._split_qq_media_message(marked_reply)
+        assert followups == []
+        assert [part.type for part in markdown_message] == ["markdown"]
+        content = markdown_message[0].data["markdown"].content
+        assert content.startswith('<qqbot-at-user id="user-openid" />')
+        assert "![查询结果 #8px #6px](" in content
+        assert "footer" in content
+        assert "😀" in content
+        published = list(Path(directory).glob("*.png"))
+        assert len(published) == 1
+        assert published[0].read_bytes() == image_bytes
+        extracted_markdown = QQBot._extract_send_message(
+            markdown_message, escape_text=False
+        )
+        assert extracted_markdown["content"] is None
+        assert extracted_markdown["markdown"].content == content
+        cached_message, cached_followups = platform._split_qq_media_message(
+            marked_reply
+        )
+        assert cached_followups == []
+        assert cached_message[0].data["markdown"].content == content
+        assert len(list(Path(directory).glob("*.png"))) == 1
+        stale = published[0]
+        old = time.time() - 7200
+        stale.touch()
+        stale.chmod(0o644)
+        os.utime(stale, (old, old))
+        platform.cleanup_qq_public_images(force=True)
+        assert not stale.exists()
+    platform.maiconfig.maimaidx_qq_media_public_url = ""
+    platform.maiconfig.maimaidx_qq_media_dir = ""
 
     mixed = OneBotMessage([OneBotSegment.text("result"), image])
     mixed_reply = platform.ensure_sender_mention(mixed, event)
@@ -130,7 +186,7 @@ def main() -> None:
     assert any(part.type == "file_image" for part in mixed_parts)
     _assert_no_serialized_media(mixed_reply)
 
-    # A single local image may keep its caption/mention in one QQ payload.
+    # An unmarked image is never published and keeps its normal media payload.
     single_caption = QQMessage(
         [QQSegment.text("说明 😀"), QQSegment.file_image(b"single-image")]
     )
@@ -261,6 +317,58 @@ def main() -> None:
     assert platform.foreign_recall_notice(event) == (
         "⚠️ Bot 无法撤回该消息，请立即手动撤回。"
     )
+
+    # Exercise the installed adapter wrapper, not only the splitter helper.
+    # A one-message Markdown conversion must preserve the QQ API receipt.
+    calls = []
+
+    async def fake_send_to_group(_self, **kwargs):
+        calls.append(kwargs)
+        return {"id": f"receipt-{len(calls)}"}
+
+    QQBot.send_to_group = fake_send_to_group
+    platform.install_qq_event_compat()
+    remote_score = QQMessage(
+        [
+            platform._qq_mention_segment("user-openid"),
+            QQSegment.image("https://example.com/result.png"),
+        ]
+    )
+    remote_score = QQMessage(platform._mark_qq_public_image(list(remote_score)))
+    receipt = asyncio.run(
+        QQBot.send_to_group(
+            object(),
+            group_openid="group-openid",
+            message=remote_score,
+            msg_id="message-id",
+            msg_seq=1,
+        )
+    )
+    assert receipt == {"id": "receipt-1"}, (receipt, calls)
+    assert len(calls) == 1
+    assert [part.type for part in calls[0]["message"]] == ["markdown"]
+
+    # A fallback media request consumes exactly one additional passive-reply
+    # sequence after the standalone Markdown mention.
+    calls.clear()
+    counter_token = platform._QQ_REPLY_FOLLOWUPS_SENT.set(0)
+    try:
+        async def send_fallback():
+            result = await QQBot.send_to_group(
+                object(),
+                group_openid="group-openid",
+                message=image_reply,
+                msg_id="message-id",
+                msg_seq=1,
+            )
+            return result, platform._QQ_REPLY_FOLLOWUPS_SENT.get()
+
+        fallback_receipt, sent_count = asyncio.run(send_fallback())
+        assert fallback_receipt == {"id": "receipt-2"}
+        assert len(calls) == 2
+        assert sent_count == 1
+    finally:
+        platform._QQ_REPLY_FOLLOWUPS_SENT.reset(counter_token)
 
     print("qq media mention tests: ok")
 

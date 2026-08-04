@@ -306,7 +306,13 @@ async def _finish_score(
         forced_source=forced_source,
         unsupported_feature=unsupported_feature,
     )
-    await plugin_finish(matcher, result, footer=footer, event=billing_event)
+    await plugin_finish(
+        matcher,
+        result,
+        footer=footer,
+        event=billing_event,
+        publish_qq_image=True,
+    )
 
 
 @best50.handle()
