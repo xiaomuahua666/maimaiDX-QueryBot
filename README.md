@@ -206,18 +206,19 @@ AWMC_XF_CLIENT_ID=your_oauth_client_id
 AWMC_XF_CLIENT_SECRET=your_oauth_client_secret
 # 必须与论坛 OAuth 应用登记值一致。bot 绑定需要一个能把 code 保留在地址栏的回调页；
 # 不要直接使用会在服务端消费 code 的网页登录回调，除非用户能拿到原始 code。
-AWMC_XF_REDIRECT_URI=https://bbs.wmc.pub/
+AWMC_XF_REDIRECT_URI=https://genshin.wmc.pub/
 AWMC_XF_AUTHORIZE_PATH=/audapi/oauth2/authorize
 AWMC_XF_TOKEN_URL=https://bbs.wmc.pub/api/audapi-oauth2/token
 ```
 
-用户在官方 QQ 中发送 `论坛绑定`，打开链接登录 `https://bbs.wmc.pub`，再把回调 URL 中的
-`code=...`（或完整 URL）发送为 `论坛绑定 <授权码>`。插件会读取论坛用户 ID、昵称和邮箱；
-邮箱符合 `数字@qq.com` 时自动绑定对应查分 QQ，否则提示用户修改论坛邮箱或联系管理员。
+用户在官方 QQ 中发送 `qbind` / `论坛绑定`，打开链接登录 `https://bbs.wmc.pub`，再把
+完整回调链接或授权码发回（`qbind <链接>`，或已发起绑定后直接粘贴链接/授权码）。
+插件会读取论坛用户 ID、昵称和邮箱；邮箱符合 `数字@qq.com` 时自动绑定对应查分 QQ。
 
-`AWMC_XF_REDIRECT_URI` 必须与论坛 OAuth 应用登记值完全一致。若要让用户在
-`https://bbs.wmc.pub/` 完成后直接复制 code，请在 OAuth 应用中登记该地址；现有网页应用若仍登记
-`http://localhost:8000/api/auth/callback`，也可以继续使用，但用户需要从浏览器地址栏复制回调 URL。
+仓库提供回调页 `static/qbind_callback.html`：把它挂到任意静态站点后，把该 URL 登记为
+OAuth 应用的 redirect_uri，并设置 `AWMC_XF_REDIRECT_URI` 与之完全一致。授权成功后页面会
+展示「qbind + 完整链接」，一键复制即可发给机器人。若暂不托管该页，也可继续用
+`https://bbs.wmc.pub/`，从地址栏复制带 `code=` 的 URL。
 
 管理员/群管理员命令：
 

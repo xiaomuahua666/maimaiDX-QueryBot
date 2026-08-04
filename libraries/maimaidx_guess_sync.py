@@ -16,7 +16,7 @@ from typing import Any, Dict, Optional, Tuple
 from loguru import logger as log
 
 from ..config import guess_sync_prefs_file
-from .maimaidx_platform import GroupId, UserId
+from .maimaidx_platform import GroupId, UserId, resolve_group_legacy_id
 from .tool import writefile
 
 MAIN_GUESS_GROUP_ID = 1072033605
@@ -94,7 +94,8 @@ class GuessSyncManager:
 
     def peer_group(self, gid: GroupId) -> Optional[int]:
         try:
-            g = int(gid)
+            mapped = resolve_group_legacy_id(gid)
+            g = int(mapped) if mapped is not None else int(gid)
         except (TypeError, ValueError):
             return None
         if g == MAIN_GUESS_GROUP_ID:
@@ -105,13 +106,15 @@ class GuessSyncManager:
 
     def is_main_group(self, gid: GroupId) -> bool:
         try:
-            return int(gid) == MAIN_GUESS_GROUP_ID
+            mapped = resolve_group_legacy_id(gid)
+            return int(mapped) == MAIN_GUESS_GROUP_ID if mapped is not None else int(gid) == MAIN_GUESS_GROUP_ID
         except (TypeError, ValueError):
             return False
 
     def is_play_group(self, gid: GroupId) -> bool:
         try:
-            return int(gid) == PLAY_GUESS_GROUP_ID
+            mapped = resolve_group_legacy_id(gid)
+            return int(mapped) == PLAY_GUESS_GROUP_ID if mapped is not None else int(gid) == PLAY_GUESS_GROUP_ID
         except (TypeError, ValueError):
             return False
 

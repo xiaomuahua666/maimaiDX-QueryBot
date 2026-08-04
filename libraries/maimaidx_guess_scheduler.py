@@ -8,6 +8,21 @@ from nonebot_plugin_apscheduler import scheduler
 
 from .maimaidx_guess_score import guess_score
 from .maimaidx_music import guess
+from .maimaidx_platform import resolve_group_delivery_id
+
+
+def _broadcast_group_ids() -> list:
+    """Keep persisted legacy data keys separate from current delivery addresses."""
+    targets = []
+    seen = set()
+    for stored_gid in guess.switch.enable:
+        target = resolve_group_delivery_id(stored_gid)
+        key = str(target)
+        if key in seen:
+            continue
+        seen.add(key)
+        targets.append(target)
+    return targets
 
 
 @scheduler.scheduled_job('cron', hour=23, minute=55, id='guess_score_period_archive')
@@ -20,7 +35,7 @@ async def archive_guess_score_periods() -> None:
     except Exception as e:
         log.warning(f'[maimai] 猜歌榜结算跳过：无法获取 Bot ({e})')
         return
-    group_ids = list(guess.switch.enable)
+    group_ids = _broadcast_group_ids()
     if not group_ids:
         return
     for period, period_key in periods:

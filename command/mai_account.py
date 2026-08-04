@@ -166,23 +166,13 @@ def _arg_text(args: Message) -> str:
 
 async def _recall_qrcode_message(bot: Bot, event: MessageEvent) -> str:
     """限时撤回二维码消息，避免 OneBot 无响应时卡住后续上传。"""
-    started_at = time.perf_counter()
-    try:
-        await asyncio.wait_for(
-            bot.delete_msg(message_id=event.message_id),
-            timeout=_QRCODE_RECALL_TIMEOUT_SECONDS,
-        )
-    except Exception as exc:
-        log.warning(
-            f"[upload] 二维码消息撤回失败：{type(exc).__name__} "
-            f"({time.perf_counter() - started_at:.2f}s)"
-        )
-        return _RECALL_FAILED_NOTICE
-    log.info(
-        f"[upload] 二维码消息已撤回 "
-        f"({time.perf_counter() - started_at:.2f}s)"
-    )
-    return ""
+    from ..libraries.maimaidx_platform import foreign_recall_notice, recall_message
+
+    if await recall_message(
+        bot, event, timeout_seconds=_QRCODE_RECALL_TIMEOUT_SECONDS, foreign=True
+    ):
+        return ""
+    return f'{foreign_recall_notice(event)}\n'
 
 
 def _mask(value: str, head: int = 5, tail: int = 4) -> str:
@@ -1192,6 +1182,12 @@ def _forward_image_node(user_id: str, nickname: str, image_b64: str, caption: st
 
 async def _deliver_live_status_forward(bot: Bot, event: MessageEvent, payload: dict) -> None:
     """发送「失败率图 + 服务器状态」合并转发。"""
+    from ..libraries.maimaidx_platform import (
+        build_image_message,
+        deliver_forward_messages,
+        use_qq_mode,
+    )
+
     nickname = str(getattr(maiconfig, "botName", None) or "AWMC Bot")
     caption = str(payload.get("failure_caption") or "")
     chart_b64 = payload.get("chart_b64")
@@ -1202,15 +1198,28 @@ async def _deliver_live_status_forward(bot: Bot, event: MessageEvent, payload: d
         if str(section).strip():
             nodes.append(build_forward_node(str(event.self_id), nickname, section))
     try:
-        messages = json.loads(json.dumps(nodes, ensure_ascii=False))
-        if isinstance(event, GroupMessageEvent):
-            await bot.call_api(
-                "send_group_forward_msg", group_id=event.group_id, messages=messages
+        send_nodes = list(nodes)
+        if chart_b64 and use_qq_mode(event):
+            img = (
+                chart_b64
+                if str(chart_b64).startswith('base64://')
+                else f'base64://{chart_b64}'
             )
-        else:
-            await bot.call_api(
-                "send_private_forward_msg", user_id=event.user_id, messages=messages
-            )
+            await bot.send(event, build_image_message(img, event=event))
+            if caption:
+                await bot.send(event, caption)
+            send_nodes = [
+                node
+                for node in nodes
+                if not str((node.get('data') or {}).get('content', '')).startswith('[CQ:image')
+            ]
+        await deliver_forward_messages(
+            bot,
+            event,
+            send_nodes,
+            title='舞萌状态',
+            reply_message=True,
+        )
     except Exception as exc:
         log.warning(
             f"[LiveStatus] 合并转发失败，回退普通消息：{type(exc).__name__}: {exc}"
@@ -1530,20 +1539,21 @@ def _service_cost(service: str, *, multiple: int = 1) -> int:
 
 
 def _allowed_ticket_multipliers() -> tuple[int, ...]:
-    raw = getattr(maiconfig, "awmc_ticket_allowed_multipliers", "2,3,5")
+    raw = getattr(maiconfig, "awmc_ticket_allowed_multipliers", "2,3")
     if isinstance(raw, (list, tuple, set)):
         parts = raw
     else:
         parts = str(raw or "").replace("，", ",").split(",")
     values: set[int] = set()
+    allowed = {2, 3}
     for part in parts:
         try:
             value = int(str(part).strip())
         except (TypeError, ValueError):
             continue
-        if value > 0:
+        if value in allowed:
             values.add(value)
-    return tuple(sorted(values)) or (2, 3, 5)
+    return tuple(sorted(values)) or (2, 3)
 
 
 def _charge_text(result) -> str:
@@ -1642,10 +1652,10 @@ async def _(
     qrcode = extract_sgwcmaid_qrcode(raw)
     recall_notice = ""
     if qrcode:
-        try:
-            await bot.delete_msg(message_id=event.message_id)
-        except Exception:
-            recall_notice = _RECALL_FAILED_NOTICE
+        from ..libraries.maimaidx_platform import foreign_recall_notice, recall_message
+
+        if not await recall_message(bot, event, foreign=True):
+            recall_notice = f'{foreign_recall_notice(event)}\n'
 
     async def retry(reason: str) -> None:
         attempt = int(matcher.state.get("account_bind_retry", 0)) + 1
@@ -1799,10 +1809,10 @@ async def _(
         await account_status.finish(text + f"\nRef_ID: {ref}", reply_message=True)
 
     recall_notice = ""
-    try:
-        await bot.delete_msg(message_id=event.message_id)
-    except Exception:
-        recall_notice = _RECALL_FAILED_NOTICE
+    from ..libraries.maimaidx_platform import foreign_recall_notice, recall_message
+
+    if not await recall_message(bot, event, foreign=True):
+        recall_notice = f'{foreign_recall_notice(event)}\n'
     qrcode = extract_sgwcmaid_qrcode(raw)
 
     async def retry(reason: str) -> None:
@@ -1907,10 +1917,10 @@ async def _(
 
     recall_notice = ""
     if token:
-        try:
-            await bot.delete_msg(message_id=event.message_id)
-        except Exception:
-            recall_notice = _RECALL_FAILED_NOTICE
+        from ..libraries.maimaidx_platform import foreign_recall_notice, recall_message
+
+        if not await recall_message(bot, event, foreign=True):
+            recall_notice = f'{foreign_recall_notice(event)}\n'
 
     if not (_FISH_TOKEN_MIN_LENGTH <= len(token) <= _FISH_TOKEN_MAX_LENGTH):
         attempt = int(matcher.state.get("fish_token_retry", 0)) + 1

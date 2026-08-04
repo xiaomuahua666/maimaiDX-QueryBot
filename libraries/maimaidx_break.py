@@ -131,7 +131,7 @@ CREATE TABLE IF NOT EXISTS break_makeup_checkin (
     created_at   REAL NOT NULL,
     PRIMARY KEY (qqid, target_date)
 );
-CREATE INDEX idx_break_makeup_month
+CREATE INDEX IF NOT EXISTS idx_break_makeup_month
     ON break_makeup_checkin(qqid, used_month);
 CREATE TABLE IF NOT EXISTS break_config (
     key     TEXT PRIMARY KEY,
@@ -145,7 +145,7 @@ CREATE TABLE IF NOT EXISTS break_log (
     meta        TEXT,
     created_at  REAL NOT NULL
 );
-CREATE INDEX idx_break_log_qqid ON break_log(qqid, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_break_log_qqid ON break_log(qqid, created_at DESC);
 CREATE TABLE IF NOT EXISTS break_guess_daily (
     qqid            INTEGER NOT NULL,
     date            TEXT NOT NULL,
@@ -164,7 +164,7 @@ CREATE TABLE IF NOT EXISTS break_service_daily (
     last_at       REAL NOT NULL,
     PRIMARY KEY (qqid, date, service)
 );
-CREATE INDEX idx_break_service_daily
+CREATE INDEX IF NOT EXISTS idx_break_service_daily
     ON break_service_daily(date, service);
 CREATE TABLE IF NOT EXISTS break_daily_reward (
     qqid        INTEGER NOT NULL,
@@ -187,7 +187,7 @@ CREATE TABLE IF NOT EXISTS break_red_packet (
     expires_at        REAL NOT NULL,
     finished_at       REAL
 );
-CREATE INDEX idx_break_red_packet_group
+CREATE INDEX IF NOT EXISTS idx_break_red_packet_group
     ON break_red_packet(group_id, status, created_at DESC);
 CREATE TABLE IF NOT EXISTS break_red_packet_claim (
     packet_id  TEXT NOT NULL,
@@ -204,7 +204,7 @@ CREATE TABLE IF NOT EXISTS break_gamble_pool (
     amount      INTEGER NOT NULL,
     created_at  REAL NOT NULL
 );
-CREATE INDEX idx_break_gamble_pool_date
+CREATE INDEX IF NOT EXISTS idx_break_gamble_pool_date
     ON break_gamble_pool(date, amount DESC);
 CREATE TABLE IF NOT EXISTS break_gamble_pool_payout (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -214,7 +214,7 @@ CREATE TABLE IF NOT EXISTS break_gamble_pool_payout (
     payout_type TEXT NOT NULL,
     created_at  REAL NOT NULL
 );
-CREATE INDEX idx_break_gamble_pool_payout_date
+CREATE INDEX IF NOT EXISTS idx_break_gamble_pool_payout_date
     ON break_gamble_pool_payout(date);
 """
 

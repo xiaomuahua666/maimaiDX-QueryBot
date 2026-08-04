@@ -95,13 +95,20 @@ class QqBindDatabase:
         log.info(f'[QBind] platform={pid} -> qq={legacy_qq}')
 
     def unbind(self, platform_id: str) -> bool:
+        """Clear score-QQ mapping and forum OAuth identity for this platform user."""
         pid = str(platform_id).strip()
         with self._lock:
-            cur = self._conn.execute(
+            cur_qq = self._conn.execute(
                 'DELETE FROM qq_bind WHERE platform_id = ?', (pid,)
             )
+            cur_forum = self._conn.execute(
+                'DELETE FROM forum_bind WHERE platform_id = ?', (pid,)
+            )
+            self._conn.execute(
+                'DELETE FROM forum_oauth_pending WHERE platform_id = ?', (pid,)
+            )
             self._conn.commit()
-            return cur.rowcount > 0
+            return cur_qq.rowcount > 0 or cur_forum.rowcount > 0
 
     def get_legacy_qq(self, platform_id: str) -> Optional[int]:
         pid = str(platform_id).strip()
@@ -260,6 +267,21 @@ class QqBindDatabase:
                 (str(platform_group_id).strip(),),
             ).fetchone()
         return int(row['legacy_group_id']) if row else None
+
+    def get_platform_group_id(self, legacy_group_id: int) -> Optional[str]:
+        """Return the latest official QQ group mapped to an old numeric group id."""
+        with self._lock:
+            row = self._conn.execute(
+                '''
+                SELECT platform_group_id
+                FROM qq_group_bind
+                WHERE legacy_group_id = ?
+                ORDER BY updated_at DESC
+                LIMIT 1
+                ''',
+                (int(legacy_group_id),),
+            ).fetchone()
+        return str(row['platform_group_id']) if row else None
 
     def list_group_bindings(self, *, limit: int = 100) -> list[dict[str, Any]]:
         with self._lock:

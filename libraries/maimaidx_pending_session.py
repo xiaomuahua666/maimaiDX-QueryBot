@@ -8,7 +8,12 @@ from typing import Dict, Iterable, List, Literal, Optional, Set, Tuple
 from nonebot import get_bots, get_driver
 
 from ..config import BOT_QQ_GROUP, log
-from .maimaidx_platform import send_group_plain_text
+from .maimaidx_platform import (
+    resolve_group_bot,
+    resolve_private_bot,
+    send_group_plain_text,
+    send_private_message,
+)
 
 SHUTDOWN_NOTICE = '机器人程序因更新重启'
 
@@ -80,19 +85,17 @@ async def _send_notice(target: PendingTarget, text: str) -> None:
     bot = None
     if target.bot_id and target.bot_id in bots:
         bot = bots[target.bot_id]
+    elif target.kind == 'group':
+        bot = resolve_group_bot(target.target_id, bots)
     else:
-        bot = next(iter(bots.values()), None)
+        bot = resolve_private_bot(target.target_id, bots)
     if bot is None:
         return
     try:
         if target.kind == 'group':
             await send_group_plain_text(bot, target.target_id, text)
             return
-        # 私聊：纯数字走 OneBot；openid 走官方 QQ C2C
-        if str(target.target_id).isdigit():
-            await bot.send_private_msg(user_id=int(target.target_id), message=text)
-            return
-        await bot.send_to_c2c(openid=str(target.target_id), message=text)
+        await send_private_message(bot, target.target_id, text)
     except Exception as exc:
         log.warning(
             f'[shutdown] 通知失败 {target.kind}={target.target_id}: '

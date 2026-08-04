@@ -227,7 +227,7 @@ async def _send_image(matcher, event: MessageEvent, im) -> None:
 
 
 def _ensure_enabled(gid) -> str | None:
-    if gid not in guess.switch.enable:
+    if not guess.is_enabled(gid):
         return "本群未开启猜歌功能，请管理员发送「开启mai猜歌」"
     return None
 

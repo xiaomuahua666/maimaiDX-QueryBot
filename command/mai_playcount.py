@@ -25,12 +25,15 @@ from ..libraries.maimaidx_processing_time import (
 )
 from ..libraries.maimaidx_platform import (
     billing_user_id,
+    foreign_recall_notice,
     get_event_group_id,
     parse_at_target_id,
     platform_user_id,
     plugin_finish,
     rank_text_image,
+    recall_message,
     resolve_score_qqid,
+    use_qq_mode,
 )
 from ..libraries.maimaidx_playcount_db import pc_db
 from ..libraries.maimaidx_playcount_fetcher import playcount_fetcher
@@ -116,23 +119,9 @@ async def _recall_sensitive_qrcode_message(
     bot: Bot, event: MessageEvent, *, timeout_seconds: float = 3.0
 ) -> bool:
     """尽快撤回二维码原消息；OneBot 无响应时不得拖住后续反馈。"""
-    started_at = time.perf_counter()
-    try:
-        await asyncio.wait_for(
-            bot.delete_msg(message_id=event.message_id),
-            timeout=max(0.5, float(timeout_seconds)),
-        )
-    except Exception as exc:
-        log.warning(
-            f'[QrcodeAuto] 敏感消息撤回失败：{type(exc).__name__} '
-            f'({time.perf_counter() - started_at:.2f}s)'
-        )
-        return False
-    log.info(
-        f'[QrcodeAuto] 敏感消息已撤回 '
-        f'({time.perf_counter() - started_at:.2f}s)'
+    return await recall_message(
+        bot, event, timeout_seconds=timeout_seconds, foreign=True
     )
-    return True
 
 
 # ============================================================================
@@ -475,22 +464,24 @@ async def _process_auto_qrcode(
     # 图片/文本一旦识别为敏感凭据就优先撤回；OneBot 偶发不返回时最多等 3 秒，
     # 随后立刻告知用户手动撤回，不能让撤回动作卡住整条同步链路。
     recalled = await _recall_sensitive_qrcode_message(bot, event)
-    if not recalled:
+    if not recalled and not use_qq_mode(event):
         try:
             await asyncio.wait_for(react_processing(bot, event), timeout=2.0)
         except asyncio.TimeoutError:
             log.warning('[QrcodeAuto] 处理表情响应超时（2.00s）')
         try:
-            await bot.send(
-                event,
-                '⚠️ Bot 无法撤回原凭据消息，请立即手动撤回。',
-            )
+            await bot.send(event, foreign_recall_notice(event))
         except Exception:
             pass
 
     recall_warning = (
-        '⚠️ Bot 无法撤回原凭据消息，请立即手动撤回。\n'
-        if not recalled else ''
+        f'{foreign_recall_notice(event)}\n'
+        if not recalled and use_qq_mode(event)
+        else (
+            '⚠️ Bot 无法撤回原凭据消息，请立即手动撤回。\n'
+            if not recalled
+            else ''
+        )
     )
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'query'):
         if recall_warning:

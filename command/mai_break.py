@@ -22,16 +22,23 @@ from ..libraries.maimaidx_break import (
 )
 from ..libraries.maimaidx_guess_score import guess_score
 from ..libraries.maimaidx_guess_stats_draw import personal_guess_stats_image_b64
+from ..libraries.maimaidx_error import QBindRequiredError
 from ..libraries.maimaidx_platform import (
     billing_user_id,
+    deliver_forward_messages,
     get_event_group_id,
     get_sender_display_name,
+    parse_at_target_id,
     platform_user_id,
     plugin_finish,
+    plugin_send,
     rank_text_image,
     require_account_qqid,
+    resolve_group_bot,
+    resolve_group_delivery_id,
     resolve_group_legacy_id,
     resolve_score_qqid,
+    send_group_plain_text,
     use_qq_mode,
 )
 from ..libraries.maimaidx_group_rating import build_forward_node
@@ -125,10 +132,10 @@ LOTTERY_HELP = (
 # )
 
 def get_at_qq(message: MessageEvent) -> Optional[int]:
-    for item in message.message:
-        if isinstance(item, MessageSegment) and item.type == 'at' and item.data['qq'] != 'all':
-            return int(item.data['qq'])
-    return None
+    target = parse_at_target_id(message)
+    if target is None:
+        return None
+    return resolve_score_qqid(message, target)
 
 
 async def _require_break_agreement(matcher, event: MessageEvent) -> None:
@@ -373,21 +380,21 @@ async def _expire_break_red_packets() -> None:
     if not refunds:
         return
     bots = get_bots()
-    bot = next(iter(bots.values()), None)
     for item in refunds:
         log.info(
             f'[BREAK红包] {item.packet_id} 已过期，退回 {item.refund} BREAK '
             f'to={item.sender_qqid}'
         )
+        delivery_id = resolve_group_delivery_id(item.group_id)
+        bot = resolve_group_bot(item.group_id, bots)
         if bot is None:
             continue
         try:
-            await bot.send_group_msg(
-                group_id=item.group_id,
-                message=(
-                    f'🧧 红包 {item.packet_id} 已过期，'
-                    f'剩余 {item.refund} BREAK 已退回发送者。'
-                ),
+            await send_group_plain_text(
+                bot,
+                delivery_id,
+                f'🧧 红包 {item.packet_id} 已过期，'
+                f'剩余 {item.refund} BREAK 已退回发送者。',
             )
         except Exception as exc:
             log.warning(
@@ -519,8 +526,58 @@ async def _(event: MessageEvent):
 
 @my_awmc.handle()
 async def _(bot: Bot, event: MessageEvent):
-    qqid = _account_qqid(event)
+    try:
+        qqid = _account_qqid(event)
+    except QBindRequiredError as exc:
+        await plugin_finish(my_awmc, str(exc), event=event, reply_message=True)
+        return
     profile = get_account_profile(qqid)
+
+    # Official QQ does not support OneBot forward messages.  Send the account
+    # overview first through the tested media adapter so an optional/slow guess
+    # chart can never make the whole command appear silent.
+    if use_qq_mode(event):
+        try:
+            await plugin_send(
+                my_awmc,
+                rank_text_image(format_account_profile(profile)),
+                event=event,
+                reply_message=True,
+            )
+        except Exception as exc:
+            log.warning(
+                f'[BREAK] 我的AWMC概览图发送失败，回退文本：'
+                f'{type(exc).__name__}: {exc}'
+            )
+            await plugin_finish(
+                my_awmc,
+                format_account_profile(profile),
+                event=event,
+                reply_message=True,
+            )
+
+        guess_payload = await _try_guess_stats_for_awmc(event)
+        if guess_payload:
+            b64, caption = guess_payload
+            try:
+                message = MessageSegment.image(b64)
+                if caption:
+                    message += MessageSegment.text(f'\n{caption}')
+                await plugin_send(
+                    my_awmc,
+                    message,
+                    event=event,
+                    reply_message=False,
+                    mention_sender=False,
+                )
+            except Exception as exc:
+                log.warning(
+                    f'[BREAK] 我的AWMC附加猜歌图发送失败（已忽略）：'
+                    f'{type(exc).__name__}: {exc}'
+                )
+        await my_awmc.finish()
+        return
+
     sections = format_account_profile_sections(profile)
     nickname = str(getattr(maiconfig, 'botName', None) or 'AWMC Bot')
     nodes = [build_forward_node(str(event.self_id), nickname, section) for section in sections]
@@ -529,14 +586,7 @@ async def _(bot: Bot, event: MessageEvent):
         b64, caption = guess_payload
         nodes.append(_forward_image_node(str(event.self_id), nickname, b64, caption))
     try:
-        if isinstance(event, GroupMessageEvent):
-            await bot.call_api(
-                'send_group_forward_msg', group_id=event.group_id, messages=nodes
-            )
-        else:
-            await bot.call_api(
-                'send_private_forward_msg', user_id=event.user_id, messages=nodes
-            )
+        await deliver_forward_messages(bot, event, nodes, title='我的 AWMC', reply_message=True)
     except Exception as exc:
         log.warning(f'[BREAK] 我的AWMC合并转发失败，回退文本：{type(exc).__name__}: {exc}')
         await my_awmc.send(format_account_profile(profile), reply_message=True)

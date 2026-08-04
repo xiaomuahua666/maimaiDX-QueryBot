@@ -24,7 +24,13 @@ from ..libraries.maimaidx_multiver_chart import draw_multiver_chart
 from ..libraries.maimaidx_pmyx_api import PmyxAPI
 from ..libraries.maimaidx_wmc_api import WMC_DIFF_NAMES, WmcAPI, build_preview_url, make_chart_key, resolve_wmc_base_url
 from ..libraries.maimaidx_timing import attach_timing, finish_timed_sync, run_timed
-from ..libraries.maimaidx_platform import billing_user_id, resolve_score_qqid
+from ..libraries.maimaidx_platform import (
+    billing_user_id,
+    build_image_message,
+    deliver_forward_messages,
+    resolve_score_qqid,
+    use_qq_mode,
+)
 
 search_music        = on_command('查歌', aliases={'search'})
 search_base         = on_command('定数查歌', aliases={'search base'})
@@ -233,15 +239,7 @@ def _build_nested_forward_node(self_id: int, title: str, sub_nodes: List[dict]) 
 
 
 async def _send_forward(bot: Bot, event: MessageEvent, nodes: List[dict]) -> None:
-    if not nodes:
-        return
-    try:
-        if isinstance(event, GroupMessageEvent):
-            await bot.call_api('send_group_forward_msg', group_id=event.group_id, messages=nodes)
-        else:
-            await bot.call_api('send_private_forward_msg', user_id=event.user_id, messages=nodes)
-    except Exception as e:
-        log.warning(f'[maimai] 发送合并转发失败: {type(e).__name__}: {e}')
+    await deliver_forward_messages(bot, event, nodes, title='查歌补充信息')
 
 
 async def _send_song_info_then_pmyx_forward(
@@ -289,6 +287,8 @@ async def _send_song_info_then_pmyx_forward(
     chart_img = draw_multiver_chart(music.id)
     if chart_img:
         b64 = image_to_base64(chart_img)
+        if use_qq_mode(event):
+            await bot.send(event, build_image_message(chart_img, event=event))
         all_nodes.append(_build_nested_forward_node(
             event.self_id, "定数变化",
             [

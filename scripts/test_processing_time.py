@@ -58,8 +58,7 @@ assert "processing_time_estimator.record(" in account_source
 assert "上游服务未返回错误详情" in account_source
 
 assert "_recall_sensitive_qrcode_message" in playcount_source
-assert "bot.delete_msg(message_id=event.message_id)" in playcount_source
-assert "timeout=max(0.5, float(timeout_seconds))" in playcount_source
-assert "敏感消息撤回失败" in playcount_source
+assert "recall_message" in playcount_source
+assert "Bot 无法撤回原凭据消息，请立即手动撤回" in playcount_source
 
 print("processing time estimator tests: ok")

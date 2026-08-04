@@ -31,7 +31,14 @@ from ..libraries.maimaidx_break import (
     take_break_charge_footer,
 )
 from ..libraries.maimaidx_error import BreakInsufficientError, format_command_error, QBindRequiredError
-from ..libraries.maimaidx_platform import platform_user_id, resolve_query_qqid
+from ..libraries.maimaidx_platform import (
+    billing_user_id,
+    platform_user_id,
+    plugin_finish,
+    plugin_send,
+    resolve_score_qqid,
+    use_qq_mode,
+)
 from ..libraries.maimaidx_reaction import react_processing
 
 _peer_stats = None
@@ -60,49 +67,82 @@ b50_analysis_cmd = on_command(
 @b50_analysis_cmd.handle()
 async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message = CommandArg()):
     style = args.extract_plain_text().strip()
-    qq = int(event.get_user_id())
-    billing_qq = int(platform_user_id(event))
+    qq = platform_user_id(event)
+    billing_qq = billing_user_id(event)
 
     if not maiconfig.b50_llm_key:
-        await matcher.finish('未配置 b50_llm_key，请在 .env 中填写 API Key', reply_message=True)
+        await plugin_finish(
+            matcher,
+            '未配置 b50_llm_key，请在 .env 中填写 API Key',
+            event=event,
+            mention_sender=use_qq_mode(event),
+        )
         return
     if not maiconfig.b50_assets_path:
-        await matcher.finish('未配置 b50_assets_path，请在 .env 中填写分析素材目录', reply_message=True)
+        await plugin_finish(
+            matcher,
+            '未配置 b50_assets_path，请在 .env 中填写分析素材目录',
+            event=event,
+            mention_sender=use_qq_mode(event),
+        )
         return
 
-    await react_processing(bot, event)
-
     pricing_help = format_analysis_pricing_help().strip().removeprefix('· ')
-    pending = f'正在查询 B50，请稍候…\n{pricing_help}'
-    if not bool(getattr(maiconfig, 'maimaidx_compact_messages', True)):
-        await matcher.send(pending, reply_message=True)
+    pending = f'正在处理 B50 锐评，请稍候…\n{pricing_help}'
+    if use_qq_mode(event) or not bool(
+        getattr(maiconfig, 'maimaidx_compact_messages', True)
+    ):
+        await plugin_send(
+            matcher,
+            pending,
+            event=event,
+            mention_sender=use_qq_mode(event),
+        )
+
+    # The official QQ gateway may not support the OneBot reaction API.  Send
+    # the visible acknowledgement first so a slow/failed reaction request can
+    # never make a long-running roast look like a silent command.
+    await react_processing(bot, event)
 
     if style:
         mod_result = check_user_input(style)
         if not mod_result.get('allowed', True):
-            await matcher.finish(
+            await plugin_finish(
+                matcher,
                 mod_result.get('reason', '请求包含不适合处理的内容，本次分析已驳回'),
-                reply_message=True,
+                event=event,
+                mention_sender=use_qq_mode(event),
             )
             return
 
     try:
-        legacy_qq = resolve_query_qqid(billing_qq)
+        legacy_qq = resolve_score_qqid(event)
         b50_data = await fetch_for_analysis(
             legacy_qq, assets_path=maiconfig.b50_assets_path
         )
     except BreakInsufficientError as e:
-        await matcher.finish(str(e), reply_message=True)
+        await plugin_finish(
+            matcher, str(e), event=event, mention_sender=use_qq_mode(event)
+        )
         return
     except QBindRequiredError as e:
-        await matcher.finish(str(e), reply_message=True)
+        await plugin_finish(
+            matcher, str(e), event=event, mention_sender=use_qq_mode(event)
+        )
         return
     except ValueError as e:
-        await matcher.finish(str(e), reply_message=True)
+        await plugin_finish(
+            matcher, str(e), event=event, mention_sender=use_qq_mode(event)
+        )
         return
     except Exception as e:
         log.warning(f'[b50_analysis] 拉取 B50 失败 qq={qq}: {type(e).__name__}: {e}')
-        await matcher.finish(format_command_error(e), reply_message=True)
+        await plugin_finish(
+            matcher,
+            format_command_error(e),
+            event=event,
+            mention_sender=use_qq_mode(event),
+        )
         return
 
     # 有本地存档时附带真实 Rating 趋势，供推分可行性判断
@@ -135,7 +175,9 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
     try:
         reserved = reserve_analysis_charge(billing_qq)
     except BreakInsufficientError as e:
-        await matcher.finish(str(e), reply_message=True)
+        await plugin_finish(
+            matcher, str(e), event=event, mention_sender=use_qq_mode(event)
+        )
         return
 
     failure_stage = '分析生成'
@@ -170,7 +212,12 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
         )
         if not isinstance(e, Exception):
             raise
-        await matcher.finish(f'{failure_stage}失败：{e}（预扣已全额退回）', reply_message=True)
+        await plugin_finish(
+            matcher,
+            f'{failure_stage}失败：{e}（预扣已全额退回）',
+            event=event,
+            mention_sender=use_qq_mode(event),
+        )
         return
 
     input_tokens = int(token_usage.get('input_tokens') or 0)
@@ -206,7 +253,9 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
         )
     )
     footer = '\n' + '\n'.join(footer_parts)
-    await matcher.finish(
+    await plugin_finish(
+        matcher,
         MessageSegment.image(buf) + MessageSegment.text(footer),
-        reply_message=True,
+        event=event,
+        mention_sender=use_qq_mode(event),
     )

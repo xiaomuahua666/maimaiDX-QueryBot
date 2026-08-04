@@ -42,6 +42,7 @@ def _bootstrap_sync_only() -> None:
     plat = types.ModuleType(f"{pkg}.libraries.maimaidx_platform")
     plat.GroupId = object
     plat.UserId = object
+    plat.resolve_group_legacy_id = lambda _gid: None
     sys.modules[f"{pkg}.libraries.maimaidx_platform"] = plat
 
 

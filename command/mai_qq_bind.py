@@ -7,8 +7,11 @@ import time
 from typing import Optional
 
 from nonebot import on_command, on_message
+from nonebot.adapters import Bot
 from nonebot.adapters.onebot.v11 import Message, MessageEvent
+from nonebot.exception import FinishedException
 from nonebot.params import CommandArg
+from nonebot.rule import Rule
 
 from ..libraries.maimaidx_bot_admin import PLUGIN_ADMIN_ONLY, is_plugin_admin
 from ..libraries.maimaidx_forum_auth import (
@@ -19,9 +22,13 @@ from ..libraries.maimaidx_forum_auth import (
     parse_authorization_code,
 )
 from ..libraries.maimaidx_platform import (
+    extract_sent_message_id,
+    foreign_recall_notice,
     is_qq_event,
     platform_user_id,
     plugin_finish,
+    plugin_send,
+    recall_message,
     use_qq_mode,
 )
 from ..libraries.maimaidx_qq_bind import qq_bind_db
@@ -40,7 +47,10 @@ qbind_cmd = on_command(
         'awmc论坛绑定',
     },
 )
-qunbind_cmd = on_command('qunbind', aliases={'解绑qq', 'QQ解绑'})
+qunbind_cmd = on_command(
+    'qunbind',
+    aliases={'解绑qq', 'QQ解绑', '解绑qbind', '解绑论坛', '论坛解绑'},
+)
 qbind_status = on_command(
     'qbind状态',
     aliases={'查绑定qq', '我的qbind', '论坛绑定状态', '论坛账号状态', '论坛状态'},
@@ -63,6 +73,12 @@ for _bind_matcher in (
 # 官方 QQ：群消息时登记 member_openid（无全量拉群 API，仅能积累见过的成员）
 _qq_member_recorder = on_message(priority=99, block=False)
 setattr(_qq_member_recorder, '_maimaidx_passive_recorder', True)
+
+# platform_id -> 绑定流程中待撤回的消息 id（用户 qbind / bot 引导文）
+_oauth_recall_ids: dict[str, list[str]] = {}
+
+_RECALL_USER_WARN = foreign_recall_notice  # 按平台返回合适文案
+_RECALL_BOT_WARN = '⚠️ Bot 无法撤回绑定引导消息，请手动删除含授权链接的消息。'
 
 
 def _event_group_id(event) -> Optional[str]:
@@ -106,15 +122,33 @@ def _oauth_start_text(url: str, *, claimed_qq: Optional[int] = None) -> str:
             '授权完成后，论坛邮箱必须是该号码对应的 数字@qq.com。\n'
         )
     return (
-        '请通过论坛 OAuth 绑定查分 QQ（不要只手填 QQ 号）：\n'
+        '请通过AWMC论坛绑定查分 QQ：\n'
         f'{url}\n'
         f'{claim}\n'
-        '1. 浏览器打开链接并登录论坛\n'
-        '2. 论坛邮箱请使用 你的QQ号@qq.com\n'
-        '3. 授权后把回调里的 code=...（或完整回调 URL）发回：\n'
-        '   qbind 授权码\n'
-        '授权码 10 分钟内有效，仅一次可用。'
+        '1. 浏览器打开链接并登录论坛～\n'
+        '2. 论坛邮箱请使用 你的QQ号@qq.com！\n'
+        '3. 授权后把授权链接直接发给我哟！\n'
+        '\n'
+        '授权码 10 分钟内有效，仅一次可用，请尽快操作哟！'
     )
+
+
+def _normalize_oauth_paste(raw: str) -> str:
+    """Strip accidental command prefixes from a pasted callback URL/code."""
+    value = (raw or '').strip()
+    for prefix in (
+        'qbind',
+        '论坛绑定',
+        '论坛登录',
+        '绑定qq',
+        'QQ绑定',
+        'mai绑定qq',
+        'maiqbind',
+    ):
+        if value.lower().startswith(prefix.lower()):
+            value = value[len(prefix):].strip()
+            break
+    return value
 
 
 def _oauth_success_text(profile: dict) -> str:
@@ -128,8 +162,90 @@ def _oauth_success_text(profile: dict) -> str:
     return '\n'.join(lines)
 
 
+def _track_oauth_message(platform_id: str, *message_ids: object) -> None:
+    bucket = _oauth_recall_ids.setdefault(str(platform_id), [])
+    for mid in message_ids:
+        value = str(mid or '').strip()
+        if value and value not in bucket:
+            bucket.append(value)
+
+
+def _pop_oauth_messages(platform_id: str) -> list[str]:
+    return _oauth_recall_ids.pop(str(platform_id), [])
+
+
+def _event_message_id(event) -> str:
+    mid = getattr(event, 'message_id', None) or getattr(event, 'id', None) or ''
+    return str(mid).strip()
+
+
+async def _send_oauth_start(
+    matcher, bot: Bot, event: MessageEvent, text: str
+) -> None:
+    pid = platform_user_id(event)
+    _track_oauth_message(pid, _event_message_id(event))
+    result = await plugin_send(matcher, text, event=event, reply_message=True)
+    _track_oauth_message(pid, extract_sent_message_id(result))
+    raise FinishedException
+
+
+async def _complete_oauth_paste(
+    matcher, bot: Bot, event: MessageEvent, raw: str
+) -> None:
+    pid = platform_user_id(event)
+    payload = _normalize_oauth_paste(raw)
+
+    # 官方 QQ 无法撤回用户消息；OneBot 仍尝试撤回授权码原消息
+    user_recalled = await recall_message(bot, event, foreign=True)
+
+    try:
+        profile = await complete_forum_login(pid, payload)
+    except ForumOAuthError as exc:
+        warn = '' if user_recalled else f'{_RECALL_USER_WARN(event)}\n'
+        await plugin_finish(matcher, warn + str(exc), event=event)
+
+    bot_failed = 0
+    for mid in _pop_oauth_messages(pid):
+        if mid == _event_message_id(event):
+            continue
+        if not await recall_message(bot, event, message_id=mid):
+            bot_failed += 1
+
+    warnings: list[str] = []
+    if not user_recalled:
+        warnings.append(_RECALL_USER_WARN(event))
+    if bot_failed:
+        warnings.append(_RECALL_BOT_WARN)
+    prefix = ('\n'.join(warnings) + '\n') if warnings else ''
+    await plugin_finish(matcher, prefix + _oauth_success_text(profile), event=event)
+
+
+# 已发起 qbind、等待授权时：可直接粘贴回调链接 / 授权码（无需再写 qbind）
+async def _oauth_paste_rule(event: MessageEvent) -> bool:
+    if not use_qq_mode(event):
+        return False
+    raw = (event.get_plaintext() or '').strip()
+    if not raw:
+        return False
+    pending = qq_bind_db.get_forum_pending(platform_user_id(event))
+    if pending is None:
+        return False
+    return _looks_like_oauth_code(_normalize_oauth_paste(raw))
+
+
+_oauth_paste = on_message(rule=Rule(_oauth_paste_rule), priority=5, block=True)
+setattr(_oauth_paste, '_maimaidx_announcement_exempt', True)
+setattr(_oauth_paste, '_maimaidx_debt_exempt', True)
+setattr(_oauth_paste, '_maimaidx_busy_surcharge_exempt', True)
+
+
+@_oauth_paste.handle()
+async def _(bot: Bot, event: MessageEvent):
+    await _complete_oauth_paste(_oauth_paste, bot, event, event.get_plaintext() or '')
+
+
 @qbind_cmd.handle()
-async def _(event: MessageEvent, args: Message = CommandArg()):
+async def _(bot: Bot, event: MessageEvent, args: Message = CommandArg()):
     if not use_qq_mode(event):
         await plugin_finish(
             qbind_cmd,
@@ -138,7 +254,7 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
         )
 
     pid = platform_user_id(event)
-    raw = args.extract_plain_text().strip()
+    raw = _normalize_oauth_paste(args.extract_plain_text())
 
     # 主路径：无参数 → 发起 OAuth
     if not raw:
@@ -146,7 +262,7 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
             url = begin_forum_login(pid)
         except ForumOAuthError as exc:
             await plugin_finish(qbind_cmd, str(exc), event=event)
-        await plugin_finish(qbind_cmd, _oauth_start_text(url), event=event)
+        await _send_oauth_start(qbind_cmd, bot, event, _oauth_start_text(url))
 
     # 可选：手填 QQ，仍必须走 OAuth 校验
     claimed = _parse_qq_arg(raw)
@@ -155,10 +271,8 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
             url = begin_forum_login(pid, claimed_qq=claimed)
         except ForumOAuthError as exc:
             await plugin_finish(qbind_cmd, str(exc), event=event)
-        await plugin_finish(
-            qbind_cmd,
-            _oauth_start_text(url, claimed_qq=claimed),
-            event=event,
+        await _send_oauth_start(
+            qbind_cmd, bot, event, _oauth_start_text(url, claimed_qq=claimed)
         )
 
     # 授权码 / 回调 URL → 完成 OAuth
@@ -167,17 +281,14 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
             qbind_cmd,
             '用法：\n'
             '· qbind — 发起论坛 OAuth（推荐）\n'
-            '· qbind 授权码 — 粘贴回调 code / URL 完成绑定\n'
+            '· qbind 授权码或完整回调链接 — 完成绑定\n'
+            '· 已发起 qbind 后也可直接发链接/授权码（不用前缀）\n'
             '· qbind QQ号 — 可选预填，仍须 OAuth 校验邮箱 QQ\n'
             '论坛邮箱请使用 数字@qq.com。',
             event=event,
         )
 
-    try:
-        profile = await complete_forum_login(pid, raw)
-    except ForumOAuthError as exc:
-        await plugin_finish(qbind_cmd, str(exc), event=event)
-    await plugin_finish(qbind_cmd, _oauth_success_text(profile), event=event)
+    await _complete_oauth_paste(qbind_cmd, bot, event, raw)
 
 
 @qunbind_cmd.handle()
@@ -185,12 +296,19 @@ async def _(event: MessageEvent):
     if not use_qq_mode(event):
         await plugin_finish(qunbind_cmd, 'OneBot 模式无需解绑。', event=event)
     pid = platform_user_id(event)
-    qq_bind_db.clear_forum_pending(pid)
     unbound = qq_bind_db.unbind(pid)
-    # Keep forum profile row but clear score QQ mapping via unbind only.
+    _pop_oauth_messages(pid)
     if not unbound:
-        await plugin_finish(qunbind_cmd, '你尚未绑定查分 QQ。', event=event)
-    await plugin_finish(qunbind_cmd, '已解绑查分 QQ。如需重新绑定请发送 qbind。', event=event)
+        await plugin_finish(
+            qunbind_cmd,
+            '你尚未绑定查分 QQ / 论坛账号。需要绑定请发送 qbind。',
+            event=event,
+        )
+    await plugin_finish(
+        qunbind_cmd,
+        '已解绑查分 QQ 与论坛身份。重新绑定请发送 qbind。',
+        event=event,
+    )
 
 
 @qbind_status.handle()
@@ -216,7 +334,9 @@ async def _(event: MessageEvent):
 
 @forum_bind_cancel.handle()
 async def _(event: MessageEvent):
-    qq_bind_db.clear_forum_pending(platform_user_id(event))
+    pid = platform_user_id(event)
+    qq_bind_db.clear_forum_pending(pid)
+    _pop_oauth_messages(pid)
     await plugin_finish(forum_bind_cancel, '已取消本次论坛授权。', event=event)
 
 

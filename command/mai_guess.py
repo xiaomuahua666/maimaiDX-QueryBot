@@ -445,7 +445,7 @@ def _guess_loop_should_stop(gid: GroupId) -> bool:
     """猜歌主循环是否应退出（被重置、关闭或正常结束）。"""
     if gid not in guess.Group:
         return True
-    if gid not in guess.switch.enable:
+    if not guess.is_enabled(gid):
         return True
     return bool(guess.Group[gid].end)
 
@@ -780,7 +780,7 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
     gid = get_event_group_id(event)
     if gid is None:
         await guess_boost_grant.finish('请在群内使用。', reply_message=True)
-    if gid not in guess.switch.enable:
+    if not guess.is_enabled(gid):
         await guess_boost_grant.finish(
             '该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True,
         )
@@ -927,7 +927,7 @@ async def _(event: MessageEvent):
 async def _(event: MessageEvent):
     await _gate_guess_group_entry(guess_music_start, event)
     gid = get_event_group_id(event)
-    if gid not in guess.switch.enable:
+    if not guess.is_enabled(gid):
         await guess_music_start.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌')
     if _guess_or_letter_busy(gid):
         await guess_music_start.finish(_GUESS_BUSY_HINT)
@@ -988,7 +988,7 @@ async def _(event: MessageEvent):
 async def _(event: MessageEvent, matched=RegexMatched()):
     await _gate_guess_group_entry(guess_music_pic, event)
     gid = get_event_group_id(event)
-    if gid not in guess.switch.enable:
+    if not guess.is_enabled(gid):
         await guess_music_pic.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True)
     if _guess_or_letter_busy(gid):
         await guess_music_pic.finish(_GUESS_BUSY_HINT, reply_message=True)
@@ -1088,7 +1088,7 @@ async def _(event: MessageEvent, matched=RegexMatched()):
 async def _(event: MessageEvent):
     await _gate_guess_group_entry(guess_music_audio, event)
     gid = get_event_group_id(event)
-    if gid not in guess.switch.enable:
+    if not guess.is_enabled(gid):
         await guess_music_audio.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True)
     if _letter_busy(gid) or _rating_or_impostor_busy(gid) or not await guess.try_begin_prepare(gid):
         await guess_music_audio.finish(_GUESS_BUSY_HINT, reply_message=True)
@@ -1198,7 +1198,7 @@ async def _(event: MessageEvent):
 async def _(event: MessageEvent):
     await _gate_guess_group_entry(guess_music_chart, event)
     gid = get_event_group_id(event)
-    if gid not in guess.switch.enable:
+    if not guess.is_enabled(gid):
         await guess_music_chart.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True)
     if _letter_busy(gid) or _rating_or_impostor_busy(gid) or not await guess.try_begin_prepare(gid):
         await guess_music_chart.finish(_GUESS_BUSY_HINT, reply_message=True)
@@ -1547,7 +1547,7 @@ async def _handle_guess_score_board(
     gid = get_event_group_id(event)
     if gid is None:
         await matcher.finish('请在群内使用。', reply_message=True)
-    if gid not in guess.switch.enable:
+    if not guess.is_enabled(gid):
         await matcher.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True)
     bot = resolve_event_bot(event)
     title, nodes = guess_score.build_ranking_forward(
@@ -1563,7 +1563,7 @@ async def _(event: MessageEvent):
     gid = get_event_group_id(event)
     if gid is None:
         await guess_group_rank.finish('请在群内使用。', reply_message=True)
-    if gid not in guess.switch.enable:
+    if not guess.is_enabled(gid):
         await guess_group_rank.finish(
             '该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True,
         )
@@ -1603,9 +1603,9 @@ async def _resolve_guess_stats_target(event: MessageEvent) -> tuple[str, str, bo
     except Exception:
         name = ''
     if not name and gid is not None:
-        store_group = guess_score.store.groups.get(str(gid))
-        if store_group and at_uid in store_group.members:
-            name = store_group.members[at_uid].name or ''
+        member = guess_score.get_member_or_none(gid, at_uid)
+        if member:
+            name = member.name or ''
     return at_uid, (name or at_uid), True
 
 
@@ -1619,7 +1619,7 @@ async def _(event: MessageEvent):
     self_uid = str(platform_user_id(event))
     if not at_uid or at_uid == self_uid:
         await _gate_guess_group_entry(guess_my_stats, event)
-    if gid not in guess.switch.enable:
+    if not guess.is_enabled(gid):
         await guess_my_stats.finish(
             '该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True,
         )
@@ -1684,7 +1684,7 @@ async def _handle_guess_history_board(
     gid = get_event_group_id(event)
     if gid is None:
         await matcher.finish('请在群内使用。', reply_message=True)
-    if gid not in guess.switch.enable:
+    if not guess.is_enabled(gid):
         await matcher.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True)
     if not period_key:
         period_key = guess_score.previous_period_key(period)
@@ -1782,7 +1782,7 @@ async def _(event: MessageEvent, matched=RegexMatched()):
     gid = get_event_group_id(event)
     if gid is None:
         await guess_rating_start.finish('请在群内使用。', reply_message=True)
-    if gid not in guess.switch.enable:
+    if not guess.is_enabled(gid):
         await guess_rating_start.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True)
     if _guess_or_letter_busy(gid):
         await guess_rating_start.finish(_GUESS_BUSY_HINT, reply_message=True)
@@ -2017,7 +2017,7 @@ async def _(event: MessageEvent):
     gid = get_event_group_id(event)
     if gid is None:
         return
-    if gid not in guess.switch.enable:
+    if not guess.is_enabled(gid):
         return
     billing = billing_user_id(event)
     rating_guess.add_volunteer(gid, billing)
@@ -2041,7 +2041,7 @@ async def _(event: MessageEvent):
     gid = get_event_group_id(event)
     if gid is None:
         await guess_impostor_start.finish('请在群内使用。', reply_message=True)
-    if gid not in guess.switch.enable:
+    if not guess.is_enabled(gid):
         await guess_impostor_start.finish(
             '该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True,
         )
@@ -2317,7 +2317,7 @@ async def _(event: MessageEvent):
     gid = get_event_group_id(event)
     if gid is None:
         await guess_duel_start.finish('请在群内使用。', reply_message=True)
-    if gid not in guess.switch.enable:
+    if not guess.is_enabled(gid):
         await guess_duel_start.finish(
             '该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True,
         )

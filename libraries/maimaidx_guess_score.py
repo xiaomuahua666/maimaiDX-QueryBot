@@ -15,6 +15,7 @@ from .maimaidx_platform import (
     is_likely_qq_group_id,
     rank_text_image,
     send_group_plain_text,
+    user_data_id,
 )
 from .tool import writefile
 
@@ -213,7 +214,10 @@ class GuessScoreManager:
 
     @staticmethod
     def _uid_key(uid: UserId) -> str:
-        return str(uid)
+        # Official QQ events use an opaque openid.  Once qbind has associated
+        # it with the user's legacy QQ number, use that number so existing
+        # OneBot-era score/event records remain visible after migration.
+        return str(user_data_id(uid))
 
     @staticmethod
     def current_day_key() -> str:
@@ -596,7 +600,8 @@ class GuessScoreManager:
                         await qq_bot.send_to_group(
                             group_openid=str(gid),
                             message=adapt_guess_outbound(
-                                rank_text_image(format_forward_nodes_as_text(title, nodes))
+                                rank_text_image(format_forward_nodes_as_text(title, nodes)),
+                                force_qq=True,
                             ),
                         )
                     else:

@@ -12,6 +12,7 @@ from typing import Dict, List, Optional, Tuple, Union
 from pydantic import BaseModel, Field
 
 from ..config import Root, letter_stats_file, log
+from .maimaidx_platform import user_data_id
 from .tool import writefile
 
 GroupId = Union[int, str]
@@ -429,18 +430,19 @@ class LetterStatsManager:
         top_weight = 0
         top_weight_name = ""
         for uid, billing_id, name, score, weight in rewards:
-            players.append(str(uid))
+            uid_key = str(user_data_id(uid))
+            players.append(uid_key)
             w = max(0, int(weight))
             total_weight += w
             if w > top_weight:
                 top_weight = w
                 top_weight_name = name or str(uid)
-            member = group.members.get(str(uid))
+            member = group.members.get(uid_key)
             if member is None:
-                member = LetterMemberStats(uid=str(uid))
-                group.members[str(uid)] = member
-            member.uid = str(uid)
-            member.name = name or member.name or str(uid)
+                member = LetterMemberStats(uid=uid_key)
+                group.members[uid_key] = member
+            member.uid = uid_key
+            member.name = name or member.name or uid_key
             member.billing_id = int(billing_id)
             member.score += max(0, int(score))
             member.weight += w

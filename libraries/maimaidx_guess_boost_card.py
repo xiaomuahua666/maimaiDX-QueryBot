@@ -9,7 +9,7 @@ from typing import Dict, List, Optional, Tuple, Union
 from pydantic import BaseModel, Field
 
 from ..config import guess_boost_card_file
-from .maimaidx_platform import GroupId, UserId
+from .maimaidx_platform import GroupId, UserId, user_data_id
 from .tool import writefile
 
 DEFAULT_CARD_HOURS = 24
@@ -57,7 +57,7 @@ class GuessBoostCardManager:
 
     @staticmethod
     def _uid_key(uid: UserId) -> str:
-        return str(uid)
+        return str(user_data_id(uid))
 
     def _purge_expired(self, user: UserBoostCards, *, now: Optional[float] = None) -> None:
         ts = now if now is not None else time.time()

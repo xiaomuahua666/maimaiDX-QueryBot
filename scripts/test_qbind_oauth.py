@@ -13,9 +13,17 @@ forum_cmd = (ROOT / "command" / "mai_forum_bind.py").read_text(encoding="utf-8")
 assert "begin_forum_login(pid)" in qq_bind
 assert "begin_forum_login(pid, claimed_qq=claimed)" in qq_bind
 assert "complete_forum_login" in qq_bind
-assert "论坛 OAuth" in qq_bind
+assert "_oauth_paste" in qq_bind
+assert "_normalize_oauth_paste" in qq_bind
+assert "请通过AWMC论坛绑定查分 QQ" in qq_bind
+assert "授权后把授权链接直接发给我哟" in qq_bind
+assert "recall_message" in qq_bind
+assert "_send_oauth_start" in qq_bind
+assert "foreign_recall_notice" in qq_bind
+assert "deliver_forward_messages" not in qq_bind
 assert "qq_bind_db.bind(pid, qq)" not in qq_bind  # no direct trust of typed QQ
 assert "'论坛绑定'" in qq_bind
+assert (ROOT / "static" / "qbind_callback.html").is_file()
 
 assert "claimed_qq" in forum_auth
 assert "OAuth 校验失败" in forum_auth

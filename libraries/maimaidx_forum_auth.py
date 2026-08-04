@@ -81,7 +81,7 @@ def forum_redirect_uri() -> str:
         # A bot-specific redirect should leave ``code`` visible so the user can
         # paste it back. Deployments using the existing web client can override
         # this with its registered net.wmc.pub callback.
-        default="https://bbs.wmc.pub/",
+        default="https://genshin.wmc.pub/",
     )
 
 

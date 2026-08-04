@@ -8,7 +8,7 @@ from typing import Optional
 
 from nonebot import get_driver, on_command, on_message
 from nonebot.adapters import Bot, Event
-from nonebot.adapters.onebot.v11 import Message, MessageEvent, MessageSegment
+from nonebot.adapters.onebot.v11 import Message, MessageEvent
 from nonebot.exception import IgnoredException
 from nonebot.matcher import Matcher
 from nonebot.message import run_postprocessor, run_preprocessor
@@ -18,8 +18,11 @@ from nonebot.typing import T_State
 from ..config import log, maiconfig
 from ..libraries.maimaidx_admin_audit import admin_audit, redact
 from ..libraries.maimaidx_bot_admin import PLUGIN_ADMIN_ONLY, is_plugin_admin
-from ..libraries.maimaidx_platform import get_event_group_id
-from ..libraries.maimaidx_platform import billing_user_id
+from ..libraries.maimaidx_platform import (
+    billing_user_id,
+    get_event_group_id,
+    parse_at_target_id,
+)
 from ..libraries.maimaidx_break import (
     break_db,
     format_break_insufficient_message,
@@ -399,12 +402,7 @@ async def _audit_postprocessor(
 
 
 def _at_user(event: MessageEvent) -> Optional[str]:
-    for segment in event.message:
-        if isinstance(segment, MessageSegment) and segment.type == "at":
-            value = str(segment.data.get("qq") or "")
-            if value and value != "all":
-                return value
-    return None
+    return parse_at_target_id(event)
 
 
 @audit_query.handle()

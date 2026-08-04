@@ -1100,21 +1100,45 @@ class Guess:
         """结束猜歌"""
         self.Group.pop(gid, None)
 
+    @staticmethod
+    def _switch_key(gid: Union[int, str]) -> Union[int, str]:
+        """Use the qgroupbind key for persisted official-QQ switches."""
+        try:
+            from .maimaidx_qq_bind import qq_bind_db
+
+            mapped = qq_bind_db.get_group_legacy_id(str(gid))
+            if mapped is not None:
+                return mapped
+        except Exception:
+            pass
+        return gid
+
+    def is_enabled(self, gid: Union[int, str]) -> bool:
+        """Check the persisted switch without confusing openid and old QQ ids."""
+        aliases = {str(gid), str(self._switch_key(gid))}
+        return bool(aliases & {str(item) for item in self.switch.enable})
+
     async def on(self, gid: Union[int, str]) -> str:
         """开启猜歌"""
-        if gid not in self.switch.enable:
-            self.switch.enable.append(gid)
-        if gid in self.switch.disable:
-            self.switch.disable.remove(gid)
+        key = self._switch_key(gid)
+        aliases = {str(gid), str(key)}
+        if not aliases & {str(item) for item in self.switch.enable}:
+            self.switch.enable.append(key)
+        self.switch.disable = [
+            item for item in self.switch.disable if str(item) not in aliases
+        ]
         await writefile(guess_file, self.switch.model_dump())
         return '群猜歌功能已开启'
 
     async def off(self, gid: Union[int, str]) -> str:
         """关闭猜歌"""
-        if gid not in self.switch.disable:
-            self.switch.disable.append(gid)
-        if gid in self.switch.enable:
-            self.switch.enable.remove(gid)
+        key = self._switch_key(gid)
+        aliases = {str(gid), str(key)}
+        if not aliases & {str(item) for item in self.switch.disable}:
+            self.switch.disable.append(key)
+        self.switch.enable = [
+            item for item in self.switch.enable if str(item) not in aliases
+        ]
         if gid in self.Group:
             self.end(gid)
         self.Preparing.discard(gid)
@@ -1138,21 +1162,48 @@ class GroupAlias:
                 json.load(open(group_alias_file, 'r', encoding='utf-8'))
             )
 
-    async def on(self, gid: int) -> str:
+    @staticmethod
+    def _switch_key(gid):
+        """Use the former numeric QQ group as the persisted alias key."""
+        try:
+            from .maimaidx_qq_bind import qq_bind_db
+
+            mapped = qq_bind_db.get_group_legacy_id(str(gid))
+            if mapped is not None:
+                return mapped
+        except Exception:
+            pass
+        return gid
+
+    @classmethod
+    def _aliases(cls, gid) -> set[str]:
+        return {str(gid), str(cls._switch_key(gid))}
+
+    def is_disabled(self, gid) -> bool:
+        aliases = self._aliases(gid)
+        return bool(aliases & {str(item) for item in self.push.disable})
+
+    async def on(self, gid) -> str:
         """开启推送"""
-        if gid not in self.push.enable:
-            self.push.enable.append(gid)
-        if gid in self.push.disable:
-            self.push.disable.remove(gid)
+        key = self._switch_key(gid)
+        aliases = self._aliases(gid)
+        if not aliases & {str(item) for item in self.push.enable}:
+            self.push.enable.append(key)
+        self.push.disable = [
+            item for item in self.push.disable if str(item) not in aliases
+        ]
         await writefile(group_alias_file, self.push.model_dump())
         return '群别名推送功能已开启'
 
-    async def off(self, gid: int) -> str:
+    async def off(self, gid) -> str:
         """关闭推送"""
-        if gid not in self.push.disable:
-            self.push.disable.append(gid)
-        if gid in self.push.enable:
-            self.push.enable.remove(gid)
+        key = self._switch_key(gid)
+        aliases = self._aliases(gid)
+        if not aliases & {str(item) for item in self.push.disable}:
+            self.push.disable.append(key)
+        self.push.enable = [
+            item for item in self.push.enable if str(item) not in aliases
+        ]
         await writefile(group_alias_file, self.push.model_dump())
         return '群别名推送功能已关闭'
 
@@ -1236,21 +1287,28 @@ class FeatureManager:
         except Exception:
             pass
         return gid
+
+    @classmethod
+    def _group_aliases(cls, gid) -> set[str]:
+        return {str(gid), str(cls._group_key(gid))}
     
     def is_enabled(self, gid: int, feature_name: str) -> bool:
         """检查功能是否在群组中启用；默认启用，显式 disable 优先。"""
         switch = self._get_feature_switch(feature_name)
-        key = str(self._group_key(gid))
-        return key not in {str(item) for item in switch.disable}
+        aliases = self._group_aliases(gid)
+        return not bool(aliases & {str(item) for item in switch.disable})
     
     async def enable(self, gid: int, feature_name: str) -> str:
         """在群组中启用功能"""
         from ..config import group_feature_switch_file
         switch = self._get_feature_switch(feature_name)
-        gid = self._group_key(gid)
-        if str(gid) not in {str(item) for item in switch.enable}:
-            switch.enable.append(gid)
-        switch.disable = [item for item in switch.disable if str(item) != str(gid)]
+        key = self._group_key(gid)
+        aliases = self._group_aliases(gid)
+        if not aliases & {str(item) for item in switch.enable}:
+            switch.enable.append(key)
+        switch.disable = [
+            item for item in switch.disable if str(item) not in aliases
+        ]
         await writefile(group_feature_switch_file, self.switch.model_dump())
         feature_names = self._feature_display_names()
         return f'群组 {feature_names.get(feature_name, feature_name)} 已启用'
@@ -1259,10 +1317,13 @@ class FeatureManager:
         """在群组中禁用功能"""
         from ..config import group_feature_switch_file
         switch = self._get_feature_switch(feature_name)
-        gid = self._group_key(gid)
-        if str(gid) not in {str(item) for item in switch.disable}:
-            switch.disable.append(gid)
-        switch.enable = [item for item in switch.enable if str(item) != str(gid)]
+        key = self._group_key(gid)
+        aliases = self._group_aliases(gid)
+        if not aliases & {str(item) for item in switch.disable}:
+            switch.disable.append(key)
+        switch.enable = [
+            item for item in switch.enable if str(item) not in aliases
+        ]
         await writefile(group_feature_switch_file, self.switch.model_dump())
         feature_names = self._feature_display_names()
         return f'群组 {feature_names.get(feature_name, feature_name)} 已禁用'
@@ -1296,28 +1357,32 @@ class FeatureManager:
     async def enable_all(self, gid: int) -> str:
         """在群组中启用所有功能"""
         from ..config import group_feature_switch_file
-        gid = self._group_key(gid)
+        key = self._group_key(gid)
+        aliases = self._group_aliases(gid)
         feature_names = self._get_all_feature_names()
         for feature_name in feature_names:
             switch = self._get_feature_switch(feature_name)
-            if gid not in switch.enable:
-                switch.enable.append(gid)
-            if gid in switch.disable:
-                switch.disable.remove(gid)
+            if not aliases & {str(item) for item in switch.enable}:
+                switch.enable.append(key)
+            switch.disable = [
+                item for item in switch.disable if str(item) not in aliases
+            ]
         await writefile(group_feature_switch_file, self.switch.model_dump())
         return '群组所有 maimai 功能已启用'
     
     async def disable_all(self, gid: int) -> str:
         """在群组中禁用所有功能"""
         from ..config import group_feature_switch_file
-        gid = self._group_key(gid)
+        key = self._group_key(gid)
+        aliases = self._group_aliases(gid)
         feature_names = self._get_all_feature_names()
         for feature_name in feature_names:
             switch = self._get_feature_switch(feature_name)
-            if gid not in switch.disable:
-                switch.disable.append(gid)
-            if gid in switch.enable:
-                switch.enable.remove(gid)
+            if not aliases & {str(item) for item in switch.disable}:
+                switch.disable.append(key)
+            switch.enable = [
+                item for item in switch.enable if str(item) not in aliases
+            ]
         await writefile(group_feature_switch_file, self.switch.model_dump())
         return '群组所有 maimai 功能已禁用'
 

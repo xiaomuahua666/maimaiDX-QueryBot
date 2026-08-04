@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AWMC Bot · 论坛授权回调</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@500;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg0: #0b1c1f;
+      --bg1: #123036;
+      --ink: #e8f4f2;
+      --muted: #8fb3ad;
+      --accent: #2fd3b6;
+      --accent-ink: #04221c;
+      --warn: #ffb454;
+      --err: #ff7a7a;
+      --line: rgba(232, 244, 242, 0.12);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      font-family: "DM Sans", sans-serif;
+      background:
+        radial-gradient(900px 500px at 10% -10%, rgba(47, 211, 182, 0.18), transparent 55%),
+        radial-gradient(700px 420px at 100% 0%, rgba(47, 140, 211, 0.12), transparent 50%),
+        linear-gradient(160deg, var(--bg0), var(--bg1));
+      display: grid;
+      place-items: center;
+      padding: 28px 16px;
+    }
+    main {
+      width: min(640px, 100%);
+    }
+    .brand {
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      font-size: 0.78rem;
+      color: var(--accent);
+      margin-bottom: 10px;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: clamp(1.6rem, 4vw, 2.1rem);
+      line-height: 1.15;
+    }
+    .sub {
+      margin: 0 0 28px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+    .panel {
+      border: 1px solid var(--line);
+      background: rgba(8, 24, 28, 0.72);
+      backdrop-filter: blur(10px);
+      border-radius: 18px;
+      padding: 18px;
+    }
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 14px;
+      font-weight: 700;
+    }
+    .status.ok { color: var(--accent); }
+    .status.bad { color: var(--err); }
+    .label {
+      font-size: 0.82rem;
+      color: var(--muted);
+      margin: 14px 0 8px;
+    }
+    .codebox {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #071416;
+      color: var(--ink);
+      font-family: "JetBrains Mono", monospace;
+      font-size: 0.82rem;
+      line-height: 1.45;
+      padding: 12px 14px;
+      resize: vertical;
+      min-height: 96px;
+      word-break: break-all;
+    }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 14px;
+    }
+    button {
+      border: 0;
+      border-radius: 999px;
+      padding: 12px 18px;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform 0.15s ease, opacity 0.15s ease;
+    }
+    button:hover { transform: translateY(-1px); }
+    button:active { transform: translateY(0); }
+    .primary {
+      background: var(--accent);
+      color: var(--accent-ink);
+    }
+    .ghost {
+      background: transparent;
+      color: var(--ink);
+      border: 1px solid var(--line);
+    }
+    .hint {
+      margin-top: 18px;
+      color: var(--muted);
+      font-size: 0.9rem;
+      line-height: 1.55;
+    }
+    .toast {
+      position: fixed;
+      left: 50%;
+      bottom: 24px;
+      transform: translateX(-50%) translateY(20px);
+      opacity: 0;
+      pointer-events: none;
+      background: var(--accent);
+      color: var(--accent-ink);
+      padding: 10px 16px;
+      border-radius: 999px;
+      font-weight: 700;
+      transition: opacity 0.2s ease, transform 0.2s ease;
+    }
+    .toast.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="brand">AWMC Bot</div>
+    <h1 id="title">正在读取授权结果…</h1>
+    <p class="sub" id="subtitle">授权完成后，把下面内容发给 QQ 机器人即可完成绑定。</p>
+
+    <section class="panel" id="panel" hidden>
+      <div class="status ok" id="status">授权成功</div>
+      <div class="label">发给机器人（推荐，点一下复制）</div>
+      <textarea class="codebox" id="cmd" readonly></textarea>
+      <div class="actions">
+        <button class="primary" type="button" id="copyCmd">复制「qbind + 链接」</button>
+        <button class="ghost" type="button" id="copyCode">只复制授权码</button>
+      </div>
+      <p class="hint">
+        回到 QQ，把复制内容直接发给 AWMC BOT。<br />
+        若已发过 <code>qbind</code> 并在等待授权，也可以不带前缀，只发整段链接或授权码。
+      </p>
+    </section>
+
+    <section class="panel" id="errorPanel" hidden>
+      <div class="status bad">授权失败</div>
+      <p class="hint" id="errorText"></p>
+      <p class="hint">请回到 QQ 重新发送 <code>qbind</code> 获取新的授权链接。</p>
+    </section>
+  </main>
+
+  <div class="toast" id="toast">已复制</div>
+
+  <script>
+    (function () {
+      const params = new URLSearchParams(window.location.search);
+      const code = (params.get("code") || "").trim();
+      const state = (params.get("state") || "").trim();
+      const err = (params.get("error") || "").trim();
+      const errDesc = (params.get("error_description") || "").trim();
+
+      const panel = document.getElementById("panel");
+      const errorPanel = document.getElementById("errorPanel");
+      const title = document.getElementById("title");
+      const subtitle = document.getElementById("subtitle");
+      const cmdBox = document.getElementById("cmd");
+      const toast = document.getElementById("toast");
+
+      function showToast(text) {
+        toast.textContent = text;
+        toast.classList.add("show");
+        clearTimeout(showToast._t);
+        showToast._t = setTimeout(function () {
+          toast.classList.remove("show");
+        }, 1600);
+      }
+
+      async function copyText(text) {
+        try {
+          await navigator.clipboard.writeText(text);
+          showToast("已复制，去 QQ 粘贴发给 Bot");
+          return;
+        } catch (_) {}
+        const area = document.createElement("textarea");
+        area.value = text;
+        document.body.appendChild(area);
+        area.select();
+        document.execCommand("copy");
+        document.body.removeChild(area);
+        showToast("已复制，去 QQ 粘贴发给 Bot");
+      }
+
+      if (err) {
+        title.textContent = "授权未完成";
+        subtitle.textContent = "论坛没有返回可用的授权码。";
+        errorPanel.hidden = false;
+        document.getElementById("errorText").textContent =
+          errDesc || err || "unknown_error";
+        return;
+      }
+
+      if (!code) {
+        title.textContent = "没有读到授权码";
+        subtitle.textContent =
+          "请确认此页面是 OAuth 回调地址，并且地址栏带有 code 参数。";
+        errorPanel.hidden = false;
+        document.getElementById("errorText").textContent =
+          "当前 URL 缺少 code=...，无法生成发给机器人的内容。";
+        return;
+      }
+
+      const callbackUrl = window.location.href;
+      const command = "qbind " + callbackUrl;
+
+      title.textContent = "授权成功";
+      subtitle.textContent = "复制下面这一行，直接发给 AWMC BOT。";
+      panel.hidden = false;
+      cmdBox.value = command;
+
+      document.getElementById("copyCmd").addEventListener("click", function () {
+        copyText(command);
+      });
+      document.getElementById("copyCode").addEventListener("click", function () {
+        copyText(code);
+      });
+
+      // Keep state visible for debugging without cluttering the main CTA.
+      if (state) {
+        cmdBox.title = "state=" + state;
+      }
+    })();
+  </script>
+</body>
+</html>

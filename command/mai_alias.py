@@ -7,7 +7,7 @@ from textwrap import dedent
 
 import httpx
 from httpx_ws import WebSocketDisconnect, aconnect_ws
-from nonebot import get_bot, on_command, on_regex
+from nonebot import get_bots, on_command, on_regex
 from nonebot.adapters.onebot.v11 import (
     GROUP_ADMIN,
     GROUP_OWNER,
@@ -29,7 +29,13 @@ from ..libraries.maimaidx_error import ServerError
 from ..libraries.maimaidx_model import Alias, PushAliasStatus
 from ..libraries.maimaidx_music import alias, mai, update_local_alias
 from ..libraries.maimaidx_music_info import draw_music_info
-from ..libraries.maimaidx_platform import billing_user_id, get_event_group_id, resolve_group_legacy_id
+from ..libraries.maimaidx_platform import (
+    billing_user_id,
+    get_event_group_id,
+    resolve_group_bot,
+    resolve_group_legacy_id,
+    send_group_message,
+)
 
 update_alias = on_command('更新别名库', permission=SUPERUSER)
 alias_local_apply = on_command(
@@ -255,10 +261,48 @@ async def _(event: GroupMessageEvent, match=RegexMatched()):
     await alias_switch.finish(msg, reply_message=True)
 
 
+async def _known_alias_group_ids(bot: Bot | None = None) -> list:
+    """Collect groups without requiring the official QQ adapter to emulate
+    OneBot's ``get_group_list`` API.
+    """
+    candidates = list(get_bots().values())
+    if bot is not None and bot not in candidates:
+        candidates.append(bot)
+    group_ids = {item for item in alias.push.enable}
+
+    # Persisted qgroupbind rows are the authoritative discovery source for
+    # official QQ groups; the adapter intentionally does not expose a group
+    # list endpoint.
+    try:
+        from ..libraries.maimaidx_qq_bind import qq_bind_db
+
+        group_ids.update(
+            str(row['platform_group_id'])
+            for row in qq_bind_db.list_group_bindings()
+            if row.get('platform_group_id')
+        )
+    except Exception:
+        pass
+
+    for candidate in candidates:
+        get_group_list = getattr(candidate, 'get_group_list', None)
+        if not callable(get_group_list):
+            continue
+        try:
+            group = await get_group_list()
+        except Exception:
+            continue
+        group_ids.update(
+            item.get('group_id')
+            for item in group
+            if isinstance(item, dict) and item.get('group_id') is not None
+        )
+    return list(group_ids)
+
+
 @alias_global_switch.handle()
 async def _(bot: Bot, match=RegexMatched()):
-    group = await bot.get_group_list()
-    group_id = [g['group_id'] for g in group]
+    group_id = await _known_alias_group_ids(bot)
     if match.group(1) == '开启':
         await alias.alias_global_change(True, group_id)
         await alias_global_switch.finish('已全局开启maimai别名推送')
@@ -270,7 +314,7 @@ async def _(bot: Bot, match=RegexMatched()):
 
 
 async def push_alias(push: PushAliasStatus):
-    bot: Bot = get_bot()
+    bots = get_bots()
     song_id = str(push.Status.SongID)
     alias_name = push.Status.ApplyAlias
     music = mai.total_list.by_id(song_id)
@@ -286,7 +330,9 @@ async def push_alias(push: PushAliasStatus):
             =================
             请使用指令「同意别名 {push.Status.Tag}」进行投票
         ''').strip() + await draw_music_info(music)
-        await bot.send_group_msg(group_id=push.Status.GroupID, message=message)
+        bot = resolve_group_bot(push.Status.GroupID, bots)
+        if bot is not None:
+            await send_group_message(bot, push.Status.GroupID, message)
         return
 
     if push.Type == 'Reject':
@@ -297,15 +343,16 @@ async def push_alias(push: PushAliasStatus):
             标题：{push.Status.Name}
             别名：{alias_name}
         ''').strip() + await draw_music_info(music)
-        await bot.send_group_msg(group_id=push.Status.GroupID, message=message)
+        bot = resolve_group_bot(push.Status.GroupID, bots)
+        if bot is not None:
+            await send_group_message(bot, push.Status.GroupID, message)
         return
 
     if not maiconfig.maimaidxaliaspush:
         await mai.get_music_alias(force=True)
         return
 
-    group_list = await bot.get_group_list()
-    group_ids: list[int] = list({g['group_id'] for g in group_list})
+    group_ids = await _known_alias_group_ids()
     message = ''
 
     if push.Type == 'Apply':
@@ -329,10 +376,13 @@ async def push_alias(push: PushAliasStatus):
         ''').strip() + await draw_music_info(music)
 
     for gid in group_ids:
-        if gid in alias.push.disable:
+        if alias.is_disabled(gid):
             continue
         try:
-            await bot.send_group_msg(group_id=gid, message=message)
+            target_bot = resolve_group_bot(gid, bots)
+            if target_bot is None:
+                continue
+            await send_group_message(target_bot, gid, message)
             await asyncio.sleep(5)
         except:
             continue

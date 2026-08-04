@@ -1127,7 +1127,6 @@ async def _enable_data_storage(event: MessageEvent):
                 for candidate in (
                     int(qqid),
                     int(billing_user_id(event)),
-                    int(event.get_user_id()),
                 ):
                     if not candidate or candidate in seen:
                         continue
