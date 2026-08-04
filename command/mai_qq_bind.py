@@ -28,6 +28,7 @@ from ..libraries.maimaidx_platform import (
     platform_user_id,
     plugin_finish,
     plugin_send,
+    build_markdown_message,
     recall_message,
     use_qq_mode,
 )
@@ -184,7 +185,23 @@ async def _send_oauth_start(
 ) -> None:
     pid = platform_user_id(event)
     _track_oauth_message(pid, _event_message_id(event))
-    result = await plugin_send(matcher, text, event=event, reply_message=True)
+    payload = text
+    if use_qq_mode(event):
+        # Bare URLs in a QQ text payload are not consistently tappable.  Keep
+        # the instructions readable while making the authorization entry a
+        # native Markdown link; the platform layer adds the blue sender @ to
+        # this same Markdown message.
+        lines = text.splitlines()
+        if len(lines) >= 2:
+            url = lines[1].strip()
+            if url.startswith(('http://', 'https://')):
+                safe_url = url.replace(')', '\\)')
+                lines[1] = f'[打开授权页面]({safe_url})'
+        payload = build_markdown_message(
+            '## AWMC 论坛绑定\n\n' + '\n'.join(lines),
+            event=event,
+        )
+    result = await plugin_send(matcher, payload, event=event, reply_message=True)
     _track_oauth_message(pid, extract_sent_message_id(result))
     raise FinishedException
 

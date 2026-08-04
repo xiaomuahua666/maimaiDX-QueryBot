@@ -110,6 +110,25 @@ def main() -> None:
     assert image_part.data["content"] == image_bytes
     _assert_no_serialized_media(image_reply)
 
+    # Plain text replies (for example AWMC 签到) must use the same text-chain
+    # @ path as the query-result fallback.  Keeping a typed mention here makes
+    # the official QQ client display the raw ``<qqbot-at-user ... />`` token.
+    checkin_reply = platform.ensure_sender_mention(
+        "✅ AWMC 签到成功！\n💰 获得：23 BREAK", event
+    )
+    assert [part.type for part in checkin_reply] == ["text", "text", "text"]
+    assert checkin_reply[0].data["text"] == (
+        '<qqbot-at-user id="user-openid" />'
+    )
+    checkin_content = QQBot._extract_send_message(
+        checkin_reply, escape_text=False
+    )["content"]
+    assert checkin_content.startswith('<qqbot-at-user id="user-openid" />\n')
+    assert "✅ AWMC 签到成功！" in checkin_content
+    # Matcher.send and Bot.send call the compatibility helper more than once;
+    # a text-chain prefix must be recognized as an existing mention.
+    assert platform.ensure_sender_mention(checkin_reply, event) is checkin_reply
+
     # Without temporary hosting, use a plain-text @ prefix before the media.
     # Text-chain tags are parsed from ``content``, not a media/Markdown field.
     mention_message, media_messages = platform._split_qq_media_message(image_reply)
@@ -225,18 +244,10 @@ def main() -> None:
 
     markdown = QQMessage([QQSegment.markdown("**😀 可复制文字**")])
     markdown_reply = platform.ensure_sender_mention(markdown, event)
-    assert [part.type for part in markdown_reply] == [
-        "mention_user", "text", "markdown"
-    ]
-    markdown_mention, markdown_followups = platform._split_qq_media_message(
-        markdown_reply
-    )
-    assert markdown_mention[0].type == "text"
-    assert markdown_mention[0].data["text"].startswith(
-        '<qqbot-at-user id="user-openid" />'
-    )
-    assert [part.type for part in markdown_followups[0]] == ["markdown"]
-    markdown_content = markdown_followups[0][0].data["markdown"].content
+    assert [part.type for part in markdown_reply] == ["markdown"]
+    assert platform._split_qq_media_message(markdown_reply) is None
+    markdown_content = markdown_reply[0].data["markdown"].content
+    assert markdown_content.startswith('<qqbot-at-user id="user-openid" />')
     assert "😀" in markdown_content
 
     forward = platform.qq_forward_markdown(
@@ -264,6 +275,9 @@ def main() -> None:
     assert "[绿谱](https://v.wmc.pub/?song=1)" in (
         link_message[0].data["markdown"].content
     )
+    button = link_message[1].data["keyboard"].content.rows[0].buttons[0]
+    assert button.render_data.label == "绿谱"
+    assert button.action.permission.type == 2
 
     class _FakeBot:
         def __init__(self):
@@ -304,13 +318,14 @@ def main() -> None:
         "target-openid", "\nhello", event=event
     )
     target_parts = list(target_message)
-    assert target_parts[0].type == "mention_user"
-    assert target_parts[0].data["user_id"] == "target-openid"
-    assert str(target_parts[0]) == '<qqbot-at-user id="target-openid" />'
+    assert target_parts[0].type == "text"
+    assert target_parts[0].data["text"] == (
+        '<qqbot-at-user id="target-openid" />'
+    )
 
     legacy_target = platform.build_mention_message(123456, event=event)
-    assert list(legacy_target)[0].data["user_id"] == "bound-target-openid"
-    assert str(list(legacy_target)[0]) == (
+    assert list(legacy_target)[0].type == "text"
+    assert list(legacy_target)[0].data["text"] == (
         '<qqbot-at-user id="bound-target-openid" />'
     )
 

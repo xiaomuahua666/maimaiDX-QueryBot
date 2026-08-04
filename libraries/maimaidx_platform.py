@@ -533,8 +533,17 @@ def install_qq_event_compat() -> None:
         if not getattr(original_qq_send, '_maimaidx_qq_compat', False):
             async def _qq_aware_bot_send(self, event, message, **kwargs):
                 followup_token = None
+                # Internal follow-ups (chart images and the flattened
+                # supplement) already follow a first response that mentions
+                # the sender.  Avoid spending another passive-reply slot on
+                # a standalone @ prefix; QQ groups allow only five replies
+                # per incoming message.
+                skip_sender_mention = bool(
+                    kwargs.pop('_maimaidx_skip_sender_mention', False)
+                )
                 if is_qq_event(event):
-                    message = ensure_sender_mention(message, event)
+                    if not skip_sender_mention:
+                        message = ensure_sender_mention(message, event)
                     if _is_onebot_payload(message):
                         message = adapt_guess_outbound(message, event=event)
                     # Keep a caption with one local media when the official
@@ -1190,7 +1199,13 @@ def build_mention_message(target: UserId, text: str = '', *, event=None) -> Any:
         from nonebot.adapters.qq.message import Message as QQMessage
         from nonebot.adapters.qq.message import MessageSegment as QQSeg
 
-        parts: List[Any] = [_qq_mention_segment(tid, username=username)]
+        mention = _qq_mention_segment(tid, username=username)
+        # Explicit target replies are text-only too.  Use the same text-chain
+        # markup as sender prefixes when a real platform id is available;
+        # unresolved legacy QQ numbers remain a visible ``@123`` fallback.
+        if getattr(mention, 'type', None) == 'mention_user':
+            mention = QQSeg.text(str(mention))
+        parts: List[Any] = [mention]
         if text:
             parts.append(QQSeg.text(text))
         return QQMessage(parts)
@@ -1212,7 +1227,15 @@ def _message_starts_with_mention(message: Any) -> bool:
     if first is None:
         return False
     seg_type = getattr(first, 'type', None)
-    return seg_type in ('at', 'mention_user')
+    if seg_type in ('at', 'mention_user'):
+        return True
+    # Official QQ's text-chain fallback is the most reliable way to render an
+    # @ in a plain-text response.  Treat an already-prefixed markup token as a
+    # mention too, otherwise Matcher.send/Bot.send would prepend it repeatedly.
+    if seg_type == 'text':
+        text = str((getattr(first, 'data', None) or {}).get('text') or '')
+        return _QQ_AT_MARKUP_RE.match(text.lstrip()) is not None
+    return False
 
 
 _QQ_MENTION_SEGMENT_CLASS = None
@@ -1256,12 +1279,55 @@ def _qq_mention_segment(target: UserId, *, username: Optional[str] = None) -> An
     return _QQ_MENTION_SEGMENT_CLASS('mention_user', data)
 
 
-def _prepend_qq_markdown_mention(message: Any, event: Any) -> Any | None:
-    """Keep a typed @ prefix so the adapter can send it as plain text.
+def _qq_plaintext_mention_message(
+    message: Any,
+    target: UserId,
+) -> Any | None:
+    """Prefix a text-only QQ message with the proven text-chain @ syntax.
 
-    The official QQ client does not consistently parse the text-chain At tag
-    when it is embedded in ``markdown.content``.  Leave the Markdown body
-    untouched and let the send wrapper emit a separate ``msg_type=0`` prefix.
+    ``mention_user`` is useful while constructing structured messages, but
+    the official QQ API has historically rendered that typed segment as the
+    literal ``<qqbot-at-user ... />`` in ordinary text replies.  A text segment
+    containing the same markup is parsed by the API and is the path used by
+    the score/media fallback.  Keep this conversion limited to text/emoji
+    chains; media and Markdown still need the typed segment and splitter.
+    """
+    try:
+        from nonebot.adapters.qq.message import Message as QQMessage
+        from nonebot.adapters.qq.message import MessageSegment as QQSeg
+    except ImportError:
+        return None
+
+    if isinstance(message, QQSeg):
+        segments = [message]
+    elif isinstance(message, QQMessage):
+        segments = list(message)
+    else:
+        return None
+    if any(
+        getattr(segment, 'type', None) not in {'text', 'emoji'}
+        for segment in segments
+    ):
+        return None
+
+    markup = qq_at_markup(target)
+    prefix = QQSeg.text(markup)
+    # Keep the body as separate segments so emoji and any adapter-specific
+    # textual rendering are preserved.  The prefix is deliberately a text
+    # segment, matching _qq_media_mention_fallback().
+    output: list[Any] = [prefix, QQSeg.text('\n'), *segments]
+    return QQMessage(output)
+
+
+def _prepend_qq_markdown_mention(message: Any, event: Any) -> Any | None:
+    """Embed the sender @ in Markdown so it stays in one QQ message.
+
+    QQ treats ``content`` and ``markdown.content`` as different wire fields.
+    A typed ``mention_user`` beside Markdown is serialized into a second
+    text request (and can render as a literal tag), while the official
+    ``<qqbot-at-user ... />`` token inside Markdown is rendered as a blue @.
+    Keeping it in the Markdown body also avoids consuming an extra passive
+    reply slot.
     """
     module = type(message).__module__
     if not module.startswith('nonebot.adapters.qq'):
@@ -1283,8 +1349,17 @@ def _prepend_qq_markdown_mention(message: Any, event: Any) -> Any | None:
     uid = platform_user_id(event)
     if not uid:
         return message
-    output: list[Any] = [_qq_mention_segment(uid), QQSeg.text('\n')]
-    output.extend(segments)
+    markup = qq_at_markup(uid)
+    output: list[Any] = []
+    for segment in segments:
+        if getattr(segment, 'type', None) != 'markdown':
+            output.append(segment)
+            continue
+        model = (getattr(segment, 'data', None) or {}).get('markdown')
+        content = str(getattr(model, 'content', None) or '')
+        if markup not in content:
+            content = f'{markup}\n{content.lstrip()}'
+        output.append(QQSeg.markdown(content))
     try:
         return QQMessage(output)
     except Exception:
@@ -1316,7 +1391,10 @@ def ensure_sender_mention(message: Any, event) -> Any:
         if use_qq_mode(event):
             from nonebot.adapters.qq.message import Message as QQMessage
             from nonebot.adapters.qq.message import MessageSegment as QQSeg
-            prefix = _qq_mention_segment(uid, username=nickname or None)
+            # Keep ordinary text replies on the same plain-text markup path as
+            # query-result fallbacks.  Typed mention segments are reserved for
+            # structured payloads where the QQ send wrapper can split them.
+            prefix = QQSeg.text(qq_at_markup(uid))
             if body:
                 return QQMessage([prefix, QQSeg.text('\n'), QQSeg.text(body)])
             return QQMessage([prefix])
@@ -1330,6 +1408,11 @@ def ensure_sender_mention(message: Any, event) -> Any:
             return markdown_message
         prefix = _qq_mention_segment(uid, username=nickname or None)
         if 'adapters.qq' in type(message).__module__:
+            plaintext_message = _qq_plaintext_mention_message(
+                message, uid
+            )
+            if plaintext_message is not None:
+                return plaintext_message
             if isinstance(message, QQSeg):
                 return QQMessage([prefix, QQSeg.text('\n'), message])
             return QQMessage([prefix, QQSeg.text('\n')] + list(message))
@@ -1340,6 +1423,11 @@ def ensure_sender_mention(message: Any, event) -> Any:
         # image.  ``adapt_guess_outbound`` preserves image/audio/video media.
         converted = adapt_guess_outbound(message, event=event)
         if 'adapters.qq' in type(converted).__module__:
+            plaintext_message = _qq_plaintext_mention_message(
+                converted, uid
+            )
+            if plaintext_message is not None:
+                return plaintext_message
             if isinstance(converted, QQSeg):
                 converted_parts = [converted]
             else:
@@ -1772,6 +1860,9 @@ def _split_qq_media_message(message: Any) -> Optional[tuple[Any, list[Any]]]:
             + [QQMessage([QQSeg.text(' '), segment]) for segment in media[1:]],
         )
 
+    if not media:
+        return None
+
     if len(media) == 1:
         return None
     text = [seg for seg in segments if getattr(seg, 'type', None) in text_types]
@@ -1954,9 +2045,16 @@ async def deliver_forward_messages(
             chunks.append(''.join(current).rstrip('\n'))
         if not chunks:
             chunks = [text]
+        send_kwargs = {
+            '_maimaidx_skip_sender_mention': True,
+        } if is_qq_bot(bot) else {}
         for chunk in chunks:
             if chunk:
-                await bot.send(event, QQMessage([QQSeg.markdown(chunk)]))
+                await bot.send(
+                    event,
+                    QQMessage([QQSeg.markdown(chunk)]),
+                    **send_kwargs,
+                )
         return
     if get_event_group_id(event) is not None:
         await bot.call_api(
@@ -2304,6 +2402,7 @@ def build_markdown_link_message(
         InlineKeyboard,
         InlineKeyboardRow,
         MessageKeyboard,
+        Permission,
         RenderData,
     )
 
@@ -2314,7 +2413,14 @@ def build_markdown_link_message(
         Button(
             id=f'maimaidx-link-{index}',
             render_data=RenderData(label=label, style=1),
-            action=Action(type=0, data=url),
+            # QQ defaults a custom-keyboard action to no authorized users.
+            # Explicitly opt into the documented "everyone" permission so
+            # URL buttons are usable in group and C2C Markdown messages.
+            action=Action(
+                type=0,
+                permission=Permission(type=2),
+                data=url,
+            ),
         )
         for index, (label, url) in enumerate(normalized, 1)
     ]
@@ -2329,6 +2435,17 @@ def build_markdown_link_message(
             QQSeg.keyboard(keyboard),
         ]
     )
+
+
+def build_markdown_message(content: str, *, event=None) -> Any:
+    """Build a native Markdown message while retaining OneBot text mode."""
+    text = str(content or '')
+    if not use_qq_mode(event):
+        return MessageSegment.text(text)
+    from nonebot.adapters.qq.message import Message as QQMessage
+    from nonebot.adapters.qq.message import MessageSegment as QQSeg
+
+    return QQMessage([QQSeg.markdown(text)])
 
 
 async def finish_reply(matcher, payload: Any, *, reply: bool = True, event=None) -> None:

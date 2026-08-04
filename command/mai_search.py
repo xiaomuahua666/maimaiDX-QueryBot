@@ -310,6 +310,7 @@ async def _send_song_info_then_pmyx_forward(
                         chart_media,
                     ]
                 ),
+                _maimaidx_skip_sender_mention=True,
             )
         else:
             all_nodes.append(_build_nested_forward_node(
@@ -332,6 +333,7 @@ async def _send_song_info_then_pmyx_forward(
                 _chart_preview_links(music),
                 event=event,
             ),
+            _maimaidx_skip_sender_mention=True,
         )
     await _send_forward(bot, event, all_nodes)
     await matcher.finish()

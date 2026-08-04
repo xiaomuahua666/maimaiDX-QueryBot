@@ -106,9 +106,8 @@ async def main() -> None:
     assert len(roast_bot.sent) >= 2
     parts, kwargs = message_parts(roast_bot.sent[0])
     assert kwargs.get("reply_message") is False
-    assert parts[0].type == "mention_user"
-    assert parts[0].data.get("user_id") == "dispatch-unbound-openid-1"
-    assert str(parts[0]) == (
+    assert parts[0].type == "text"
+    assert parts[0].data.get("text") == (
         '<qqbot-at-user id="dispatch-unbound-openid-1" />'
     )
     assert any(
@@ -122,8 +121,10 @@ async def main() -> None:
     assert awmc_bot.sent
     parts, kwargs = message_parts(awmc_bot.sent[0])
     assert kwargs.get("reply_message") is False
-    assert parts[0].type == "mention_user"
-    assert parts[0].data.get("user_id") == "dispatch-unbound-openid-2"
+    assert parts[0].type == "text"
+    assert parts[0].data.get("text") == (
+        '<qqbot-at-user id="dispatch-unbound-openid-2" />'
+    )
     assert any(
         segment.type == "text"
         and "qbind" in str(segment.data.get("text") or "")
@@ -171,8 +172,10 @@ async def main() -> None:
     assert legacy_finish_bot.sent
     parts, kwargs = message_parts(legacy_finish_bot.sent[0])
     assert kwargs.get("reply_message") is False
-    assert parts[0].type == "mention_user"
-    assert parts[0].data.get("user_id") == "dispatch-unbound-openid-4"
+    assert parts[0].type == "text"
+    assert parts[0].data.get("text") == (
+        '<qqbot-at-user id="dispatch-unbound-openid-4" />'
+    )
 
     original_guess_enabled = mai_guess.guess.is_enabled
     original_build_guess_stats = mai_guess.guess_score.build_user_guess_stats

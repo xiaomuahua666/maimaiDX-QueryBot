@@ -81,8 +81,10 @@ async def main() -> None:
         )
         assert len(matcher.sent) == 1
         payload = matcher.sent[0][0]
-        assert getattr(payload[0], "type", None) == "mention_user"
-        assert str(payload[0]) == '<qqbot-at-user id="guess-user-openid" />'
+        assert getattr(payload[0], "type", None) == "text"
+        assert payload[0].data["text"] == (
+            '<qqbot-at-user id="guess-user-openid" />'
+        )
     finally:
         mai_guess.use_qq_mode = originals["use_qq_mode"]
         mai_guess.resolve_event_bot = originals["resolve_event_bot"]
