@@ -112,8 +112,10 @@ async def run_timed(
         from .maimaidx_break import (
             break_billing,
             ensure_query_affordable,
+            normalize_billing_qqid,
             settle_feature_if_uncharged,
         )
+        billing_qqid = normalize_billing_qqid(billing_qqid)
         if feature_charge:
             ensure_query_affordable(billing_qqid)
         async with break_billing(billing_qqid):

@@ -8,7 +8,9 @@ from ..config import project_attribution_message
 from ..libraries.maimaidx_break import break_db, calculate_luck_break
 from ..libraries.maimaidx_music import feature_manager
 from ..libraries.maimaidx_music_info import *
+from ..libraries.maimaidx_error import QBindRequiredError
 from ..libraries.maimaidx_player_score import *
+from ..libraries.maimaidx_platform import billing_user_id, event_group_data_id, resolve_score_qqid
 from ..libraries.maimaidx_timing import finish_timed, finish_timed_sync
 from ..libraries.maimaidx_update_plate import *
 from ..libraries.tool import qqhash
@@ -48,7 +50,7 @@ async def _():
 
 @mai_today.handle()
 async def _(event: MessageEvent):
-    if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'today'):
+    if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event_group_data_id(event), 'today'):
         raise IgnoredException('功能已禁用')
     wm_list = [
         '拼机', 
@@ -63,11 +65,11 @@ async def _(event: MessageEvent):
         '抓绝赞', 
         '收歌'
     ]
-    h = qqhash(event.user_id)
+    h = qqhash(billing_user_id(event))
     rp = h % 100
     rounded_rp, luck_break = calculate_luck_break(rp)
     reward = break_db.claim_daily_reward(
-        int(event.user_id),
+        billing_user_id(event),
         'today_luck',
         luck_break,
         reason='today_luck',
@@ -104,15 +106,17 @@ async def _(event: MessageEvent):
 
 @mai_what.handle()
 async def _(event: MessageEvent, match = RegexMatched()):
-    if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'query'):
+    if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event_group_data_id(event), 'query'):
         raise IgnoredException('功能已禁用')
 
     async def _gen():
         music = mai.total_list.random()
         user = None
+        score_qqid = None
         if (point := match.group(1)) and ('推分' in point or '上分' in point or '加分' in point):
             try:
-                user = await maiApi.query_user_b50(qqid=event.user_id)
+                score_qqid = resolve_score_qqid(event)
+                user = await maiApi.query_user_b50(qqid=score_qqid)
                 r = random.randint(0, 1)
                 _ra = 0
                 ignore = []
@@ -133,16 +137,20 @@ async def _(event: MessageEvent, match = RegexMatched()):
                     music = musiclist.random()
             except (UserNotFoundError, UserDisabledQueryError):
                 pass
-        return await draw_music_info(music, event.user_id, user)
+        return await draw_music_info(music, score_qqid, user)
 
-    await finish_timed(
-        mai_what, _gen(), billing_qqid=event.user_id, feature_charge='search', event=event
-    )
+    try:
+        await finish_timed(
+            mai_what, _gen(), billing_qqid=billing_user_id(event),
+            feature_charge='search', event=event
+        )
+    except QBindRequiredError as exc:
+        await mai_what.finish(str(exc), reply_message=True)
 
 
 @random_song.handle()
 async def _(event: MessageEvent, match = RegexMatched()):
-    if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'random'):
+    if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event_group_data_id(event), 'random'):
         raise IgnoredException('功能已禁用')
     try:
         diff = match.group(1)
@@ -168,7 +176,7 @@ async def _(event: MessageEvent, match = RegexMatched()):
     await finish_timed(
         random_song,
         draw_music_info(music_data.random()),
-        billing_qqid=event.user_id,
+        billing_qqid=billing_user_id(event),
         feature_charge='search',
         event=event,
     )
@@ -176,7 +184,7 @@ async def _(event: MessageEvent, match = RegexMatched()):
 
 @rating_ranking.handle()
 async def _(event: MessageEvent, message: Message = CommandArg()):
-    if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'ranking'):
+    if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event_group_data_id(event), 'ranking'):
         raise IgnoredException('功能已禁用')
     args = message.extract_plain_text().strip()
     name = ''
@@ -191,10 +199,10 @@ async def _(event: MessageEvent, message: Message = CommandArg()):
 
 @my_rating_ranking.handle()
 async def _(event: MessageEvent):
-    if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'ranking'):
+    if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event_group_data_id(event), 'ranking'):
         raise IgnoredException('功能已禁用')
     try:
-        user = await maiApi.query_user_b50(qqid=event.user_id)
+        user = await maiApi.query_user_b50(qqid=resolve_score_qqid(event))
         rank_data = await maiApi.rating_ranking()
         for num, rank in enumerate(rank_data):
             if rank.username == user.username:
@@ -208,7 +216,7 @@ async def _(event: MessageEvent):
 async def _(event: MessageEvent, message: Message = CommandArg()):
     from ..libraries.maimaidx_theme import Theme, get_theme_display_name, get_user_theme, set_user_theme
     args = message.extract_plain_text().strip()
-    qqid = event.user_id
+    qqid = billing_user_id(event)
 
     if not args:
         current = get_user_theme(qqid)

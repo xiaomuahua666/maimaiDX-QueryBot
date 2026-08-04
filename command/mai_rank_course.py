@@ -14,6 +14,7 @@ from ..libraries.maimaidx_rank_course import (
     get_rank_course,
     rank_course_help,
 )
+from ..libraries.maimaidx_platform import billing_user_id, parse_at_target_id, resolve_score_qqid
 from ..libraries.maimaidx_timing import finish_timed
 
 
@@ -21,13 +22,10 @@ rank_course_query = on_regex(r"^/?(?:段位表(?:\s+(.+))?|(.+?)段位表)\s*$")
 
 
 def _at_qq(event: MessageEvent) -> Optional[int]:
-    for segment in event.message:
-        if segment.type != "at":
-            continue
-        qq = segment.data.get("qq")
-        if qq and qq != "all":
-            return int(qq)
-    return None
+    target = parse_at_target_id(event)
+    if target is None:
+        return None
+    return resolve_score_qqid(event, target)
 
 
 async def _generate_message(rank_name: str, qqid: Optional[int], username: Optional[str]):
@@ -54,10 +52,10 @@ async def _(event: MessageEvent, match=RegexMatched()):
             reply_message=True,
         )
 
-    qqid = _at_qq(event) or (None if username else event.user_id)
+    qqid = _at_qq(event) or (None if username else resolve_score_qqid(event))
     await finish_timed(
         rank_course_query,
         _generate_message(rank_name, qqid, username),
-        billing_qqid=event.user_id,
+        billing_qqid=billing_user_id(event),
         event=event,
     )

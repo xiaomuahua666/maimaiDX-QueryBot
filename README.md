@@ -25,6 +25,8 @@
 - **倍率票 / 道具**：获取倍率票、查询票券、添加收藏品
 - **谱面标签 / 印象**：dxrating 谱面标签、谱面印象 API
 - **数据源切换**：水鱼 API 或本地 `dxdata.json`
+- **双 Bot 模式**：保留 OneBot 与腾讯官方 QQ Bot 两种模式；官方 QQ 的加密 openid
+  通过论坛 OAuth 或管理员绑定映射到原 QQ 号，群级猜歌数据也可迁移。
 
 ## 安装
 
@@ -186,6 +188,40 @@ AWMCNET 服务端配置相同密钥：
 AWWC_BOT_TOKENS=replace_with_a_shared_random_secret
 ```
 
+### 官方 QQ Bot 与论坛绑定
+
+官方 QQ 的用户、消息和群 ID 是加密 openid，不能直接当作水鱼查分 QQ 号使用。插件同时
+支持普通 OneBot 和官方 QQ 两种模式，切换后重启 Bot：
+
+```env
+# onebot（默认）或 qq_official
+MAIMAIDX_PLATFORM=qq_official
+# 官方 QQ adapter 由插件依赖自动安装；NoneBot 项目仍需填写 QQ Bot 的 appid/secret。
+
+# XenForo ThemeHouse/Audentio OAuth，论坛站点固定为 bbs.wmc.pub
+AWMC_XF_BASE_URL=https://bbs.wmc.pub
+AWMC_XF_CLIENT_ID=your_oauth_client_id
+AWMC_XF_CLIENT_SECRET=your_oauth_client_secret
+# 必须与论坛 OAuth 应用登记值一致。bot 绑定需要一个能把 code 保留在地址栏的回调页；
+# 不要直接使用会在服务端消费 code 的网页登录回调，除非用户能拿到原始 code。
+AWMC_XF_REDIRECT_URI=https://bbs.wmc.pub/
+AWMC_XF_AUTHORIZE_PATH=/api/audapi/oauth2/authorize
+```
+
+用户在官方 QQ 中发送 `论坛绑定`，打开链接登录 `https://bbs.wmc.pub`，再把回调 URL 中的
+`code=...`（或完整 URL）发送为 `论坛绑定 <授权码>`。插件会读取论坛用户 ID、昵称和邮箱；
+邮箱符合 `数字@qq.com` 时自动绑定对应查分 QQ，否则提示用户修改论坛邮箱或联系管理员。
+
+管理员/群管理员命令：
+
+- `强制绑定QQ @用户 <QQ号>`：为当前平台用户绑定查分 QQ；官方 QQ 也可直接填写加密平台用户 ID。
+- `群绑定QQ <旧QQ群号>`：把当前官方 QQ 群 openid 映射到旧 QQ 群号，恢复群级猜歌积分、加倍卡等数据。
+- `解绑群QQ`、`群绑定状态`：管理或查看群映射。
+- `猜歌预制状态`（别名 `猜谱面预制状态`）：查看热门池音频、谱面视频的完整/部分/未预制数量及后台任务。
+
+如果要继续使用普通 Bot，只需将 `MAIMAIDX_PLATFORM` 改回 `onebot`；普通模式下消息 QQ
+号仍直接作为查分 QQ，不需要 `qbind`。
+
 ### 谱面标签（dxrating，可选）
 
 未配置时谱面详情不显示 dxrating 标签。
@@ -244,8 +280,9 @@ API 强制使用 Bearer Token，页面不会返回二维码、水鱼/落雪 Toke
 管理员可在 Bot 内发送 `管理面板` 查看地址。
 完整部署与安全说明见 `docs/WebUI配置说明.md`。
 
-`MAIMAIDX_COMPACT_MESSAGES=true` 默认合并猜歌开场/结算、群排行摘要、凭据撤回警告
-与业务结果，并省略非必要的“处理中”消息，以降低平台消息发送频率。二维码补交、
+`MAIMAIDX_COMPACT_MESSAGES=true` 默认合并猜歌开场/结算摘要、凭据撤回警告
+与业务结果，并省略非必要的“处理中”消息，以降低平台消息发送频率；排行榜统一渲染为图片。
+二维码补交、
 猜歌阶段提示等需要用户继续交互的消息不会被省略。
 
 ### SQLite / YAML / MySQL 统一存储

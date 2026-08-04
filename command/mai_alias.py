@@ -29,6 +29,7 @@ from ..libraries.maimaidx_error import ServerError
 from ..libraries.maimaidx_model import Alias, PushAliasStatus
 from ..libraries.maimaidx_music import alias, mai, update_local_alias
 from ..libraries.maimaidx_music_info import draw_music_info
+from ..libraries.maimaidx_platform import billing_user_id, get_event_group_id, resolve_group_legacy_id
 
 update_alias = on_command('更新别名库', permission=SUPERUSER)
 alias_local_apply = on_command(
@@ -129,7 +130,15 @@ async def _(event: GroupMessageEvent, message: Message = CommandArg()):
                 reply_message=True
             )
 
-        msg = await maiApi.post_alias(song_id, alias_name, event.user_id, event.group_id)
+        group_id = get_event_group_id(event)
+        if isinstance(group_id, str) and not group_id.isdigit():
+            group_id = resolve_group_legacy_id(group_id)
+        if group_id is None:
+            await alias_apply.finish(
+                '官方 QQ 群尚未绑定旧 QQ 群号，暂不能提交别名；请先使用「群绑定QQ <群号>」。',
+                reply_message=True,
+            )
+        msg = await maiApi.post_alias(song_id, alias_name, billing_user_id(event), int(group_id))
     except (ServerError, ValueError) as e:
         log.error(traceback.format_exc())
         msg = str(e)
@@ -140,7 +149,7 @@ async def _(event: GroupMessageEvent, message: Message = CommandArg()):
 async def _(event: GroupMessageEvent, message: Message = CommandArg()):
     try:
         tag = message.extract_plain_text().strip().upper()
-        status = await maiApi.post_agree_user(tag, event.user_id)
+        status = await maiApi.post_agree_user(tag, billing_user_id(event))
         await alias_agree.finish(status, reply_message=True)
     except ValueError as e:
         await alias_agree.finish(str(e), reply_message=True)

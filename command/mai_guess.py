@@ -8,7 +8,7 @@ from typing import Literal, Optional, Union
 
 from loguru import logger as log
 from nonebot import on_command, on_message, on_regex
-from nonebot.adapters.onebot.v11 import Bot, Message, MessageEvent, MessageSegment, PrivateMessageEvent
+from nonebot.adapters.onebot.v11 import Bot, Message, MessageEvent, MessageSegment
 from nonebot.matcher import Matcher
 from nonebot.params import CommandArg, RegexMatched
 from nonebot.rule import Rule
@@ -21,7 +21,6 @@ from ..libraries.maimaidx_guess_boost_card import (
 )
 from ..libraries.maimaidx_guess_match import match_guess_answer
 from ..libraries.maimaidx_guess_rate_limit import consume_guess_answer_slot
-from ..libraries.maimaidx_group_rating import build_forward_node
 from ..libraries.maimaidx_guess_score import guess_score
 from ..libraries.maimaidx_guess_rank_draw import image_b64 as rank_image_b64, render_guess_rank_image
 from ..libraries.maimaidx_guess_stats_draw import personal_guess_stats_image_b64
@@ -37,6 +36,7 @@ from ..libraries.maimaidx_guess_audio import (
     build_hot_audio_cache,
     get_audio_manifest_entry,
     get_audio_prepare_status,
+    summarize_pool_cache as summarize_audio_pool_cache,
     request_hot_batch_cancel,
 )
 from ..libraries.maimaidx_guess_chart import (
@@ -46,6 +46,7 @@ from ..libraries.maimaidx_guess_chart import (
     STAGE_INTERVAL as CHART_STAGE_INTERVAL,
     build_hot_chart_cache,
     get_chart_prepare_status,
+    summarize_pool_cache as summarize_chart_pool_cache,
     request_chart_batch_cancel,
 )
 from ..libraries.maimaidx_music import guess
@@ -94,6 +95,8 @@ from ..libraries.maimaidx_platform import (
     local_video_segment,
     parse_at_target_id,
     platform_user_id,
+    plugin_finish,
+    rank_text_image,
     resolve_event_bot,
     resolve_reply_message,
     use_qq_mode,
@@ -147,6 +150,11 @@ guess_music_chart   = on_command('猜铺面', aliases={'猜谱面'}, rule=GROUP_
 update_guess_audio  = on_regex(r'^更新猜曲音频(?:\s+(-full))?\s*$', permission=PLUGIN_ADMIN_ONLY)
 update_guess_chart  = on_regex(
     r'^(?:更新|预制)猜(?:铺|谱)面(?:\s+(-full))?(?:\s+(\d+))?\s*$',
+    permission=PLUGIN_ADMIN_ONLY,
+)
+guess_prepare_status = on_command(
+    '猜歌预制状态',
+    aliases={'猜谱面预制状态', '猜歌预制', '预制状态'},
     permission=PLUGIN_ADMIN_ONLY,
 )
 guess_boost_grant   = on_command('发加倍卡', permission=GUESS_GROUP_MANAGER, rule=GROUP_MESSAGE)
@@ -259,6 +267,7 @@ for _guess_matcher in (
     guess_music_chart,
     update_guess_audio,
     update_guess_chart,
+    guess_prepare_status,
     guess_boost_grant,
     guess_boost_query,
     guess_music_solve,
@@ -723,32 +732,13 @@ async def _send_guess_score_forward(
     nodes: list,
 ) -> None:
     if not nodes:
-        await matcher.finish(title, reply_message=True)
-    if use_qq_mode(event):
-        await matcher.finish(
-            format_forward_nodes_as_text(title, nodes),
-            reply_message=True,
-        )
-    nickname = str(getattr(bot, 'nickname', None) or 'Bot')
-    title_node = build_forward_node(str(event.self_id), nickname, title)
-    all_nodes = [title_node] + nodes
-    try:
-        messages = json.loads(json.dumps(all_nodes, ensure_ascii=False))
-        await bot.call_api(
-            'send_group_forward_msg',
-            group_id=int(get_event_group_id(event)),
-            messages=messages,
-        )
-    except TypeError as e:
-        log.warning(f'[maimai] 猜歌积分排行 合并转发序列化失败: {e}')
-        await matcher.finish('合并转发序列化失败，请稍后再试。', reply_message=True)
-    except Exception as e:
-        log.warning(f'[maimai] 猜歌积分排行 合并转发发送失败: {type(e).__name__}: {e}')
-        await matcher.finish(
-            format_forward_nodes_as_text(title, nodes),
-            reply_message=True,
-        )
-    await matcher.finish(reply_message=True)
+        await plugin_finish(matcher, title, event=event, reply_message=True)
+    await plugin_finish(
+        matcher,
+        rank_text_image(format_forward_nodes_as_text(title, nodes)),
+        event=event,
+        reply_message=True,
+    )
 
 
 def _parse_grant_target(
@@ -1373,7 +1363,7 @@ async def _(event: MessageEvent):
 
 
 @update_guess_audio.handle()
-async def _(event: PrivateMessageEvent, match=RegexMatched()):
+async def _(event: MessageEvent, match=RegexMatched()):
     force = match.group(1) is not None
     log.info(f'[GuessAudio] 收到「更新猜曲音频」qq={event.user_id} force={force}')
     hint = '强制重建' if force else '增量烘焙'
@@ -1393,7 +1383,7 @@ async def _(event: PrivateMessageEvent, match=RegexMatched()):
 
 
 @update_guess_chart.handle()
-async def _(event: PrivateMessageEvent, match=RegexMatched()):
+async def _(event: MessageEvent, match=RegexMatched()):
     force = match.group(1) is not None
     limit_raw = match.group(2)
     limit = int(limit_raw) if limit_raw else None
@@ -1421,6 +1411,57 @@ async def _(event: PrivateMessageEvent, match=RegexMatched()):
         raise
     log.info(f'[GuessChart] 「更新猜铺面」完成 qq={event.user_id}')
     await update_guess_chart.finish(report)
+
+
+@guess_prepare_status.handle()
+async def _(event: MessageEvent):
+    """管理员查看音频/谱面热门池的当前预制进度与缓存分布。"""
+    try:
+        pool = await asyncio.to_thread(guess._guess_music_pool)
+    except Exception as exc:
+        await plugin_finish(
+            guess_prepare_status,
+            f'读取猜歌热门池失败：{type(exc).__name__}: {exc}',
+            event=event,
+        )
+    if not pool:
+        await plugin_finish(
+            guess_prepare_status,
+            '猜歌热门池为空，可能仍在等待曲库初始化。',
+            event=event,
+        )
+    try:
+        audio = await asyncio.to_thread(summarize_audio_pool_cache, pool)
+        chart = await asyncio.to_thread(summarize_chart_pool_cache, pool)
+    except Exception as exc:
+        await plugin_finish(
+            guess_prepare_status,
+            f'读取缓存状态失败：{type(exc).__name__}: {exc}',
+            event=event,
+        )
+
+    def _line(label: str, stats: dict[str, int], *, chart_mode: bool = False) -> str:
+        ready = int(stats.get('ready', 0))
+        partial = int(stats.get('partial', 0))
+        empty = int(stats.get('empty', 0))
+        if chart_mode:
+            middle = f"静音已好/BGM未好 {stats.get('mute_only', 0)}"
+        else:
+            middle = f"旧版本缓存 {stats.get('stale', 0)}"
+        return (
+            f'{label}：完整 {ready}，{middle}，部分 {partial}，未预制 {empty}'
+        )
+
+    audio_task = get_audio_prepare_status().strip() or '空闲'
+    chart_task = get_chart_prepare_status().strip() or '空闲'
+    text = (
+        f'猜歌预制状态（热门池 {len(pool)} 首）\n'
+        f'{_line("猜曲音频", audio)}\n'
+        f'{_line("猜谱面视频", chart, chart_mode=True)}\n\n'
+        f'音频任务：{audio_task}\n'
+        f'谱面任务：{chart_task}'
+    )
+    await plugin_finish(guess_prepare_status, text, event=event)
 
 
 @guess_music_solve.handle()

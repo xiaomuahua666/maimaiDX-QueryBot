@@ -14,7 +14,15 @@ from ..libraries.maimaidx_error import (
     UserNotFoundError,
     UserNotExistsError,
 )
-from ..libraries.maimaidx_platform import adapt_reply_payload, billing_user_id, plugin_finish, resolve_score_qqid
+from ..libraries.maimaidx_platform import (
+    adapt_reply_payload,
+    billing_user_id,
+    format_forward_nodes_as_text,
+    parse_at_target_id,
+    plugin_finish,
+    rank_text_image,
+    resolve_score_qqid,
+)
 from ..libraries.maimaidx_group_rating import (
     group_weak_rank,
     group_rating_ranking,
@@ -182,10 +190,10 @@ friend_battle = on_command('友人对战', aliases={'好友对战'})
 friend_battle_rank = on_command('友人对战排行', aliases={'友人排行', '友人对战排名'})
 
 def get_at_qq(message: MessageEvent) -> Optional[int]:
-    for item in message.message:
-        if isinstance(item, MessageSegment) and item.type == 'at' and item.data['qq'] != 'all':
-            return int(item.data['qq'])
-    return None
+    target = parse_at_target_id(message)
+    if target is None:
+        return None
+    return resolve_score_qqid(message, target)
 
 
 def _source_label(qqid: Optional[int]) -> str:
@@ -451,13 +459,14 @@ async def _coop_resolve_nicks_and_finish(event, at_qq, cmd, generator):
         raise IgnoredException('功能已禁用')
     if not at_qq:
         await cmd.finish('请使用「合作b50@某人」或「合作ab50@某人」并@一位好友。', reply_message=True)
-    if at_qq == event.user_id:
+    qqid = resolve_score_qqid(event)
+    if at_qq == qqid:
         await cmd.finish('请@除自己以外的另一位好友。', reply_message=True)
     from ..libraries.maimaidx_break import break_db, charge_session_extra
     cost = int(break_db.get_config('coop_b50_cost', '2'))
     if cost > 0:
-        break_db.ensure_service_affordable(int(event.user_id), 'coop_b50', cost)
-    nick_a = _display_name_from_sender(event.sender) or str(event.user_id)
+        break_db.ensure_service_affordable(billing_user_id(event), 'coop_b50', cost)
+    nick_a = _display_name_from_sender(event.sender) or str(qqid)
     nick_b = nick_a
     if isinstance(event, GroupMessageEvent):
         try:
@@ -474,8 +483,13 @@ async def _coop_resolve_nicks_and_finish(event, at_qq, cmd, generator):
         nick_b = str(at_qq)
     from ..libraries.maimaidx_timing import finish_timed
     if cost > 0:
-        charge_session_extra(int(event.user_id), cost, 'coop_b50')
-    await finish_timed(cmd, generator(event.user_id, at_qq, nick_a, nick_b), billing_qqid=event.user_id)
+        charge_session_extra(billing_user_id(event), cost, 'coop_b50')
+    await finish_timed(
+        cmd,
+        generator(qqid, at_qq, nick_a, nick_b),
+        billing_qqid=billing_user_id(event),
+        event=event,
+    )
 
 
 @coop_b50.handle()
@@ -524,32 +538,15 @@ async def _group_weak(event: MessageEvent):
     self_id = int(getattr(bot, 'self_id', event.self_id))
     nickname = str(getattr(bot, 'nickname', None) or 'Bot')
     text, nodes = await group_weak_rank(
-        bot, event.group_id, self_id, nickname, event.user_id
+        bot, event.group_id, self_id, nickname, resolve_score_qqid(event)
     )
-    if nodes:
-        try:
-            if bool(getattr(maiconfig, 'maimaidx_compact_messages', True)):
-                nodes = [build_forward_node(str(self_id), nickname, text)] + nodes
-            else:
-                await group_weak.send(text, reply_message=True)
-            # 做一次 JSON 往返，确保仅传递可序列化数据，避免 adapter 层 partial 等导致 TypeError
-            messages = json.loads(json.dumps(nodes, ensure_ascii=False))
-            await bot.call_api(
-                'send_group_forward_msg',
-                group_id=event.group_id,
-                messages=messages,
-            )
-        except TypeError as e:
-            log.warning(f'[maimai] 我在群里有多菜 合并转发序列化失败: {e}')
-            if bool(getattr(maiconfig, 'maimaidx_compact_messages', True)):
-                await group_weak.finish(text, reply_message=True)
-        except Exception as e:
-            log.warning(f'[maimai] 我在群里有多菜 合并转发发送失败: {type(e).__name__}: {e}')
-            if bool(getattr(maiconfig, 'maimaidx_compact_messages', True)):
-                await group_weak.finish(text, reply_message=True)
-    else:
-        await group_weak.finish(text, reply_message=True)
-    await group_weak.finish()
+    board_text = format_forward_nodes_as_text(text, nodes) if nodes else (text or '暂无数据。')
+    await plugin_finish(
+        group_weak,
+        rank_text_image(board_text),
+        event=event,
+        reply_message=True,
+    )
 
 
 @group_rating_leaderboard.handle()
@@ -588,31 +585,22 @@ async def _group_rating_leaderboard(event: MessageEvent, message: Message = Comm
     # 计算当前用户在群内排名（与排行榜同一数据源）
     rows = await get_group_member_ratings(bot, event.group_id)
     user_rank = None
+    current_qqid = resolve_score_qqid(event)
     for i, (uid, _, _) in enumerate(rows):
-        if uid == event.user_id:
+        if uid == current_qqid:
             user_rank = i + 1
             break
     if user_rank is not None:
         title_content = f"{text}\n您在群里排名为第{user_rank}名"
     else:
         title_content = f"{text}\n您尚未绑定查分器，无法显示排名"
-    # 标题作为合并转发第一条，不引用用户；保证 name/content 均为纯字符串，避免 partial 等泄露
-    title_node = build_forward_node(str(self_id), nickname, title_content)
-    all_nodes = [title_node] + nodes
-    try:
-        messages = json.loads(json.dumps(all_nodes, ensure_ascii=False))
-        await bot.call_api(
-            'send_group_forward_msg',
-            group_id=event.group_id,
-            messages=messages,
-        )
-    except TypeError as e:
-        log.warning(f'[maimai] 群聊rating排行榜 合并转发序列化失败: {e}')
-        await group_rating_leaderboard.finish('合并转发序列化失败，请稍后再试。', reply_message=False)
-    except Exception as e:
-        log.warning(f'[maimai] 群聊rating排行榜 合并转发发送失败: {type(e).__name__}: {e}')
-        await group_rating_leaderboard.finish('合并转发发送失败，请稍后再试。', reply_message=False)
-    await group_rating_leaderboard.finish(reply_message=False)
+    board_text = format_forward_nodes_as_text(title_content, nodes)
+    await plugin_finish(
+        group_rating_leaderboard,
+        rank_text_image(board_text),
+        event=event,
+        reply_message=False,
+    )
 
 
 async def _send_group_forward_or_finish(
@@ -625,27 +613,16 @@ async def _send_group_forward_or_finish(
     nodes: list,
     *,
     empty_fallback: str = '暂无数据。',
+    event: MessageEvent | None = None,
 ):
-    """合并转发：首条为标题 text，后续为 nodes；失败则文本收尾。"""
-    if not nodes:
-        await matcher.finish(text or empty_fallback, reply_message=False)
-        return
-    title_node = build_forward_node(str(self_id), nickname, text)
-    all_nodes = [title_node] + nodes
-    try:
-        messages = json.loads(json.dumps(all_nodes, ensure_ascii=False))
-        await bot.call_api(
-            'send_group_forward_msg',
-            group_id=group_id,
-            messages=messages,
-        )
-    except TypeError as e:
-        log.warning(f'[maimai] 群榜合并转发序列化失败: {e}')
-        await matcher.finish('合并转发序列化失败，请稍后再试。', reply_message=False)
-    except Exception as e:
-        log.warning(f'[maimai] 群榜合并转发发送失败: {type(e).__name__}: {e}')
-        await matcher.finish('合并转发发送失败，请稍后再试。', reply_message=False)
-    await matcher.finish(reply_message=False)
+    """将群榜内容统一渲染成图片，避免发送合并转发聊天记录。"""
+    board_text = format_forward_nodes_as_text(text, nodes) if nodes else (text or empty_fallback)
+    await plugin_finish(
+        matcher,
+        rank_text_image(board_text),
+        event=event,
+        reply_message=False,
+    )
 
 
 @group_gain_board.handle()
@@ -677,7 +654,8 @@ async def _group_gain_board(event: MessageEvent, message: Message = CommandArg()
         bot, event.group_id, self_id, nickname, days=days, top_n=top_n
     )
     await _send_group_forward_or_finish(
-        group_gain_board, bot, event.group_id, self_id, nickname, text, nodes
+        group_gain_board, bot, event.group_id, self_id, nickname, text, nodes,
+        event=event,
     )
 
 
@@ -705,7 +683,8 @@ async def _group_sun_board(event: MessageEvent, message: Message = CommandArg())
         bot, event.group_id, self_id, nickname, mode='sun', top_n=top_n
     )
     await _send_group_forward_or_finish(
-        group_sun_board, bot, event.group_id, self_id, nickname, text, nodes
+        group_sun_board, bot, event.group_id, self_id, nickname, text, nodes,
+        event=event,
     )
 
 
@@ -733,7 +712,8 @@ async def _group_lock_board(event: MessageEvent, message: Message = CommandArg()
         bot, event.group_id, self_id, nickname, mode='lock', top_n=top_n
     )
     await _send_group_forward_or_finish(
-        group_lock_board, bot, event.group_id, self_id, nickname, text, nodes
+        group_lock_board, bot, event.group_id, self_id, nickname, text, nodes,
+        event=event,
     )
 
 
@@ -748,34 +728,37 @@ async def _friend_battle(event: MessageEvent, message: Message = CommandArg()):
         await friend_battle.finish('该功能仅在群聊中可用。', reply_message=True)
     if not feature_manager.is_enabled(event.group_id, 'score'):
         raise IgnoredException('功能已禁用')
-    cd_msg = check_friend_battle_cooldown(event.user_id)
+    qqid = resolve_score_qqid(event)
+    cd_msg = check_friend_battle_cooldown(qqid)
     if cd_msg:
         await friend_battle.finish(cd_msg, reply_message=True)
     arg = message.extract_plain_text().strip()
     rounds, user_rating_cap = parse_friend_battle_args(arg)
 
     async def _gen():
-        mark_friend_battle_used(event.user_id)
+        mark_friend_battle_used(qqid)
         try:
             bot = get_bot()
         except Exception:
             bot = get_bot(str(event.self_id))
         if rounds > 1:
             batch = await run_friend_battle_batch(
-                bot, event.group_id, event.user_id, rounds, user_rating_cap=user_rating_cap
+                bot, event.group_id, qqid, rounds, user_rating_cap=user_rating_cap
             )
             if isinstance(batch, str):
                 return batch
             return await draw_friend_battle_batch_image(batch)
         result = await run_friend_battle(
-            bot, event.group_id, event.user_id, user_rating_cap=user_rating_cap
+            bot, event.group_id, qqid, user_rating_cap=user_rating_cap
         )
         if isinstance(result, str):
             return result
         return await draw_friend_battle_image(result)
 
     from ..libraries.maimaidx_timing import finish_timed
-    await finish_timed(friend_battle, _gen(), billing_qqid=event.user_id)
+    await finish_timed(
+        friend_battle, _gen(), billing_qqid=billing_user_id(event), event=event
+    )
 
 
 @friend_battle_rank.handle()
@@ -799,7 +782,7 @@ async def _friend_battle_rank(event: MessageEvent, message: Message = CommandArg
     self_id = int(getattr(bot, 'self_id', event.self_id))
     nickname = str(getattr(bot, 'nickname', None) or 'Bot')
     text, nodes = await group_friend_battle_ranking(
-        bot, event.group_id, self_id, nickname, event.user_id, top_n=top_n
+        bot, event.group_id, self_id, nickname, resolve_score_qqid(event), top_n=top_n
     )
     await _send_group_forward_or_finish(
         friend_battle_rank,
@@ -810,6 +793,7 @@ async def _friend_battle_rank(event: MessageEvent, message: Message = CommandArg
         text,
         nodes,
         empty_fallback='暂无友人对战段位数据。',
+        event=event,
     )
 
 
@@ -1841,10 +1825,11 @@ async def _head_to_head(
         raise IgnoredException('功能已禁用')
     if not at_qq:
         await head_to_head.finish('请使用「对战战绩@某人」并 @ 一位群友。', reply_message=True)
-    if at_qq == event.user_id:
+    qqid = resolve_score_qqid(event)
+    if at_qq == qqid:
         await head_to_head.finish('请 @ 除自己以外的另一位群友。', reply_message=True)
 
-    nick_a = _display_name_from_sender(event.sender) or str(event.user_id)
+    nick_a = _display_name_from_sender(event.sender) or str(qqid)
     nick_b = str(at_qq)
     if isinstance(event, GroupMessageEvent):
         try:
@@ -1859,7 +1844,7 @@ async def _head_to_head(
             pass
 
     async def _gen():
-        return await generate_head_to_head(event.user_id, at_qq, nick_a, nick_b)
+        return await generate_head_to_head(qqid, at_qq, nick_a, nick_b)
 
     from ..libraries.maimaidx_timing import finish_timed
     await finish_timed(head_to_head, _gen(), billing_qqid=event.user_id)

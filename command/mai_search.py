@@ -24,6 +24,7 @@ from ..libraries.maimaidx_multiver_chart import draw_multiver_chart
 from ..libraries.maimaidx_pmyx_api import PmyxAPI
 from ..libraries.maimaidx_wmc_api import WMC_DIFF_NAMES, WmcAPI, build_preview_url, make_chart_key, resolve_wmc_base_url
 from ..libraries.maimaidx_timing import attach_timing, finish_timed_sync, run_timed
+from ..libraries.maimaidx_platform import billing_user_id, resolve_score_qqid
 
 search_music        = on_command('查歌', aliases={'search'})
 search_base         = on_command('定数查歌', aliases={'search base'})
@@ -253,16 +254,19 @@ async def _send_song_info_then_pmyx_forward(
 ):
     """歌曲信息直接回复用户，再发一个合并转发（包含谱面印象、谱面标签、谱面预览链接三个子合并转发）。"""
     async def _gen():
-        pic = await draw_music_info(music, event.user_id)
+        pic = await draw_music_info(music, resolve_score_qqid(event))
         return (Message(prefix) + pic) if prefix else pic
 
     from ..libraries.maimaidx_break import take_break_charge_footer
-    from ..libraries.maimaidx_error import BreakInsufficientError
+    from ..libraries.maimaidx_error import BreakInsufficientError, QBindRequiredError
     try:
         msg, total = await run_timed(
-            _gen(), billing_qqid=event.user_id, feature_charge='search'
+            _gen(), billing_qqid=billing_user_id(event), feature_charge='search'
         )
     except BreakInsufficientError as e:
+        await matcher.finish(str(e), reply_message=reply)
+        return
+    except QBindRequiredError as e:
         await matcher.finish(str(e), reply_message=reply)
         return
     charge = take_break_charge_footer()

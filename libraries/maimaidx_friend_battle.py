@@ -30,7 +30,11 @@ from .maimaidx_error import (
     UserNotFoundError,
     UserNotExistsError,
 )
-from .maimaidx_group_rating import _display_name, build_forward_node
+from .maimaidx_group_rating import (
+    _display_name,
+    _get_group_member_list,
+    build_forward_node,
+)
 from .maimaidx_timing import measure
 from .maimaidx_model import ChartInfo, PlayInfoDev, UserInfoDev
 from .maimaidx_score_formatter import get_difficulty_name
@@ -509,7 +513,7 @@ async def _build_friend_battle_group_context(
 ) -> Tuple[Optional[FriendBattleGroupContext], Optional[str]]:
     try:
         with measure('fetch'):
-            raw = await bot.call_api("get_group_member_list", group_id=group_id)
+            raw = await _get_group_member_list(bot, group_id)
     except Exception as e:
         return None, f"获取群成员失败：{e}"
     if not raw or not isinstance(raw, list):
@@ -772,7 +776,7 @@ async def group_friend_battle_ranking(
         return "暂无友人对战段位数据，先发「友人对战」打几局吧。", []
 
     try:
-        raw = await bot.call_api("get_group_member_list", group_id=group_id)
+        raw = await _get_group_member_list(bot, group_id)
     except Exception as e:
         log.warning(f"[group_friend_battle_ranking] get_group_member_list failed: {e}")
         return "获取群成员列表失败。", []

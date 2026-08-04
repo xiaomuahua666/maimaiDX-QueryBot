@@ -1,5 +1,6 @@
 nonebot2<3.0.0,>=2.0.0
 nonebot-adapter-onebot<3.0.0,>=2.2.2
+nonebot-adapter-qq<2.0.0,>=1.7.1; python_version >= "3.10"
 nonebot-plugin-apscheduler<1.0.0,>=0.3.0
 aiofiles<25.0.0,>=23.2.1
 httpx<1.0.0,>=0.23.1

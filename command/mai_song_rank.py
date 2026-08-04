@@ -1,4 +1,3 @@
-import json
 import re
 from typing import Optional
 
@@ -7,7 +6,7 @@ from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, MessageEvent
 from nonebot.exception import IgnoredException
 from nonebot.params import RegexMatched
 
-from ..config import log, maiconfig
+from ..config import log
 from ..libraries.maimaidx_group_rating import (
     build_forward_node,
     get_group_member_song_scores,
@@ -20,6 +19,12 @@ from ..libraries.maimaidx_score_formatter import (
     get_difficulty_name,
 )
 from ..libraries.maimaidx_song_resolver import SongResolver
+from ..libraries.maimaidx_platform import (
+    format_forward_nodes_as_text,
+    plugin_finish,
+    rank_text_image,
+    resolve_score_qqid,
+)
 
 
 _DIFF_RE = r"(?:绿|黄|红|紫|白|basic|advanced|expert|master|remaster|re:master)"
@@ -181,33 +186,23 @@ async def _song_rank(event: MessageEvent, matched = RegexMatched()):
     )
 
     bot, self_id, nickname = await _get_bot_info(event)
+    current_qqid = resolve_score_qqid(event)
 
     if is_my:
         text, nodes = await group_song_my_rank(
-            bot, event.group_id, self_id, nickname, event.user_id, music_id, music_title, level_index
+            bot, event.group_id, self_id, nickname, current_qqid, music_id, music_title, level_index
         )
         log.debug(f"[song_rank] my branch result text_len={len(text)}, nodes={len(nodes)}")
         if not nodes:
             log.debug("[song_rank] my branch has no nodes, finish")
             await song_rank.finish(text, reply_message=True)
-        compact = bool(getattr(maiconfig, 'maimaidx_compact_messages', True))
-        if compact:
-            nodes = [build_forward_node(str(self_id), nickname, text)] + nodes
-        else:
-            await song_rank.send(text, reply_message=True)
-        try:
-            messages = json.loads(json.dumps(nodes, ensure_ascii=False))
-            await bot.call_api("send_group_forward_msg", group_id=event.group_id, messages=messages)
-            log.debug("[song_rank] my branch forward message sent")
-        except TypeError as e:
-            log.warning(f"[maimai] 我的歌曲排名 合并转发序列化失败: {e}")
-            fallback = text + "\n合并转发序列化失败，请稍后再试。" if compact else "合并转发序列化失败，请稍后再试。"
-            await song_rank.finish(fallback, reply_message=True)
-        except Exception as e:
-            log.warning(f"[maimai] 我的歌曲排名 合并转发发送失败: {type(e).__name__}: {e}")
-            fallback = text + "\n合并转发发送失败，请稍后再试。" if compact else "合并转发发送失败，请稍后再试。"
-            await song_rank.finish(fallback, reply_message=True)
-        await song_rank.finish()
+        board_text = format_forward_nodes_as_text(text, nodes)
+        await plugin_finish(
+            song_rank,
+            rank_text_image(board_text),
+            event=event,
+            reply_message=True,
+        )
 
     # 群榜：只查一次群成绩，并附带当前用户排名提示
     rows = await get_group_member_song_scores(bot, event.group_id, music_id, level_index)
@@ -227,7 +222,7 @@ async def _song_rank(event: MessageEvent, matched = RegexMatched()):
 
     user_rank = None
     for i, (uid, _, _) in enumerate(rows):
-        if uid == event.user_id:
+        if uid == current_qqid:
             user_rank = i + 1
             break
 
@@ -240,20 +235,15 @@ async def _song_rank(event: MessageEvent, matched = RegexMatched()):
     )
     nodes = []
     for i, (uid, name, score_info) in enumerate(take):
-        line = format_score_line_from_dict(i + 1, name, score_info, is_self=(uid == event.user_id))
-        node_name = "你" if uid == event.user_id else name
+        line = format_score_line_from_dict(i + 1, name, score_info, is_self=(uid == current_qqid))
+        node_name = "你" if uid == current_qqid else name
         nodes.append(build_forward_node(str(self_id), str(node_name), line))
 
     all_nodes = [build_forward_node(str(self_id), nickname, title_text)] + nodes
     log.debug(f"[song_rank] leaderboard all_nodes={len(all_nodes)}")
-    try:
-        messages = json.loads(json.dumps(all_nodes, ensure_ascii=False))
-        await bot.call_api("send_group_forward_msg", group_id=event.group_id, messages=messages)
-        log.debug("[song_rank] leaderboard forward message sent")
-    except TypeError as e:
-        log.warning(f"[maimai] 歌曲排名排行榜 合并转发序列化失败: {e}")
-        await song_rank.finish("合并转发序列化失败，请稍后再试。", reply_message=False)
-    except Exception as e:
-        log.warning(f"[maimai] 歌曲排名排行榜 合并转发发送失败: {type(e).__name__}: {e}")
-        await song_rank.finish("合并转发发送失败，请稍后再试。", reply_message=False)
-    await song_rank.finish(reply_message=False)
+    await plugin_finish(
+        song_rank,
+        rank_text_image(format_forward_nodes_as_text(title_text, nodes)),
+        event=event,
+        reply_message=False,
+    )

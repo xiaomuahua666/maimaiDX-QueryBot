@@ -18,4 +18,5 @@ from .mai_search import *
 from .mai_table import *
 from .mai_pmyx import *
 from .mai_qq_bind import *
+from .mai_forum_bind import *
 from .mai_rank_course import *

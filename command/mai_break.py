@@ -27,6 +27,9 @@ from ..libraries.maimaidx_platform import (
     get_event_group_id,
     get_sender_display_name,
     platform_user_id,
+    plugin_finish,
+    rank_text_image,
+    resolve_group_legacy_id,
 )
 from ..libraries.maimaidx_group_rating import build_forward_node
 from ..libraries.maimaidx_pending_session import finish_pending, session_key, track_event
@@ -208,7 +211,12 @@ async def _(event: MessageEvent, message: Message = CommandArg()):
 
 def _red_packet_group_id(event: MessageEvent) -> Optional[int]:
     if isinstance(event, GroupMessageEvent):
-        return int(event.group_id)
+        gid = get_event_group_id(event)
+        if gid is None:
+            return None
+        if isinstance(gid, str) and not gid.isdigit():
+            return resolve_group_legacy_id(gid)
+        return int(gid)
     return None
 
 
@@ -470,8 +478,8 @@ def _storage_status_for_event(event: MessageEvent) -> tuple[bool, bool]:
 
 @awmc_checkin.handle()
 async def _(event: MessageEvent):
-    group_id = event.group_id if isinstance(event, GroupMessageEvent) else None
-    qqid = int(event.get_user_id())
+    group_id = _red_packet_group_id(event)
+    qqid = int(billing_user_id(event))
     storage_on, storage_eligible = _storage_status_for_event(event)
     result = break_db.checkin(
         qqid,
@@ -751,11 +759,15 @@ async def _(event: MessageEvent):
     status = break_db.get_gamble_pool_status()
 
     if status.total_pool == 0:
-        await break_gamble_pool.finish(
-            '🎰 今日抽奖池\n'
-            '━━━━━━━━━━━━━━\n'
-            '还没有人贡献呢~\n'
-            '参与 BREAK 抽奖即可贡献！',
+        await plugin_finish(
+            break_gamble_pool,
+            rank_text_image(
+                '🎰 今日抽奖池\n'
+                '━━━━━━━━━━━━━━\n'
+                '还没有人贡献呢~\n'
+                '参与 BREAK 抽奖即可贡献！'
+            ),
+            event=event,
             reply_message=True,
         )
         return
@@ -781,7 +793,12 @@ async def _(event: MessageEvent):
         '💡 发送"领取福利"可领取今日福利！',
     ])
 
-    await break_gamble_pool.finish('\n'.join(lines), reply_message=True)
+    await plugin_finish(
+        break_gamble_pool,
+        rank_text_image('\n'.join(lines)),
+        event=event,
+        reply_message=True,
+    )
 
 
 @break_gamble_claim.handle()
@@ -811,11 +828,15 @@ async def _(event: MessageEvent):
     leaderboard = break_db.get_gamble_pool_leaderboard(limit=10)
 
     if not leaderboard:
-        await break_gamble_leaderboard.finish(
-            '🏆 贡献总榜（首富榜）\n'
-            '━━━━━━━━━━━━━━\n'
-            '还没有人贡献过呢~\n'
-            '参与 BREAK 抽奖即可贡献！',
+        await plugin_finish(
+            break_gamble_leaderboard,
+            rank_text_image(
+                '🏆 贡献总榜（首富榜）\n'
+                '━━━━━━━━━━━━━━\n'
+                '还没有人贡献过呢~\n'
+                '参与 BREAK 抽奖即可贡献！'
+            ),
+            event=event,
             reply_message=True,
         )
         return
@@ -840,4 +861,9 @@ async def _(event: MessageEvent):
         '💡 发送"BREAK抽奖"来贡献吧！',
     ])
 
-    await break_gamble_leaderboard.finish('\n'.join(lines), reply_message=True)
+    await plugin_finish(
+        break_gamble_leaderboard,
+        rank_text_image('\n'.join(lines)),
+        event=event,
+        reply_message=True,
+    )

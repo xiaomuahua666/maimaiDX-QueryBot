@@ -7,7 +7,15 @@ from pydantic import BaseModel, Field
 
 from ..config import guess_score_events_file, guess_score_file, guess_score_history_file
 from .maimaidx_group_rating import build_forward_node
-from .maimaidx_platform import GroupId, UserId, format_forward_nodes_as_text, is_likely_qq_group_id, send_group_plain_text
+from .maimaidx_platform import (
+    GroupId,
+    UserId,
+    adapt_guess_outbound,
+    format_forward_nodes_as_text,
+    is_likely_qq_group_id,
+    rank_text_image,
+    send_group_plain_text,
+)
 from .tool import writefile
 
 
@@ -191,6 +199,16 @@ class GuessScoreManager:
 
     @staticmethod
     def _gid_key(gid: GroupId) -> str:
+        # Preserve old guess-score data after an official QQ migration when an
+        # administrator mapped the encrypted group_openid to its former QQ id.
+        try:
+            from .maimaidx_qq_bind import qq_bind_db
+
+            mapped = qq_bind_db.get_group_legacy_id(str(gid))
+            if mapped is not None:
+                return str(mapped)
+        except Exception:
+            pass
         return str(gid)
 
     @staticmethod
@@ -575,21 +593,17 @@ class GuessScoreManager:
                     if is_likely_qq_group_id(gid):
                         if qq_bot is None:
                             raise RuntimeError('未找到官方 QQ Bot')
-                        await send_group_plain_text(
-                            qq_bot,
-                            gid,
-                            format_forward_nodes_as_text(title, nodes),
+                        await qq_bot.send_to_group(
+                            group_openid=str(gid),
+                            message=adapt_guess_outbound(
+                                rank_text_image(format_forward_nodes_as_text(title, nodes))
+                            ),
                         )
                     else:
                         target_bot = onebot_bot or bot
-                        title_node = build_forward_node(str(self_id), '猜歌榜结算', title)
-                        messages = json.loads(
-                            json.dumps([title_node] + nodes, ensure_ascii=False),
-                        )
-                        await target_bot.call_api(
-                            'send_group_forward_msg',
+                        await target_bot.send_group_msg(
                             group_id=int(gid),
-                            messages=messages,
+                            message=rank_text_image(format_forward_nodes_as_text(title, nodes)),
                         )
                 except Exception as e:
                     log.warning(

@@ -25,7 +25,7 @@ setattr(_qq_member_recorder, '_maimaidx_passive_recorder', True)
 
 
 def _event_group_id(event) -> Optional[str]:
-    gid = getattr(event, 'group_id', None) or getattr(event, 'group_openid', None)
+    gid = getattr(event, 'group_openid', None) or getattr(event, 'group_id', None)
     return str(gid) if gid is not None else None
 
 

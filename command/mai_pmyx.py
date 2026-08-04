@@ -16,6 +16,7 @@ from ..libraries.maimaidx_wmc_api import (
     make_chart_key,
     resolve_wmc_base_url,
 )
+from ..libraries.maimaidx_platform import plugin_finish, rank_text_image
 
 
 def _wmc_api() -> Optional[WmcAPI]:
@@ -227,4 +228,9 @@ async def _(event: MessageEvent, matcher: Matcher, arg: Message = CommandArg()):
         line += f"\n   浏览 {views} | 评分 {avg:.1f}★（{count}人）"
         lines.append(line)
 
-    await matcher.finish("\n".join(lines), reply_message=True)
+    await plugin_finish(
+        matcher,
+        rank_text_image("\n".join(lines)),
+        event=event,
+        reply_message=True,
+    )

@@ -36,6 +36,9 @@ from .maimaidx_score_formatter import (
     format_score_line_from_dict,
     get_difficulty_name,
 )
+from .maimaidx_platform import is_likely_qq_group_id
+from .maimaidx_qq_bind import qq_bind_db
+from .maimaidx_qq_member_registry import qq_member_registry
 
 # 群内歌曲成绩缓存：key = (group_id, music_id, level_index), value = (rows, expiry_timestamp)
 _group_song_score_cache: dict = {}
@@ -116,6 +119,40 @@ def _display_name(member: dict) -> str:
 _GROUP_RATING_CONCURRENCY = 5
 
 
+def _forum_or_qbind_qq(platform_id: str) -> Optional[int]:
+    """Resolve an official QQ member openid to the real query QQ number."""
+    qq = qq_bind_db.get_legacy_qq(str(platform_id))
+    if qq is not None:
+        return qq
+    binding = qq_bind_db.get_forum_binding(str(platform_id))
+    if binding and binding.get('legacy_qq') is not None:
+        try:
+            return int(binding['legacy_qq'])
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
+async def _get_group_member_list(bot: Bot, group_id) -> List[dict]:
+    """Fetch members for OneBot, or bound/seen members for official QQ."""
+    if is_likely_qq_group_id(group_id):
+        members: List[dict] = []
+        for row in qq_member_registry.list_group(str(group_id), limit=200):
+            platform_id = str(row.get('member_id') or '').strip()
+            qq = _forum_or_qbind_qq(platform_id)
+            if qq is None:
+                continue
+            binding = qq_bind_db.get_forum_binding(platform_id) or {}
+            nickname = str(binding.get('username') or f'QQ{qq}')
+            members.append({'user_id': qq, 'nickname': nickname, 'card': ''})
+        return members
+    try:
+        raw = await bot.call_api("get_group_member_list", group_id=group_id)
+    except Exception:
+        return []
+    return raw if isinstance(raw, list) else []
+
+
 async def get_group_member_ratings(
     bot: Bot,
     group_id: int,
@@ -132,10 +169,7 @@ async def get_group_member_ratings(
     net_fetch_limit: 网络补拉人数上限（None=不限制）；shuffle_net 为 True 时先打乱再截取。
     require_token_for_net: 为 True 时未配置开发者 TOKEN 则跳过网络补拉。
     """
-    try:
-        raw = await bot.call_api("get_group_member_list", group_id=group_id)
-    except Exception:
-        return []
+    raw = await _get_group_member_list(bot, group_id)
     if not raw or not isinstance(raw, list):
         return []
 
@@ -317,7 +351,7 @@ async def group_gain_ranking(
         rows = list(cached_rows)
     else:
         try:
-            raw = await bot.call_api("get_group_member_list", group_id=group_id)
+            raw = await _get_group_member_list(bot, group_id)
         except Exception as e:
             log.warning(f"[group_gain_ranking] get_group_member_list failed: {e}")
             return "获取群成员列表失败。", []
@@ -381,7 +415,7 @@ async def group_sun_lock_ranking(
     rows = _group_sun_lock_raw_cache_get(group_id)
     if rows is None:
         try:
-            raw = await bot.call_api("get_group_member_list", group_id=group_id)
+            raw = await _get_group_member_list(bot, group_id)
         except Exception as e:
             log.warning(f"[group_sun_lock_ranking] get_group_member_list failed: {e}")
             return "获取群成员列表失败。", []
@@ -468,7 +502,7 @@ async def get_group_member_song_scores(
         return cached
 
     try:
-        raw = await bot.call_api("get_group_member_list", group_id=group_id)
+        raw = await _get_group_member_list(bot, group_id)
         log.debug(f"[get_group_member_song_scores] 获取群成员列表: {len(raw) if raw else 0} 人")
     except Exception as e:
         log.warning(f"[get_group_member_song_scores] 获取群成员列表失败: {e}")

@@ -2243,6 +2243,32 @@ def get_billing_qqid() -> Optional[int]:
     return _billing_qqid.get()
 
 
+def normalize_billing_qqid(qqid: Optional[int]) -> Optional[int]:
+    """Normalize a legacy QQ number or official QQ openid for BREAK billing.
+
+    Some legacy handlers still pass ``event.user_id`` directly.  Official QQ
+    user IDs are encrypted strings, so never cast them with ``int``.  Prefer a
+    qbind/forum mapping and otherwise derive a stable local-only key so BREAK
+    accounting remains usable before the user completes binding.
+    """
+    if qqid in (None, ''):
+        return None
+    raw = str(qqid).strip()
+    if raw.isdigit():
+        return int(raw)
+    try:
+        from .maimaidx_qq_bind import qq_bind_db
+
+        mapped = qq_bind_db.get_legacy_qq(raw)
+    except Exception:
+        mapped = None
+    if mapped is not None:
+        return int(mapped)
+    import hashlib
+
+    return int(hashlib.sha256(raw.encode()).hexdigest()[:15], 16)
+
+
 def charge_session_extra(qqid: Optional[int], cost: int, service: str) -> bool:
     """在 break_billing 上下文内额外扣除功能费；成功返回 True。"""
     if not qqid or cost <= 0 or is_superuser_exempt(qqid):
@@ -2281,7 +2307,11 @@ def settle_feature_if_uncharged(qqid: Optional[int], service: str = 'search') ->
 @asynccontextmanager
 async def break_billing(qqid: Optional[int]):
     """指令级扣费上下文：查分器/落雪成绩 API 成功后会在此 qq 上结算 BREAK。"""
-    payer = int(qqid) if qqid else None
+    # Official QQ events expose an encrypted openid.  A few mature commands
+    # still pass ``event.user_id`` directly into this context, so normalize it
+    # here as a final boundary: use the forum/qbind QQ when available, and a
+    # stable hash only for platform-local BREAK accounting when it is not.
+    payer = normalize_billing_qqid(qqid)
     if payer and is_superuser_exempt(payer):
         payer = None
     t1 = _billing_qqid.set(payer)

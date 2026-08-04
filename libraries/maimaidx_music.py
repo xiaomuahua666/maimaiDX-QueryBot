@@ -1223,17 +1223,31 @@ class FeatureManager:
         if not hasattr(self.switch, feature_name):
             raise ValueError(f'未知功能: {feature_name}')
         return getattr(self.switch, feature_name)
+
+    @staticmethod
+    def _group_key(gid):
+        """Use an administrator's legacy QQ group mapping for persisted switches."""
+        try:
+            from .maimaidx_qq_bind import qq_bind_db
+
+            mapped = qq_bind_db.get_group_legacy_id(str(gid))
+            if mapped is not None:
+                return mapped
+        except Exception:
+            pass
+        return gid
     
     def is_enabled(self, gid: int, feature_name: str) -> bool:
         """检查功能是否在群组中启用；默认启用，显式 disable 优先。"""
         switch = self._get_feature_switch(feature_name)
-        key = str(gid)
+        key = str(self._group_key(gid))
         return key not in {str(item) for item in switch.disable}
     
     async def enable(self, gid: int, feature_name: str) -> str:
         """在群组中启用功能"""
         from ..config import group_feature_switch_file
         switch = self._get_feature_switch(feature_name)
+        gid = self._group_key(gid)
         if str(gid) not in {str(item) for item in switch.enable}:
             switch.enable.append(gid)
         switch.disable = [item for item in switch.disable if str(item) != str(gid)]
@@ -1245,6 +1259,7 @@ class FeatureManager:
         """在群组中禁用功能"""
         from ..config import group_feature_switch_file
         switch = self._get_feature_switch(feature_name)
+        gid = self._group_key(gid)
         if str(gid) not in {str(item) for item in switch.disable}:
             switch.disable.append(gid)
         switch.enable = [item for item in switch.enable if str(item) != str(gid)]
@@ -1281,6 +1296,7 @@ class FeatureManager:
     async def enable_all(self, gid: int) -> str:
         """在群组中启用所有功能"""
         from ..config import group_feature_switch_file
+        gid = self._group_key(gid)
         feature_names = self._get_all_feature_names()
         for feature_name in feature_names:
             switch = self._get_feature_switch(feature_name)
@@ -1294,6 +1310,7 @@ class FeatureManager:
     async def disable_all(self, gid: int) -> str:
         """在群组中禁用所有功能"""
         from ..config import group_feature_switch_file
+        gid = self._group_key(gid)
         feature_names = self._get_all_feature_names()
         for feature_name in feature_names:
             switch = self._get_feature_switch(feature_name)

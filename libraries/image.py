@@ -275,7 +275,16 @@ def music_picture(music_id: Union[int, str]) -> Path:
 
 
 def text_to_image(text: str) -> Image.Image:
-    font = ImageFont.truetype(str(SHANGGUMONO), 24)
+    # Static packs normally provide ShangguMono; keep lightweight text boards
+    # usable during first boot or in a minimal deployment without that pack.
+    font_path = Path(SHANGGUMONO)
+    if not font_path.is_file():
+        bundled = Path(__file__).resolve().parents[1] / 'GenSenMaruGothicTW-Regular.ttf'
+        font_path = bundled if bundled.is_file() else font_path
+    try:
+        font = ImageFont.truetype(str(font_path), 24)
+    except OSError:
+        font = ImageFont.load_default()
     padding = 10
     margin = 4
     lines = text.strip().split('\n')

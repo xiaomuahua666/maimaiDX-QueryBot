@@ -687,6 +687,38 @@ def is_chart_round_ready(music_id: str, kind: str, diff: int) -> bool:
     return is_chart_video_ready(music_id, kind, diff) and is_chart_bgm_ready(music_id, kind, diff)
 
 
+def summarize_pool_cache(pool) -> Dict[str, int]:
+    """统计热门池中每首曲目的谱面视频预制状态。
+
+    与热门池预制逻辑保持一致：同一首歌会同时检查其主谱面类型和另一种
+    类型的回退缓存。``ready`` 表示静音段和曲末 BGM 都可用，``mute_only``
+    表示仅有静音段，``partial`` 表示目录存在但文件尚未达到可用大小，
+    ``empty`` 表示尚无当前版本缓存。
+    """
+    stats = {'ready': 0, 'mute_only': 0, 'partial': 0, 'empty': 0}
+    for music in pool or ():
+        mid = str(music.id)
+        primary = chart_kind(music.type)
+        diff = pick_chart_diff(len(music.ds))
+        kinds = (primary, 'standard' if primary == 'dx' else 'dx')
+        has_ready = any(is_chart_round_ready(mid, kind, diff) for kind in kinds)
+        if has_ready:
+            stats['ready'] += 1
+            continue
+        has_mute = any(is_chart_video_ready(mid, kind, diff) for kind in kinds)
+        if has_mute:
+            stats['mute_only'] += 1
+            continue
+        # Keep a separate bucket for incomplete files/directories so an admin can
+        # distinguish a failed/interrupted render from a song never attempted.
+        has_partial = any(
+            (CHART_GUESS_CACHE_DIR / cache_key(mid, kind, diff)).exists()
+            for kind in kinds
+        )
+        stats['partial' if has_partial else 'empty'] += 1
+    return stats
+
+
 def _load_manifest() -> dict:
     if not CHART_GUESS_MANIFEST.exists():
         return {'version': CHART_VIDEO_REV, 'entries': {}}

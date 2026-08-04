@@ -307,6 +307,14 @@ class LetterStatsManager:
             self.store = LetterStatsStore()
 
     def _gid(self, gid: GroupId) -> str:
+        try:
+            from .maimaidx_qq_bind import qq_bind_db
+
+            mapped = qq_bind_db.get_group_legacy_id(str(gid))
+            if mapped is not None:
+                return str(mapped)
+        except Exception:
+            pass
         return str(gid)
 
     def _group(self, gid: GroupId) -> LetterGroupStats:

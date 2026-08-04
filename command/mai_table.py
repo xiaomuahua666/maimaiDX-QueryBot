@@ -11,6 +11,11 @@ from ..libraries.maimaidx_error import BreakInsufficientError, UserDisabledQuery
 from ..libraries.maimaidx_break import take_break_charge_footer
 from ..libraries.maimaidx_timing import attach_timing, finish_timed, run_timed, run_timed_call
 from ..libraries.maimaidx_update_plate import *
+from ..libraries.maimaidx_platform import (
+    billing_user_id,
+    parse_at_target_id,
+    resolve_score_qqid,
+)
 
 _RISE_SCORE_TIP = "您可以通过开启数据存储 使用「今日吃分推荐」获取更有参考价值的个性化推荐上分曲目。"
 
@@ -28,10 +33,10 @@ level_achievement_list  = on_regex(r'^([0-9]+\.?[0-9]?\+?)\s?分数列表\s?([0-
 
 
 def get_at_qq(message: MessageEvent) -> Optional[int]:
-    for item in message.message:
-        if isinstance(item, MessageSegment) and item.type == 'at' and item.data['qq'] != 'all':
-            return int(item.data['qq'])
-    return None
+    target = parse_at_target_id(message)
+    if target is None:
+        return None
+    return resolve_score_qqid(message, target)
 
 
 @update_table.handle()
@@ -75,8 +80,8 @@ async def _(event: MessageEvent, match = RegexMatched()):
     elif ra in levelList[6:]:
         await finish_timed(
             rating_table_pfm,
-            draw_rating_table(event.user_id, ra, True if plan and plan.lower() in comboRank else False),
-            billing_qqid=event.user_id,
+            draw_rating_table(resolve_score_qqid(event), ra, True if plan and plan.lower() in comboRank else False),
+            billing_qqid=billing_user_id(event),
         )
     else:
         await rating_table_pfm.finish('无法识别的定数', reply_message=True)
@@ -91,12 +96,17 @@ async def _(event: MessageEvent, match = RegexMatched()):
     if f'{ver}{plan}' == '真将':
         await plate_table_pfm.finish('真系没有真将哦', reply_message=True)
     page = int(match.group(3)) if match.group(3) else 1
-    await finish_timed(plate_table_pfm, draw_plate_table(event.user_id, ver, plan, page), billing_qqid=event.user_id)
+    qqid = resolve_score_qqid(event)
+    await finish_timed(
+        plate_table_pfm,
+        draw_plate_table(qqid, ver, plan, page),
+        billing_qqid=billing_user_id(event), event=event,
+    )
 
 
 @rise_score.handle()
 async def _(event: MessageEvent, match = RegexMatched(), user_id: Optional[int] = Depends(get_at_qq)):
-    qqid = user_id or event.user_id
+    qqid = user_id or resolve_score_qqid(event)
     username = None
     
     rating = match.group(1)
@@ -112,7 +122,7 @@ async def _(event: MessageEvent, match = RegexMatched(), user_id: Optional[int] 
     try:
         result, total = await run_timed(
             rise_score_data(qqid, username, rating, score),
-            billing_qqid=event.user_id,
+            billing_qqid=billing_user_id(event),
         )
     except BreakInsufficientError as e:
         await rise_score.finish(str(e), reply_message=True)
@@ -128,19 +138,22 @@ async def _(event: MessageEvent, match = RegexMatched(), user_id: Optional[int] 
 
 @plate_process.handle()
 async def _(event: MessageEvent, match = RegexMatched(), user_id: Optional[int] = Depends(get_at_qq)):
-    qqid = user_id or event.user_id
+    qqid = user_id or resolve_score_qqid(event)
     ver = match.group(1)
     plan = match.group(2)
     
     if f'{ver}{plan}' == '真将':
         await plate_process.finish('真系没有真将哦', reply_message=True)
 
-    await finish_timed(plate_process, player_plate_data(qqid, '', ver, plan), billing_qqid=event.user_id)
+    await finish_timed(
+        plate_process, player_plate_data(qqid, '', ver, plan),
+        billing_qqid=billing_user_id(event), event=event,
+    )
 
 
 @level_process.handle()
 async def _(event: MessageEvent, match = RegexMatched(), user_id: Optional[int] = Depends(get_at_qq)):
-    qqid = user_id or event.user_id
+    qqid = user_id or resolve_score_qqid(event)
     
     level = match.group(1)
     plan = match.group(2)
@@ -171,13 +184,14 @@ async def _(event: MessageEvent, match = RegexMatched(), user_id: Optional[int] 
     await finish_timed(
         level_process,
         level_process_data(qqid, username, level, plan, category, int(page) if page else 1),
-        billing_qqid=event.user_id,
+        billing_qqid=billing_user_id(event),
+        event=event,
     )
 
 
 @level_plate_progress.handle()
 async def _level_plate_progress(event: MessageEvent, match=RegexMatched(), user_id: Optional[int] = Depends(get_at_qq)):
-    qqid = user_id or event.user_id
+    qqid = user_id or resolve_score_qqid(event)
     level = match.group(1)
     plan_cn = match.group(2)
     category_cn = match.group(3)
@@ -211,7 +225,7 @@ async def _level_plate_progress(event: MessageEvent, match=RegexMatched(), user_
         return summary, pic
 
     try:
-        result, total = await run_timed(_generate(), billing_qqid=event.user_id)
+        result, total = await run_timed(_generate(), billing_qqid=billing_user_id(event))
     except BreakInsufficientError as e:
         await level_plate_progress.finish(str(e), reply_message=True)
         return
@@ -233,7 +247,7 @@ async def _level_plate_progress(event: MessageEvent, match=RegexMatched(), user_
 
 @level_achievement_list.handle()
 async def _(event: MessageEvent, match = RegexMatched(), user_id: Optional[int] = Depends(get_at_qq)):
-    qqid = user_id or event.user_id
+    qqid = user_id or resolve_score_qqid(event)
 
     rating = match.group(1)
     page = match.group(2)
@@ -251,5 +265,6 @@ async def _(event: MessageEvent, match = RegexMatched(), user_id: Optional[int] 
     await finish_timed(
         level_achievement_list,
         level_achievement_list_data(qqid, username, rating, int(page) if page else 1),
-        billing_qqid=event.user_id,
+        billing_qqid=billing_user_id(event),
+        event=event,
     )

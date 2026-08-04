@@ -198,6 +198,19 @@ class Config(BaseModel):
     maimaidx_use_qq_card: bool = False
     # 插件管理员 platform id（逗号/空格分隔），与 SUPERUSER 等效；官方 QQ 填 openid
     maimaidx_bot_admins: str = ''
+    # ---------- AWMC 论坛（ThemeHouse/Audentio OAuth） ----------
+    # 论坛域名默认 bbs.wmc.pub；兼容网页端使用的 AWWC_XF_* 环境变量。
+    awmc_xf_base_url: str = 'https://bbs.wmc.pub'
+    awmc_xf_client_id: Optional[str] = None
+    awmc_xf_client_secret: Optional[str] = None
+    # 必须与 XenForo OAuth 应用登记值完全一致；机器人默认使用论坛域名回调，
+    # 让用户可以把带 code 的地址复制回 QQ。已有网页登录回调可用环境变量覆盖。
+    awmc_xf_redirect_uri: str = 'https://bbs.wmc.pub/'
+    awmc_xf_authorize_path: str = '/api/audapi/oauth2/authorize'
+    awmc_xf_token_url: Optional[str] = None
+    awmc_xf_userinfo_url: Optional[str] = None
+    awmc_xf_scope: Optional[str] = None
+    awmc_forum_auth_enabled: bool = True
 
 
 maiconfig = get_plugin_config(Config)

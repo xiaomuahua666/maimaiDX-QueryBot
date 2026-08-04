@@ -23,7 +23,15 @@ from ..libraries.maimaidx_processing_time import (
     auto_qrcode_workflow_key,
     processing_time_estimator,
 )
-from ..libraries.maimaidx_platform import billing_user_id, resolve_score_qqid
+from ..libraries.maimaidx_platform import (
+    billing_user_id,
+    get_event_group_id,
+    parse_at_target_id,
+    platform_user_id,
+    plugin_finish,
+    rank_text_image,
+    resolve_score_qqid,
+)
 from ..libraries.maimaidx_playcount_db import pc_db
 from ..libraries.maimaidx_playcount_fetcher import playcount_fetcher
 from ..libraries.maimaidx_prober_compare import (
@@ -52,7 +60,7 @@ pc_rank50 = on_command('游玩排行50', aliases={'游玩PC50', 'PC游玩50', 'p
 setattr(update_pc, '_maimaidx_serial_user_operation', True)
 
 # user_id -> group_id；关机时可据此通知对应群
-_waiting_qrcode: dict[int, int] = {}
+_waiting_qrcode: dict[int, object] = {}
 _qrcode_auto_dedupe: dict[tuple[int, str], float] = {}
 _qrcode_auto_processing: set[int] = set()
 _qrcode_retry_state: dict[int, tuple[int, float]] = {}
@@ -85,10 +93,10 @@ setattr(image_qrcode_auto_listener, '_maimaidx_deferred_audit', True)
 setattr(image_qrcode_auto_listener, '_maimaidx_announcement_exempt', True)
 
 async def get_at_qq(message: MessageEvent) -> Optional[int]:
-    for item in message.message:
-        if isinstance(item, MessageSegment) and item.type == 'at' and item.data['qq'] != 'all':
-            return int(item.data['qq'])
-    return None
+    target = parse_at_target_id(message)
+    if target is None:
+        return None
+    return resolve_score_qqid(message, target)
 
 
 async def check_feature(bot: Bot, event: GroupMessageEvent):
@@ -136,7 +144,7 @@ async def handle_update_pc(bot: Bot, event: GroupMessageEvent):
     """处理「更新pc数」命令，引导用户发送机台二维码。"""
     await check_feature(bot, event)
 
-    qqid = event.user_id
+    qqid = billing_user_id(event)
 
     if not playcount_fetcher.sdgb_available:
         await update_pc.finish(
@@ -186,13 +194,13 @@ async def handle_update_pc(bot: Bot, event: GroupMessageEvent):
             '⚠️ 请注意保护好你的二维码数据，不要发给他人。'
         )
     )
-    _waiting_qrcode[qqid] = int(event.group_id)
+    _waiting_qrcode[qqid] = get_event_group_id(event)
 
 
 @update_pc.receive()
 async def receive_qrcode(bot: Bot, event: GroupMessageEvent):
     """接收用户发送的二维码数据。"""
-    qqid = event.user_id
+    qqid = billing_user_id(event)
 
     if qqid not in _waiting_qrcode:
         return
@@ -361,7 +369,7 @@ async def _handle_sdgb_update(
 
         account_db.mark_qrcode_result(str(qqid), False)
         if retry_on_cached_failure:
-            _waiting_qrcode[qqid] = int(event.group_id)
+            _waiting_qrcode[qqid] = get_event_group_id(event)
             await matcher.send(
                 MessageSegment.reply(event.message_id)
                 + MessageSegment.text(
@@ -781,7 +789,7 @@ async def handle_my_pc(bot: Bot, event: GroupMessageEvent):
     """处理「我的pc数」命令，展示用户PC数统计。"""
     await check_feature(bot, event)
 
-    qqid = event.user_id
+    qqid = billing_user_id(event)
 
     records = pc_db.get_user_play_counts(qqid)
     if not records:
@@ -814,9 +822,11 @@ async def handle_pc_rank(bot: Bot, event: GroupMessageEvent):
 
     all_users = pc_db.get_all_users_with_data()
     if not all_users:
-        await pc_rank.finish(
-            MessageSegment.reply(event.message_id)
-            + MessageSegment.text('暂无PC排行数据，请先使用「更新pc数」同步数据。')
+        await plugin_finish(
+            pc_rank,
+            '暂无PC排行数据，请先使用「更新pc数」同步数据。',
+            event=event,
+            reply_message=True,
         )
 
     user_stats = []
@@ -832,7 +842,12 @@ async def handle_pc_rank(bot: Bot, event: GroupMessageEvent):
         lines.append(f'{i:2}. QQ:{uid} - PC: {total} 次 ({count} 谱面)')
 
     msg = '\n'.join(lines)
-    await pc_rank.finish(MessageSegment.reply(event.message_id) + MessageSegment.text(msg))
+    await plugin_finish(
+        pc_rank,
+        rank_text_image(msg),
+        event=event,
+        reply_message=True,
+    )
 
 
 @pc_detail.handle()
@@ -847,7 +862,7 @@ async def handle_pc_detail(bot: Bot, event: GroupMessageEvent, arg: Message = Co
             + MessageSegment.text('请输入歌曲名或ID，例如: pc数 1231')
         )
 
-    target_qqid = event.user_id
+    target_qqid = resolve_score_qqid(event)
     at_qq = await get_at_qq(event)
     if at_qq:
         target_qqid = at_qq
@@ -896,7 +911,7 @@ async def handle_pc50(
 ):
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
         raise IgnoredException('功能已禁用')
-    qqid = user_id or event.user_id
+    qqid = user_id or resolve_score_qqid(event)
     from ..libraries.maimaidx_break import break_billing, take_break_charge_footer
     from ..libraries.maimaidx_error import BreakInsufficientError
     try:
@@ -918,7 +933,7 @@ async def handle_pca50(
 ):
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
         raise IgnoredException('功能已禁用')
-    qqid = user_id or event.user_id
+    qqid = user_id or resolve_score_qqid(event)
     from ..libraries.maimaidx_break import break_billing, take_break_charge_footer
     from ..libraries.maimaidx_error import BreakInsufficientError
     try:
@@ -940,7 +955,7 @@ async def handle_pc_rank50(
 ):
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
         raise IgnoredException('功能已禁用')
-    qqid = user_id or event.user_id
+    qqid = user_id or resolve_score_qqid(event)
     from ..libraries.maimaidx_break import break_billing, take_break_charge_footer
     from ..libraries.maimaidx_error import BreakInsufficientError
     try:

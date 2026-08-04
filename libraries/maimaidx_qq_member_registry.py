@@ -98,7 +98,7 @@ def record_from_event(event) -> None:
 
     if not is_qq_event(event) and not use_qq_mode(event):
         return
-    gid = getattr(event, 'group_id', None) or getattr(event, 'group_openid', None)
+    gid = getattr(event, 'group_openid', None) or getattr(event, 'group_id', None)
     if gid is None:
         return
     mid = str(event.get_user_id())

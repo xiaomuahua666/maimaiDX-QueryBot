@@ -13,6 +13,7 @@ Description-Content-Type: text/markdown
 License-File: LICENSE
 Requires-Dist: nonebot2<3.0.0,>=2.0.0
 Requires-Dist: nonebot-adapter-onebot<3.0.0,>=2.2.2
+Requires-Dist: nonebot-adapter-qq<2.0.0,>=1.7.1; python_version >= "3.10"
 Requires-Dist: nonebot-plugin-apscheduler<1.0.0,>=0.3.0
 Requires-Dist: aiofiles<25.0.0,>=23.2.1
 Requires-Dist: httpx<1.0.0,>=0.23.1

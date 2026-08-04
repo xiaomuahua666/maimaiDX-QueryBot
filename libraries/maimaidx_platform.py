@@ -17,6 +17,222 @@ from ..config import log, maiconfig
 from .maimaidx_qq_bind import qq_bind_db
 
 
+def install_qq_event_compat() -> None:
+    """Expose the OneBot-style aliases used by older command modules.
+
+    ``nonebot-adapter-qq`` deliberately exposes ``id``/``author`` while many
+    mature plugin commands still read ``message_id``/``user_id``/``sender``.
+    Adding read-only aliases keeps both adapters usable without changing the
+    encrypted values or pretending they are real QQ numbers.
+    """
+    try:
+        from nonebot.adapters.qq.event import QQMessageEvent
+    except (ImportError, AttributeError):
+        return
+    aliases = {
+        'user_id': property(lambda event: event.get_user_id()),
+        'message_id': property(lambda event: str(getattr(event, 'id', ''))),
+        'sender': property(lambda event: getattr(event, 'author', None)),
+    }
+    for name, value in aliases.items():
+        if not hasattr(QQMessageEvent, name):
+            try:
+                setattr(QQMessageEvent, name, value)
+            except Exception:
+                log.debug(f'[platform] 无法安装官方 QQ 事件兼容属性 {name}')
+
+    # Older commands use ``event.group_id`` as the delivery key.  Official QQ
+    # exposes both a legacy group id and the API-facing group_openid; normalize
+    # the former to the latter so those calls never accidentally send an
+    # encrypted/legacy value to the QQ API.
+    try:
+        original_getattribute = QQMessageEvent.__getattribute__
+        if not getattr(original_getattribute, '_maimaidx_qq_group_id', False):
+            def _qq_getattribute(event, name):
+                if name == 'group_id':
+                    try:
+                        openid = original_getattribute(event, 'group_openid')
+                    except AttributeError:
+                        openid = None
+                    if openid is not None:
+                        return openid
+                return original_getattribute(event, name)
+
+            _qq_getattribute._maimaidx_qq_group_id = True
+            QQMessageEvent.__getattribute__ = _qq_getattribute
+    except (AttributeError, TypeError):
+        pass
+
+    # A number of mature commands use ``isinstance(event,
+    # onebot.GroupMessageEvent)`` for feature switches.  Make those checks
+    # understand QQ group/C2C events as well; the hook is restricted to the
+    # three OneBot event classes and delegates every other class unchanged.
+    try:
+        from nonebot.adapters.onebot.v11.event import (
+            GroupMessageEvent as OneBotGroupMessageEvent,
+            MessageEvent as OneBotMessageEvent,
+            PrivateMessageEvent as OneBotPrivateMessageEvent,
+        )
+
+        event_meta = type(OneBotMessageEvent)
+        if not getattr(event_meta, '_maimaidx_qq_instancecheck', False):
+            original_instancecheck = event_meta.__instancecheck__
+
+            def _qq_aware_instancecheck(cls, value):
+                module = type(value).__module__
+                if module.startswith('nonebot.adapters.qq'):
+                    if cls is OneBotGroupMessageEvent:
+                        return getattr(value, 'group_openid', None) is not None
+                    if cls is OneBotPrivateMessageEvent:
+                        return getattr(value, 'group_openid', None) is None
+                    if cls is OneBotMessageEvent:
+                        return hasattr(value, 'get_message')
+                return original_instancecheck(cls, value)
+
+            event_meta.__instancecheck__ = _qq_aware_instancecheck
+            event_meta._maimaidx_qq_instancecheck = True
+    except (ImportError, AttributeError):
+        pass
+
+    # Most of the historical command modules annotate their dependencies with
+    # OneBot's ``MessageEvent``/``Message``/``Bot`` classes.  NoneBot validates
+    # those annotations before invoking a handler, so a QQ event would never
+    # reach the platform-aware code below.  Keep the old annotations working by
+    # relaxing only the adapter boundary: a value from ``nonebot.adapters.qq``
+    # is accepted for an annotation from ``nonebot.adapters.onebot``.  Other
+    # type mismatches still use NoneBot's normal validation and continue to
+    # fail fast.
+    try:
+        import nonebot.dependencies.utils as dependency_utils
+        import nonebot.internal.params as internal_params
+
+        original_check = dependency_utils.check_field_type
+        if not getattr(original_check, '_maimaidx_qq_compat', False):
+            def _check_field_type(field, value):
+                expected = getattr(field, 'annotation', None)
+                expected_module = getattr(expected, '__module__', '')
+                value_module = type(value).__module__
+                if (
+                    expected_module.startswith('nonebot.adapters.onebot')
+                    and value_module.startswith('nonebot.adapters.qq')
+                ):
+                    return value
+                return original_check(field, value)
+
+            _check_field_type._maimaidx_qq_compat = True
+            dependency_utils.check_field_type = _check_field_type
+            # ``nonebot.internal.params`` keeps a module-level reference imported
+            # from dependency_utils, so patch it as well for already-loaded classes.
+            internal_params.check_field_type = _check_field_type
+    except Exception as exc:
+        log.warning(f'[platform] 官方 QQ 依赖注入兼容补丁安装失败: {exc}')
+
+    try:
+        from nonebot.matcher import Matcher, current_event
+
+        original_matcher_send = Matcher.send
+        if not getattr(original_matcher_send, '_maimaidx_qq_compat', False):
+            async def _qq_aware_matcher_send(cls, message, **kwargs):
+                event = current_event.get(None)
+                if is_qq_event(event) and _is_onebot_payload(message):
+                    message = adapt_guess_outbound(message, event=event)
+                return await original_matcher_send(message, **kwargs)
+
+            _qq_aware_matcher_send._maimaidx_qq_compat = True
+            Matcher.send = classmethod(_qq_aware_matcher_send)
+    except Exception as exc:
+        log.warning(f'[platform] 官方 QQ Matcher.send 兼容补丁安装失败: {exc}')
+
+    try:
+        from nonebot.adapters.qq.bot import Bot as QQBot
+
+        original_qq_send = QQBot.send
+        if not getattr(original_qq_send, '_maimaidx_qq_compat', False):
+            async def _qq_aware_bot_send(self, event, message, **kwargs):
+                if is_qq_event(event) and _is_onebot_payload(message):
+                    message = adapt_guess_outbound(message, event=event)
+                return await original_qq_send(self, event, message, **kwargs)
+
+            _qq_aware_bot_send._maimaidx_qq_compat = True
+            QQBot.send = _qq_aware_bot_send
+
+        original_qq_call_api = QQBot.call_api
+        if not getattr(original_qq_call_api, '_maimaidx_qq_compat', False):
+            async def _qq_aware_call_api(self, api: str, **data):
+                """Translate the small OneBot API subset used by this plugin."""
+                api_name = str(api)
+                if api_name in ('send_group_msg', 'send_private_msg'):
+                    message = data.get('message', '')
+                    if api_name == 'send_group_msg':
+                        return await self.send_to_group(
+                            group_openid=str(data.get('group_id', '')),
+                            message=adapt_guess_outbound(message),
+                        )
+                    return await self.send_to_c2c(
+                        openid=str(data.get('user_id', '')),
+                        message=adapt_guess_outbound(message),
+                    )
+                if api_name in ('send_group_forward_msg', 'send_private_forward_msg'):
+                    title = '合并转发'
+                    text = format_forward_nodes_as_text(
+                        title, data.get('messages') or data.get('nodes') or []
+                    )
+                    if api_name == 'send_group_forward_msg':
+                        return await self.send_to_group(
+                            group_openid=str(data.get('group_id', '')), message=text
+                        )
+                    return await self.send_to_c2c(
+                        openid=str(data.get('user_id', '')), message=text
+                    )
+                if api_name == 'delete_msg':
+                    message_id = str(data.get('message_id', ''))
+                    if data.get('group_id'):
+                        return await self.delete_group_message(
+                            group_openid=str(data['group_id']), message_id=message_id
+                        )
+                    if data.get('user_id'):
+                        return await self.delete_c2c_message(
+                            openid=str(data['user_id']), message_id=message_id
+                        )
+                    # Official QQ has no global delete-by-message-id endpoint.
+                    return None
+                if api_name in ('get_group_member_list', 'get_group_member_info'):
+                    # The official API does not expose QQ numbers.  Callers that
+                    # need an identity use qq_member_registry/qbind instead.
+                    return [] if api_name.endswith('list') else {}
+                return await original_qq_call_api(self, api_name, **data)
+
+            _qq_aware_call_api._maimaidx_qq_compat = True
+            QQBot.call_api = _qq_aware_call_api
+
+        # A few legacy modules call these OneBot convenience methods directly.
+        # Add narrow shims instead of changing the public QQ adapter package.
+        if not hasattr(QQBot, 'send_group_msg'):
+            async def _send_group_msg(self, *, group_id, message, **kwargs):
+                return await self.send_to_group(
+                    group_openid=str(group_id), message=adapt_guess_outbound(message)
+                )
+            QQBot.send_group_msg = _send_group_msg
+        if not hasattr(QQBot, 'send_private_msg'):
+            async def _send_private_msg(self, *, user_id, message, **kwargs):
+                return await self.send_to_c2c(
+                    openid=str(user_id), message=adapt_guess_outbound(message)
+                )
+            QQBot.send_private_msg = _send_private_msg
+        if not hasattr(QQBot, 'delete_msg'):
+            async def _delete_msg(self, *, message_id, **kwargs):
+                return await self.call_api('delete_msg', message_id=message_id, **kwargs)
+            QQBot.delete_msg = _delete_msg
+    except (ImportError, AttributeError):
+        pass
+
+
+def _is_onebot_payload(value: Any) -> bool:
+    """Whether a message object was constructed by the OneBot adapter."""
+    module = type(value).__module__
+    return module.startswith('nonebot.adapters.onebot')
+
+
 def get_platform() -> str:
     """onebot | qq_official（.env 默认倾向，可被事件来源覆盖）。"""
     raw = (getattr(maiconfig, 'maimaidx_platform', None) or 'onebot').strip().lower()
@@ -59,13 +275,50 @@ def get_event_group_id(event) -> Optional[GroupId]:
     """OneBot group_id 或官方 QQ group_openid。"""
     if event is None:
         return None
-    gid = getattr(event, 'group_id', None)
-    if gid is not None:
-        return gid
     openid = getattr(event, 'group_openid', None)
     if openid is not None:
         return str(openid)
+    gid = getattr(event, 'group_id', None)
+    if gid is not None:
+        return gid
     return None
+
+
+def resolve_group_legacy_id(group_id: Optional[GroupId]) -> Optional[int]:
+    """Return an administrator-configured old QQ group number, if any."""
+    if group_id is None:
+        return None
+    return qq_bind_db.get_group_legacy_id(str(group_id))
+
+
+def event_group_data_id(event) -> Optional[GroupId]:
+    """Stable data key for group-scoped features.
+
+    Message delivery must continue using the encrypted official
+    ``group_openid``; this helper is for persisted score/settings keys that
+    should survive a bot migration when an admin mapped the group to its
+    former QQ number.
+    """
+    raw = get_event_group_id(event)
+    mapped = resolve_group_legacy_id(raw)
+    return mapped if mapped is not None else raw
+
+
+def billing_group_id(event) -> Optional[int]:
+    """Return the integer group key used by legacy BREAK/storage tables.
+
+    Official QQ group identifiers are opaque strings.  An administrator's
+    ``qgroupbind`` mapping takes precedence; otherwise derive a stable,
+    SQLite-safe integer without ever coercing the encrypted openid directly.
+    """
+    raw = event_group_data_id(event)
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        digest = hashlib.sha256(str(raw).encode('utf-8')).hexdigest()[:15]
+        return int(digest, 16)
 
 
 def is_group_message_event(event) -> bool:
@@ -103,6 +356,13 @@ def get_sender_display_name(event) -> str:
 
 def iter_message_segments(event) -> Iterable[Any]:
     msg = getattr(event, 'message', None)
+    if msg is None:
+        getter = getattr(event, 'get_message', None)
+        if callable(getter):
+            try:
+                msg = getter()
+            except Exception:
+                msg = None
     if msg is None:
         return
     if isinstance(msg, str):
@@ -200,6 +460,38 @@ def format_forward_nodes_as_text(title: str, nodes: List[dict]) -> str:
     return '\n'.join(lines)
 
 
+def rank_text_image(text: str) -> MessageSegment:
+    """Render a ranking/leaderboard as one portable image message.
+
+    OneBot forward nodes are not supported consistently by the official QQ
+    adapter.  Keeping the renderer here lets old text-producing ranking
+    services share the same image conversion and QQ attachment path.
+    """
+    from .image import image_to_base64, text_to_image
+
+    # Keep a single unusually long title/name from producing an unreadably
+    # wide image (song titles and nicknames can contain arbitrary user text).
+    lines: list[str] = []
+    for raw_line in str(text or '暂无数据。').splitlines() or ['暂无数据。']:
+        line = str(raw_line)
+        if not line:
+            lines.append('')
+            continue
+        current: list[str] = []
+        columns = 0
+        for char in line:
+            width = 2 if ord(char) > 0x7F else 1
+            if current and columns + width > 42:
+                lines.append(''.join(current))
+                current = []
+                columns = 0
+            current.append(char)
+            columns += width
+        lines.append(''.join(current))
+    rendered = '\n'.join(lines)
+    return MessageSegment.image(image_to_base64(text_to_image(rendered)))
+
+
 async def send_group_plain_text(bot, gid: GroupId, text: str) -> None:
     """向群发送纯文本（OneBot / 官方 QQ）。"""
     if is_likely_qq_group_id(gid):
@@ -223,6 +515,11 @@ def resolve_query_qqid(
     if not qq_mode:
         return int(raw_id)
     pid = str(raw_id).strip()
+    # ``@`` helpers may already have converted a target to the real QQ.  A
+    # numeric value is therefore a valid legacy QQ even while official mode is
+    # active; encrypted official openids are non-numeric strings.
+    if pid.isdigit():
+        return int(pid)
     bound = qq_bind_db.get_legacy_qq(pid)
     if bound is not None:
         return bound

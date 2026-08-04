@@ -49,7 +49,7 @@ PENDING_TTL_SECONDS = 10 * 60
 
 @dataclass
 class PendingSync:
-    gid: int
+    gid: GroupId
     uid: str
     stage: str  # choose | confirm_yes | confirm_no | confirm_import
     created_at: float = field(default_factory=time.time)
@@ -58,7 +58,7 @@ class PendingSync:
 class GuessSyncManager:
     def __init__(self, prefs_path: Optional[Path] = None) -> None:
         self.prefs_path = Path(prefs_path or guess_sync_prefs_file)
-        self._pending: Dict[Tuple[int, str], PendingSync] = {}
+        self._pending: Dict[Tuple[str, str], PendingSync] = {}
         self._prefs: Dict[str, Any] = {'users': {}}
         self._load_prefs()
 
@@ -116,7 +116,7 @@ class GuessSyncManager:
             return False
 
     def get_pending(self, gid: GroupId, uid: UserId) -> Optional[PendingSync]:
-        key = (int(gid), str(uid))
+        key = (str(gid), str(uid))
         item = self._pending.get(key)
         if not item:
             return None
@@ -126,11 +126,11 @@ class GuessSyncManager:
         return item
 
     def clear_pending(self, gid: GroupId, uid: UserId) -> None:
-        self._pending.pop((int(gid), str(uid)), None)
+        self._pending.pop((str(gid), str(uid)), None)
 
     def set_pending(self, gid: GroupId, uid: UserId, stage: str) -> PendingSync:
-        item = PendingSync(gid=int(gid), uid=str(uid), stage=stage)
-        self._pending[(item.gid, item.uid)] = item
+        item = PendingSync(gid=gid, uid=str(uid), stage=stage)
+        self._pending[(str(item.gid), item.uid)] = item
         return item
 
     async def _backup_main(self, uid: UserId) -> None:

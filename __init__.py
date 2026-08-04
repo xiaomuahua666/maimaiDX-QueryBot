@@ -4,6 +4,10 @@ from pathlib import Path
 import asyncio
 
 from .config import Config, driver, log, maiconfig, plate_tabledir, rating_table_dir
+from .libraries.maimaidx_platform import install_qq_event_compat
+
+install_qq_event_compat()
+
 from .command import *
 nonebot.load_plugin("nonebot_plugin_maimaidx.command.mai_jacket")
 from .libraries.maimaidx_music_info import get_music_tags, _get_dxrating_token
