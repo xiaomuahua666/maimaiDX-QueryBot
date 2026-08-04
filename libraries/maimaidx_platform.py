@@ -1257,13 +1257,11 @@ def _qq_mention_segment(target: UserId, *, username: Optional[str] = None) -> An
 
 
 def _prepend_qq_markdown_mention(message: Any, event: Any) -> Any | None:
-    """Put a sender @ inside Markdown, where QQ parses it as a blue label.
+    """Keep a typed @ prefix so the adapter can send it as plain text.
 
-    A standalone ``mention_user`` segment becomes the ``content`` field while
-    a Markdown message is sent through ``markdown.content``.  Mixing the two
-    fields makes the former render as plain text, so Markdown messages need
-    the official ``<qqbot-at-user id="..." />`` token embedded directly in
-    their content.
+    The official QQ client does not consistently parse the text-chain At tag
+    when it is embedded in ``markdown.content``.  Leave the Markdown body
+    untouched and let the send wrapper emit a separate ``msg_type=0`` prefix.
     """
     module = type(message).__module__
     if not module.startswith('nonebot.adapters.qq'):
@@ -1285,17 +1283,8 @@ def _prepend_qq_markdown_mention(message: Any, event: Any) -> Any | None:
     uid = platform_user_id(event)
     if not uid:
         return message
-    markup = qq_at_markup(uid)
-    output: list[Any] = []
-    for segment in segments:
-        if getattr(segment, 'type', None) != 'markdown':
-            output.append(segment)
-            continue
-        model = (getattr(segment, 'data', None) or {}).get('markdown')
-        content = str(getattr(model, 'content', None) or '')
-        if markup not in content:
-            content = f'{markup}\n{content.lstrip()}'
-        output.append(QQSeg.markdown(content))
+    output: list[Any] = [_qq_mention_segment(uid), QQSeg.text('\n')]
+    output.extend(segments)
     try:
         return QQMessage(output)
     except Exception:
@@ -1653,7 +1642,7 @@ def _qq_media_as_markdown(segments: List[Any]) -> Any | None:
 
 
 def _qq_media_mention_fallback(mentions: List[Any]) -> Any:
-    """Use Markdown plus visible text so a standalone fallback @ is parsed."""
+    """Send the current text-chain At syntax in a plain text message."""
     tags: list[str] = []
     for segment in mentions:
         seg_type = getattr(segment, 'type', None)
@@ -1667,7 +1656,7 @@ def _qq_media_mention_fallback(mentions: List[Any]) -> Any:
     from nonebot.adapters.qq.message import MessageSegment as QQSeg
 
     if tags:
-        return QQMessage([QQSeg.markdown(f'{" ".join(tags)}\n\n查询结果')])
+        return QQMessage([QQSeg.text(f'{" ".join(tags)}\n\n查询结果')])
     return QQMessage([*mentions, QQSeg.text(' 查询结果')])
 
 
@@ -1688,14 +1677,15 @@ def _ensure_qq_media_text(parts: List[Any]) -> List[Any]:
 
 
 def _split_qq_media_message(message: Any) -> Optional[tuple[Any, list[Any]]]:
-    """Build API-safe QQ wire messages without dropping media captions.
+    """Build API-safe QQ wire messages without mixing text and rich types.
 
-    The official QQ API uses ``msg_type=7`` for media and exposes one media
-    object per request. It displays ordinary caption text, but does not parse
-    interactive @ markup there. Move mentions into a preceding text request
-    while keeping the ordinary caption beside the first image. Extra media
-    objects each become a follow-up request instead of being discarded by the
-    adapter's ``[-1]`` extraction.
+    The official QQ API uses separate ``msg_type`` payloads for text,
+    Markdown and media.  A text-chain At token must live in ``content``;
+    putting it beside ``markdown`` or ``media`` makes the client render an
+    empty ``<>`` token.  Move such prefixes into a plain-text request while
+    keeping the rich body in a follow-up request.  Extra media objects each
+    become another follow-up instead of being discarded by the adapter's
+    ``[-1]`` extraction.
     """
     module = type(message).__module__
     if not module.startswith('nonebot.adapters.qq'):
@@ -1718,18 +1708,48 @@ def _split_qq_media_message(message: Any) -> Optional[tuple[Any, list[Any]]]:
 
     media_types = _QQ_MEDIA_SEGMENT_TYPES
     text_types = {'text', 'mention_user', 'mention_everyone', 'mention_channel', 'emoji'}
-    media = [seg for seg in segments if getattr(seg, 'type', None) in media_types]
-    if not media:
-        return None
-
     mention_types = {'mention_user', 'mention_everyone', 'mention_channel'}
     mentions = [
         seg for seg in segments if getattr(seg, 'type', None) in mention_types
     ]
+    media = [seg for seg in segments if getattr(seg, 'type', None) in media_types]
     if mentions:
-        markdown_message = _qq_media_as_markdown(segments)
+        # ``<qqbot-at-user ... />`` is a text-chain tag.  Putting it beside a
+        # Markdown or media field makes the official client render ``<>``.
+        if not media:
+            body = [
+                seg for seg in segments
+                if getattr(seg, 'type', None) not in mention_types
+            ]
+            structured = any(
+                getattr(seg, 'type', None)
+                not in {'text', 'emoji'}
+                for seg in body
+            )
+            if not structured:
+                return None
+            while body and getattr(body[0], 'type', None) == 'text':
+                text = str((getattr(body[0], 'data', None) or {}).get('text') or '')
+                if text.strip():
+                    break
+                body.pop(0)
+            if body:
+                return (
+                    _qq_media_mention_fallback(mentions),
+                    [QQMessage(body)],
+                )
+            return None
+        # An explicitly approved image can still be delivered as one native
+        # Markdown body after the plain-text At prefix.  This keeps links and
+        # dimensions clickable without putting the At token in markdown.
+        marked_body = [
+            seg for seg in segments
+            if getattr(seg, 'type', None) not in mention_types
+        ]
+        markdown_message = _qq_media_as_markdown(marked_body)
         if markdown_message is not None:
-            return markdown_message, []
+            return _qq_media_mention_fallback(mentions), [markdown_message]
+
         caption = [
             seg
             for seg in segments
