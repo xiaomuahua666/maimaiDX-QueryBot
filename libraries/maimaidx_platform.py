@@ -254,6 +254,114 @@ def install_qq_event_compat() -> None:
     except (ImportError, AttributeError):
         pass
 
+    # Official QQ handlers often raise QBindRequiredError before any reply.
+    # Without this safety net the matcher dies silently and users see "no response".
+    try:
+        from nonebot.exception import (
+            FinishedException,
+            IgnoredException,
+            PausedException,
+            RejectedException,
+            SkippedException,
+            StopPropagation,
+        )
+        from nonebot.matcher import Matcher
+
+        from .maimaidx_error import (
+            BreakInsufficientError,
+            QBindRequiredError,
+            format_command_error,
+        )
+
+        _passthrough = (
+            FinishedException,
+            IgnoredException,
+            PausedException,
+            RejectedException,
+            SkippedException,
+            StopPropagation,
+        )
+        original_simple_run = Matcher.simple_run
+        if not getattr(original_simple_run, '_maimaidx_user_error_reply', False):
+            async def _simple_run_with_user_errors(
+                self, bot, event, state, stack=None, dependency_cache=None
+            ):
+                try:
+                    return await original_simple_run(
+                        self, bot, event, state, stack, dependency_cache
+                    )
+                except _passthrough:
+                    raise
+                except (QBindRequiredError, BreakInsufficientError) as exc:
+                    module = ' '.join(
+                        str(x)
+                        for x in (
+                            getattr(self, 'module_name', None),
+                            getattr(self, 'plugin_name', None),
+                            getattr(self, 'module', None),
+                        )
+                        if x
+                    ).lower()
+                    if 'maimaidx' not in module:
+                        raise
+                    try:
+                        await plugin_finish(
+                            self,
+                            format_command_error(exc),
+                            event=event,
+                            reply_message=True,
+                        )
+                    except FinishedException:
+                        raise
+                    except Exception as send_exc:
+                        log.warning(
+                            f'[platform] 业务异常回复失败: '
+                            f'{type(send_exc).__name__}: {send_exc}'
+                        )
+                        raise exc from send_exc
+
+            _simple_run_with_user_errors._maimaidx_user_error_reply = True
+            Matcher.simple_run = _simple_run_with_user_errors
+    except Exception as exc:
+        log.warning(f'[platform] 业务异常回复补丁安装失败: {exc}')
+
+    # Adapter 1.7 may receive Dispatch.data as a bare string for some payloads.
+    try:
+        from nonebot.adapters.qq.adapter import Adapter as QQAdapter
+
+        original_payload_to_event = QQAdapter.payload_to_event
+        if not getattr(original_payload_to_event, '_maimaidx_qq_compat', False):
+            def _payload_to_event_safe(payload):
+                data = getattr(payload, 'data', None)
+                if isinstance(data, dict):
+                    return original_payload_to_event(payload)
+
+                # RESUMED / unknown frames may send data as "" or a bare string.
+                class _PayloadProxy:
+                    __slots__ = ('_payload',)
+
+                    def __init__(self, raw):
+                        self._payload = raw
+
+                    @property
+                    def id(self):
+                        return self._payload.id
+
+                    @property
+                    def type(self):
+                        return self._payload.type
+
+                    @property
+                    def data(self):
+                        return {}
+
+                return original_payload_to_event(_PayloadProxy(payload))
+
+            _payload_to_event_safe._maimaidx_qq_compat = True
+            QQAdapter.payload_to_event = staticmethod(_payload_to_event_safe)
+    except Exception as exc:
+        log.warning(f'[platform] QQ payload_to_event 兼容补丁安装失败: {exc}')
+
 
 def _is_onebot_payload(value: Any) -> bool:
     """Whether a message object was constructed by the OneBot adapter."""
@@ -565,6 +673,11 @@ def resolve_score_qqid(event, at_qq: Optional[int] = None) -> int:
     if mode:
         return resolve_query_qqid(str(event.get_user_id()), qq_mode=True)
     return int(event.get_user_id())
+
+
+def require_account_qqid(event, at_qq: Optional[int] = None) -> int:
+    """账号类指令统一身份：官方 QQ 必须先 qbind，否则抛出可回复的提示。"""
+    return resolve_score_qqid(event, at_qq)
 
 
 def platform_user_id(event) -> str:

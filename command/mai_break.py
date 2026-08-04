@@ -29,7 +29,10 @@ from ..libraries.maimaidx_platform import (
     platform_user_id,
     plugin_finish,
     rank_text_image,
+    require_account_qqid,
     resolve_group_legacy_id,
+    resolve_score_qqid,
+    use_qq_mode,
 )
 from ..libraries.maimaidx_group_rating import build_forward_node
 from ..libraries.maimaidx_pending_session import finish_pending, session_key, track_event
@@ -438,16 +441,22 @@ async def _try_guess_stats_for_awmc(
         return None
 
 
-def _storage_qqids_for_event(event: MessageEvent) -> list[int]:
-    from ..libraries.maimaidx_platform import resolve_score_qqid
+def _account_qqid(event: MessageEvent) -> int:
+    """签到/账号类：官方 QQ 必须 qbind；OneBot 直接用消息 QQ。"""
+    if use_qq_mode(event):
+        return int(require_account_qqid(event))
+    return int(billing_user_id(event))
 
+
+def _storage_qqids_for_event(event: MessageEvent, account_qqid: int) -> list[int]:
     seen: set[int] = set()
     out: list[int] = []
-    for raw in (
-        event.get_user_id(),
-        billing_user_id(event),
-        resolve_score_qqid(event),
-    ):
+    candidates = [account_qqid, billing_user_id(event)]
+    try:
+        candidates.append(resolve_score_qqid(event))
+    except Exception:
+        pass
+    for raw in candidates:
         try:
             qid = int(raw)
         except (TypeError, ValueError):
@@ -459,7 +468,9 @@ def _storage_qqids_for_event(event: MessageEvent) -> list[int]:
     return out
 
 
-def _storage_status_for_event(event: MessageEvent) -> tuple[bool, bool]:
+def _storage_status_for_event(
+    event: MessageEvent, account_qqid: int
+) -> tuple[bool, bool]:
     """返回 (当前已开启, 签到是否可享存储加成)。
 
     加成需「开启并保持到跨天」，防止当天开关刷奖励。
@@ -468,7 +479,7 @@ def _storage_status_for_event(event: MessageEvent) -> tuple[bool, bool]:
 
     enabled = False
     eligible = False
-    for qid in _storage_qqids_for_event(event):
+    for qid in _storage_qqids_for_event(event, account_qqid):
         if data_storage.is_enabled(qid):
             enabled = True
         if data_storage.storage_bonus_eligible_for_checkin(qid):
@@ -479,8 +490,8 @@ def _storage_status_for_event(event: MessageEvent) -> tuple[bool, bool]:
 @awmc_checkin.handle()
 async def _(event: MessageEvent):
     group_id = _red_packet_group_id(event)
-    qqid = int(billing_user_id(event))
-    storage_on, storage_eligible = _storage_status_for_event(event)
+    qqid = _account_qqid(event)
+    storage_on, storage_eligible = _storage_status_for_event(event, qqid)
     result = break_db.checkin(
         qqid,
         group_id,
@@ -496,7 +507,7 @@ async def _(event: MessageEvent):
 @awmc_makeup_checkin.handle()
 async def _(event: MessageEvent):
     await _require_break_agreement(awmc_makeup_checkin, event)
-    qqid = int(billing_user_id(event))
+    qqid = _account_qqid(event)
     try:
         result = break_db.makeup_yesterday(qqid)
     except Exception as exc:
@@ -508,7 +519,7 @@ async def _(event: MessageEvent):
 
 @my_awmc.handle()
 async def _(bot: Bot, event: MessageEvent):
-    qqid = int(billing_user_id(event))
+    qqid = _account_qqid(event)
     profile = get_account_profile(qqid)
     sections = format_account_profile_sections(profile)
     nickname = str(getattr(maiconfig, 'botName', None) or 'AWMC Bot')
