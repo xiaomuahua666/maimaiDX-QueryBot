@@ -288,7 +288,7 @@ def _ticket_stock(rows: list[dict], charge_id: int) -> int:
 def _unused_ticket_stocks(
     rows: list[dict], *, now: Optional[float] = None
 ) -> dict[int, int]:
-    """返回仍未使用的 2/3 倍票库存。"""
+    """返回仍未使用的 2/3/5 倍票库存。"""
     current = float(time.time() if now is None else now)
     valid_rows = [
         row
