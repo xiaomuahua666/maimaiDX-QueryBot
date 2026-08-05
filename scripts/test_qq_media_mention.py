@@ -404,7 +404,9 @@ def main() -> None:
     assert receipt == {"id": "receipt-1"}, (receipt, calls)
     assert len(calls) == 1
     assert [part.type for part in calls[0]["message"]] == ["text", "image"]
-    assert calls[0]["message"][0].data["text"].startswith('@Tester\n\n')
+    # This synthetic remote mention has no username metadata, so the safe
+    # native-media fallback uses the generic visible label.
+    assert calls[0]["message"][0].data["text"].startswith('@用户\n\n')
 
     # A fallback media request now consumes no additional reply slot.
     calls.clear()
