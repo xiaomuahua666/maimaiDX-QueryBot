@@ -42,6 +42,10 @@ async def get_music():
     """
     bot启动时开始获取所有数据
     """
+    # The QQ adapter can be imported after the plugin module during NoneBot
+    # startup.  Retry the idempotent compatibility install once adapters are
+    # registered so plain-text @ replies use the same path after every restart.
+    install_qq_event_compat()
     cleanup_qq_public_images(force=True)
     _tag_token = _get_dxrating_token()
     log.opt(colors=True).info('谱面标签(combined-tags): ' + ('<g>已配置</g>' if _tag_token else '<y>未配置 token，详情图不显示标签</y>'))
