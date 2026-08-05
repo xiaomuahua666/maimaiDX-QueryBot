@@ -133,7 +133,11 @@ async def handle_update_pc(bot: Bot, event: GroupMessageEvent):
     """处理「更新pc数」命令，引导用户发送机台二维码。"""
     await check_feature(bot, event)
 
-    qqid = billing_user_id(event)
+    try:
+        qqid = billing_user_id(event)
+    except QBindRequiredError as exc:
+        await update_pc.finish(str(exc), reply_message=True)
+        return
 
     if not playcount_fetcher.sdgb_available:
         await update_pc.finish(
@@ -149,9 +153,8 @@ async def handle_update_pc(bot: Bot, event: GroupMessageEvent):
 
     # 账号功能合并后，已执行「mai绑定」的用户无需重复发送二维码。
     from ..libraries.maimaidx_account_db import account_db
-    from ..libraries.maimaidx_platform import billing_user_id
 
-    account_qqid = billing_user_id(event)
+    account_qqid = qqid
     binding = account_db.get(str(account_qqid))
     if binding and binding.qrcode:
         from .mai_account import _sgid_cache_state
@@ -189,7 +192,11 @@ async def handle_update_pc(bot: Bot, event: GroupMessageEvent):
 @update_pc.receive()
 async def receive_qrcode(bot: Bot, event: GroupMessageEvent):
     """接收用户发送的二维码数据。"""
-    qqid = billing_user_id(event)
+    try:
+        qqid = billing_user_id(event)
+    except QBindRequiredError as exc:
+        await update_pc.finish(str(exc), reply_message=True)
+        return
 
     if qqid not in _waiting_qrcode:
         return
@@ -829,7 +836,11 @@ async def handle_my_pc(bot: Bot, event: GroupMessageEvent):
     """处理「我的pc数」命令，展示用户PC数统计。"""
     await check_feature(bot, event)
 
-    qqid = billing_user_id(event)
+    try:
+        qqid = billing_user_id(event)
+    except QBindRequiredError as exc:
+        await my_pc.finish(str(exc), reply_message=True)
+        return
 
     records = pc_db.get_user_play_counts(qqid)
     if not records:

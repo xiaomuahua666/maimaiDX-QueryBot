@@ -23,6 +23,7 @@ from ..config import log, maiconfig
 from ..libraries.maimaidx_account_db import AccountBinding, account_db
 from ..libraries.maimaidx_admin_audit import admin_audit, redact
 from ..libraries.maimaidx_break import break_db
+from ..libraries.maimaidx_error import QBindRequiredError
 from ..libraries.maimaidx_group_rating import build_forward_node
 from ..libraries.maimaidx_lxns_client import (
     LxnsApiError,
@@ -2707,7 +2708,11 @@ async def _(
     matcher: Matcher, bot: Bot, event: MessageEvent, args: Message = CommandArg()
 ):
     fish, lxns = _upload_mode(matcher)
-    preflight_error = _upload_preflight_error(event, fish=fish, lxns=lxns)
+    try:
+        preflight_error = _upload_preflight_error(event, fish=fish, lxns=lxns)
+    except QBindRequiredError as exc:
+        await matcher.finish(str(exc), reply_message=True)
+        return
     if preflight_error:
         await matcher.finish(preflight_error, reply_message=False)
     raw = _arg_text(args)
@@ -2762,7 +2767,12 @@ async def _(
         finish_pending(pending_key)
         await matcher.finish("已取消成绩上传。", reply_message=True)
     fish, lxns = _upload_mode(matcher)
-    preflight_error = _upload_preflight_error(event, fish=fish, lxns=lxns)
+    try:
+        preflight_error = _upload_preflight_error(event, fish=fish, lxns=lxns)
+    except QBindRequiredError as exc:
+        finish_pending(pending_key)
+        await matcher.finish(str(exc), reply_message=True)
+        return
     if preflight_error:
         finish_pending(pending_key)
         await matcher.finish(preflight_error, reply_message=False)
