@@ -23,7 +23,6 @@ from ..libraries.maimaidx_bot_admin import PLUGIN_ADMIN_ONLY
 from ..libraries.maimaidx_guess_score import guess_score
 from ..libraries.maimaidx_guess_stats_draw import personal_guess_stats_image_b64
 from ..libraries.maimaidx_error import QBindRequiredError
-from ..libraries.maimaidx_account_db import account_db
 from ..libraries.maimaidx_platform import (
     billing_user_id,
     deliver_forward_messages,
@@ -456,15 +455,6 @@ def _account_qqid(event: MessageEvent) -> int:
     return int(billing_user_id(event))
 
 
-def _require_bound_account(event: MessageEvent) -> int:
-    """账号类 BREAK 指令统一要求先完成舞萌账号绑定。"""
-    qqid = _account_qqid(event)
-    binding = account_db.get(str(qqid))
-    if binding is None or not binding.qrcode:
-        raise RuntimeError('尚未绑定舞萌账号，请先使用：mai绑定 SGWCMAID...')
-    return qqid
-
-
 def _storage_qqids_for_event(event: MessageEvent, account_qqid: int) -> list[int]:
     seen: set[int] = set()
     out: list[int] = []
@@ -508,8 +498,8 @@ def _storage_status_for_event(
 async def _(event: MessageEvent):
     try:
         group_id = _red_packet_group_id(event)
-        qqid = _require_bound_account(event)
-    except (QBindRequiredError, RuntimeError) as exc:
+        qqid = _account_qqid(event)
+    except QBindRequiredError as exc:
         await awmc_checkin.finish(str(exc), reply_message=True)
         return
     storage_on, storage_eligible = _storage_status_for_event(event, qqid)
@@ -529,8 +519,8 @@ async def _(event: MessageEvent):
 async def _(event: MessageEvent):
     await _require_break_agreement(awmc_makeup_checkin, event)
     try:
-        qqid = _require_bound_account(event)
-    except (QBindRequiredError, RuntimeError) as exc:
+        qqid = _account_qqid(event)
+    except QBindRequiredError as exc:
         await awmc_makeup_checkin.finish(str(exc), reply_message=True)
         return
     try:
@@ -545,8 +535,8 @@ async def _(event: MessageEvent):
 @my_awmc.handle()
 async def _(bot: Bot, event: MessageEvent):
     try:
-        qqid = _require_bound_account(event)
-    except (QBindRequiredError, RuntimeError) as exc:
+        qqid = _account_qqid(event)
+    except QBindRequiredError as exc:
         await plugin_finish(my_awmc, str(exc), event=event, reply_message=True)
         return
     profile = get_account_profile(qqid)
