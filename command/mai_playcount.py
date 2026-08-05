@@ -553,9 +553,34 @@ async def _process_auto_qrcode_for_account(
         else '⚠️ Bot 无法撤回原凭据消息，请立即手动撤回。'
     )
     pending_ticket = take_pending_ticket_retry(str(qqid))
-    pending_account = take_pending_account_retry(str(qqid))
     if qqid in _waiting_qrcode:
         _waiting_qrcode.pop(qqid, None)
+
+    # A QR sent to recover an expired invoice is scoped to that invoice.  Do
+    # not run the normal account workflow here: syncing PC/AWMCNET or external
+    # services would repeat uploads and charges before the ticket is retried.
+    if pending_ticket is not None:
+        t0 = time.perf_counter()
+        async def notify(message: str) -> None:
+            await bot.send(event, message=prefix + MessageSegment.text(message))
+
+        ticket_result = await continue_ticket_with_qrcode(
+            event, qrcode_data, pending_ticket, notify=notify
+        )
+        msg = (
+            f'{recall_status}\n'
+            '📨 自动继续发票：\n'
+            f'{ticket_result}'
+        )
+        log.info(
+            f'[QrcodeAuto] 发票续办完成 source={source} qq={qqid} '
+            f'({time.perf_counter() - t0:.2f}s) '
+            f'qrcode={qrcode_log_preview(qrcode_data)}'
+        )
+        await bot.send(event, message=prefix + MessageSegment.text(msg))
+        return
+
+    pending_account = take_pending_account_retry(str(qqid))
     if pending_ticket is None and pending_account is None and _qrcode_dedupe_hit(qqid, qrcode_data):
         log.info(
             f'[QrcodeAuto] 跳过重复请求 group={getattr(event, "group_id", "private")} qq={qqid} '

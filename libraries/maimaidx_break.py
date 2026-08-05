@@ -549,7 +549,64 @@ class BreakDatabase:
         if self._conn._backend == 'sqlite':
             self._conn.executescript(_CREATE_SQL)
         self._seed_config()
+        self._prune_unbound_hash_users()
         self._prune_empty_users()
+
+    def _prune_unbound_hash_users(self) -> None:
+        """Remove official-QQ hash keys left by the pre-qbind fallback.
+
+        Legacy QQ ids accepted by this plugin are at most 12 digits.  The old
+        official-QQ fallback used the first 15 SHA-256 hex digits, producing
+        13- to 18-digit ``qqid`` values that cannot belong to a bound account.
+        Delete those keys and every BREAK ledger row referring to them.  This
+        deliberately leaves ordinary numeric OneBot QQ ids untouched.
+        """
+        try:
+            candidates = self._conn.execute(
+                'SELECT qqid FROM break_users WHERE qqid >= 1000000000000'
+            ).fetchall()
+            if not candidates:
+                return
+            related_rows = (
+                'DELETE FROM break_daily_usage WHERE qqid = ?',
+                'DELETE FROM break_group_checkin WHERE first_qqid = ?',
+                'DELETE FROM break_makeup_checkin WHERE qqid = ?',
+                'DELETE FROM break_log WHERE qqid = ?',
+                'DELETE FROM break_guess_daily WHERE qqid = ?',
+                'DELETE FROM break_service_daily WHERE qqid = ?',
+                'DELETE FROM break_daily_reward WHERE qqid = ?',
+                'DELETE FROM break_red_packet_claim '
+                'WHERE packet_id IN '
+                '(SELECT id FROM break_red_packet WHERE sender_qqid = ?)',
+                'DELETE FROM break_red_packet_claim WHERE qqid = ?',
+                'DELETE FROM break_red_packet WHERE sender_qqid = ?',
+                'DELETE FROM break_gamble_pool WHERE qqid = ?',
+                'DELETE FROM break_gamble_pool_payout WHERE qqid = ?',
+                'DELETE FROM break_users WHERE qqid = ?',
+            )
+            removed = 0
+            for candidate in candidates:
+                qqid = int(candidate['qqid'])
+                for sql in related_rows:
+                    try:
+                        self._conn.execute(sql, (qqid,))
+                    except Exception as exc:
+                        message = str(exc).lower()
+                        if 'no such table' in message or "doesn't exist" in message:
+                            continue
+                        raise
+                removed += 1
+            self._conn.commit()
+            log.info(f'[BREAK] 已清理 {removed} 条未绑定官方 QQ 哈希用户记录')
+        except Exception as exc:
+            try:
+                self._conn._conn.rollback()
+            except Exception:
+                pass
+            log.warning(
+                f'[BREAK] 清理未绑定官方 QQ 哈希记录失败（已忽略）：'
+                f'{type(exc).__name__}: {exc}'
+            )
 
     def _prune_empty_users(self) -> None:
         """Remove rows created by read-only checks that never had activity.
@@ -2318,13 +2375,13 @@ def get_billing_qqid() -> Optional[int]:
     return _billing_qqid.get()
 
 
-def normalize_billing_qqid(qqid: Optional[int]) -> Optional[int]:
+def normalize_billing_qqid(qqid: Optional[int | str]) -> Optional[int]:
     """Normalize a legacy QQ number or official QQ openid for BREAK billing.
 
     Some legacy handlers still pass ``event.user_id`` directly.  Official QQ
     user IDs are encrypted strings, so never cast them with ``int``.  Prefer a
-    qbind/forum mapping and otherwise derive a stable local-only key so BREAK
-    accounting remains usable before the user completes binding.
+    qbind/forum mapping; an unmapped official id is rejected instead of being
+    converted to a persistent hash key.
     """
     if qqid in (None, ''):
         return None
@@ -2339,9 +2396,9 @@ def normalize_billing_qqid(qqid: Optional[int]) -> Optional[int]:
         mapped = None
     if mapped is not None:
         return int(mapped)
-    import hashlib
+    from .maimaidx_error import QBindRequiredError
 
-    return int(hashlib.sha256(raw.encode()).hexdigest()[:15], 16)
+    raise QBindRequiredError(raw)
 
 
 def charge_session_extra(qqid: Optional[int], cost: int, service: str) -> bool:

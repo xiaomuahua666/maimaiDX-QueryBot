@@ -57,13 +57,18 @@ assert "倍票已受理" not in account_source
 
 playcount_source = PLAYCOUNT_PATH.read_text(encoding="utf-8")
 pending_pos = playcount_source.index("pending_ticket = take_pending_ticket_retry")
+ticket_only_pos = playcount_source.index("if pending_ticket is not None:", pending_pos)
 dedupe_guard = (
     "if pending_ticket is None and pending_account is None "
     "and _qrcode_dedupe_hit"
 )
 dedupe_pos = playcount_source.index(dedupe_guard, pending_pos)
 auto_upload_pos = playcount_source.index("previous = account_db.get", pending_pos)
-assert pending_pos < dedupe_pos < auto_upload_pos
+assert pending_pos < ticket_only_pos < dedupe_pos < auto_upload_pos
+ticket_branch = playcount_source[ticket_only_pos:auto_upload_pos]
+assert "continue_ticket_with_qrcode" in ticket_branch
+assert "_sync_sdgb_qrcode" not in ticket_branch
+assert "_upload" not in ticket_branch
 assert "continue_ticket_with_qrcode" in playcount_source[auto_upload_pos:]
 
 print("ticket qrcode retry tests: ok")

@@ -135,9 +135,8 @@ def get_at_qq(message: MessageEvent) -> Optional[int]:
     target = parse_at_target_id(message)
     if target is None:
         return None
-    # BREAK is a platform-local ledger.  A score-query QQ binding is helpful
-    # but must not be mandatory for transfers/admin adjustments: unbound
-    # official-QQ openids receive the same stable billing id used at check-in.
+    # Official QQ targets must also have a qbind mapping; never create a hash
+    # ledger row for an opaque openid supplied in an @ segment.
     return normalize_billing_qqid(target)
 
 

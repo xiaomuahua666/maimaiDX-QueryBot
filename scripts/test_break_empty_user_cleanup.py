@@ -15,6 +15,7 @@ class_node = next(
     if isinstance(node, ast.ClassDef) and node.name == "BreakDatabase"
 )
 method_names = {
+    "_prune_unbound_hash_users",
     "_prune_empty_users",
     "_today",
     "get_balance",
@@ -76,8 +77,8 @@ db._conn.executescript(
         qqid INTEGER, success_count INTEGER, free_used INTEGER, break_spent INTEGER
     );
     CREATE TABLE break_daily_reward (qqid INTEGER);
-    CREATE TABLE break_red_packet (sender_qqid INTEGER);
-    CREATE TABLE break_red_packet_claim (qqid INTEGER);
+    CREATE TABLE break_red_packet (id TEXT, sender_qqid INTEGER);
+    CREATE TABLE break_red_packet_claim (packet_id TEXT, qqid INTEGER);
     CREATE TABLE break_gamble_pool (qqid INTEGER);
     CREATE TABLE break_gamble_pool_payout (qqid INTEGER);
     """
@@ -97,6 +98,7 @@ rows = [
     (2, 5, 0, None, 0, 0, None, None, 1, 1),       # balance: keep
     (3, 0, 0, None, 0, 0, None, None, 1, 1),       # log: keep
     (4, 0, 0, None, 0, 0, None, None, 1, 1),       # usage: keep
+    (1234567890123456, 99, 0, None, 0, 0, None, None, 1, 1),  # legacy hash: remove
 ]
 db._conn.executemany(
     "INSERT INTO break_users VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", rows
@@ -110,7 +112,19 @@ db._conn.execute(
     "INSERT INTO break_daily_usage VALUES (4, ?, 0, 1, 0, 0, 0)",
     (date.today().isoformat(),),
 )
+db._conn.execute(
+    "INSERT INTO break_log VALUES (?)",
+    (1234567890123456,),
+)
 db._conn.commit()
+
+db._prune_unbound_hash_users()
+assert db._conn.execute(
+    "SELECT COUNT(*) FROM break_users WHERE qqid=1234567890123456"
+).fetchone()[0] == 0
+assert db._conn.execute(
+    "SELECT COUNT(*) FROM break_log WHERE qqid=1234567890123456"
+).fetchone()[0] == 0
 
 db._prune_empty_users()
 remaining = {

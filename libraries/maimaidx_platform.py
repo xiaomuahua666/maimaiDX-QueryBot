@@ -1811,16 +1811,27 @@ def _qq_media_mention_fallback(mentions: List[Any]) -> Any:
 
 
 def _qq_media_mention_prefix(mentions: List[Any]) -> str:
-    """Build the text-chain @ prefix used beside a native QQ attachment."""
+    """Build a safe plain-text @ prefix beside a native QQ attachment.
+
+    ``<qqbot-at-user ... />`` is a Markdown-only token.  Native attachment
+    captions are sent through the ordinary ``content`` field, where that token
+    is shown literally.  Use the available display name instead; text-only
+    replies still use the real Markdown mention path.
+    """
     tags: list[str] = []
     for segment in mentions:
         seg_type = getattr(segment, 'type', None)
         if seg_type == 'mention_user':
-            user_id = _segment_user_id(segment)
-            if user_id:
-                tags.append(qq_at_markup(user_id))
+            data = getattr(segment, 'data', None) or {}
+            name = str(
+                data.get('username')
+                or data.get('nickname')
+                or data.get('display_name')
+                or '用户'
+            ).strip()
+            tags.append(f'@{name}')
         elif seg_type == 'mention_everyone':
-            tags.append('<qqbot-at-everyone />')
+            tags.append('@全体成员')
     return f'{" ".join(tags)}\n\n查询结果' if tags else '查询结果'
 
 
@@ -2264,14 +2275,22 @@ def platform_user_id(event) -> str:
 
 
 def billing_user_id(event) -> int:
-    """BREAK 扣费主体：官方 QQ 优先用 qbind 的 legacy QQ，否则 openid 稳定哈希。"""
+    """Return the billing QQ id, requiring qbind for official QQ events.
+
+    An official QQ ``openid`` is not a QQ number.  Older code converted an
+    unbound openid to a SHA hash and persisted that value in user-facing
+    ledgers, which made orphan accounts impossible to reconcile after binding.
+    Keep OneBot's numeric identity unchanged, but fail closed for official QQ
+    until the platform user has a qbind mapping.
+    """
     if use_qq_mode(event):
         pid = platform_user_id(event)
         bound = qq_bind_db.get_legacy_qq(pid)
         if bound is not None:
             return bound
-        digest = hashlib.sha256(pid.encode()).hexdigest()[:15]
-        return int(digest, 16)
+        from .maimaidx_error import QBindRequiredError
+
+        raise QBindRequiredError(pid)
     return int(event.get_user_id())
 
 

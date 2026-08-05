@@ -156,7 +156,7 @@ def main() -> None:
     media_message, media_messages = platform._split_qq_media_message(image_reply)
     assert [part.type for part in media_message] == ["text", "file_image"]
     fallback_content = media_message[0].data["text"]
-    assert '<qqbot-at-user id="user-openid" />' in fallback_content
+    assert fallback_content.startswith('@用户\n\n')
     assert "查询结果" in fallback_content
     extracted_fallback = QQBot._extract_send_message(
         media_message, escape_text=False
@@ -173,7 +173,7 @@ def main() -> None:
     )
     remote_message, remote_messages = platform._split_qq_media_message(remote_media)
     assert [part.type for part in remote_message] == ["text", "image"]
-    assert '<qqbot-at-user id="user-openid" />' in remote_message[0].data["text"]
+    assert remote_message[0].data["text"].startswith('@用户\n\n')
     assert "查询结果" in remote_message[0].data["text"]
     assert remote_messages == []
 
@@ -198,7 +198,7 @@ def main() -> None:
             "text", "text", "file_image"
         ]
         fallback_content = media_message[0].data["text"]
-        assert fallback_content.startswith('<qqbot-at-user id="user-openid" />')
+        assert fallback_content.startswith('@用户\n\n')
         assert "查询结果" in fallback_content
         assert media_message[1].data["text"] == "footer | text 😀"
         assert len(followups) == 0
@@ -404,9 +404,7 @@ def main() -> None:
     assert receipt == {"id": "receipt-1"}, (receipt, calls)
     assert len(calls) == 1
     assert [part.type for part in calls[0]["message"]] == ["text", "image"]
-    assert '<qqbot-at-user id="user-openid" />' in calls[0]["message"][0].data[
-        "text"
-    ]
+    assert calls[0]["message"][0].data["text"].startswith('@用户\n\n')
 
     # A fallback media request now consumes no additional reply slot.
     calls.clear()
