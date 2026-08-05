@@ -221,8 +221,12 @@ class SwApiClient:
 
         if has_expired_sgid(data):
             raise SwApiError("ChimeError 3002：Chime 获取用户失败，SGID 已过期")
-        if "error" in data:
-            raise SwApiError(str(data["error"]))
+        # Some successful gateway responses include an empty ``error`` field.
+        # Only a non-empty value represents an error; raising on ``error: ""``
+        # made a completed item write look like ``SwApiError()`` to callers.
+        error_value = data.get("error")
+        if error_value not in (None, "", {}, []):
+            raise SwApiError(str(error_value))
 
         return_code = data.get("returnCode", data.get("ReturnCode"))
         if return_code is not None:
@@ -241,6 +245,27 @@ class SwApiClient:
 
         business_data = data.get("businessData")
         if business_data is not None:
+            # The public gateway may wrap the upstream Sega envelope twice.
+            # Validate the nested returnCode before returning it so a genuine
+            # nested failure is not silently treated as a successful request,
+            # while ``returnCode=1`` (including item upsert) is accepted.
+            if isinstance(business_data, dict):
+                nested_code = business_data.get(
+                    "returnCode", business_data.get("ReturnCode")
+                )
+                if nested_code is not None:
+                    try:
+                        nested_ok = int(nested_code) == 1
+                    except (TypeError, ValueError):
+                        nested_ok = False
+                    if not nested_ok:
+                        nested_error = (
+                            business_data.get("returnMessage")
+                            or business_data.get("msg")
+                            or business_data.get("error")
+                            or f"AWMC 业务失败（returnCode={nested_code}）"
+                        )
+                        raise SwApiError(str(nested_error))
             return business_data
 
         if "returnMessage" in data:

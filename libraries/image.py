@@ -8,6 +8,46 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 from ..config import SHANGGUMONO, Path, coverdir
 
 
+# The production font pack is intentionally CJK-focused and the Linux hosts do
+# not provide a color-emoji font.  Keep image output readable by translating
+# the small set of UI emoji to glyphs available in every bundled font instead
+# of letting Pillow draw a tofu square.  Unknown supplementary-plane symbols
+# become a neutral bullet rather than a missing-glyph box.
+_IMAGE_SYMBOL_FALLBACKS = {
+    '✅': '[OK]', '❌': '[X]', '⚠': '!', '⚠️': '!', '🔄': '↻',
+    '🎵': '♪', '🎲': '*', '✨': '*', '💳': '卡', '💰': '$', '📅': '日',
+    '📦': '箱', '📋': '表', '🧾': '票', '📤': '出', '📥': '入', '🔑': '钥',
+    '🔒': '锁', '🔓': '开', '🚪': '门', '🛠': '工', '🛠️': '工', '🧧': '红包',
+    '🎁': '礼', '🎯': '靶', '🛡': '盾', '🛡️': '盾', '❄': '*', '❄️': '*',
+    '🤔': '?', '🥇': '1', '🥈': '2', '🥉': '3', '🟢': '●', '🟡': '●',
+    '🔴': '●', '🟣': '●', '⚪': '○', '⭐': '★', '🌟': '★', '📈': '^',
+    '📊': '图', '🔗': '链', '📌': '点', '🎮': '游', '💥': '!', '📝': '记',
+}
+
+
+def image_safe_text(text) -> str:
+    """Return text that can be rendered by the bundled monochrome fonts."""
+    raw = str(text)
+    # Apply longest keys first so a variation-selector sequence is translated
+    # as one symbol, then remove any remaining variation selectors.
+    for source in sorted(_IMAGE_SYMBOL_FALLBACKS, key=len, reverse=True):
+        raw = raw.replace(source, _IMAGE_SYMBOL_FALLBACKS[source])
+    out: list[str] = []
+    for char in raw:
+        code = ord(char)
+        if 0xFE00 <= code <= 0xFE0F:
+            continue
+        # Emoji and many newer pictographs live outside the BMP.  The bundled
+        # CJK fonts do not cover them; a bullet keeps names and labels intact.
+        if code > 0xFFFF:
+            out.append('•')
+            continue
+        # A few symbol blocks still contain glyphs in the font, so only replace
+        # characters that are explicitly known to be pictographs here.
+        out.append(char)
+    return ''.join(out)
+
+
 class DrawText:
 
     def __init__(self, image: ImageDraw.ImageDraw, font: Path) -> None:
@@ -15,7 +55,7 @@ class DrawText:
         self._font = str(font)
 
     def get_box(self, text: str, size: int) -> Tuple[float, float, float, float]:
-        return ImageFont.truetype(self._font, size).getbbox(text)
+        return ImageFont.truetype(self._font, size).getbbox(image_safe_text(text))
 
     def draw(
         self,
@@ -30,6 +70,7 @@ class DrawText:
         multiline: bool = False
     ) -> None:
         font = ImageFont.truetype(self._font, size)
+        text = image_safe_text(text)
         if multiline:
             self._img.multiline_text(
                 (pos_x, pos_y), 
@@ -287,7 +328,7 @@ def text_to_image(text: str) -> Image.Image:
         font = ImageFont.load_default()
     padding = 10
     margin = 4
-    lines = text.strip().split('\n')
+    lines = image_safe_text(text).strip().split('\n')
     max_width = 0
     b = 0
     for line in lines:

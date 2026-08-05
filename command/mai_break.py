@@ -2,7 +2,7 @@ import asyncio
 from typing import Optional, Tuple
 
 from nonebot import get_bots, on_command, require
-from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message, MessageEvent, MessageSegment
+from nonebot.adapters.onebot.v11 import Bot, Message, MessageEvent, MessageSegment
 from nonebot.matcher import Matcher
 from nonebot.params import Arg, CommandArg, Depends
 from ..libraries.maimaidx_break import (
@@ -23,6 +23,7 @@ from ..libraries.maimaidx_bot_admin import PLUGIN_ADMIN_ONLY
 from ..libraries.maimaidx_guess_score import guess_score
 from ..libraries.maimaidx_guess_stats_draw import personal_guess_stats_image_b64
 from ..libraries.maimaidx_error import QBindRequiredError
+from ..libraries.maimaidx_account_db import account_db
 from ..libraries.maimaidx_platform import (
     billing_user_id,
     deliver_forward_messages,
@@ -423,8 +424,6 @@ async def _try_guess_stats_for_awmc(
     event: MessageEvent,
 ) -> Optional[Tuple[str, str]]:
     """群内解析到用户时尝试出猜歌数据图；失败返回 None，不抛错。"""
-    if not isinstance(event, GroupMessageEvent):
-        return None
     gid = get_event_group_id(event)
     if gid is None:
         return None
@@ -455,6 +454,15 @@ def _account_qqid(event: MessageEvent) -> int:
     if use_qq_mode(event):
         return int(require_account_qqid(event))
     return int(billing_user_id(event))
+
+
+def _require_bound_account(event: MessageEvent) -> int:
+    """账号类 BREAK 指令统一要求先完成舞萌账号绑定。"""
+    qqid = _account_qqid(event)
+    binding = account_db.get(str(qqid))
+    if binding is None or not binding.qrcode:
+        raise RuntimeError('尚未绑定舞萌账号，请先使用：mai绑定 SGWCMAID...')
+    return qqid
 
 
 def _storage_qqids_for_event(event: MessageEvent, account_qqid: int) -> list[int]:
@@ -498,8 +506,12 @@ def _storage_status_for_event(
 
 @awmc_checkin.handle()
 async def _(event: MessageEvent):
-    group_id = _red_packet_group_id(event)
-    qqid = _account_qqid(event)
+    try:
+        group_id = _red_packet_group_id(event)
+        qqid = _require_bound_account(event)
+    except (QBindRequiredError, RuntimeError) as exc:
+        await awmc_checkin.finish(str(exc), reply_message=True)
+        return
     storage_on, storage_eligible = _storage_status_for_event(event, qqid)
     result = break_db.checkin(
         qqid,
@@ -516,7 +528,11 @@ async def _(event: MessageEvent):
 @awmc_makeup_checkin.handle()
 async def _(event: MessageEvent):
     await _require_break_agreement(awmc_makeup_checkin, event)
-    qqid = _account_qqid(event)
+    try:
+        qqid = _require_bound_account(event)
+    except (QBindRequiredError, RuntimeError) as exc:
+        await awmc_makeup_checkin.finish(str(exc), reply_message=True)
+        return
     try:
         result = break_db.makeup_yesterday(qqid)
     except Exception as exc:
@@ -529,8 +545,8 @@ async def _(event: MessageEvent):
 @my_awmc.handle()
 async def _(bot: Bot, event: MessageEvent):
     try:
-        qqid = _account_qqid(event)
-    except QBindRequiredError as exc:
+        qqid = _require_bound_account(event)
+    except (QBindRequiredError, RuntimeError) as exc:
         await plugin_finish(my_awmc, str(exc), event=event, reply_message=True)
         return
     profile = get_account_profile(qqid)
