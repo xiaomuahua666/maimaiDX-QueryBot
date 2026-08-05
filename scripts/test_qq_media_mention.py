@@ -116,9 +116,9 @@ def main() -> None:
     checkin_reply = platform.ensure_sender_mention(
         "✅ AWMC 签到成功！\n💰 获得：23 BREAK", event
     )
-    assert [part.type for part in checkin_reply] == ["text", "text", "text"]
-    assert checkin_reply[0].data["text"] == (
-        '<qqbot-at-user id="user-openid" />'
+    assert [part.type for part in checkin_reply] == ["text"]
+    assert checkin_reply[0].data["text"].startswith(
+        '<qqbot-at-user id="user-openid" />\n'
     )
     checkin_content = QQBot._extract_send_message(
         checkin_reply, escape_text=False
@@ -128,6 +128,14 @@ def main() -> None:
     # Matcher.send and Bot.send call the compatibility helper more than once;
     # a text-chain prefix must be recognized as an existing mention.
     assert platform.ensure_sender_mention(checkin_reply, event) is checkin_reply
+
+    explicit_reply = platform.build_mention_message(
+        "user-openid", " 正在处理", event=event
+    )
+    assert [part.type for part in explicit_reply] == ["text"]
+    assert explicit_reply[0].data["text"] == (
+        '<qqbot-at-user id="user-openid" /> 正在处理'
+    )
 
     # Without temporary hosting, use a plain-text @ prefix before the media.
     # Text-chain tags are parsed from ``content``, not a media/Markdown field.
@@ -320,7 +328,7 @@ def main() -> None:
     target_parts = list(target_message)
     assert target_parts[0].type == "text"
     assert target_parts[0].data["text"] == (
-        '<qqbot-at-user id="target-openid" />'
+        '<qqbot-at-user id="target-openid" />\nhello'
     )
 
     legacy_target = platform.build_mention_message(123456, event=event)

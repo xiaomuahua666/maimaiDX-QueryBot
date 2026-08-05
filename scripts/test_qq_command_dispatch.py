@@ -8,6 +8,7 @@ import base64
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -107,8 +108,8 @@ async def main() -> None:
     parts, kwargs = message_parts(roast_bot.sent[0])
     assert kwargs.get("reply_message") is False
     assert parts[0].type == "text"
-    assert parts[0].data.get("text") == (
-        '<qqbot-at-user id="dispatch-unbound-openid-1" />'
+    assert parts[0].data.get("text", "").startswith(
+        '<qqbot-at-user id="dispatch-unbound-openid-1" />\n'
     )
     assert any(
         segment.type == "text"
@@ -122,8 +123,8 @@ async def main() -> None:
     parts, kwargs = message_parts(awmc_bot.sent[0])
     assert kwargs.get("reply_message") is False
     assert parts[0].type == "text"
-    assert parts[0].data.get("text") == (
-        '<qqbot-at-user id="dispatch-unbound-openid-2" />'
+    assert parts[0].data.get("text", "").startswith(
+        '<qqbot-at-user id="dispatch-unbound-openid-2" />\n'
     )
     assert any(
         segment.type == "text"
@@ -173,9 +174,40 @@ async def main() -> None:
     parts, kwargs = message_parts(legacy_finish_bot.sent[0])
     assert kwargs.get("reply_message") is False
     assert parts[0].type == "text"
-    assert parts[0].data.get("text") == (
-        '<qqbot-at-user id="dispatch-unbound-openid-4" />'
+    assert parts[0].data.get("text", "").startswith(
+        '<qqbot-at-user id="dispatch-unbound-openid-4" />\n'
     )
+
+    # Sign-in is a plain-text handler and must use the same single text-chain
+    # @ payload as the query-result fallback.
+    original_checkin = mai_break.break_db.checkin
+    original_checkin_formatter = mai_break.format_checkin_result
+    original_checkin_qqid = mai_break._account_qqid
+    original_checkin_storage = mai_break._storage_status_for_event
+    mai_break.break_db.checkin = lambda *args, **kwargs: SimpleNamespace()
+    mai_break.format_checkin_result = lambda _result: (
+        "✅ AWMC 签到成功！\n💰 获得：23 BREAK"
+    )
+    mai_break._account_qqid = lambda _event: 123456789
+    mai_break._storage_status_for_event = lambda _event, _qqid: (False, False)
+    try:
+        checkin_bot = FakeQQBot()
+        await handle_event(checkin_bot, make_event("签到", 6))
+        assert checkin_bot.sent
+        parts, kwargs = message_parts(checkin_bot.sent[0])
+        assert kwargs.get("reply_message") is False
+        assert len(parts) == 1
+        assert parts[0].type == "text"
+        checkin_text = parts[0].data.get("text", "")
+        assert checkin_text.startswith(
+            '<qqbot-at-user id="dispatch-unbound-openid-6" />\n'
+        )
+        assert "✅ AWMC 签到成功！" in checkin_text
+    finally:
+        mai_break.break_db.checkin = original_checkin
+        mai_break.format_checkin_result = original_checkin_formatter
+        mai_break._account_qqid = original_checkin_qqid
+        mai_break._storage_status_for_event = original_checkin_storage
 
     original_guess_enabled = mai_guess.guess.is_enabled
     original_build_guess_stats = mai_guess.guess_score.build_user_guess_stats
@@ -195,12 +227,12 @@ async def main() -> None:
     )
     try:
         guess_stats_bot = FakeQQBot()
-        await handle_event(guess_stats_bot, make_event("我的猜歌", 5))
+        await handle_event(guess_stats_bot, make_event("我的猜歌", 7))
         assert guess_stats_bot.sent
         parts, kwargs = message_parts(guess_stats_bot.sent[0])
         assert kwargs.get("reply_message") is False
         assert parts[0].type == "mention_user"
-        assert parts[0].data.get("user_id") == "dispatch-unbound-openid-5"
+        assert parts[0].data.get("user_id") == "dispatch-unbound-openid-7"
         assert any(segment.type == "file_image" for segment in parts)
     finally:
         mai_guess.guess.is_enabled = original_guess_enabled

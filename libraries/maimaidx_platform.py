@@ -1205,6 +1205,15 @@ def build_mention_message(target: UserId, text: str = '', *, event=None) -> Any:
         # unresolved legacy QQ numbers remain a visible ``@123`` fallback.
         if getattr(mention, 'type', None) == 'mention_user':
             mention = QQSeg.text(str(mention))
+        if getattr(mention, 'type', None) == 'text':
+            # Keep explicit @ + body in the same text-chain segment as the
+            # automatic sender prefix; QQ's gateway parses that form reliably.
+            mention_text = str(
+                (getattr(mention, 'data', None) or {}).get('text') or ''
+            )
+            return QQMessage(
+                [QQSeg.text(mention_text + str(text or ''))]
+            )
         parts: List[Any] = [mention]
         if text:
             parts.append(QQSeg.text(text))
@@ -1311,11 +1320,18 @@ def _qq_plaintext_mention_message(
         return None
 
     markup = qq_at_markup(target)
-    prefix = QQSeg.text(markup)
-    # Keep the body as separate segments so emoji and any adapter-specific
-    # textual rendering are preserved.  The prefix is deliberately a text
-    # segment, matching _qq_media_mention_fallback().
-    output: list[Any] = [prefix, QQSeg.text('\n'), *segments]
+    # Keep the complete text-chain in one text segment.  This is the same wire
+    # shape used by the query-result fallback and avoids older QQ gateways
+    # treating adjacent text segments as separate content fields.  Emoji are
+    # represented by the adapter's normal textual token, just as
+    # ``extract_content(escape_text=False)`` does.
+    body = ''.join(
+        str((getattr(segment, 'data', None) or {}).get('text') or '')
+        if getattr(segment, 'type', None) == 'text'
+        else str(segment)
+        for segment in segments
+    )
+    output: list[Any] = [QQSeg.text(f'{markup}\n{body}')]
     return QQMessage(output)
 
 
@@ -1394,10 +1410,12 @@ def ensure_sender_mention(message: Any, event) -> Any:
             # Keep ordinary text replies on the same plain-text markup path as
             # query-result fallbacks.  Typed mention segments are reserved for
             # structured payloads where the QQ send wrapper can split them.
-            prefix = QQSeg.text(qq_at_markup(uid))
+            # Match the query-result fallback exactly: one plain-text segment
+            # containing the official QQ at token and the complete body.
+            content = qq_at_markup(uid)
             if body:
-                return QQMessage([prefix, QQSeg.text('\n'), QQSeg.text(body)])
-            return QQMessage([prefix])
+                content += f'\n{body}'
+            return QQMessage([QQSeg.text(content)])
         return build_mention_message(uid, f'\n{body}' if body else '', event=event)
 
     if use_qq_mode(event):
