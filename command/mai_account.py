@@ -58,7 +58,7 @@ from ..libraries.maimaidx_processing_time import (
 )
 from ..libraries.maimaidx_reaction import react_processing
 from ..libraries.maimaidx_status_api import build_live_status_payload
-from ..libraries.maimaidx_sw_api import format_user_region_block, sw_api
+from ..libraries.maimaidx_sw_api import SwApiError, format_user_region_block, sw_api
 from .mai_agreement import agreement_prompt, has_user_agreed
 
 account_help = on_command("mai账号", aliases={"账号帮助", "mai账户"})
@@ -1381,6 +1381,8 @@ def _exception_detail(exc: BaseException) -> str:
         cause_detail = _exception_detail(cause)
         if cause_detail:
             return cause_detail
+    if isinstance(exc, SwApiError):
+        return "AWMCError"
     return f"{type(exc).__name__}（上游服务未返回错误详情）"
 
 
@@ -2422,7 +2424,7 @@ async def _upload(
             )
             return (
                 "\n".join(shown)
-                + f"\n⚠️ 其他查分平台同步失败：{detail}\nRef_ID: {ref}"
+                + f"\n⚠️ 其他查分平台同步失败 {detail}\nRef_ID: {ref}"
             )
         failure_message = _upload_failure_message(exc)
         if _upload_retryable(failure_message):
