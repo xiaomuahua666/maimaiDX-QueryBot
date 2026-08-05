@@ -151,29 +151,31 @@ def main() -> None:
         '<qqbot-at-user id="user-openid" /> 正在处理'
     )
 
-    # Without temporary hosting, use a plain-text @ prefix before the media.
-    # Text-chain tags are parsed from ``content``, not a media/Markdown field.
-    mention_message, media_messages = platform._split_qq_media_message(image_reply)
-    assert [part.type for part in mention_message] == ["markdown"]
-    fallback_content = mention_message[0].data["markdown"].content
+    # The text-chain @ and query label travel in the same native media request;
+    # no standalone "查询结果" message is needed.
+    media_message, media_messages = platform._split_qq_media_message(image_reply)
+    assert [part.type for part in media_message] == ["text", "file_image"]
+    fallback_content = media_message[0].data["text"]
     assert '<qqbot-at-user id="user-openid" />' in fallback_content
     assert "查询结果" in fallback_content
     extracted_fallback = QQBot._extract_send_message(
-        mention_message, escape_text=False
+        media_message, escape_text=False
     )
-    assert extracted_fallback["content"] is None
-    assert extracted_fallback["markdown"].content == fallback_content
-    assert len(media_messages) == 1
-    media_parts = list(media_messages[0])
+    assert extracted_fallback["content"] == fallback_content
+    assert "markdown" not in extracted_fallback
+    assert len(media_messages) == 0
+    media_parts = list(media_message)
     assert not any(part.type == "mention_user" for part in media_parts)
     assert any(part.type == "file_image" for part in media_parts)
 
     remote_media = QQMessage(
         [image_parts[0], QQSegment.image("https://example.com/result.png")]
     )
-    remote_mention, remote_messages = platform._split_qq_media_message(remote_media)
-    assert [part.type for part in remote_mention] == ["markdown"]
-    assert [part.type for part in remote_messages[0]] == ["text", "image"]
+    remote_message, remote_messages = platform._split_qq_media_message(remote_media)
+    assert [part.type for part in remote_message] == ["text", "image"]
+    assert '<qqbot-at-user id="user-openid" />' in remote_message[0].data["text"]
+    assert "查询结果" in remote_message[0].data["text"]
+    assert remote_messages == []
 
     # Score images must stay on QQ's native upload path. External Markdown
     # image URLs frequently render as "加载失败" in QQ clients, while the
@@ -191,29 +193,30 @@ def main() -> None:
             event=event,
             publish_qq_image=True,
         )
-        mention_message, followups = platform._split_qq_media_message(marked_reply)
-        assert [part.type for part in mention_message] == ["markdown"]
-        fallback_content = mention_message[0].data["markdown"].content
+        media_message, followups = platform._split_qq_media_message(marked_reply)
+        assert [part.type for part in media_message] == [
+            "text", "text", "file_image"
+        ]
+        fallback_content = media_message[0].data["text"]
         assert fallback_content.startswith('<qqbot-at-user id="user-openid" />')
-        assert len(followups) == 1
-        media_message = followups[0]
-        assert [part.type for part in media_message] == ["text", "file_image"]
-        assert media_message[0].data["text"] == "footer | text 😀"
-        assert media_message[1].data["content"] == image_bytes
+        assert "查询结果" in fallback_content
+        assert media_message[1].data["text"] == "footer | text 😀"
+        assert len(followups) == 0
+        assert media_message[2].data["content"] == image_bytes
         published = list(Path(directory).glob("*.png"))
         assert published == []
         extracted_media = QQBot._extract_send_message(
             media_message, escape_text=False
         )
-        assert extracted_media["content"] == "footer | text 😀"
+        assert extracted_media["content"] == (
+            fallback_content + "footer | text 😀"
+        )
         cached_message, cached_followups = platform._split_qq_media_message(
             marked_reply
         )
-        assert cached_message[0].data["markdown"].content == fallback_content
-        assert [part.type for part in cached_followups[0]] == [
-            "text", "file_image"
-        ]
-        assert cached_followups[0][1].data["content"] == image_bytes
+        assert cached_message[0].data["text"] == fallback_content
+        assert cached_followups == []
+        assert cached_message[2].data["content"] == image_bytes
     platform.maiconfig.maimaidx_qq_media_public_url = ""
     platform.maiconfig.maimaidx_qq_media_dir = ""
 
@@ -365,8 +368,8 @@ def main() -> None:
     )
 
     # Exercise the installed adapter wrapper, not only the splitter helper.
-    # A structured score reply uses a standalone Markdown @ followed by the
-    # native media request; the adapter wrapper must preserve both receipts.
+    # A structured score reply keeps the @ and image in one native media
+    # request; the adapter wrapper must preserve the combined payload.
     calls = []
 
     async def fake_send_to_group(_self, **kwargs):
@@ -391,13 +394,14 @@ def main() -> None:
             msg_seq=1,
         )
     )
-    assert receipt == {"id": "receipt-2"}, (receipt, calls)
-    assert len(calls) == 2
-    assert [part.type for part in calls[0]["message"]] == ["markdown"]
-    assert [part.type for part in calls[1]["message"]] == ["text", "image"]
+    assert receipt == {"id": "receipt-1"}, (receipt, calls)
+    assert len(calls) == 1
+    assert [part.type for part in calls[0]["message"]] == ["text", "image"]
+    assert '<qqbot-at-user id="user-openid" />' in calls[0]["message"][0].data[
+        "text"
+    ]
 
-    # A fallback media request consumes exactly one additional passive-reply
-    # sequence after the standalone Markdown mention.
+    # A fallback media request now consumes no additional reply slot.
     calls.clear()
     counter_token = platform._QQ_REPLY_FOLLOWUPS_SENT.set(0)
     try:
@@ -412,9 +416,9 @@ def main() -> None:
             return result, platform._QQ_REPLY_FOLLOWUPS_SENT.get()
 
         fallback_receipt, sent_count = asyncio.run(send_fallback())
-        assert fallback_receipt == {"id": "receipt-2"}
-        assert len(calls) == 2
-        assert sent_count == 1
+        assert fallback_receipt == {"id": "receipt-1"}
+        assert len(calls) == 1
+        assert sent_count == 0
     finally:
         platform._QQ_REPLY_FOLLOWUPS_SENT.reset(counter_token)
 

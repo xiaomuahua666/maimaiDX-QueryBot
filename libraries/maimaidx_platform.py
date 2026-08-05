@@ -1801,6 +1801,17 @@ def _qq_media_as_markdown(segments: List[Any]) -> Any | None:
 
 def _qq_media_mention_fallback(mentions: List[Any]) -> Any:
     """Send the current QQ @ syntax in a native Markdown message."""
+    prefix = _qq_media_mention_prefix(mentions)
+    from nonebot.adapters.qq.message import Message as QQMessage
+    from nonebot.adapters.qq.message import MessageSegment as QQSeg
+
+    if prefix != '查询结果':
+        return QQMessage([QQSeg.markdown(prefix)])
+    return QQMessage([*mentions, QQSeg.text(' 查询结果')])
+
+
+def _qq_media_mention_prefix(mentions: List[Any]) -> str:
+    """Build the text-chain @ prefix used beside a native QQ attachment."""
     tags: list[str] = []
     for segment in mentions:
         seg_type = getattr(segment, 'type', None)
@@ -1810,12 +1821,7 @@ def _qq_media_mention_fallback(mentions: List[Any]) -> Any:
                 tags.append(qq_at_markup(user_id))
         elif seg_type == 'mention_everyone':
             tags.append('<qqbot-at-everyone />')
-    from nonebot.adapters.qq.message import Message as QQMessage
-    from nonebot.adapters.qq.message import MessageSegment as QQSeg
-
-    if tags:
-        return QQMessage([QQSeg.markdown(f'{" ".join(tags)}\n\n查询结果')])
-    return QQMessage([*mentions, QQSeg.text(' 查询结果')])
+    return f'{" ".join(tags)}\n\n查询结果' if tags else '查询结果'
 
 
 def _ensure_qq_media_text(parts: List[Any]) -> List[Any]:
@@ -1837,10 +1843,11 @@ def _ensure_qq_media_text(parts: List[Any]) -> List[Any]:
 def _split_qq_media_message(message: Any) -> Optional[tuple[Any, list[Any]]]:
     """Build API-safe QQ wire messages without mixing text and rich types.
 
-    The official QQ API uses separate ``msg_type`` payloads for Markdown and
-    media. Keep the @ and explanatory text in one Markdown request, then send
-    each media object as a follow-up because the adapter exposes one media slot
-    per request.
+    The QQ adapter uploads each attachment as a native ``msg_type=7`` media
+    request. Its text segments become the request's ``content``, so a plain
+    text-chain @ and caption can travel with the first image without a second
+    Markdown message. Extra media objects still become follow-ups because the
+    API exposes only one ``media`` field per request.
     """
     module = type(message).__module__
     if not module.startswith('nonebot.adapters.qq'):
@@ -1869,8 +1876,6 @@ def _split_qq_media_message(message: Any) -> Optional[tuple[Any, list[Any]]]:
     ]
     media = [seg for seg in segments if getattr(seg, 'type', None) in media_types]
     if mentions:
-        # Keep @ markup in a dedicated Markdown request instead of mixing it
-        # with a media field, which the QQ API cannot represent in one payload.
         if not media:
             body = [
                 seg for seg in segments
@@ -1897,8 +1902,8 @@ def _split_qq_media_message(message: Any) -> Optional[tuple[Any, list[Any]]]:
         # Keep local attachments on QQ's native upload path. Replacing them
         # with Markdown URLs is tempting because it combines caption and image
         # visually, but QQ clients frequently fail to fetch external image
-        # URLs (showing "加载失败"). The media request below still carries the
-        # caption alongside the uploaded ``file_image``.
+        # URLs (showing "加载失败"). Put the official @ token and the short
+        # query-result label into the same media request's text content.
         caption = [
             seg
             for seg in segments
@@ -1917,11 +1922,14 @@ def _split_qq_media_message(message: Any) -> Optional[tuple[Any, list[Any]]]:
             if first_text:
                 caption.insert(0, QQSeg.text(first_text))
                 break
+        mention_prefix = _qq_media_mention_prefix(mentions)
+        if caption:
+            mention_prefix += '\n'
+        caption.insert(0, QQSeg.text(mention_prefix))
         first_media = _ensure_qq_media_text([*caption, media[0]])
         return (
-            _qq_media_mention_fallback(mentions),
-            [QQMessage(first_media)]
-            + [QQMessage([QQSeg.text(' '), segment]) for segment in media[1:]],
+            QQMessage(first_media),
+            [QQMessage([QQSeg.text(' '), segment]) for segment in media[1:]],
         )
 
     if not media:
