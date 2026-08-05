@@ -163,6 +163,43 @@ def _oauth_success_text(profile: dict) -> str:
     return '\n'.join(lines)
 
 
+def _escape_markdown_value(value: object) -> str:
+    """Keep profile fields from changing the surrounding QQ Markdown."""
+    text = str(value or '未返回')
+    for char in ('\\', '`', '*', '_', '[', ']', '(', ')', '#'):
+        text = text.replace(char, f'\\{char}')
+    return text
+
+
+def _oauth_success_payload(
+    profile: dict,
+    event: MessageEvent,
+    *,
+    prefix: str = '',
+):
+    """Render the OAuth receipt as native QQ Markdown when available."""
+    if not use_qq_mode(event):
+        return prefix + _oauth_success_text(profile)
+
+    name = _escape_markdown_value(profile.get('username') or profile.get('xf_user_id'))
+    email = _escape_markdown_value(profile.get('email'))
+    qq = _escape_markdown_value(profile.get('legacy_qq'))
+    lines = ['## 论坛 OAuth 绑定成功', '']
+    if prefix.strip():
+        lines.extend(f'> {line}' for line in prefix.splitlines() if line.strip())
+        lines.append('')
+    lines.extend(
+        [
+            f'- **论坛账号**：{name}',
+            f'- **邮箱**：{email}',
+            f'- **查分 QQ**：{qq}',
+            '',
+            '现在可以直接使用签到、查分、B50 等账号功能。',
+        ]
+    )
+    return build_markdown_message('\n'.join(lines), event=event)
+
+
 def _track_oauth_message(platform_id: str, *message_ids: object) -> None:
     bucket = _oauth_recall_ids.setdefault(str(platform_id), [])
     for mid in message_ids:
@@ -234,7 +271,11 @@ async def _complete_oauth_paste(
     if bot_failed:
         warnings.append(_RECALL_BOT_WARN)
     prefix = ('\n'.join(warnings) + '\n') if warnings else ''
-    await plugin_finish(matcher, prefix + _oauth_success_text(profile), event=event)
+    await plugin_finish(
+        matcher,
+        _oauth_success_payload(profile, event, prefix=prefix),
+        event=event,
+    )
 
 
 # 已发起 qbind、等待授权时：可直接粘贴回调链接 / 授权码（无需再写 qbind）
