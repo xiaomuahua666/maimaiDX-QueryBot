@@ -629,8 +629,38 @@ def _status_qrcode_prompt(reason: str) -> str:
 def _pending_qrcode_prompt(reason: str, operation_label: str = "原操作") -> str:
     return (
         f"🔄 二维码缓存{reason}\n"
-        "请直接发送最新 SGWCMAID、官方二维码链接或二维码图片（180 秒内有效）。\n"
-        f"验证并同步成绩后，Bot 会自动继续本次{operation_label}。"
+        "请直接发送最新 SGWCMAID（SGID）、官方二维码链接或二维码图片（180 秒内有效）。\n"
+        f"验证后，Bot 会直接继续本次{operation_label}，不会同步成绩。"
+    )
+
+
+def _is_sgid_expired_error(exc: BaseException) -> bool:
+    """识别上游 Chime 3002 等失效 SGID 响应，避免继续使用旧凭据。"""
+    current: Optional[BaseException] = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        detail = str(current or "")
+        lowered = detail.lower()
+        if "chime" in lowered and (
+            "3002" in lowered or "获取用户失败" in detail
+        ):
+            return True
+        cause = current.__cause__ or current.__context__
+        current = cause if isinstance(cause, BaseException) else None
+    return False
+
+
+def _raise_sgid_refresh_required(
+    key: str,
+    operation: str,
+    payload: Optional[dict[str, Any]],
+    label: str,
+) -> None:
+    account_db.mark_qrcode_result(key, False)
+    remember_pending_account_retry(key, operation, payload or {})
+    raise QrcodeRefreshRequiredError(
+        _pending_qrcode_prompt("已过期，需刷新", label)
     )
 
 
@@ -780,6 +810,10 @@ async def _render_account_status(
             lines.extend(["", _format_ticket_status(charge)])
         except Exception as exc:
             log.warning(f"[AccountStatus] 获取票券失败：{type(exc).__name__}: {exc}")
+            if _is_sgid_expired_error(exc):
+                account_db.mark_qrcode_result(binding.user_key, False)
+                lines.append("🎫 票券情况：二维码已过期，请重新发送最新 SGID")
+                return "\n".join(lines)
             lines.append("🎫 票券情况：暂时无法获取")
     return "\n".join(lines)
 
@@ -1466,6 +1500,11 @@ def _ensure_business_success(result: dict) -> None:
     """防止外部服务以 HTTP 200 返回业务失败时被误扣 BREAK。"""
     if not isinstance(result, dict):
         return
+
+    if _is_sgid_expired_error(
+        RuntimeError(json.dumps(result, ensure_ascii=False, default=str))
+    ):
+        raise RuntimeError("ChimeError 3002：Chime 获取用户失败，SGID 已过期")
 
     def all_null(value: Any) -> bool:
         if isinstance(value, dict):
@@ -2782,7 +2821,13 @@ async def _execute_ticket_now(
             raise TicketQrcodeError(
                 "二维码已过期、失效或与当前绑定账号不一致"
             ) from exc
-        before_charge = await sw_api.get_user_charge(binding.qrcode)
+        try:
+            before_charge = await sw_api.get_user_charge(binding.qrcode)
+        except Exception as exc:
+            if _is_sgid_expired_error(exc):
+                account_db.mark_qrcode_result(key, False)
+                raise TicketQrcodeError("二维码已过期，需重新发送最新 SGID") from exc
+            raise
         before_ok, before_rows, before_free_rows = _normalize_charge_payload(
             before_charge
         )
@@ -2808,6 +2853,9 @@ async def _execute_ticket_now(
             try:
                 result = await sw_api.charge_ticket(binding.qrcode, multiple)
             except Exception as exc:
+                if _is_sgid_expired_error(exc):
+                    account_db.mark_qrcode_result(key, False)
+                    raise TicketQrcodeError("二维码已过期，需重新发送最新 SGID") from exc
                 # 网络超时无法判断上游是否已执行，不能自动重试。
                 raise RuntimeError(
                     f"发票请求状态未知：{_exception_detail(exc)}；"
@@ -2818,16 +2866,25 @@ async def _execute_ticket_now(
             try:
                 _ensure_business_success(result)
             except Exception as exc:
+                if _is_sgid_expired_error(exc):
+                    account_db.mark_qrcode_result(key, False)
+                    raise TicketQrcodeError("二维码已过期，需重新发送最新 SGID") from exc
                 raise TicketRetryableError(
                     f"发票被上游明确拒绝：{_exception_detail(exc)}"
                 ) from exc
 
-        return await _confirm_ticket_delivery(
-            binding.qrcode,
-            multiple,
-            binding.mai_uid,
-            baseline_stock,
-        )
+        try:
+            return await _confirm_ticket_delivery(
+                binding.qrcode,
+                multiple,
+                binding.mai_uid,
+                baseline_stock,
+            )
+        except Exception as exc:
+            if _is_sgid_expired_error(exc):
+                account_db.mark_qrcode_result(key, False)
+                raise TicketQrcodeError("二维码已过期，需重新发送最新 SGID") from exc
+            raise
 
     verified_stock, attempts = await _run_ticket_with_retries(
         execute_attempt,
@@ -3045,6 +3102,13 @@ async def _(event: MessageEvent):
             result = await sw_api.get_user_charge(binding.qrcode)
         text = _format_ticket_status(result)
     except Exception as exc:
+        if _is_sgid_expired_error(exc):
+            account_db.mark_qrcode_result(key, False)
+            remember_pending_account_retry(key, "ticket_status")
+            await account_ticket_status.finish(
+                _pending_qrcode_prompt("已过期，需刷新", "票券查询"),
+                reply_message=True,
+            )
         detail = _exception_detail(exc)
         ref = _log(key, "ticket_status", "error", detail)
         await account_ticket_status.finish(
@@ -3073,8 +3137,18 @@ async def _run_paid_awmc_read(
         raise RuntimeError(error or "账号未绑定")
     cost = _service_cost(service)
     break_db.ensure_service_affordable(int(key), service, cost)
-    async with machine_session():
-        result = await fetch(binding.qrcode)
+    try:
+        async with machine_session():
+            result = await fetch(binding.qrcode)
+    except Exception as exc:
+        if _is_sgid_expired_error(exc):
+            label = {
+                "awmc_preview": "账号预览查询",
+                "awmc_items": "道具查询",
+                "awmc_gate_status": "门状态查询",
+            }.get(service, "查询")
+            _raise_sgid_refresh_required(key, service, {}, label)
+        raise
     text = formatter(result)
     charge = break_db.settle_service_success(
         int(key), service, cost, meta={"operation": service}
@@ -3101,6 +3175,9 @@ async def continue_pending_account_retry(
             await _read_verified_preview(binding, qrcode, save_qrcode=True)
     except Exception as exc:
         remember_pending_account_retry(key, operation, payload, expires_at=expires_at)
+        if _is_sgid_expired_error(exc):
+            account_db.mark_qrcode_result(key, False)
+            return _pending_qrcode_prompt("已过期，需刷新", "原操作")
         return _pending_qrcode_prompt("验证失败，请重新获取", "原操作")
 
     try:
@@ -3115,10 +3192,21 @@ async def continue_pending_account_retry(
                 event, service=operation, fetch=fetch, formatter=formatter
             )
         if operation == "ticket_status":
-            result = await sw_api.get_user_charge(qrcode)
+            try:
+                result = await sw_api.get_user_charge(qrcode)
+            except Exception as exc:
+                if _is_sgid_expired_error(exc):
+                    _raise_sgid_refresh_required(key, operation, payload, "票券查询")
+                raise
             return _format_ticket_status(result)
         if operation == "region":
-            return format_user_region_block(await sw_api.get_user_region(qrcode))
+            try:
+                result = await sw_api.get_user_region(qrcode)
+            except Exception as exc:
+                if _is_sgid_expired_error(exc):
+                    _raise_sgid_refresh_required(key, operation, payload, "地区查询")
+                raise
+            return format_user_region_block(result)
         if operation in {"awmc_music_upsert", "awmc_music_delete"}:
             return await _run_music_write(
                 event,
@@ -3136,6 +3224,8 @@ async def continue_pending_account_retry(
                 operation=str(payload.get("operation") or ""),
             )
         return "二维码已刷新，但原操作类型已失效，请重新发送原命令。"
+    except QrcodeRefreshRequiredError as exc:
+        return str(exc)
     except Exception as exc:
         ref = _log(key, operation, "error", _exception_detail(exc))
         return (
@@ -3167,15 +3257,26 @@ async def _run_music_write(
         raise RuntimeError(error or "账号未绑定")
     cost = _service_cost(service)
     break_db.ensure_service_affordable(int(key), service, cost)
-    async with machine_session():
-        if service == "awmc_music_upsert":
-            if score is None:
-                raise RuntimeError("缺少成绩数据")
-            await sw_api.upsert_music(binding.qrcode, score)
-        elif service == "awmc_music_delete":
-            await sw_api.delete_music(binding.qrcode, int(music.id), level)
-        else:
-            raise RuntimeError(f"不支持的成绩写入服务：{service}")
+    try:
+        async with machine_session():
+            if service == "awmc_music_upsert":
+                if score is None:
+                    raise RuntimeError("缺少成绩数据")
+                await sw_api.upsert_music(binding.qrcode, score)
+            elif service == "awmc_music_delete":
+                await sw_api.delete_music(binding.qrcode, int(music.id), level)
+            else:
+                raise RuntimeError(f"不支持的成绩写入服务：{service}")
+    except Exception as exc:
+        if _is_sgid_expired_error(exc):
+            label = "成绩编辑" if score is not None else "成绩删除"
+            _raise_sgid_refresh_required(
+                key,
+                service,
+                {"music": music, "level": level, "score": score},
+                label,
+            )
+        raise
 
     try:
         from ..libraries.maimaidx_player_cache import invalidate_player_cache
@@ -3241,30 +3342,45 @@ async def _run_account_dangerous_write(
         raise RuntimeError(error or "账号未绑定")
     cost = _service_cost(service)
     break_db.ensure_service_affordable(int(key), service, cost)
-    async with machine_session():
-        if service == "awmc_ticket_clear":
-            await sw_api.clear_tickets(binding.qrcode)
-            meta = {"operation": "clear"}
-            result_text = "✅ 已清空账号内的 Charge 票券"
-        elif service == "awmc_item_upsert":
-            if item_kind is None or item_id is None:
-                raise RuntimeError("缺少道具参数")
-            await sw_api.upsert_item(
-                binding.qrcode, item_kind, item_id, operation
+    try:
+        async with machine_session():
+            if service == "awmc_ticket_clear":
+                await sw_api.clear_tickets(binding.qrcode)
+                meta = {"operation": "clear"}
+                result_text = "✅ 已清空账号内的 Charge 票券"
+            elif service == "awmc_item_upsert":
+                if item_kind is None or item_id is None:
+                    raise RuntimeError("缺少道具参数")
+                await sw_api.upsert_item(
+                    binding.qrcode, item_kind, item_id, operation
+                )
+                meta = {
+                    "item_kind": item_kind,
+                    "item_id": item_id,
+                    "operation": operation,
+                }
+                action = "添加" if operation == "add" else "删除"
+                label = _ITEM_KIND_LABELS.get(item_kind, f"未知类型 {item_kind}")
+                result_text = f"✅ 已提交{action}道具：{label} · itemId={item_id}"
+                result_text += f"\n{_ITEM_UPSERT_SUCCESS_NOTE}"
+                if item_kind == 4:
+                    result_text += f"\n{_COLLECTION_UPSERT_TICKET_WARNING}"
+            else:
+                raise RuntimeError(f"不支持的账号写入服务：{service}")
+    except Exception as exc:
+        if _is_sgid_expired_error(exc):
+            label = "道具修改" if service == "awmc_item_upsert" else "清票"
+            _raise_sgid_refresh_required(
+                key,
+                service,
+                {
+                    "item_kind": item_kind,
+                    "item_id": item_id,
+                    "operation": operation,
+                },
+                label,
             )
-            meta = {
-                "item_kind": item_kind,
-                "item_id": item_id,
-                "operation": operation,
-            }
-            action = "添加" if operation == "add" else "删除"
-            label = _ITEM_KIND_LABELS.get(item_kind, f"未知类型 {item_kind}")
-            result_text = f"✅ 已提交{action}道具：{label} · itemId={item_id}"
-            result_text += f"\n{_ITEM_UPSERT_SUCCESS_NOTE}"
-            if item_kind == 4:
-                result_text += f"\n{_COLLECTION_UPSERT_TICKET_WARNING}"
-        else:
-            raise RuntimeError(f"不支持的账号写入服务：{service}")
+        raise
     charge = break_db.settle_service_success(int(key), service, cost, meta=meta)
     ref = _log(
         key,
@@ -3679,6 +3795,13 @@ async def _(event: MessageEvent):
     try:
         result = await sw_api.get_user_region(binding.qrcode)
     except Exception as exc:
+        if _is_sgid_expired_error(exc):
+            account_db.mark_qrcode_result(key, False)
+            remember_pending_account_retry(key, "region")
+            await account_region.finish(
+                _pending_qrcode_prompt("已过期，需刷新", "地区查询"),
+                reply_message=True,
+            )
         await account_region.finish(f"查询失败：{exc}")
     # 与 maibot 一致：用 regionId → WAHLAP_REGIONS 映射省份名，勿依赖 regionName。
     await account_region.finish(format_user_region_block(result))

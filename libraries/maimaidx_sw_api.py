@@ -190,6 +190,37 @@ class SwApiClient:
 
     @staticmethod
     def _parse_envelope(data: dict) -> Any:
+        # Chime 3002 means the SGID is no longer usable.  Some gateways put
+        # this failure inside an otherwise successful outer envelope, so
+        # inspect the nested payload before returning businessData.
+        def has_expired_sgid(value: Any) -> bool:
+            if isinstance(value, dict):
+                error_type = str(value.get("errorType") or value.get("ErrorType") or "").lower()
+                error_code = str(value.get("errorCode") or value.get("ErrorCode") or "")
+                message = str(
+                    value.get("errorMessage")
+                    or value.get("ErrorMessage")
+                    or value.get("message")
+                    or value.get("msg")
+                    or ""
+                ).lower()
+                if (
+                    ("chime" in error_type and "3002" in error_code)
+                    or ("chime" in message and ("3002" in message or "获取用户失败" in message))
+                ):
+                    return True
+                return any(has_expired_sgid(item) for item in value.values())
+            if isinstance(value, (list, tuple)):
+                return any(has_expired_sgid(item) for item in value)
+            if isinstance(value, str):
+                lowered = value.lower()
+                return "chime" in lowered and (
+                    "3002" in lowered or "获取用户失败" in value
+                )
+            return False
+
+        if has_expired_sgid(data):
+            raise SwApiError("ChimeError 3002：Chime 获取用户失败，SGID 已过期")
         if "error" in data:
             raise SwApiError(str(data["error"]))
 
