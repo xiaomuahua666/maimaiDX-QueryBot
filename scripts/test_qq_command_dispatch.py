@@ -107,13 +107,14 @@ async def main() -> None:
     assert len(roast_bot.sent) >= 2
     parts, kwargs = message_parts(roast_bot.sent[0])
     assert kwargs.get("reply_message") is False
-    assert parts[0].type == "text"
-    assert parts[0].data.get("text", "").startswith(
+    assert parts[0].type == "markdown"
+    roast_content = parts[0].data["markdown"].content
+    assert roast_content.startswith(
         '<qqbot-at-user id="dispatch-unbound-openid-1" />\n'
     )
     assert any(
-        segment.type == "text"
-        and "正在处理 B50 锐评" in str(segment.data.get("text") or "")
+        segment.type == "markdown"
+        and "正在处理 B50 锐评" in segment.data["markdown"].content
         for segment in parts
     )
 
@@ -122,13 +123,14 @@ async def main() -> None:
     assert awmc_bot.sent
     parts, kwargs = message_parts(awmc_bot.sent[0])
     assert kwargs.get("reply_message") is False
-    assert parts[0].type == "text"
-    assert parts[0].data.get("text", "").startswith(
+    assert parts[0].type == "markdown"
+    awmc_content = parts[0].data["markdown"].content
+    assert awmc_content.startswith(
         '<qqbot-at-user id="dispatch-unbound-openid-2" />\n'
     )
     assert any(
-        segment.type == "text"
-        and "qbind" in str(segment.data.get("text") or "")
+        segment.type == "markdown"
+        and "qbind" in segment.data["markdown"].content
         for segment in parts
     )
 
@@ -173,8 +175,8 @@ async def main() -> None:
     assert legacy_finish_bot.sent
     parts, kwargs = message_parts(legacy_finish_bot.sent[0])
     assert kwargs.get("reply_message") is False
-    assert parts[0].type == "text"
-    assert parts[0].data.get("text", "").startswith(
+    assert parts[0].type == "markdown"
+    assert parts[0].data["markdown"].content.startswith(
         '<qqbot-at-user id="dispatch-unbound-openid-4" />\n'
     )
 
@@ -197,8 +199,8 @@ async def main() -> None:
         parts, kwargs = message_parts(checkin_bot.sent[0])
         assert kwargs.get("reply_message") is False
         assert len(parts) == 1
-        assert parts[0].type == "text"
-        checkin_text = parts[0].data.get("text", "")
+        assert parts[0].type == "markdown"
+        checkin_text = parts[0].data["markdown"].content
         assert checkin_text.startswith(
             '<qqbot-at-user id="dispatch-unbound-openid-6" />\n'
         )
