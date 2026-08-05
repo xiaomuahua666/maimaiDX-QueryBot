@@ -126,6 +126,9 @@ _TICKET_QRCODE_RETRY_SECONDS = 180
 _TICKET_TIMING_KEY = "ticket:processing_seconds"
 _LEGACY_TICKET_TIMING_KEY = "ticket_queue:seconds_per_request"
 _TICKET_AUTO_RETRIES = 2
+# AWMC 发票接口是全局机台资源；即使不同用户同时发起，也必须逐张提交。
+_ticket_queue_lock = asyncio.Lock()
+_ticket_queue_waiting = 0
 _pending_ticket_retries: dict[str, tuple[int, float]] = {}
 _pending_account_retries: dict[str, tuple[str, dict[str, Any], float]] = {}
 _DIVING_FISH_PROBER_URL = "https://www.diving-fish.com/maimaidx/prober/"
@@ -468,6 +471,17 @@ def _ticket_wait_message(estimated: int, samples: int) -> str:
         f"（{estimate_source}）。\n"
         "Bot 会在接口返回并确认票券到账后才扣 BREAK。"
     )
+
+
+def _ticket_queue_wait_message(ahead: int) -> str:
+    """告知排队请求前方数量；数量至少为正在处理的那一张发票。"""
+    return (
+        "🎫 发票请求已进入队列，"
+        f"前面还有 {max(1, int(ahead))} 个请求，请耐心等待。\n"
+        "轮到后 Bot 会发送预计处理时间，并在确认到账后才扣 BREAK。"
+    )
+
+
 async def _confirm_ticket_delivery(
     qrcode: str,
     charge_id: int,
@@ -2727,7 +2741,7 @@ async def _():
     await account_ping.finish("AWMC API 连接正常\n" + _result_text(result))
 
 
-async def _execute_ticket(
+async def _execute_ticket_now(
     event: MessageEvent,
     multiple: int,
     *,
@@ -2832,6 +2846,59 @@ async def _execute_ticket(
         + (f"自动重试 {attempts - 1} 次后成功。\n" if attempts > 1 else "")
         + f"{_charge_text(charge)}\nRef_ID: {ref}"
     )
+
+
+async def _execute_ticket(
+    event: MessageEvent,
+    multiple: int,
+    *,
+    qrcode_override: str = "",
+    notify: Optional[Callable[[str], Awaitable[Any]]] = None,
+) -> str:
+    """将发票请求放入全局串行队列，再执行实际发票流程。
+
+    发票接口背后的机台资源是全局单通道。等待中的任务只占用队列计数，
+    不占用 ``machine_session``，并在取消或异常时及时清理计数。
+    """
+    global _ticket_queue_waiting
+
+    # ``asyncio.Lock.locked()`` can briefly be false after the active task
+    # releases the lock but before its first waiter is resumed.  Include the
+    # waiting count so a new request cannot miss the queue notification in
+    # that hand-off window (the lock itself still guarantees FIFO ordering).
+    queued = _ticket_queue_lock.locked() or _ticket_queue_waiting > 0
+    if queued:
+        # ``ahead`` 包含当前正在处理的任务以及已经排在本任务前面的等待者。
+        _ticket_queue_waiting += 1
+        ahead = _ticket_queue_waiting
+
+    acquired = False
+    try:
+        if queued and notify is not None:
+            try:
+                await notify(_ticket_queue_wait_message(ahead))
+            except Exception as exc:
+                log.warning(
+                    "[ticket] 发送排队通知失败，继续等待："
+                    f"{_exception_detail(exc)}"
+                )
+
+        await _ticket_queue_lock.acquire()
+        acquired = True
+        if queued:
+            _ticket_queue_waiting -= 1
+        return await _execute_ticket_now(
+            event,
+            multiple,
+            qrcode_override=qrcode_override,
+            notify=notify,
+        )
+    finally:
+        # 取消可能发生在 acquire() 或排队通知期间；此时任务还未减少等待数。
+        if queued and not acquired:
+            _ticket_queue_waiting -= 1
+        if acquired:
+            _ticket_queue_lock.release()
 
 
 def _ticket_failure_text(key: str, multiple: int, exc: Exception) -> str:

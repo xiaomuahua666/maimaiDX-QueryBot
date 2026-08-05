@@ -19,9 +19,11 @@ names = {
     "_ticket_estimate",
     "_format_wait_duration",
     "_ticket_wait_message",
+    "_ticket_queue_wait_message",
     "_confirm_ticket_delivery",
     "_run_ticket_with_retries",
     "_exception_detail",
+    "_execute_ticket",
 }
 selected = [
     node
@@ -74,6 +76,9 @@ namespace = {
     "_TICKET_TIMING_KEY": "ticket:processing_seconds",
     "_LEGACY_TICKET_TIMING_KEY": "ticket_queue:seconds_per_request",
     "_TICKET_AUTO_RETRIES": 2,
+    "_ticket_queue_lock": asyncio.Lock(),
+    "_ticket_queue_waiting": 0,
+    "MessageEvent": object,
     "asyncio": SimpleNamespace(sleep=no_sleep, TimeoutError=asyncio.TimeoutError),
     "time": __import__("time"),
     "re": __import__("re"),
@@ -102,6 +107,87 @@ assert "正在处理" in message
 assert "最近 3 次真实处理时间" in message
 assert "确认票券到账后才扣 BREAK" in message
 assert "队列" not in message
+queue_message = namespace["_ticket_queue_wait_message"](3)
+assert "已进入队列" in queue_message
+assert "前面还有 3 个请求" in queue_message
+
+
+# 直接运行队列包装器，验证全局串行和取消清理；实际发票流程由假函数替代。
+execution_order = []
+first_started = asyncio.Event()
+release_first = asyncio.Event()
+failing_started = asyncio.Event()
+release_failing = asyncio.Event()
+
+
+async def fake_execute_ticket_now(event, multiple, *, qrcode_override="", notify=None):
+    execution_order.append(multiple)
+    if multiple == 1:
+        first_started.set()
+        await release_first.wait()
+    if multiple == 5:
+        failing_started.set()
+        await release_failing.wait()
+    if multiple == 6:
+        raise RuntimeError("fake ticket failure")
+    return f"done-{multiple}"
+
+
+namespace["_execute_ticket_now"] = fake_execute_ticket_now
+notifications = {2: [], 3: [], 4: []}
+
+
+async def collect_notify(multiple):
+    async def notify(text):
+        notifications[multiple].append(text)
+
+    return await namespace["_execute_ticket"](
+        object(), multiple, notify=notify
+    )
+
+
+async def exercise_queue():
+    first = asyncio.create_task(collect_notify(1))
+    await first_started.wait()
+    second = asyncio.create_task(collect_notify(2))
+    third = asyncio.create_task(collect_notify(3))
+    await asyncio.sleep(0)
+    assert notifications[2] and "前面还有 1 个请求" in notifications[2][0]
+    assert notifications[3] and "前面还有 2 个请求" in notifications[3][0]
+    release_first.set()
+    assert await first == "done-1"
+    assert await second == "done-2"
+    assert await third == "done-3"
+    assert execution_order == [1, 2, 3]
+
+    # 排队中的任务取消后不得残留等待计数，也不能阻塞后续发票。
+    failing = asyncio.create_task(collect_notify(5))
+    await failing_started.wait()
+    cancelled = asyncio.create_task(collect_notify(4))
+    await asyncio.sleep(0)
+    assert namespace["_ticket_queue_waiting"] == 1
+    cancelled.cancel()
+    try:
+        await cancelled
+    except asyncio.CancelledError:
+        pass
+    assert namespace["_ticket_queue_waiting"] == 0
+    release_failing.set()
+    assert await failing == "done-5"
+
+    # 执行中的任务失败也必须释放锁，后续请求可以继续进入。
+    failed = asyncio.create_task(collect_notify(6))
+    try:
+        await failed
+    except RuntimeError as exc:
+        assert "fake ticket failure" in str(exc)
+    else:
+        raise AssertionError("发票失败应向调用方抛出")
+    assert namespace["_ticket_queue_waiting"] == 0
+    assert not namespace["_ticket_queue_lock"].locked()
+
+
+asyncio.run(exercise_queue())
 
 
 async def succeeds_on_third(attempt):
@@ -174,8 +260,11 @@ confirm_source = source[
     source.index("def _ticket_valid_timestamp(")
 ]
 assert confirm_source.count("sw_api.get_user_charge(qrcode)") == 1
-assert "get_charge_queue" not in source
-assert "maiqueue" not in source
+assert "async def _execute_ticket_now(" in source
+assert "async def _execute_ticket(" in source
+assert "_ticket_queue_lock.acquire()" in source
+assert "_ticket_queue_lock.locked() or _ticket_queue_waiting > 0" in source
+assert "前面还有" in source
 assert "processing_time_estimator.record(_TICKET_TIMING_KEY" in source
 assert "状态未知" in source
 assert "_TICKET_AUTO_RETRIES = 2" in source

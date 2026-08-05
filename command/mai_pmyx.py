@@ -68,6 +68,11 @@ def _available_diffs(music) -> List[int]:
     return [i + 2 for i in range(len(music.ds))]
 
 
+def _diff_button_label(diff: int) -> str:
+    """Return the compact colour label used by QQ keyboards."""
+    return {2: "绿", 3: "黄", 4: "红", 5: "紫", 6: "白"}.get(diff, str(diff))
+
+
 async def _finish_impression_result(
     matcher: Matcher,
     event: MessageEvent,
@@ -148,7 +153,7 @@ async def _(event: MessageEvent, matcher: Matcher, arg: Message = CommandArg()):
     if not all_comments:
         msg = f"「{title}」暂无谱面印象"
         links = [
-            (f"写入{WMC_DIFF_NAMES.get(d, str(d))}", build_preview_url(wmc_sid, kind, d))
+            (_diff_button_label(d), build_preview_url(wmc_sid, kind, d))
             for d in diffs_avail
         ]
         await _finish_impression_result(matcher, event, msg, f"{title} 谱面印象", links)
@@ -172,7 +177,7 @@ async def _(event: MessageEvent, matcher: Matcher, arg: Message = CommandArg()):
         lines.append(f"… 仅展示前 20 条，共 {len(all_comments)} 条")
 
     links = [
-        (f"写入{WMC_DIFF_NAMES.get(d, str(d))}", build_preview_url(wmc_sid, kind, d))
+        (_diff_button_label(d), build_preview_url(wmc_sid, kind, d))
         for d in diffs_avail
     ]
     await _finish_impression_result(

@@ -284,23 +284,23 @@ def main() -> None:
 
     link_message = platform.build_markdown_link_message(
         "谱面预览",
-        [("绿谱", "https://v.wmc.pub/?song=1")],
+        [("绿", "https://v.wmc.pub/?song=1")],
         event=event,
     )
     assert [part.type for part in link_message] == ["markdown", "keyboard"]
     assert link_message[0].data["markdown"].content == "谱面预览"
     assert "https://v.wmc.pub/?song=1" not in link_message[0].data["markdown"].content
     button = link_message[1].data["keyboard"].content.rows[0].buttons[0]
-    assert button.render_data.label == "绿谱"
+    assert button.render_data.label == "绿"
     assert button.action.permission.type == 2
 
     write_message = platform.build_markdown_link_message(
         "谱面印象",
-        [("写入绿谱", "https://v.wmc.pub/?song=1")],
+        [("绿", "https://v.wmc.pub/?song=1")],
         event=event,
     )
     assert write_message[0].data["markdown"].content == "谱面印象"
-    assert write_message[1].data["keyboard"].content.rows[0].buttons[0].render_data.label == "写入绿谱"
+    assert write_message[1].data["keyboard"].content.rows[0].buttons[0].render_data.label == "绿"
 
     class _FakeBot:
         def __init__(self):

@@ -72,7 +72,10 @@ def _pmyx_node(self_id: int, nickname: str, text: str) -> dict:
 
 def _chart_preview_links(music) -> list[tuple[str, str]]:
     """Return stable, public preview URLs for every available difficulty."""
-    diff_names = ['绿谱', '黄谱', '红谱', '紫谱', '白谱']
+    # QQ custom-keyboard buttons have limited width.  The message heading
+    # already identifies the action (preview/impression), so keep each
+    # difficulty button to the familiar one-character colour label.
+    diff_names = ['绿', '黄', '红', '紫', '白']
     kind = 'standard' if music.type == 'SD' else 'dx'
     song_id = music.id[1:] if music.type == 'DX' and music.id.startswith('1') else music.id
     return [
@@ -82,8 +85,12 @@ def _chart_preview_links(music) -> list[tuple[str, str]]:
 
 
 def _chart_write_links(music) -> list[tuple[str, str]]:
-    """Return the same chart pages with explicit impression-write labels."""
-    return [(f"写入{label}", url) for label, url in _chart_preview_links(music)]
+    """Return the same chart pages for impression writing.
+
+    The surrounding Markdown heading says this is the impression-writing
+    action, so the keyboard can reuse the compact colour labels.
+    """
+    return _chart_preview_links(music)
 
 
 async def _build_chart_preview_nodes(music, self_id: int, nickname: str) -> List[dict]:
@@ -714,7 +721,7 @@ async def _(event: MessageEvent, match=RegexMatched()):
         return
     preview_links = dict(_chart_preview_links(music))
     url = preview_links.get(
-        {'绿': '绿谱', '黄': '黄谱', '红': '红谱', '紫': '紫谱', '白': '白谱'}[diff_name],
+        diff_name,
         build_preview_url(
             music.id[1:] if music.type == 'DX' and music.id.startswith('1') else music.id,
             'standard' if music.type == 'SD' else 'dx',
@@ -728,7 +735,7 @@ async def _(event: MessageEvent, match=RegexMatched()):
         await chart_preview.finish(
             build_markdown_link_message(
                 f'{music.title} {diff_name}谱预览',
-                [('打开预览', url)],
+                [(diff_name, url)],
                 event=event,
             ),
             reply_message=True,
