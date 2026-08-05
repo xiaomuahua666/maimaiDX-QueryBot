@@ -90,7 +90,7 @@ db._conn.commit()
 assert db.try_reserve_analysis(1, 10)
 assert db.get_balance(1) == 10
 daily = db._conn.execute("SELECT * FROM break_daily_usage WHERE qqid=1").fetchone()
-assert daily["break_spent"] == 0
+assert daily is None  # 预扣失败/成功前不应为只读检查创建空的每日记录
 
 balance = db.settle_analysis_reservation(1, 40, 10, meta={"pricing": "test"})
 assert balance == -20
@@ -108,9 +108,7 @@ db._conn.commit()
 assert db.try_reserve_analysis(2, 10)
 assert db.refund_analysis_reservation(2, 10, meta={"reason": "test"}) == 18
 daily = db._conn.execute("SELECT * FROM break_daily_usage WHERE qqid=2").fetchone()
-assert daily["analysis_count"] == 0
-assert daily["break_spent"] == 0
-assert daily["break_gained"] == 0
+assert daily is None
 
 db._conn.execute(
     "INSERT INTO break_users (qqid, balance, created_at, updated_at) VALUES (3, 9, ?, ?)",

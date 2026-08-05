@@ -549,6 +549,89 @@ class BreakDatabase:
         if self._conn._backend == 'sqlite':
             self._conn.executescript(_CREATE_SQL)
         self._seed_config()
+        self._prune_empty_users()
+
+    def _prune_empty_users(self) -> None:
+        """Remove rows created by read-only checks that never had activity.
+
+        Official QQ used to derive a temporary BREAK key from an unbound
+        openid.  Older read paths inserted a zeroed ``break_users`` row even
+        when the request was rejected later.  Keep every row with a balance,
+        check-in, counter, timestamp, or related business record; only delete
+        genuinely empty shells and their zeroed daily/service placeholders.
+        """
+        try:
+            candidates = self._conn.execute(
+                """SELECT qqid FROM break_users
+                   WHERE COALESCE(balance, 0) = 0
+                     AND COALESCE(streak, 0) = 0
+                     AND COALESCE(last_checkin_date, '') = ''
+                     AND COALESCE(total_query_count, 0) = 0
+                     AND COALESCE(total_analysis_count, 0) = 0
+                     AND COALESCE(last_query_at, 0) = 0
+                     AND COALESCE(last_analysis_at, 0) = 0"""
+            ).fetchall()
+            if not candidates:
+                return
+
+            # A row is meaningful if it appears in any ledger/history table,
+            # even when its current balance has returned to zero.
+            meaningful_checks = (
+                "SELECT 1 FROM break_log WHERE qqid = ? LIMIT 1",
+                "SELECT 1 FROM break_group_checkin WHERE first_qqid = ? LIMIT 1",
+                "SELECT 1 FROM break_makeup_checkin WHERE qqid = ? LIMIT 1",
+                "SELECT 1 FROM break_guess_daily WHERE qqid = ? LIMIT 1",
+                """SELECT 1 FROM break_service_daily
+                   WHERE qqid = ? AND (COALESCE(success_count, 0) > 0
+                       OR COALESCE(free_used, 0) > 0
+                       OR COALESCE(break_spent, 0) > 0) LIMIT 1""",
+                "SELECT 1 FROM break_daily_reward WHERE qqid = ? LIMIT 1",
+                "SELECT 1 FROM break_red_packet WHERE sender_qqid = ? LIMIT 1",
+                "SELECT 1 FROM break_red_packet_claim WHERE qqid = ? LIMIT 1",
+                "SELECT 1 FROM break_gamble_pool WHERE qqid = ? LIMIT 1",
+                "SELECT 1 FROM break_gamble_pool_payout WHERE qqid = ? LIMIT 1",
+                """SELECT 1 FROM break_daily_usage
+                   WHERE qqid = ? AND (COALESCE(free_used, 0) > 0
+                       OR COALESCE(query_count, 0) > 0
+                       OR COALESCE(analysis_count, 0) > 0
+                       OR COALESCE(break_spent, 0) > 0
+                       OR COALESCE(break_gained, 0) > 0) LIMIT 1""",
+            )
+            removed = 0
+            for candidate in candidates:
+                qqid = int(candidate['qqid'])
+                meaningful = False
+                for sql in meaningful_checks:
+                    try:
+                        if self._conn.execute(sql, (qqid,)).fetchone():
+                            meaningful = True
+                            break
+                    except Exception as exc:
+                        # Optional history tables were introduced over time.
+                        # A legacy database may not have one yet; that table
+                        # cannot contain history, so continue checking the
+                        # remaining tables instead of aborting all cleanup.
+                        message = str(exc).lower()
+                        if 'no such table' in message or "doesn't exist" in message:
+                            continue
+                        raise
+                if meaningful:
+                    continue
+                self._conn.execute('DELETE FROM break_daily_usage WHERE qqid = ?', (qqid,))
+                self._conn.execute('DELETE FROM break_service_daily WHERE qqid = ?', (qqid,))
+                self._conn.execute('DELETE FROM break_users WHERE qqid = ?', (qqid,))
+                removed += 1
+            if removed:
+                self._conn.commit()
+                log.info(f'[BREAK] 已清理 {removed} 条无业务数据的空用户记录')
+        except Exception as exc:
+            # A legacy installation may not yet have every optional table;
+            # cleanup must never prevent the bot from starting.
+            try:
+                self._conn._conn.rollback()
+            except Exception:
+                pass
+            log.warning(f'[BREAK] 清理空用户记录失败（已忽略）：{type(exc).__name__}: {exc}')
 
     def _seed_config(self):
         for key, value in DEFAULT_CONFIG.items():
@@ -712,7 +795,6 @@ class BreakDatabase:
         )
 
     def get_balance(self, qqid: int) -> int:
-        self._ensure_user(qqid)
         row = self._conn.execute(
             'SELECT balance FROM break_users WHERE qqid = ?', (qqid,)
         ).fetchone()
@@ -732,8 +814,6 @@ class BreakDatabase:
         )
 
     def is_daily_free_available(self, qqid: int) -> bool:
-        self._ensure_user(qqid)
-        self._ensure_daily(qqid)
         row = self._conn.execute(
             'SELECT free_used FROM break_daily_usage WHERE qqid = ? AND date = ?',
             (qqid, self._today()),
@@ -805,8 +885,6 @@ class BreakDatabase:
     ) -> bool:
         if amount <= 0:
             return True
-        self._ensure_user(qqid)
-        self._ensure_daily(qqid)
         with self._lock:
             row = self._conn.execute(
                 'SELECT balance FROM break_users WHERE qqid = ?', (qqid,)
@@ -814,6 +892,7 @@ class BreakDatabase:
             balance = int(row['balance']) if row else 0
             if balance < amount:
                 return False
+            self._ensure_daily(qqid)
             now = time.time()
             self._conn.execute(
                 'UPDATE break_users SET balance = balance - ?, updated_at = ? WHERE qqid = ?',
@@ -833,8 +912,6 @@ class BreakDatabase:
         amount = max(0, int(amount))
         if amount <= 0:
             return True
-        self._ensure_user(qqid)
-        self._ensure_daily(qqid)
         with self._lock:
             row = self._conn.execute(
                 'SELECT balance FROM break_users WHERE qqid = ?', (qqid,)
@@ -964,16 +1041,8 @@ class BreakDatabase:
     ) -> ServiceChargeResult:
         """成功业务原子结算：DAILY_FREE_SERVICES 每日首次免费，其余每次按配置扣费。"""
         cost = max(0, int(cost))
-        self._ensure_user(qqid)
-        self._ensure_daily(qqid)
         today, now = self._today(), time.time()
         with self._lock:
-            self._conn.execute(
-                """INSERT OR IGNORE INTO break_service_daily
-                   (qqid, date, service, success_count, free_used, break_spent, last_at)
-                   VALUES (?, ?, ?, 0, 0, 0, ?)""",
-                (qqid, today, service, now),
-            )
             row = self._conn.execute(
                 """SELECT free_used FROM break_service_daily
                    WHERE qqid=? AND date=? AND service=?""",
@@ -987,6 +1056,14 @@ class BreakDatabase:
             balance = self.get_balance(qqid)
             if charged and balance < charged:
                 raise BreakInsufficientError(charged, balance, qqid=qqid)
+            self._ensure_user(qqid)
+            self._ensure_daily(qqid)
+            self._conn.execute(
+                """INSERT OR IGNORE INTO break_service_daily
+                   (qqid, date, service, success_count, free_used, break_spent, last_at)
+                   VALUES (?, ?, ?, 0, 0, 0, ?)""",
+                (qqid, today, service, now),
+            )
             self._conn.execute(
                 """UPDATE break_service_daily SET success_count=success_count+1,
                    free_used=1, break_spent=break_spent+?, last_at=?
@@ -1015,15 +1092,15 @@ class BreakDatabase:
         if amount <= 0 or sender == recipient:
             raise ValueError('转账数量必须大于 0，且不能转给自己')
         fee = max(0, _parse_config_int(self.get_config('transfer_fee', '0'), 0))
-        self._ensure_user(sender)
-        self._ensure_user(recipient)
-        self._ensure_daily(sender)
-        self._ensure_daily(recipient)
         with self._lock:
             sender_balance = self.get_balance(sender)
             total = amount + fee
             if sender_balance < total:
                 raise BreakInsufficientError(total, sender_balance, qqid=sender)
+            self._ensure_user(sender)
+            self._ensure_user(recipient)
+            self._ensure_daily(sender)
+            self._ensure_daily(recipient)
             now = time.time()
             self._conn.execute(
                 'UPDATE break_users SET balance=balance-?, updated_at=? WHERE qqid=?',
@@ -1116,8 +1193,6 @@ class BreakDatabase:
             raise ValueError(f'单个红包最多 {max_count} 份')
 
         self.expire_red_packets()
-        self._ensure_user(sender)
-        self._ensure_daily(sender)
         now = time.time()
         expire_minutes = max(
             1,
@@ -1141,6 +1216,8 @@ class BreakDatabase:
             balance = int(row['balance']) if row else 0
             if balance < total_amount:
                 raise BreakInsufficientError(total_amount, balance, qqid=sender)
+            self._ensure_user(sender)
+            self._ensure_daily(sender)
             try:
                 self._conn.execute(
                     'UPDATE break_users SET balance=balance-?, updated_at=? WHERE qqid=?',
@@ -1188,8 +1265,6 @@ class BreakDatabase:
 
     def claim_red_packet(self, qqid: int, group_id: int) -> RedPacketClaimResult:
         self.expire_red_packets()
-        self._ensure_user(qqid)
-        self._ensure_daily(qqid)
         now = time.time()
         with self._lock:
             packet = self._conn.execute(
@@ -1216,6 +1291,8 @@ class BreakDatabase:
             after_count = remaining_count - 1
             completed = after_count == 0
             status = 'completed' if completed else 'active'
+            self._ensure_user(qqid)
+            self._ensure_daily(qqid)
             try:
                 self._conn.execute(
                     """INSERT INTO break_red_packet_claim
@@ -1299,12 +1376,12 @@ class BreakDatabase:
         count = max(1, min(int(count), 10))
         unit_cost = max(1, _parse_config_int(self.get_config('lottery_cost', '2'), 2))
         cost = unit_cost * count
-        self._ensure_user(qqid)
-        self._ensure_daily(qqid)
         with self._lock:
             balance = self.get_balance(qqid)
             if balance < cost:
                 raise BreakInsufficientError(cost, balance, qqid=qqid)
+            self._ensure_user(qqid)
+            self._ensure_daily(qqid)
             prizes = random.choices(
                 LOTTERY_PRIZES,
                 weights=LOTTERY_WEIGHTS,
@@ -1351,13 +1428,12 @@ class BreakDatabase:
         if mode not in GAMBLE_WEIGHTS_MAP:
             raise ValueError(f'未知模式：{mode}，可选：{", ".join(GAMBLE_MODES)}')
 
-        self._ensure_user(qqid)
-        self._ensure_daily(qqid)
-
         with self._lock:
             balance = self.get_balance(qqid)
             if balance <= 0:
                 raise BreakInsufficientError(1, balance, qqid=qqid)
+            self._ensure_user(qqid)
+            self._ensure_daily(qqid)
 
             # 按权重随机选择倍率
             weights_data = GAMBLE_WEIGHTS_MAP[mode]
@@ -1644,12 +1720,10 @@ class BreakDatabase:
         return balance
 
     def get_user_row(self, qqid: int) -> dict:
-        self._ensure_user(qqid)
         row = self._conn.execute('SELECT * FROM break_users WHERE qqid = ?', (qqid,)).fetchone()
         return dict(row) if row else {}
 
     def get_daily_row(self, qqid: int) -> dict:
-        self._ensure_daily(qqid)
         row = self._conn.execute(
             'SELECT * FROM break_daily_usage WHERE qqid = ? AND date = ?',
             (qqid, self._today()),
@@ -1723,8 +1797,10 @@ class BreakDatabase:
         return [dict(row) for row in rows]
 
     def is_checked_in_today(self, qqid: int) -> bool:
-        row = self.get_user_row(qqid)
-        return row.get('last_checkin_date') == self._today()
+        row = self._conn.execute(
+            'SELECT last_checkin_date FROM break_users WHERE qqid = ?', (qqid,)
+        ).fetchone()
+        return bool(row and row['last_checkin_date'] == self._today())
 
     def _streak_bonus(self, streak: int) -> int:
         raw = self.get_config('streak_bonus', DEFAULT_CONFIG['streak_bonus'])
@@ -2035,7 +2111,6 @@ class BreakDatabase:
             return None
         if not allow_retroactive:
             return None
-        self._ensure_user(qqid)
         today = self._today()
         user = self.get_user_row(qqid)
         if user.get('last_checkin_date') != today:

@@ -2499,8 +2499,11 @@ def build_markdown_link_message(
     )
 
     heading = str(title or '').strip()
+    # QQ clients render Markdown links as a separate text block while the
+    # actual action is already exposed by the keyboard below.  Keeping only
+    # the heading avoids showing duplicate, non-clickable URL text while
+    # preserving the buttons as the single link affordance.
     content_lines = [heading] if heading else []
-    content_lines.extend(f'[{label}]({url})' for label, url in normalized)
     buttons = [
         Button(
             id=f'maimaidx-link-{index}',

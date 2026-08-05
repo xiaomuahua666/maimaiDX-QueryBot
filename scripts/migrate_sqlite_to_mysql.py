@@ -173,6 +173,7 @@ def migrate_break_db(mysql_conn):
         'break_red_packet_claim',
         'break_makeup_checkin',
         'break_gamble_pool',
+        'break_gamble_pool_payout',
     ]
     
     for table in tables:

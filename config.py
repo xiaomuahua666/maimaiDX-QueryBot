@@ -65,7 +65,7 @@ class Config(BaseModel):
     # 本地 PC 成绩可用于落雪 OAuth 直传的新鲜度（秒）；默认与 SGID 缓存一致。
     awmc_lxns_pc_cache_seconds: float = 600.0
     # 等待全局机台锁的最长时间（秒）；0=无限等待。超时返回「机台繁忙」。
-    awmc_machine_lock_timeout_seconds: float = 60.0
+    awmc_machine_lock_timeout_seconds: float = 120.0
     # AWMC 账号 API 成功返回后的静默冷却（秒）。
     awmc_api_success_cooldown_seconds: float = 1.0
     # 发票允许倍率固定为 2、3 倍；保留配置字段兼容旧环境变量。

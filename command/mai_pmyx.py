@@ -16,7 +16,14 @@ from ..libraries.maimaidx_wmc_api import (
     make_chart_key,
     resolve_wmc_base_url,
 )
-from ..libraries.maimaidx_platform import plugin_finish, rank_text_image
+from ..libraries.maimaidx_platform import (
+    build_markdown_link_message,
+    build_markdown_message,
+    plugin_finish,
+    plugin_send,
+    rank_text_image,
+    use_qq_mode,
+)
 
 
 def _wmc_api() -> Optional[WmcAPI]:
@@ -59,6 +66,34 @@ def _kind_str(music) -> str:
 def _available_diffs(music) -> List[int]:
     """返回可用难度的 API diff 值列表（2-6）。"""
     return [i + 2 for i in range(len(music.ds))]
+
+
+async def _finish_impression_result(
+    matcher: Matcher,
+    event: MessageEvent,
+    text: str,
+    title: str,
+    links: List[tuple[str, str]],
+) -> None:
+    """Send the impression text and keep write actions as QQ buttons."""
+    if not use_qq_mode(event):
+        await matcher.finish(text, reply_message=True)
+        return
+    await plugin_send(
+        matcher,
+        build_markdown_message(text, event=event),
+        event=event,
+        reply_message=True,
+    )
+    if links:
+        await plugin_send(
+            matcher,
+            build_markdown_link_message(title, links, event=event),
+            event=event,
+            reply_message=False,
+            mention_sender=False,
+        )
+    await matcher.finish()
 
 
 # ================================================================
@@ -111,10 +146,12 @@ async def _(event: MessageEvent, matcher: Matcher, arg: Message = CommandArg()):
         all_comments.extend(result["items"])
 
     if not all_comments:
-        # 无评论时仍给出写入引导
-        preview_urls = [build_preview_url(wmc_sid, kind, d) for d in diffs_avail]
-        msg = f"「{title}」暂无谱面印象\n\n前往写入：\n" + "\n".join(preview_urls)
-        await matcher.finish(msg, reply_message=True)
+        msg = f"「{title}」暂无谱面印象"
+        links = [
+            (f"写入{WMC_DIFF_NAMES.get(d, str(d))}", build_preview_url(wmc_sid, kind, d))
+            for d in diffs_avail
+        ]
+        await _finish_impression_result(matcher, event, msg, f"{title} 谱面印象", links)
         return
 
     lines = [f"【{title}】谱面印象（共 {len(all_comments)} 条）"]
@@ -134,13 +171,17 @@ async def _(event: MessageEvent, matcher: Matcher, arg: Message = CommandArg()):
     if len(all_comments) > 20:
         lines.append(f"… 仅展示前 20 条，共 {len(all_comments)} 条")
 
-    # 附带写入引导
-    preview_urls = [build_preview_url(wmc_sid, kind, d) for d in diffs_avail]
-    lines.append("\n写入谱面印象：")
-    for d, url in zip(diffs_avail, preview_urls):
-        lines.append(f"  {WMC_DIFF_NAMES.get(d, str(d))} → {url}")
-
-    await matcher.finish("\n".join(lines), reply_message=True)
+    links = [
+        (f"写入{WMC_DIFF_NAMES.get(d, str(d))}", build_preview_url(wmc_sid, kind, d))
+        for d in diffs_avail
+    ]
+    await _finish_impression_result(
+        matcher,
+        event,
+        "\n".join(lines),
+        f"{title} 谱面印象",
+        links,
+    )
 
 
 # ================================================================
@@ -174,13 +215,17 @@ async def _(event: MessageEvent, matcher: Matcher, arg: Message = CommandArg()):
     kind = _kind_str(music)
     diffs_avail = _available_diffs(music)
 
-    lines = [f"「{title}」谱面印象写入链接："]
-    for d in diffs_avail:
-        url = build_preview_url(wmc_sid, kind, d)
-        lines.append(f"{WMC_DIFF_NAMES.get(d, str(d))} → {url}")
-    lines.append("\n点击链接在浏览器中打开，即可评分和发表印象。")
-
-    await matcher.finish("\n".join(lines), reply_message=True)
+    links = [
+        (f"写入{WMC_DIFF_NAMES.get(d, str(d))}", build_preview_url(wmc_sid, kind, d))
+        for d in diffs_avail
+    ]
+    await _finish_impression_result(
+        matcher,
+        event,
+        f"「{title}」谱面印象写入",
+        f"{title} 谱面印象",
+        links,
+    )
 
 
 # ================================================================

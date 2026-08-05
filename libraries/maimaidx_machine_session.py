@@ -21,10 +21,10 @@ class MachineBusyError(RuntimeError):
 async def machine_session() -> AsyncIterator[None]:
     """Hold the shared machine session for one complete business workflow.
 
-    等待超时由 ``AWMC_MACHINE_LOCK_TIMEOUT_SECONDS`` 控制（默认 60s）；
+    等待超时由 ``AWMC_MACHINE_LOCK_TIMEOUT_SECONDS`` 控制（默认 120s）；
     设为 ``0`` 表示无限等待（旧行为）。
     """
-    timeout = float(getattr(maiconfig, "awmc_machine_lock_timeout_seconds", 60.0) or 0.0)
+    timeout = float(getattr(maiconfig, "awmc_machine_lock_timeout_seconds", 120.0) or 0.0)
     if timeout > 0:
         if _machine_lock.locked():
             log.info(f"[machine_session] 机台锁被占用，最多等待 {timeout:.0f}s")

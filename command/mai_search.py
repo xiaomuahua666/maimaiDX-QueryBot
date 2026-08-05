@@ -81,6 +81,11 @@ def _chart_preview_links(music) -> list[tuple[str, str]]:
     ]
 
 
+def _chart_write_links(music) -> list[tuple[str, str]]:
+    """Return the same chart pages with explicit impression-write labels."""
+    return [(f"写入{label}", url) for label, url in _chart_preview_links(music)]
+
+
 async def _build_chart_preview_nodes(music, self_id: int, nickname: str) -> List[dict]:
     """构建谱面预览链接的合并转发节点列表"""
     nodes = []
@@ -147,8 +152,18 @@ async def _build_wmc_tags_forward_nodes(music, self_id: int, nickname: str) -> L
     return nodes
 
 
-async def _build_pmyx_forward_nodes(music_id: str, self_id: int, nickname: str) -> List[dict]:
-    """拉取该曲谱面印象，构建合并转发 node 列表；无数据时也返回一条「暂无谱面印象」节点。优先走 v.wmc.pub，未配置则回退旧 PMYX。"""
+async def _build_pmyx_forward_nodes(
+    music_id: str,
+    self_id: int,
+    nickname: str,
+    *,
+    include_write_links: bool = True,
+) -> List[dict]:
+    """拉取谱面印象并构建转发节点。
+
+    QQ 将写入链接作为独立键盘发送，因此其转发正文只保留印象内容；
+    OneBot 继续把 URL 放在正文里，保持原有可复制、可打开的行为。
+    """
     # ---- v2: v.wmc.pub API ----
     wmc_key = maiconfig.wmc_api_key
     if wmc_key:
@@ -175,9 +190,16 @@ async def _build_pmyx_forward_nodes(music_id: str, self_id: int, nickname: str) 
                         c["_diff_name"] = diff_name
                     all_comments.extend(items)
             if not all_comments:
-                preview_urls = [build_preview_url(wmc_sid, kind, d + 2) for d in range(len(music.ds))]
-                url_text = "\n".join(preview_urls)
-                return [_pmyx_node(self_id, nickname, f"ID {music_id} 暂无谱面印象\n\n前往写入：\n{url_text}")]
+                if include_write_links:
+                    preview_urls = [
+                        build_preview_url(wmc_sid, kind, d + 2)
+                        for d in range(len(music.ds))
+                    ]
+                    url_text = "\n".join(preview_urls)
+                    text = f"ID {music_id} 暂无谱面印象\n\n前往写入：\n{url_text}"
+                else:
+                    text = f"ID {music_id} 暂无谱面印象"
+                return [_pmyx_node(self_id, nickname, text)]
             random.shuffle(all_comments)
             nodes = [_pmyx_node(self_id, nickname, f"ID {music_id} 的谱面印象（共 {len(all_comments)} 条）")]
             for x in all_comments[:10]:
@@ -193,9 +215,13 @@ async def _build_pmyx_forward_nodes(music_id: str, self_id: int, nickname: str) 
                 nodes.append(_pmyx_node(self_id, nickname, line))
             if len(all_comments) > 10:
                 nodes.append(_pmyx_node(self_id, nickname, f"… 随机展示 10 条，共 {len(all_comments)} 条"))
-            # 写入引导
-            preview_urls = [build_preview_url(wmc_sid, kind, d + 2) for d in range(len(music.ds))]
-            nodes.append(_pmyx_node(self_id, nickname, "写入谱面印象：\n" + "\n".join(preview_urls)))
+            if include_write_links:
+                # OneBot 下保留可复制的写入 URL；QQ 由调用方发送键盘。
+                preview_urls = [
+                    build_preview_url(wmc_sid, kind, d + 2)
+                    for d in range(len(music.ds))
+                ]
+                nodes.append(_pmyx_node(self_id, nickname, "写入谱面印象：\n" + "\n".join(preview_urls)))
             return nodes
 
     # ---- 回退：旧 PMYX API ----
@@ -281,7 +307,13 @@ async def _send_song_info_then_pmyx_forward(
     all_nodes = []
     # 并发拉取三个数据源
     import asyncio
-    pmyx_task = _build_pmyx_forward_nodes(music.id, event.self_id, nickname)
+    qq_mode = use_qq_mode(event)
+    pmyx_task = _build_pmyx_forward_nodes(
+        music.id,
+        event.self_id,
+        nickname,
+        include_write_links=not qq_mode,
+    )
     tag_task = build_tags_forward_nodes(music.id, event.self_id, nickname)
     wmc_task = _build_wmc_tags_forward_nodes(music, event.self_id, nickname)
     pmyx_nodes, tag_nodes, wmc_tag_nodes = await asyncio.gather(pmyx_task, tag_task, wmc_task)
@@ -294,7 +326,7 @@ async def _send_song_info_then_pmyx_forward(
     chart_img = draw_multiver_chart(music.id)
     if chart_img:
         b64 = image_to_base64(chart_img)
-        if use_qq_mode(event):
+        if qq_mode:
             # ``draw_multiver_chart`` returns a PIL image.  Convert it to a
             # real QQ local attachment instead of passing the object through
             # the OneBot image converter (which produced an empty/"附图" node).
@@ -323,9 +355,9 @@ async def _send_song_info_then_pmyx_forward(
     chart_preview_nodes = await _build_chart_preview_nodes(music, event.self_id, nickname)
     if chart_preview_nodes and not use_qq_mode(event):
         all_nodes.append(_build_nested_forward_node(event.self_id, "谱面预览", chart_preview_nodes))
-    if use_qq_mode(event) and _chart_preview_links(music):
+    if qq_mode and _chart_preview_links(music):
         # URLs inside a rasterized forward summary are not clickable.  Send a
-        # native Markdown block (and URL buttons when the adapter supports it).
+        # native Markdown block with URL buttons instead.
         await bot.send(
             event,
             build_markdown_link_message(
@@ -336,6 +368,18 @@ async def _send_song_info_then_pmyx_forward(
             _maimaidx_skip_sender_mention=True,
         )
     await _send_forward(bot, event, all_nodes)
+    if qq_mode and _chart_write_links(music):
+        # Keep impression actions directly below the impression summary and
+        # avoid exposing bare URLs in the Markdown/forward text.
+        await bot.send(
+            event,
+            build_markdown_link_message(
+                f'ID {music.id} 谱面印象',
+                _chart_write_links(music),
+                event=event,
+            ),
+            _maimaidx_skip_sender_mention=True,
+        )
     await matcher.finish()
 
 
