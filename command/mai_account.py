@@ -342,9 +342,18 @@ async def _run_ticket_with_retries(
             return await operation(attempt), attempt
         except TicketRetryableError as exc:
             if attempt >= total_attempts:
-                raise TicketRetryableError(
+                final_error = TicketRetryableError(
                     f"{_exception_detail(exc)}；已自动重试 {retries} 次，仍失败"
-                ) from exc
+                )
+                if notify is not None:
+                    try:
+                        await notify(f"⚠️ 发票失败：{_exception_detail(final_error)}")
+                    except Exception as notify_exc:
+                        log.warning(
+                            "[ticket] 发送最终失败通知失败："
+                            f"{_exception_detail(notify_exc)}"
+                        )
+                raise final_error from exc
             log.warning(
                 f"[ticket] 第 {attempt} 次明确失败，准备自动重试 "
                 f"({attempt}/{retries})：{_exception_detail(exc)}"
@@ -2905,8 +2914,6 @@ async def _execute_ticket_now(
                     f"发票请求状态未知：{_exception_detail(exc)}；"
                     "为避免重复发票，本次不会自动重试或扣 BREAK"
                 ) from exc
-            elapsed = max(0.001, time.perf_counter() - timing_started_at)
-            processing_time_estimator.record(_TICKET_TIMING_KEY, elapsed)
             try:
                 _ensure_business_success(result)
             except Exception as exc:
@@ -2929,6 +2936,11 @@ async def _execute_ticket_now(
                 account_db.mark_qrcode_result(key, False)
                 raise TicketQrcodeError("二维码已过期，需重新发送最新 SGID") from exc
             raise
+        # Only successful, fully confirmed tickets contribute to the estimate.
+        # A rejected request or failed settlement must not make future waits
+        # look faster or slower than real completed deliveries.
+        elapsed = max(0.001, time.perf_counter() - timing_started_at)
+        processing_time_estimator.record(_TICKET_TIMING_KEY, elapsed)
 
     verified_stock, attempts = await _run_ticket_with_retries(
         execute_attempt,
