@@ -23,6 +23,7 @@ from ..libraries.maimaidx_platform import (
     get_event_group_id,
     parse_at_target_id,
 )
+from ..libraries.maimaidx_error import QBindRequiredError
 from ..libraries.maimaidx_break import (
     break_db,
     format_break_insufficient_message,
@@ -287,12 +288,18 @@ async def _audit_and_ban_preprocessor(
         log.warning('[BREAK] 欠费检查失败，跳过', exc_info=True)
 
     if _serial_user_operation(matcher):
-        operation_key = str(billing_user_id(event))
-        if not try_begin_account_operation(operation_key):
-            # 同一账号只允许一个账号流程。重复请求静默丢弃，
-            # 避免用“等待/已受理”之类过程消息刷屏。
-            raise IgnoredException("serial user operation already active")
-        state["__maimaidx_serial_user_operation"] = operation_key
+        try:
+            operation_key = str(billing_user_id(event))
+        except QBindRequiredError:
+            # Let the platform matcher guard send the common qbind prompt.
+            # A missing mapping must not abort the preprocessor first.
+            operation_key = None
+        if operation_key is not None:
+            if not try_begin_account_operation(operation_key):
+                # 同一账号只允许一个账号流程。重复请求静默丢弃，
+                # 避免用“等待/已受理”之类过程消息刷屏。
+                raise IgnoredException("serial user operation already active")
+            state["__maimaidx_serial_user_operation"] = operation_key
 
     busy_surcharge_exempt = _busy_surcharge_exempt(matcher)
     try:
