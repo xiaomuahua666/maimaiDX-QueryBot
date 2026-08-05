@@ -150,6 +150,8 @@ assert client_source.count("retry_count=0") >= 7
 assert "MilK" in (ROOT / "command" / "mai_account.py").read_text(encoding="utf-8")
 assert "只发道具时" in (ROOT / "command" / "mai_account.py").read_text(encoding="utf-8")
 assert "0 分的乐曲记录" in (ROOT / "command" / "mai_account.py").read_text(encoding="utf-8")
+assert "上机游玩清除票券" in (ROOT / "command" / "mai_account.py").read_text(encoding="utf-8")
+assert "mai清票（或清票）" in (ROOT / "command" / "mai_account.py").read_text(encoding="utf-8")
 
 break_source = (ROOT / "libraries" / "maimaidx_break.py").read_text(encoding="utf-8")
 assert "'awmc_music_upsert_cost': '75'" in break_source

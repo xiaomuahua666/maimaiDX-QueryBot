@@ -804,6 +804,10 @@ _ITEM_UPSERT_SUCCESS_NOTE = (
     "提示：只发道具时，可能会同时上传一条名为「MilK」、0 分的乐曲记录；"
     "看到这条记录即代表道具写入成功。"
 )
+_COLLECTION_UPSERT_TICKET_WARNING = (
+    "⚠️ 如果账号内还有票券，收藏品可能实际不会生效，但本次道具修改仍会扣费。\n"
+    "若确认未成功：1. 上机游玩清除票券；2. 使用 mai清票（或清票）；3. 再次重试。"
+)
 
 
 def _format_user_preview(payload: dict) -> str:
@@ -3257,6 +3261,8 @@ async def _run_account_dangerous_write(
             label = _ITEM_KIND_LABELS.get(item_kind, f"未知类型 {item_kind}")
             result_text = f"✅ 已提交{action}道具：{label} · itemId={item_id}"
             result_text += f"\n{_ITEM_UPSERT_SUCCESS_NOTE}"
+            if item_kind == 4:
+                result_text += f"\n{_COLLECTION_UPSERT_TICKET_WARNING}"
         else:
             raise RuntimeError(f"不支持的账号写入服务：{service}")
     charge = break_db.settle_service_success(int(key), service, cost, meta=meta)
