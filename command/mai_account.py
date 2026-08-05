@@ -36,7 +36,12 @@ from ..libraries.maimaidx_machine_session import (
     machine_session,
 )
 from ..libraries.maimaidx_music import mai
-from ..libraries.maimaidx_platform import billing_user_id, resolve_score_qqid
+from ..libraries.maimaidx_platform import (
+    billing_user_id,
+    plugin_finish,
+    plugin_send,
+    resolve_score_qqid,
+)
 from ..libraries.maimaidx_playcount_db import pc_db
 from ..libraries.maimaidx_qrcode_util import (
     extract_sgwcmaid_from_image_segments,
@@ -823,7 +828,7 @@ _ITEM_KIND_LABELS = {
     2: "称号",
     3: "头像",
     4: "收藏品",
-    5: "乐曲",
+    5: "乐曲解锁",
     6: "MASTER 谱面解锁",
     7: "Re:MASTER 谱面解锁",
     8: "乐曲解锁(高风险类型)",
@@ -1048,6 +1053,16 @@ def _resolve_account_music(query: str):
     raise ValueError(f"未找到歌曲：{text}")
 
 
+def _resolve_item_music(query: str, item_kind: int):
+    """Resolve a song item and enforce DX/Re:MASTER unlock constraints."""
+    music = _resolve_account_music(query)
+    if item_kind in {6, 7} and str(getattr(music, "type", "")).upper() != "DX":
+        raise ValueError(f"《{music.title}》不是 DX 谱面，不需要解锁 {item_kind}。")
+    if item_kind == 7 and len(getattr(music, "charts", ()) or ()) <= 4:
+        raise ValueError(f"《{music.title}》没有 Re:MASTER 难度，无法进行 7 类解锁。")
+    return music
+
+
 def _validate_music_difficulty(music, level: int) -> None:
     is_utage = (
         int(music.id) >= 100000
@@ -1181,6 +1196,8 @@ _ITEM_KIND_INPUTS = {
     "票券": 12, "ticket": 12,
     "钥匙": 15, "key": 15,
 }
+_SUPPORTED_ITEM_KINDS = frozenset({1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 15})
+_MUSIC_ITEM_KINDS = frozenset({5, 6, 7})
 _INTERACTION_CANCEL_WORDS = {"取消", "cancel", "q", "退出", "00"}
 
 
@@ -1196,8 +1213,10 @@ def _parse_item_kind(value: str) -> int:
         kind = int(text)
     except ValueError as exc:
         raise ValueError("itemKind 必须是正整数或已知类型名称") from exc
-    if kind <= 0:
-        raise ValueError("itemKind 必须大于 0")
+    if kind not in {1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 15}:
+        raise ValueError(
+            "暂只支持 itemKind：1、2、3、4、5、6、7、9、10、11、12、15"
+        )
     return kind
 
 
@@ -1212,16 +1231,21 @@ def _parse_item_operation(value: str) -> str:
 
 def _parse_item_upsert_command(raw: str) -> tuple[int, int, str]:
     tokens = str(raw or "").split()
-    if len(tokens) != 3:
-        raise ValueError("格式错误：mai改道具 <itemKind> <itemId> <add/del>")
+    if len(tokens) < 3:
+        raise ValueError("格式错误：mai改道具 <itemKind> <歌曲或 itemId> <add/del>")
     kind = _parse_item_kind(tokens[0])
+    operation = _parse_item_operation(tokens[-1])
+    item_query = " ".join(tokens[1:-1]).strip()
+    if kind in {5, 6, 7}:
+        music = _resolve_item_music(item_query, kind)
+        return kind, int(music.id), operation
     try:
-        item_id = int(tokens[1])
+        item_id = int(item_query)
     except ValueError as exc:
         raise ValueError("itemId 必须是正整数") from exc
     if item_id <= 0:
         raise ValueError("itemId 必须大于 0")
-    return kind, item_id, _parse_item_operation(tokens[2])
+    return kind, item_id, operation
 
 
 def _forward_image_node(user_id: str, nickname: str, image_b64: str, caption: str = "") -> dict:
@@ -1603,13 +1627,13 @@ def _service_cost(service: str, *, multiple: int = 1) -> int:
 
 
 def _allowed_ticket_multipliers() -> tuple[int, ...]:
-    raw = getattr(maiconfig, "awmc_ticket_allowed_multipliers", "2,3")
+    raw = getattr(maiconfig, "awmc_ticket_allowed_multipliers", "2,3,5")
     if isinstance(raw, (list, tuple, set)):
         parts = raw
     else:
         parts = str(raw or "").replace("，", ",").split(",")
     values: set[int] = set()
-    allowed = {2, 3}
+    allowed = {2, 3, 5}
     for part in parts:
         try:
             value = int(str(part).strip())
@@ -1617,7 +1641,7 @@ def _allowed_ticket_multipliers() -> tuple[int, ...]:
             continue
         if value in allowed:
             values.add(value)
-    return tuple(sorted(values)) or (2, 3)
+    return tuple(sorted(values)) or (2, 3, 5)
 
 
 def _charge_text(result) -> str:
@@ -1646,7 +1670,7 @@ async def _require_agreement(matcher, event: MessageEvent) -> None:
 
 
 @account_help.handle()
-async def _():
+async def _(event: MessageEvent):
     fish_cost = break_db.get_config("upload_fish_cost", "2")
     lx_cost = break_db.get_config("upload_lx_cost", "2")
     all_cost = break_db.get_config("upload_all_cost", "3")
@@ -1657,7 +1681,8 @@ async def _():
     clear_cost = break_db.get_config("awmc_ticket_clear_cost", "10")
     item_cost = break_db.get_config("awmc_item_upsert_cost", "100")
     ticket_multipliers = "/".join(map(str, _allowed_ticket_multipliers()))
-    await account_help.finish(
+    await plugin_finish(
+        account_help,
         "AWMC 账号功能（已合并到 QueryBot）\n"
         "mai绑定 / maibind：绑定或认领舞萌账号\n"
         "mai状态 / mymai：查看账号详细状态，缓存失效时引导刷新二维码\n"
@@ -1677,10 +1702,11 @@ async def _():
         f"AWMC 只读新功能：每次成功查询 {read_cost} BREAK，失败不扣费\n"
         f"成绩编辑 {edit_cost} BREAK / 条；成绩删除 {delete_cost} BREAK / 条，失败不扣费\n"
         f"清票 {clear_cost} BREAK / 次；道具修改 {item_cost} BREAK / 次（未经测试，风险自负）\n"
-        "已有 2/3 倍票未使用时重复发票，将拦截并扣除 20 BREAK。\n"
+        "已有 2/3/5 倍票未使用时重复发票，将拦截并扣除 20 BREAK。\n"
         "成绩上传每日首次成功免费；发票每次按价扣费，失败不扣费；"
         "明确失败会自动重试 2 次。\n"
-        "发送“用户协议”阅读和确认服务条款。"
+        "发送“用户协议”阅读和确认服务条款。",
+        event=event,
     )
 
 
@@ -3047,30 +3073,35 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
             except ValueError:
                 pending_multiple = 2
             remember_pending_ticket_retry(key, pending_multiple)
-            await account_ticket.finish(
+            await plugin_finish(
+                account_ticket,
                 _pending_qrcode_prompt("已过期，需刷新", "发票操作"),
+                event=event,
                 reply_message=True,
             )
-        await account_ticket.finish(error or "账号未绑定")
+        await plugin_finish(account_ticket, error or "账号未绑定", event=event)
     raw = _arg_text(args) or "2"
     try:
         multiple = int(raw)
     except ValueError:
-        await account_ticket.finish("倍率格式错误，用法：发票 2（或 fp 2）")
+        await plugin_finish(account_ticket, "倍率格式错误，用法：发票 2（或 fp 2）", event=event)
     allowed = _allowed_ticket_multipliers()
     if multiple not in allowed:
         allowed_text = " / ".join(map(str, allowed))
-        await account_ticket.finish(f"票券倍率仅支持：{allowed_text}。")
+        await plugin_finish(account_ticket, f"票券倍率仅支持：{allowed_text}。", event=event)
     clear_pending_ticket_retry(key)
     try:
         cost = _service_cost("ticket", multiple=multiple)
         break_db.ensure_service_affordable(int(key), "ticket", cost)
     except Exception as exc:
-        await account_ticket.finish(
-            _ticket_failure_text(key, multiple, exc), reply_message=True
+        await plugin_finish(
+            account_ticket,
+            _ticket_failure_text(key, multiple, exc),
+            event=event,
+            reply_message=True,
         )
     async def notify(message: str) -> None:
-        await account_ticket.send(message, reply_message=True)
+        await plugin_send(account_ticket, message, event=event, reply_message=True)
 
     try:
         text = await _execute_ticket(event, multiple, notify=notify)
@@ -3083,7 +3114,7 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
         )
     except Exception as exc:
         text = _ticket_failure_text(key, multiple, exc)
-    await account_ticket.finish(text, reply_message=True)
+    await plugin_finish(account_ticket, text, event=event, reply_message=True)
 
 
 @account_ticket_status.handle()
@@ -3092,11 +3123,13 @@ async def _(event: MessageEvent):
     if error or binding is None:
         if error and "二维码缓存" in error:
             remember_pending_account_retry(key, "ticket_status")
-            await account_ticket_status.finish(
+            await plugin_finish(
+                account_ticket_status,
                 _pending_qrcode_prompt("已过期，需刷新", "票券查询"),
+                event=event,
                 reply_message=True,
             )
-        await account_ticket_status.finish(error or "账号未绑定")
+        await plugin_finish(account_ticket_status, error or "账号未绑定", event=event)
     try:
         async with machine_session():
             result = await sw_api.get_user_charge(binding.qrcode)
@@ -3105,16 +3138,21 @@ async def _(event: MessageEvent):
         if _is_sgid_expired_error(exc):
             account_db.mark_qrcode_result(key, False)
             remember_pending_account_retry(key, "ticket_status")
-            await account_ticket_status.finish(
+            await plugin_finish(
+                account_ticket_status,
                 _pending_qrcode_prompt("已过期，需刷新", "票券查询"),
+                event=event,
                 reply_message=True,
             )
         detail = _exception_detail(exc)
         ref = _log(key, "ticket_status", "error", detail)
-        await account_ticket_status.finish(
-            f"票券查询失败：{detail}\nRef_ID: {ref}", reply_message=True
+        await plugin_finish(
+            account_ticket_status,
+            f"票券查询失败：{detail}\nRef_ID: {ref}",
+            event=event,
+            reply_message=True,
         )
-    await account_ticket_status.finish(text, reply_message=True)
+    await plugin_finish(account_ticket_status, text, event=event, reply_message=True)
 
 
 async def _run_paid_awmc_read(
@@ -3404,14 +3442,16 @@ async def _(event: MessageEvent):
         )
     except Exception as exc:
         if isinstance(exc, QrcodeRefreshRequiredError):
-            await account_preview.finish(str(exc), reply_message=True)
+            await plugin_finish(account_preview, str(exc), event=event, reply_message=True)
         detail = _exception_detail(exc)
         ref = _log(_user_key(event), "awmc_preview", "error", detail)
-        await account_preview.finish(
+        await plugin_finish(
+            account_preview,
             f"账号预览查询失败：{detail}\n本次不扣 BREAK\nRef_ID: {ref}",
+            event=event,
             reply_message=True,
         )
-    await account_preview.finish(text, reply_message=True)
+    await plugin_finish(account_preview, text, event=event, reply_message=True)
 
 
 @account_items.handle()
@@ -3426,14 +3466,16 @@ async def _(event: MessageEvent):
         )
     except Exception as exc:
         if isinstance(exc, QrcodeRefreshRequiredError):
-            await account_items.finish(str(exc), reply_message=True)
+            await plugin_finish(account_items, str(exc), event=event, reply_message=True)
         detail = _exception_detail(exc)
         ref = _log(_user_key(event), "awmc_items", "error", detail)
-        await account_items.finish(
+        await plugin_finish(
+            account_items,
             f"道具查询失败：{detail}\n本次不扣 BREAK\nRef_ID: {ref}",
+            event=event,
             reply_message=True,
         )
-    await account_items.finish(text, reply_message=True)
+    await plugin_finish(account_items, text, event=event, reply_message=True)
 
 
 @account_gate_status.handle()
@@ -3448,14 +3490,16 @@ async def _(event: MessageEvent):
         )
     except Exception as exc:
         if isinstance(exc, QrcodeRefreshRequiredError):
-            await account_gate_status.finish(str(exc), reply_message=True)
+            await plugin_finish(account_gate_status, str(exc), event=event, reply_message=True)
         detail = _exception_detail(exc)
         ref = _log(_user_key(event), "awmc_gate_status", "error", detail)
-        await account_gate_status.finish(
+        await plugin_finish(
+            account_gate_status,
             f"门状态查询失败：{detail}\n本次不扣 BREAK\nRef_ID: {ref}",
+            event=event,
             reply_message=True,
         )
-    await account_gate_status.finish(text, reply_message=True)
+    await plugin_finish(account_gate_status, text, event=event, reply_message=True)
 
 
 @account_music_upsert.handle()
@@ -3717,18 +3761,32 @@ async def _(matcher: Matcher, message: Message = Arg("item_kind")):
 
 
 @account_item_upsert.got(
-    "item_id", prompt="请输入要操作的 itemId（正整数）；发送“取消”或 00 退出："
+    "item_id",
+    prompt=(
+        "请输入要操作的 乐曲ID/乐曲名/别名（5/6/7 类）或 itemId（其他类型，正整数）；"
+        "发送“取消”或 00 退出："
+    ),
 )
 async def _(matcher: Matcher, message: Message = Arg("item_id")):
     raw = _arg_text(message)
     if _is_interaction_cancel(raw):
         await account_item_upsert.finish("已取消道具修改，本次不扣 BREAK。")
-    try:
-        item_id = int(raw)
-        if item_id <= 0:
-            raise ValueError
-    except ValueError:
-        await matcher.reject("itemId 必须是正整数，请重新发送。")
+    kind = matcher.state["item_kind_value"]
+    music = None
+    if kind in _MUSIC_ITEM_KINDS:
+        try:
+            music = _resolve_item_music(raw, kind)
+        except ValueError as exc:
+            await matcher.reject(str(exc) + " 请重新输入歌曲 ID、歌曲名或别名。")
+        item_id = int(music.id)
+        matcher.state["item_music"] = music
+    else:
+        try:
+            item_id = int(raw)
+            if item_id <= 0:
+                raise ValueError
+        except ValueError:
+            await matcher.reject("itemId 必须是正整数，请重新发送。")
     matcher.state["item_id_value"] = item_id
 
 
@@ -3736,7 +3794,11 @@ async def _(matcher: Matcher, message: Message = Arg("item_id")):
     "item_operation",
     prompt="请选择操作：add（添加）或 del（删除）；发送“取消”或 00 退出：",
 )
-async def _(matcher: Matcher, message: Message = Arg("item_operation")):
+async def _(
+    matcher: Matcher,
+    event: MessageEvent,
+    message: Message = Arg("item_operation"),
+):
     raw = _arg_text(message)
     if _is_interaction_cancel(raw):
         await account_item_upsert.finish("已取消道具修改，本次不扣 BREAK。")
@@ -3749,9 +3811,16 @@ async def _(matcher: Matcher, message: Message = Arg("item_operation")):
     item_id = matcher.state["item_id_value"]
     action = "添加" if operation == "add" else "删除"
     label = _ITEM_KIND_LABELS.get(kind, f"未知类型 {kind}")
-    await matcher.send(
-        f"即将{action}：{label}（itemKind={kind}），itemId={item_id}。\n"
+    music = matcher.state.get("item_music")
+    if music is not None:
+        target = f"乐曲名为《{music.title}》，乐曲ID {music.id}"
+    else:
+        target = f"itemId={item_id}"
+    await plugin_send(
+        matcher,
+        f"即将{action}：{label}（itemKind={kind}），{target}。\n"
         "该功能未经测试，风险由用户自行承担。",
+        event=event,
         reply_message=True,
     )
 
@@ -3766,6 +3835,12 @@ async def _(matcher: Matcher, message: Message = Arg("item_operation")):
 async def _(matcher: Matcher, event: MessageEvent, message: Message = Arg("item_risk_confirm")):
     if _arg_text(message) != "我已知晓风险":
         await account_item_upsert.finish("已取消道具修改，本次不扣 BREAK。")
+    await plugin_send(
+        matcher,
+        "✅ 已确认风险，正在提交道具修改，请稍候……",
+        event=event,
+        reply_message=True,
+    )
     try:
         text = await _run_account_dangerous_write(
             event,
@@ -3787,33 +3862,41 @@ async def _(event: MessageEvent):
     if error or binding is None:
         if error and "二维码缓存" in error:
             remember_pending_account_retry(key, "region")
-            await account_region.finish(
+            await plugin_finish(
+                account_region,
                 _pending_qrcode_prompt("已过期，需刷新", "地区查询"),
+                event=event,
                 reply_message=True,
             )
-        await account_region.finish(error or "账号未绑定")
+        await plugin_finish(account_region, error or "账号未绑定", event=event)
     try:
         result = await sw_api.get_user_region(binding.qrcode)
     except Exception as exc:
         if _is_sgid_expired_error(exc):
             account_db.mark_qrcode_result(key, False)
             remember_pending_account_retry(key, "region")
-            await account_region.finish(
+            await plugin_finish(
+                account_region,
                 _pending_qrcode_prompt("已过期，需刷新", "地区查询"),
+                event=event,
                 reply_message=True,
             )
-        await account_region.finish(f"查询失败：{exc}")
+        await plugin_finish(account_region, f"查询失败：{exc}", event=event)
     # 与 maibot 一致：用 regionId → WAHLAP_REGIONS 映射省份名，勿依赖 regionName。
-    await account_region.finish(format_user_region_block(result))
+    await plugin_finish(
+        account_region, format_user_region_block(result), event=event
+    )
 
 
 @account_opt.handle()
-async def _(args: Message = CommandArg()):
+async def _(event: MessageEvent, args: Message = CommandArg()):
     title_ver = _arg_text(args)
     if not title_ver:
-        await account_opt.finish("用法：mai查询opt <titleVer>")
+        await plugin_finish(account_opt, "用法：mai查询opt <titleVer>", event=event)
     try:
         result = await sw_api.get_opt(title_ver)
     except Exception as exc:
-        await account_opt.finish(f"查询失败：{exc}")
-    await account_opt.finish(json.dumps(result, ensure_ascii=False, indent=2)[:3000])
+        await plugin_finish(account_opt, f"查询失败：{exc}", event=event)
+    await plugin_finish(
+        account_opt, json.dumps(result, ensure_ascii=False, indent=2)[:3000], event=event
+    )

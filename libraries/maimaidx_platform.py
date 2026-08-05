@@ -1785,7 +1785,7 @@ def _qq_media_as_markdown(segments: List[Any]) -> Any | None:
         elif seg_type in _QQ_MARKDOWN_IMAGE_TYPES:
             url, width, height = published[id(segment)]
             dimensions = f' #{width}px #{height}px' if width and height else ''
-            blocks.append(f'![查询结果{dimensions}]({url})')
+            blocks.append(f'![{dimensions.strip()}]({url})')
     flush_text()
 
     content = '\n\n'.join(block for block in blocks if block.strip())
@@ -1805,9 +1805,9 @@ def _qq_media_mention_fallback(mentions: List[Any]) -> Any:
     from nonebot.adapters.qq.message import Message as QQMessage
     from nonebot.adapters.qq.message import MessageSegment as QQSeg
 
-    if prefix != '查询结果':
+    if prefix:
         return QQMessage([QQSeg.markdown(prefix)])
-    return QQMessage([*mentions, QQSeg.text(' 查询结果')])
+    return QQMessage([*mentions])
 
 
 def _qq_media_mention_prefix(mentions: List[Any]) -> str:
@@ -1832,7 +1832,7 @@ def _qq_media_mention_prefix(mentions: List[Any]) -> str:
             tags.append(f'@{name}')
         elif seg_type == 'mention_everyone':
             tags.append('@全体成员')
-    return f'{" ".join(tags)}\n\n查询结果' if tags else '查询结果'
+    return f'{" ".join(tags)}\n\n' if tags else ''
 
 
 def _ensure_qq_media_text(parts: List[Any]) -> List[Any]:
@@ -2401,9 +2401,9 @@ def adapt_reply_payload(
 
         parts: List[Any] = []
         if result.strip():
-            parts.append(QQSeg.text(result))
+            parts.append(QQSeg.markdown(result))
         if footer:
-            parts.append(QQSeg.text(footer))
+            parts.append(QQSeg.markdown(footer))
         return QQMessage(parts) if parts else QQMessage([QQSeg.text('（无内容）')])
 
     if not qq_mode:

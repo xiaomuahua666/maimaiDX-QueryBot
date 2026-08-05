@@ -151,13 +151,13 @@ def main() -> None:
         '<qqbot-at-user id="user-openid" /> 正在处理'
     )
 
-    # The text-chain @ and query label travel in the same native media request;
-    # no standalone "查询结果" message is needed.
+    # The text-chain @ travels in the same native media request; no standalone
+    # caption is needed.
     media_message, media_messages = platform._split_qq_media_message(image_reply)
     assert [part.type for part in media_message] == ["text", "file_image"]
     fallback_content = media_message[0].data["text"]
     assert fallback_content.startswith('@Tester\n\n')
-    assert "查询结果" in fallback_content
+    assert "查询结果" not in fallback_content
     extracted_fallback = QQBot._extract_send_message(
         media_message, escape_text=False
     )
@@ -174,7 +174,7 @@ def main() -> None:
     remote_message, remote_messages = platform._split_qq_media_message(remote_media)
     assert [part.type for part in remote_message] == ["text", "image"]
     assert remote_message[0].data["text"].startswith('@Tester\n\n')
-    assert "查询结果" in remote_message[0].data["text"]
+    assert "查询结果" not in remote_message[0].data["text"]
     assert remote_messages == []
 
     # Score images must stay on QQ's native upload path. External Markdown
@@ -199,7 +199,7 @@ def main() -> None:
         ]
         fallback_content = media_message[0].data["text"]
         assert fallback_content.startswith('@Tester\n\n')
-        assert "查询结果" in fallback_content
+        assert "查询结果" not in fallback_content
         assert media_message[1].data["text"] == "footer | text 😀"
         assert len(followups) == 0
         assert media_message[2].data["content"] == image_bytes
