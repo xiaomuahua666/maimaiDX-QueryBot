@@ -71,4 +71,15 @@ assert "_sync_sdgb_qrcode" not in ticket_branch
 assert "_upload" not in ticket_branch
 assert "continue_ticket_with_qrcode" in playcount_source[auto_upload_pos:]
 
+# A refreshed QR for a pending account query must bypass the normal sync
+# workflow and continue the requested operation directly.
+pending_account_direct_pos = playcount_source.index(
+    "if pending_account is not None:", pending_pos
+)
+assert pending_account_direct_pos < dedupe_pos
+pending_account_branch = playcount_source[pending_account_direct_pos:dedupe_pos]
+assert "continue_pending_account_retry" in pending_account_branch
+assert "_sync_sdgb_qrcode" not in pending_account_branch
+assert "_upload" not in pending_account_branch
+
 print("ticket qrcode retry tests: ok")

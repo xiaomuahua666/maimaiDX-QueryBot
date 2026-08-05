@@ -62,6 +62,8 @@ class Config(BaseModel):
     # 有新鲜 PC 缓存时优先用本地成绩，不再打这条接口。
     awmc_user_music_timeout_seconds: float = 15.0
     awmc_user_music_retry_count: int = 0
+    # 收藏品/道具列表偶尔较慢，允许最多等待 120 秒且不重复提交。
+    awmc_user_items_timeout_seconds: float = 120.0
     # 本地 PC 成绩可用于落雪 OAuth 直传的新鲜度（秒）；默认与 SGID 缓存一致。
     awmc_lxns_pc_cache_seconds: float = 600.0
     # 等待全局机台锁的最长时间（秒）；0=无限等待。超时返回「机台繁忙」。

@@ -33,7 +33,7 @@ namespace = {
         1: "姓名框",
         2: "称号",
         9: "角色",
-        15: "钥匙(高风险类型)",
+        15: "钥匙",
     },
     "_GATE_NAMES": {
         1: "蓝色之门", 2: "白色之门", 3: "紫色之门", 4: "黑色之门",
@@ -70,7 +70,7 @@ assert len(rows) == 4
 items = namespace["_format_user_items"](items_payload)
 assert "称号（kind=2）：100" in items
 assert "角色（kind=9）：200、201" in items
-assert "钥匙(高风险类型)（kind=15）：300" in items
+assert "钥匙（kind=15）：300" in items
 
 gates = namespace["_format_gate_status"](
     {
@@ -98,6 +98,7 @@ for alias in ('"查门"', '"门状态"'):
     assert alias in account_source
 assert "cache_valid, cache_label = _sgid_cache_state(binding)" in account_source
 assert "请直接发送最新 SGWCMAID" in account_source
+assert "6 MASTER谱面解锁 / 7 Re:MASTER谱面解锁" in account_source
 
 cache_nodes = [
     node

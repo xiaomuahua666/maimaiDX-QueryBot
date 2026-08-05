@@ -209,6 +209,7 @@ assert fallback_block not in upload_src
 
 sw_api_src = (ROOT / "libraries" / "maimaidx_sw_api.py").read_text(encoding="utf-8")
 assert "awmc_user_music_timeout_seconds" in sw_api_src
+assert "awmc_user_items_timeout_seconds" in sw_api_src
 assert "awmc_b50_upload_timeout_seconds" in sw_api_src
 assert "_b50_upload_timeout" in sw_api_src
 # B50 上传（水鱼 + 落雪）统一 120s 硬超时，零重试。
@@ -219,6 +220,7 @@ config_src = (ROOT / "config.py").read_text(encoding="utf-8")
 assert "awmc_b50_upload_timeout_seconds: float = 120.0" in config_src
 assert "awmc_upload_poll_timeout_seconds: float = 120.0" in config_src
 assert "awmc_user_music_timeout_seconds: float = 15.0" in config_src
+assert "awmc_user_items_timeout_seconds: float = 120.0" in config_src
 assert "awmc_lxns_pc_cache_seconds" in config_src
 assert "_lxns_scores_from_pc_cache" in upload_src
 assert "convert_pc_records_to_lxns_scores" in upload_src

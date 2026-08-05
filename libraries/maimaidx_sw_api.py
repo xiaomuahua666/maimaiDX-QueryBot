@@ -499,13 +499,23 @@ class SwApiClient:
         )
         return self._parse_envelope(data)
 
-    async def get_user_items(self, qrcode: str) -> dict:
+    async def get_user_items(
+        self, qrcode: str, *, timeout: Optional[float] = None
+    ) -> dict:
         """读取用户道具列表（POST /user/item-list）。"""
+        items_timeout = max(
+            1.0,
+            float(
+                timeout
+                if timeout is not None
+                else getattr(maiconfig, "awmc_user_items_timeout_seconds", 120.0)
+            ),
+        )
         data = await self._request(
             "POST",
             self._api_path("user/item-list"),
             json_body=self._machine_body(qrcode),
-            timeout=30,
+            timeout=items_timeout,
             retry_count=0,
         )
         return self._parse_envelope(data)

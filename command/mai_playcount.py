@@ -581,6 +581,27 @@ async def _process_auto_qrcode_for_account(
         return
 
     pending_account = take_pending_account_retry(str(qqid))
+    # A refreshed QR submitted for a pending account command is already an
+    # explicit continuation request.  Complete that operation directly;
+    # running the normal QR workflow here would unnecessarily pull all scores
+    # and sync AWMCNET before a read-only query such as 门状态/道具/预览.
+    if pending_account is not None:
+        t0 = time.perf_counter()
+        account_result = await continue_pending_account_retry(
+            event, qrcode_data, pending_account
+        )
+        msg = (
+            f'{recall_status}\n'
+            '🔁 自动继续原操作：\n'
+            f'{account_result}'
+        )
+        log.info(
+            f'[QrcodeAuto] 账号操作续办完成 source={source} qq={qqid} '
+            f'({time.perf_counter() - t0:.2f}s) '
+            f'qrcode={qrcode_log_preview(qrcode_data)}'
+        )
+        await bot.send(event, message=prefix + MessageSegment.text(msg))
+        return
     if pending_ticket is None and pending_account is None and _qrcode_dedupe_hit(qqid, qrcode_data):
         log.info(
             f'[QrcodeAuto] 跳过重复请求 group={getattr(event, "group_id", "private")} qq={qqid} '
