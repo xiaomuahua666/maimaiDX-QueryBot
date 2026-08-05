@@ -49,6 +49,13 @@ _DIFFICULTY_ALIASES: Dict[str, int] = {
 # 难度名称（用于展示）
 _DIFFICULTY_NAMES: List[str] = ["Basic", "Advanced", "Expert", "Master", "Re:MASTER"]
 _DIFFICULTY_COLORS: List[str] = ["绿", "黄", "红", "紫", "白"]
+_STAR_ALIASES: Dict[str, int] = {
+    "一星": 1, "一颗星": 1, "1星": 1,
+    "二星": 2, "二颗星": 2, "2星": 2,
+    "三星": 3, "三颗星": 3, "3星": 3,
+    "四星": 4, "四颗星": 4, "4星": 4,
+    "五星": 5, "五颗星": 5, "5星": 5,
+}
 
 
 def _normalize_difficulty_input(text: str) -> str:
@@ -79,6 +86,7 @@ class DifficultyFilter:
         - "13-14"-> 定数范围 [13.0, 14.0]
     """
     level_index: Optional[int] = None
+    star_count: Optional[int] = None
     ds_exact: Optional[float] = None
     ds_min: Optional[float] = None
     ds_max: Optional[float] = None
@@ -121,20 +129,29 @@ class DifficultyFilter:
         normalized = _normalize_difficulty_input(text)
 
         level_index: Optional[int] = None
+        star_count: Optional[int] = None
         remaining = normalized
+
+        # 星数是 DX 分数星级，与谱面难度/等级完全独立。
+        for alias, count in sorted(_STAR_ALIASES.items(), key=lambda x: -len(x[0])):
+            if normalized.startswith(alias):
+                star_count = count
+                remaining = normalized[len(alias):].strip()
+                break
 
         # 先尝试提取难度前缀（最长匹配优先）
         # 注意：数字索引 0~4 只能完整匹配，不能做前缀匹配，否则 "14" 会被误认为难度=Advanced(1)
         prefix_aliases = {k: v for k, v in _DIFFICULTY_ALIASES.items() if not k.isdigit()}
         sorted_aliases = sorted(prefix_aliases.items(), key=lambda x: -len(x[0]))
-        for alias, idx in sorted_aliases:
-            if normalized.startswith(alias):
-                level_index = idx
-                remaining = normalized[len(alias):].strip()
-                break
+        if star_count is None:
+            for alias, idx in sorted_aliases:
+                if normalized.startswith(alias):
+                    level_index = idx
+                    remaining = normalized[len(alias):].strip()
+                    break
 
         # 如果没有匹配到难度前缀，且整个字符串是难度别名
-        if level_index is None and normalized in _DIFFICULTY_ALIASES:
+        if star_count is None and level_index is None and normalized in _DIFFICULTY_ALIASES:
             level_index = _DIFFICULTY_ALIASES[normalized]
             remaining = ""
 
@@ -142,7 +159,7 @@ class DifficultyFilter:
         ds_exact, ds_min, ds_max, parsed_ds = cls._parse_ds_part(remaining)
 
         # 关键：避免无法解析的输入静默变成「全部」导致误筛选
-        if level_index is None and not parsed_ds:
+        if level_index is None and star_count is None and not parsed_ds:
             raise ValueError(f"无法解析难度/定数：{text}")
         if remaining and not parsed_ds:
             raise ValueError(f"无法解析定数部分：{remaining}")
@@ -151,6 +168,8 @@ class DifficultyFilter:
         display_parts: List[str] = []
         if level_index is not None:
             display_parts.append(f"{_DIFFICULTY_COLORS[level_index]}({_DIFFICULTY_NAMES[level_index]})")
+        if star_count is not None:
+            display_parts.append(f"DX星数={star_count}")
         if ds_exact is not None:
             display_parts.append(f"定数={ds_exact}")
         elif ds_min is not None or ds_max is not None:
@@ -161,6 +180,7 @@ class DifficultyFilter:
 
         result = cls(
             level_index=level_index,
+            star_count=star_count,
             ds_exact=ds_exact,
             ds_min=ds_min,
             ds_max=ds_max,

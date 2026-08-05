@@ -15,7 +15,7 @@ from .maimaidx_platform import (
     send_private_message,
 )
 
-SHUTDOWN_NOTICE = '机器人程序因更新重启'
+SHUTDOWN_NOTICE = '机器人因程序更新重启'
 
 Kind = Literal['group', 'private']
 

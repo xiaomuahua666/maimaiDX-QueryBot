@@ -2010,7 +2010,11 @@ async def _difficulty_b50_common(
     result = await b50_pipeline(
         qqid=qqid,
         username=username,
-        filter_fn=diff_filter.matches,
+        filter_fn=(
+            diff_filter.matches
+            if diff_filter.star_count is None
+            else _make_star_filter(diff_filter)
+        ),
         recalculate=True,
         by_group=by_group,
         empty_message=f"没有{diff_filter.display_name}的成绩数据",
@@ -2018,6 +2022,23 @@ async def _difficulty_b50_common(
 
     log.debug(f"[_difficulty_b50_common] 返回结果类型: {type(result).__name__}")
     return result
+
+
+def _make_star_filter(diff_filter):
+    """构造 DX 星数筛选器；星数需要本地谱面 notes 计算理论最高 DX 分。"""
+    def _matches(record):
+        if not diff_filter.matches(record):
+            return False
+        try:
+            music = mai.total_list.by_id(str(record.song_id))
+            level_index = int(record.level_index)
+            if not music or level_index >= len(music.charts):
+                return False
+            dx_max = sum(music.charts[level_index].notes) * 3
+            return dx_star_count(int(record.dxScore or 0), dx_max) == diff_filter.star_count
+        except (AttributeError, IndexError, TypeError, ValueError):
+            return False
+    return _matches
 
 
 async def generate_difficulty_b50(

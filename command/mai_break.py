@@ -92,6 +92,9 @@ break_gamble_leaderboard = on_command(
     '贡献总榜', aliases={'首富榜', '总贡献榜'}
 )
 
+# Help is safe to use before account binding; it explains how to send qbind.
+setattr(awmc_help, '_maimaidx_qbind_exempt', True)
+
 for _debt_exempt_matcher in (
     awmc_checkin,
     my_awmc,

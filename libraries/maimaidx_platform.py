@@ -842,6 +842,8 @@ def install_qq_event_compat() -> None:
                 self, bot, event, state, stack=None, dependency_cache=None
             ):
                 try:
+                    if _official_qbind_required(self, event):
+                        raise QBindRequiredError(platform_user_id(event))
                     return await original_simple_run(
                         self, bot, event, state, stack, dependency_cache
                     )
@@ -977,6 +979,74 @@ def use_qq_mode(event=None) -> bool:
         if mod.startswith('nonebot.adapters.onebot'):
             return False
     return is_qq_official()
+
+
+def _matcher_flag(matcher: Any, name: str) -> bool:
+    """Read matcher flags from both NoneBot matcher classes and instances."""
+    return bool(
+        getattr(matcher, name, False)
+        or getattr(type(matcher), name, False)
+    )
+
+
+def _matcher_module_blob(matcher: Any) -> str:
+    """Return a stable module label across NoneBot matcher versions."""
+    names: list[str] = []
+    for obj in (matcher, type(matcher)):
+        value = getattr(obj, 'module_name', None)
+        if value:
+            names.append(str(value))
+    module = getattr(matcher, 'module', None) or getattr(
+        type(matcher), 'module', None
+    )
+    if isinstance(module, str):
+        names.append(module)
+    else:
+        module_name = getattr(module, '__name__', None)
+        if module_name:
+            names.append(str(module_name))
+        names.append(str(module or ''))
+    names.append(str(getattr(matcher, 'plugin_name', '') or ''))
+    return ' '.join(names).lower()
+
+
+def _official_qbind_required(matcher: Any, event: Any) -> bool:
+    """Whether a plugin matcher must stop until an official QQ user qbinds.
+
+    Most account/query commands already resolve ``billing_user_id`` in their
+    handlers.  A matcher-level guard also covers lightweight commands such as
+    ``签到`` and upload preflight branches that otherwise return before that
+    resolution.  Binding/OAuth/admin plumbing is deliberately left usable.
+    """
+    if not use_qq_mode(event):
+        return False
+    if 'maimaidx' not in _matcher_module_blob(matcher):
+        return False
+    if _matcher_flag(matcher, '_maimaidx_qbind_exempt'):
+        return False
+    if _matcher_flag(matcher, '_maimaidx_passive_recorder'):
+        return False
+    module = _matcher_module_blob(matcher)
+    if any(
+        name in module
+        for name in (
+            'mai_qq_bind',
+            'mai_forum_bind',
+            'mai_admin_runtime',
+            'mai_announcement',
+            'mai_agreement',
+            'mai_migration',
+            # These modes use the platform identity directly and do not query
+            # a user's external maimai account.
+            'mai_guess',
+            'mai_letter',
+        )
+    ):
+        return False
+    pid = platform_user_id(event)
+    if not pid:
+        return False
+    return qq_bind_db.get_legacy_qq(pid) is None
 
 
 def is_qq_bot(bot: Any) -> bool:

@@ -18,6 +18,9 @@ from ..libraries.tool import qqhash
 update_data         = on_command('更新maimai数据', permission=PLUGIN_ADMIN_ONLY)
 maimaidxhelp        = on_command('帮助maimaiDX', aliases={'帮助maimaidx'})
 maimaidxrepo        = on_command('项目地址maimaiDX', aliases={'项目地址maimaidx'})
+# Documentation commands do not need a bound score account.
+setattr(maimaidxhelp, '_maimaidx_qbind_exempt', True)
+setattr(maimaidxrepo, '_maimaidx_qbind_exempt', True)
 mai_today           = on_command('今日mai', aliases={'今日舞萌', '今日运势'})
 setattr(mai_today, "_maimaidx_debt_exempt", True)
 mai_what            = on_regex(r'.*mai.*什么(.+)?')

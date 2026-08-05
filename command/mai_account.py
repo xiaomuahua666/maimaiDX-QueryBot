@@ -40,6 +40,7 @@ from ..libraries.maimaidx_music import mai
 from ..libraries.maimaidx_platform import (
     billing_user_id,
     plugin_finish,
+    require_account_qqid,
     plugin_send,
     resolve_score_qqid,
 )
@@ -97,6 +98,8 @@ account_music_delete = on_command(
 account_ticket_clear = on_command("mai清票", aliases={"清空票券", "清票"})
 account_item_upsert = on_command("mai改道具", aliases={"修改道具", "改道具"})
 account_opt = on_command("mai查询opt", aliases={"查询opt"})
+# Help remains available before qbind so users can discover the binding flow.
+setattr(account_help, '_maimaidx_qbind_exempt', True)
 # 涉及账号状态、外部上传或机台会话的命令按用户串行执行。
 # 同一账号并发提交时静默拒绝后到的请求，不发送过程确认消息。
 for _serial_account_matcher in (
@@ -2461,6 +2464,9 @@ def _upload_preflight_error(
     event: MessageEvent, *, fish: bool, lxns: bool
 ) -> Optional[str]:
     """在外部请求前完成不需要网络的基础校验。"""
+    # Official QQ users must have a qbind mapping before any upload flow,
+    # including the agreement/setup branches that otherwise return early.
+    require_account_qqid(event)
     if bool(getattr(maiconfig, "maimaidx_user_agreement_required", True)):
         if not has_user_agreed(event):
             return agreement_prompt()
