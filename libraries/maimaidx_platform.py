@@ -939,11 +939,30 @@ def is_qq_official() -> bool:
 
 
 def is_qq_event(event) -> bool:
-    """按事件类型判断：官方 QQ 群/私聊消息。"""
+    """判断官方 QQ 事件，兼容适配器代理/自定义事件类。"""
     if event is None:
         return False
     mod = type(event).__module__
-    return mod.startswith('nonebot.adapters.qq')
+    if mod.startswith('nonebot.adapters.qq'):
+        return True
+    # Some QQ adapter versions wrap the event in a proxy whose module no
+    # longer contains ``adapters.qq``.  These fields are QQ-only and avoid
+    # treating an opaque openid as a numeric OneBot QQ number.
+    if getattr(event, 'group_openid', None) not in (None, ''):
+        return True
+    author = getattr(event, 'author', None)
+    if author is not None:
+        member_openid = (
+            getattr(author, 'member_openid', None)
+            or (author.get('member_openid') if isinstance(author, dict) else None)
+        )
+        if member_openid not in (None, ''):
+            return True
+    try:
+        user_id = str(event.get_user_id() or '').strip()
+    except Exception:
+        user_id = ''
+    return bool(user_id and not user_id.isdigit() and author is not None)
 
 
 def use_qq_mode(event=None) -> bool:
