@@ -30,7 +30,7 @@ pricing_config = {
     "analysis_min_cost": 2,
     "analysis_max_cost": 20,
     "analysis_fallback_cost": 4,
-    "analysis_price_multiplier": 5,
+    "analysis_price_multiplier": 1,
     "analysis_precharge_cost": 10,
 }
 
@@ -50,25 +50,25 @@ pricing = load_functions(
     {"Optional": Optional, "math": math, "_config_int": config_int},
 )
 cost = pricing["analysis_token_cost"]
-assert cost(0, 0) == 10
-assert cost(4000, 1000) == 10
-assert cost(4001, 1000) == 15
-assert cost(8000, 2000) == 20
-assert cost(16000, 4000) == 40
-assert cost(999999, 999999) == 100
-assert cost(0, 0, usage_available=False) == 20
+assert cost(0, 0) == 2
+assert cost(4000, 1000) == 2
+assert cost(4001, 1000) == 3
+assert cost(8000, 2000) == 4
+assert cost(16000, 4000) == 8
+assert cost(999999, 999999) == 20
+assert cost(0, 0, usage_available=False) == 4
 
 line = pricing["format_analysis_cost_line"](
-    charged=40,
+    charged=8,
     balance=21,
     input_tokens=16000,
     output_tokens=4000,
 )
-assert "锐评消耗 40 BREAK" in line
+assert "锐评消耗 8 BREAK" in line
 assert "输入 16,000 / 输出 4,000 Token" in line
 assert "输入每 4,000 Token + 输出每 1,000 Token" in line
-assert "基础价合计向上取整后 ×5" in line
-assert "最低 10、最高 100" in line
+assert "基础价合计向上取整后 ×1" in line
+assert "最低 2、最高 20" in line
 
 usage_helpers = load_functions(
     ROOT / "libraries" / "b50_analysis" / "llm.py",
@@ -139,21 +139,21 @@ settlement = load_functions(
         "Optional": Optional,
         "break_db": fake_db,
         "is_superuser_exempt": lambda _qqid: False,
-        "analysis_price_multiplier": lambda: 5,
+        "analysis_price_multiplier": lambda: 1,
         "log": SimpleNamespace(info=lambda *_args, **_kwargs: None),
     },
 )
 charged = settlement["settle_analysis_charge"](
     10001,
-    40,
+    8,
     reserved=10,
     token_usage={"input_tokens": 16000, "output_tokens": 4000},
 )
-assert charged == 40
-assert fake_db.adjustment[1:3] == (-30, "b50_analysis_settlement")
+assert charged == 8
+assert fake_db.adjustment[1:3] == (2, "b50_analysis_settlement")
 assert fake_db.adjustment[3]["pricing"] == "token_x_multiplier"
-assert fake_db.balance == -10
-assert fake_db.usage == (10001, "analysis", -40)
+assert fake_db.balance == 22
+assert fake_db.usage == (10001, "analysis", -8)
 
 analysis_command = (ROOT / "command" / "mai_b50_analysis.py").read_text(
     encoding="utf-8"

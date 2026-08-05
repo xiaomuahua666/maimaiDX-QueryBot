@@ -36,8 +36,8 @@ DEFAULT_CONFIG: Dict[str, str] = {
     'analysis_min_cost': '2',
     'analysis_max_cost': '20',
     'analysis_fallback_cost': '4',
-    # 锐评最终价格 = 原 Token 价格 × 倍率；调用模型前先预扣固定额度。
-    'analysis_price_multiplier': '5',
+    # 锐评按原 Token 价格计费；调用模型前先预扣固定额度。
+    'analysis_price_multiplier': '1',
     'analysis_precharge_cost': '10',
     # 第 1～5 天按曲线递增；streak_bonus_growth 控制超过曲线后每天的增长量，0 = 封顶。
     'streak_bonus': '1,2,3,4,5',
@@ -733,7 +733,7 @@ class BreakDatabase:
         log.info('[BREAK] 已将锐评 Token 计费封顶迁移为 20 BREAK')
 
     def _migrate_analysis_pricing_default(self) -> None:
-        """将旧版锐评倍率 ×3 / 预扣 6 BREAK 迁移为 ×5 / 预扣 10 BREAK。"""
+        """将旧版锐评倍率 ×3/×5 迁移为 ×1，预扣额度仍保留 10 BREAK。"""
         migrations = {
             'analysis_price_multiplier': '3',
             'analysis_precharge_cost': '6',
@@ -743,7 +743,10 @@ class BreakDatabase:
             row = self._conn.execute(
                 'SELECT value FROM break_config WHERE key = ?', (key,)
             ).fetchone()
-            if row and str(row['value']) == old_value:
+            if row and (
+                (key == 'analysis_price_multiplier' and str(row['value']) in {'3', '5'})
+                or (key != 'analysis_price_multiplier' and str(row['value']) == old_value)
+            ):
                 self._conn.execute(
                     'UPDATE break_config SET value = ? WHERE key = ?',
                     (DEFAULT_CONFIG[key], key),
@@ -752,7 +755,7 @@ class BreakDatabase:
         if changed:
             self._conn.commit()
             log.info(
-                '[BREAK] 已将锐评默认计费迁移为倍率 ×5、预扣 10 BREAK'
+                '[BREAK] 已将锐评默认计费迁移为倍率 ×1、预扣 10 BREAK'
             )
 
     def _migrate_analysis_token_rates_default(self) -> None:
@@ -2535,7 +2538,7 @@ def analysis_cost() -> int:
 
 
 def analysis_price_multiplier() -> int:
-    return max(1, _config_int('analysis_price_multiplier', 5))
+    return max(1, _config_int('analysis_price_multiplier', 1))
 
 
 def analysis_precharge_cost() -> int:
