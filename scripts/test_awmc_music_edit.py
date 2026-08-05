@@ -148,6 +148,7 @@ assert 'self._api_path("ticket/clear")' in client_source
 assert 'self._api_path("item/upsert")' in client_source
 assert client_source.count("retry_count=0") >= 7
 assert "MilK" in (ROOT / "command" / "mai_account.py").read_text(encoding="utf-8")
+assert "只发道具时" in (ROOT / "command" / "mai_account.py").read_text(encoding="utf-8")
 assert "0 分的乐曲记录" in (ROOT / "command" / "mai_account.py").read_text(encoding="utf-8")
 
 break_source = (ROOT / "libraries" / "maimaidx_break.py").read_text(encoding="utf-8")
