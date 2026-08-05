@@ -1010,6 +1010,18 @@ def _matcher_module_blob(matcher: Any) -> str:
     return ' '.join(names).lower()
 
 
+def _matcher_is_instruction(matcher: Any) -> bool:
+    """Only gate command/regex matchers, never ordinary message listeners."""
+    if _matcher_flag(matcher, '_maimaidx_announcement_exempt'):
+        return False
+    rule = getattr(matcher, 'rule', None)
+    for checker in getattr(rule, 'checkers', ()) or ():
+        call = getattr(checker, 'call', None)
+        if type(call).__name__ in {'CommandRule', 'RegexRule'}:
+            return True
+    return False
+
+
 def _official_qbind_required(matcher: Any, event: Any) -> bool:
     """Whether a plugin matcher must stop until an official QQ user qbinds.
 
@@ -1019,6 +1031,8 @@ def _official_qbind_required(matcher: Any, event: Any) -> bool:
     resolution.  Binding/OAuth/admin plumbing is deliberately left usable.
     """
     if not use_qq_mode(event):
+        return False
+    if not _matcher_is_instruction(matcher):
         return False
     if 'maimaidx' not in _matcher_module_blob(matcher):
         return False
