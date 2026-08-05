@@ -800,6 +800,11 @@ _ITEM_KIND_LABELS = {
     15: "钥匙",
 }
 
+_COLLECTION_UPSERT_SUCCESS_NOTE = (
+    "提示：只发收藏品时，可能会同时上传一条名为「MilK」、0 分的乐曲记录；"
+    "看到这条记录即代表收藏品写入成功。"
+)
+
 
 def _format_user_preview(payload: dict) -> str:
     """格式化只读 preview，避免输出 userId、二维码等账号标识。"""
@@ -3251,6 +3256,8 @@ async def _run_account_dangerous_write(
             action = "添加" if operation == "add" else "删除"
             label = _ITEM_KIND_LABELS.get(item_kind, f"未知类型 {item_kind}")
             result_text = f"✅ 已提交{action}道具：{label} · itemId={item_id}"
+            if item_kind == 4:
+                result_text += f"\n{_COLLECTION_UPSERT_SUCCESS_NOTE}"
         else:
             raise RuntimeError(f"不支持的账号写入服务：{service}")
     charge = break_db.settle_service_success(int(key), service, cost, meta=meta)
