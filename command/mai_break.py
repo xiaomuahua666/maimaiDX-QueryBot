@@ -2,7 +2,13 @@ import asyncio
 from typing import Optional, Tuple
 
 from nonebot import get_bots, on_command, require
-from nonebot.adapters.onebot.v11 import Bot, Message, MessageEvent, MessageSegment
+from nonebot.adapters.onebot.v11 import (
+    Bot,
+    GroupMessageEvent,
+    Message,
+    MessageEvent,
+    MessageSegment,
+)
 from nonebot.matcher import Matcher
 from nonebot.params import Arg, CommandArg, Depends
 from ..libraries.maimaidx_break import (
