@@ -457,12 +457,23 @@ class GuessDuelManager:
 
     def unlock(self, gid) -> None:
         self.locked.discard(gid)
+        from .maimaidx_game_session import game_session_gate
+        game_session_gate.release(gid)
 
     def get(self, gid) -> Optional[GuessDuelData]:
         return self.groups.get(gid)
 
-    def end(self, gid) -> Optional[GuessDuelData]:
+    def end(
+        self,
+        gid,
+        *,
+        expected: Optional[GuessDuelData] = None,
+    ) -> Optional[GuessDuelData]:
+        if expected is not None and self.groups.get(gid) is not expected:
+            return None
         self.locked.discard(gid)
+        from .maimaidx_game_session import game_session_gate
+        game_session_gate.release(gid)
         return self.groups.pop(gid, None)
 
     def start(

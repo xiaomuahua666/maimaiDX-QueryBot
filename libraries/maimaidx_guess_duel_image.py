@@ -21,6 +21,7 @@ _RIGHT = (232, 132, 92, 255)
 _HINT = (180, 200, 220, 255)
 
 _DIFF_NAMES = ['Basic', 'Advanced', 'Expert', 'Master', 'Remaster']
+_DIFF_SHORT = ['绿', '黄', '红', '紫', '白']
 _DIFF_BG = [
     (111, 212, 61, 255),
     (248, 183, 9, 255),
@@ -102,7 +103,13 @@ def _draw_card(
         )
     else:
         diff_color = _color_for_level(ref.level_index)
-        badge = diff if hide_level else f'{diff}  {ref.level}'
+        # Reveal the difficulty colour explicitly.  This is the stable
+        # green/yellow/red/purple/white convention used by maimai charts.
+        badge = (
+            f'{_DIFF_SHORT[ref.level_index]} {diff}'
+            if hide_level
+            else f'{_DIFF_SHORT[ref.level_index]} {diff}  {ref.level}'
+        )
         dr.rounded_rectangle(
             (diff_x, diff_y, diff_x + 220, diff_y + 30),
             radius=6, fill=diff_color,
@@ -194,10 +201,11 @@ def render_duel_board(
 
     left_value = _format_answer(round_obj.left, round_obj.question_type) if reveal else None
     right_value = _format_answer(round_obj.right, round_obj.question_type) if reveal else None
-    # 定数/等级题：作答阶段连难度色条一起藏（黄/绿/紫一眼就能比高低）
+    # 定数题两侧强制同一难度档，因此可安全显示“红/紫/白”等档位但隐藏
+    # 数字定数；等级题的档位本身会泄露答案，仍完全隐藏。
     qtype = round_obj.question_type
     hide_level = (not reveal) and qtype in ('ds', 'level')
-    hide_diff_badge = (not reveal) and qtype in ('ds', 'level')
+    hide_diff_badge = (not reveal) and qtype == 'level'
 
     _draw_card(
         im, round_obj.left,

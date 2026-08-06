@@ -611,6 +611,8 @@ class LetterGuessManager:
         return guess.is_busy(gid) or self.is_playing(gid)
 
     def end(self, gid: GroupId) -> Optional[LetterBoard]:
+        from .maimaidx_game_session import game_session_gate
+        game_session_gate.release(gid)
         return self.Group.pop(gid, None)
 
     def get(self, gid: GroupId) -> Optional[LetterBoard]:

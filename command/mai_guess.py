@@ -50,6 +50,8 @@ from ..libraries.maimaidx_guess_chart import (
     request_chart_batch_cancel,
 )
 from ..libraries.maimaidx_render_tasks import format_active_tasks
+from ..libraries.maimaidx_game_session import game_session_gate
+from ..libraries.maimaidx_image_executor import run_image_cpu
 from ..libraries.maimaidx_music import guess
 from ..libraries.maimaidx_reaction import REACT_EMOJI_CHECK, react_processing
 from ..libraries.maimaidx_model import (
@@ -449,19 +451,37 @@ def _guess_or_letter_busy(gid: GroupId) -> bool:
     )
 
 
-def _guess_loop_should_stop(gid: GroupId) -> bool:
+async def _reserve_game_session(gid: GroupId, mode: str) -> bool:
+    """Atomically reserve a group before a game handler performs any await."""
+    return await game_session_gate.acquire(
+        gid,
+        mode=mode,
+        busy_check=_guess_or_letter_busy,
+    )
+
+
+def _release_game_session(gid: GroupId) -> None:
+    game_session_gate.release(gid)
+
+
+def _guess_loop_should_stop(gid: GroupId, expected: Optional[GuessData] = None) -> bool:
     """猜歌主循环是否应退出（被重置、关闭或正常结束）。"""
-    if gid not in guess.Group:
+    current = guess.Group.get(gid)
+    if current is None or (expected is not None and current is not expected):
         return True
     if not guess.is_enabled(gid):
         return True
     return bool(guess.Group[gid].end)
 
 
-async def _guess_sleep(gid: GroupId, seconds: float) -> None:
+async def _guess_sleep(
+    gid: GroupId,
+    seconds: float,
+    expected: Optional[GuessData] = None,
+) -> None:
     """可中断的 sleep：重置猜歌后尽快退出主循环。"""
     remaining = max(0.0, float(seconds))
-    while remaining > 0 and not _guess_loop_should_stop(gid):
+    while remaining > 0 and not _guess_loop_should_stop(gid, expected):
         step = min(1.0, remaining)
         await asyncio.sleep(step)
         remaining -= step
@@ -474,11 +494,13 @@ class GuessSendAborted(Exception):
 async def _force_end_guess_round(gid: GroupId) -> None:
     """强制结束本群猜歌局（可重复调用）。"""
     guess.Preparing.discard(gid)
-    if gid not in guess.Group:
+    data = guess.Group.get(gid)
+    if data is None:
+        _release_game_session(gid)
         return
-    guess.Group[gid].end = True
+    data.end = True
     await guess_score.reset_all_streaks(gid)
-    guess.end(gid)
+    guess.end(gid, expected=data)
 
 
 async def _guess_notify(
@@ -677,10 +699,11 @@ async def _send_guess_answer_bundle(
 ) -> None:
     lines = [line for line in (header, settlement) if line]
     music_info = await draw_music_info(data.music)
-    reveal = (
-        MessageSegment.image(guess.render_pic_reveal(data))
-        if isinstance(data, GuessPicData) else None
-    )
+    reveal = None
+    if isinstance(data, GuessPicData):
+        reveal = MessageSegment.image(
+            await run_image_cpu(guess.render_pic_reveal, data)
+        )
     final_audio = None
     if (
         isinstance(data, GuessAudioData)
@@ -970,10 +993,15 @@ async def _(event: MessageEvent):
     gid = get_event_group_id(event)
     if not guess.is_enabled(gid):
         await guess_music_start.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌')
-    if _guess_or_letter_busy(gid):
+    if not await _reserve_game_session(gid, 'song'):
         await guess_music_start.finish(_GUESS_BUSY_HINT)
     await _guess_notify(guess_music_start, event, '正在准备猜歌（选曲与提示）…', reply=True)
-    guess.start(gid)
+    try:
+        guess.start(gid)
+    except Exception:
+        _release_game_session(gid)
+        raise
+    data = guess.Group[gid]
     try:
         await _safe_matcher_send(
             guess_music_start, event,
@@ -985,41 +1013,41 @@ async def _(event: MessageEvent):
             '''),
             gid,
         )
-        await _guess_sleep(gid, 4)
+        await _guess_sleep(gid, 4, data)
         for cycle in range(7):
-            if _guess_loop_should_stop(gid):
+            if _guess_loop_should_stop(gid, data):
                 break
             if cycle < 6:
                 await _safe_matcher_send(
                     guess_music_start, event,
-                    f'{cycle + 1}/7 这首歌{guess.Group[gid].options[cycle]}',
+                    f'{cycle + 1}/7 这首歌{data.options[cycle]}',
                     gid,
                 )
-                guess.Group[gid].hint_step = cycle + 1
-                await _guess_sleep(gid, 8)
+                data.hint_step = cycle + 1
+                await _guess_sleep(gid, 8, data)
             else:
                 await _safe_matcher_send(
                     guess_music_start, event,
                     MessageSegment.text('7/7 这首歌封面的一部分是：\n')
-                    + MessageSegment.image(guess.Group[gid].img)
+                    + MessageSegment.image(data.img)
                     + MessageSegment.text('答案将在30秒后揭晓'),
                     gid,
                     media=True,
                 )
-                guess.Group[gid].hint_step = 7
+                data.hint_step = 7
                 for _ in range(30):
-                    await _guess_sleep(gid, 1)
-                    if _guess_loop_should_stop(gid):
+                    await _guess_sleep(gid, 1, data)
+                    if _guess_loop_should_stop(gid, data):
                         await guess_music_start.finish()
-                if _guess_loop_should_stop(gid):
+                if _guess_loop_should_stop(gid, data):
                     await guess_music_start.finish()
                 guess.Group[gid].end = True
                 await guess_score.reset_all_streaks(gid)
                 answer = (
                     MessageSegment.text('答案是：\n')
-                    + await draw_music_info(guess.Group[gid].music)
+                    + await draw_music_info(data.music)
                 )
-                guess.end(gid)
+                guess.end(gid, expected=data)
                 await _safe_matcher_send(
                     guess_music_start,
                     event,
@@ -1031,6 +1059,9 @@ async def _(event: MessageEvent):
                 await guess_music_start.finish()
     except GuessSendAborted:
         await guess_music_start.finish()
+    except BaseException:
+        guess.end(gid, expected=data)
+        raise
 
 
 @guess_music_pic.handle()
@@ -1039,7 +1070,7 @@ async def _(event: MessageEvent, matched=RegexMatched()):
     gid = get_event_group_id(event)
     if not guess.is_enabled(gid):
         await guess_music_pic.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True)
-    if _guess_or_letter_busy(gid):
+    if not await _reserve_game_session(gid, 'pic'):
         await guess_music_pic.finish(_GUESS_BUSY_HINT, reply_message=True)
     diff_raw = matched.group(1)
     difficulty = int(diff_raw) if diff_raw else None
@@ -1048,8 +1079,13 @@ async def _(event: MessageEvent, matched=RegexMatched()):
         '正在生成猜曲绘（裁剪封面与干扰）…',
         reply=True,
     )
-    guess.startpic(gid, difficulty)
-    data = guess.Group[gid]
+    try:
+        data = await run_image_cpu(guess.guesspicdata, difficulty)
+        guess.Group[gid] = data
+        guess._log_guess_start('猜曲绘', gid)
+    except Exception:
+        _release_game_session(gid)
+        raise
     try:
         intro = dedent(f'''\
             开始猜曲绘！可以直接发送答案！
@@ -1058,7 +1094,9 @@ async def _(event: MessageEvent, matched=RegexMatched()):
             积分：难度越高基础分越高（1～4分）；首次扩增前猜中可叠加首阶段×2、首答×2，理论最高4倍。
             指定难度可发送：猜曲绘1～猜曲绘4。
         ''')
-        first_pic = MessageSegment.image(guess.render_pic_crop(data))
+        first_pic = MessageSegment.image(
+            await run_image_cpu(guess.render_pic_crop, data)
+        )
         compact = bool(getattr(maiconfig, 'maimaidx_compact_messages', True))
         await _safe_matcher_send(
             guess_music_pic, event,
@@ -1077,8 +1115,8 @@ async def _(event: MessageEvent, matched=RegexMatched()):
         total_duration = clear_at + timeout_after_clear
 
         for elapsed in range(1, total_duration + 1):
-            await _guess_sleep(gid, 1)
-            if _guess_loop_should_stop(gid):
+            await _guess_sleep(gid, 1, data)
+            if _guess_loop_should_stop(gid, data):
                 await guess_music_pic.finish()
             if gid not in guess.Group:
                 await guess_music_pic.finish()
@@ -1086,51 +1124,55 @@ async def _(event: MessageEvent, matched=RegexMatched()):
             if elapsed % hint_interval != 0:
                 continue
 
-            data = guess.Group[gid]
             step = elapsed // hint_interval
             if step <= data.expansion_count:
                 guess.expand_pic_crop(data)
+                crop = await run_image_cpu(guess.render_pic_crop, data)
                 await _safe_matcher_send(
                     guess_music_pic, event,
                     MessageSegment.text('[区域扩增!]\n')
-                    + MessageSegment.image(guess.render_pic_crop(data)),
+                    + MessageSegment.image(crop),
                     gid,
                     media=True,
                 )
                 data.hint_step += 1
             elif step == data.expansion_count + 1 and not data.global_shown:
                 data.global_shown = True
+                global_pic = await run_image_cpu(guess.render_pic_global, data)
                 await _safe_matcher_send(
                     guess_music_pic, event,
                     MessageSegment.text('[全局视野!]\n')
-                    + MessageSegment.image(guess.render_pic_global(data)),
+                    + MessageSegment.image(global_pic),
                     gid,
                     media=True,
                 )
                 data.hint_step += 1
             elif step == data.expansion_count + 2 and not data.interference_cleared:
                 data.interference_cleared = True
+                clear_pic = await run_image_cpu(guess.render_pic_clear, data)
                 await _safe_matcher_send(
                     guess_music_pic, event,
                     MessageSegment.text('[干扰消除!]\n')
-                    + MessageSegment.image(guess.render_pic_clear(data)),
+                    + MessageSegment.image(clear_pic),
                     gid,
                     media=True,
                 )
                 data.hint_step += 1
 
-        if _guess_loop_should_stop(gid):
+        if _guess_loop_should_stop(gid, data):
             await guess_music_pic.finish()
-        data = guess.Group[gid]
         data.end = True
         await guess_score.reset_all_streaks(gid)
-        guess.end(gid)
+        guess.end(gid, expected=data)
         await _send_guess_answer_bundle(
             guess_music_pic, event, data, gid, header='答案是：',
         )
         await guess_music_pic.finish()
     except GuessSendAborted:
         await guess_music_pic.finish()
+    except BaseException:
+        guess.end(gid, expected=data)
+        raise
 
 
 @guess_music_audio.handle()
@@ -1139,7 +1181,10 @@ async def _(event: MessageEvent):
     gid = get_event_group_id(event)
     if not guess.is_enabled(gid):
         await guess_music_audio.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True)
-    if _letter_busy(gid) or _rating_or_impostor_busy(gid) or not await guess.try_begin_prepare(gid):
+    if not await _reserve_game_session(gid, 'audio'):
+        await guess_music_audio.finish(_GUESS_BUSY_HINT, reply_message=True)
+    if not await guess.try_begin_prepare(gid):
+        _release_game_session(gid)
         await guess_music_audio.finish(_GUESS_BUSY_HINT, reply_message=True)
 
     data = None
@@ -1161,6 +1206,8 @@ async def _(event: MessageEvent):
             guess.startaudio(gid, data)
         finally:
             guess.end_prepare(gid)
+            if gid not in guess.Group:
+                _release_game_session(gid)
 
         stage_count = data.stage_count
         audio_meta = get_audio_manifest_entry(data.music.id)
@@ -1187,9 +1234,9 @@ async def _(event: MessageEvent):
             )
 
         for stage_idx in range(stage_count):
-            if _guess_loop_should_stop(gid):
+            if _guess_loop_should_stop(gid, data):
                 await guess_music_audio.finish()
-            cur = guess.Group[gid]
+            cur = data
 
             label = STAGE_LABELS[stage_idx] if stage_idx < len(STAGE_LABELS) else '更多乐器'
             stage_path = Path(cur.stage_paths[stage_idx]).resolve()
@@ -1220,27 +1267,34 @@ async def _(event: MessageEvent):
 
             if stage_idx < stage_count - 1:
                 for _ in range(STAGE_INTERVAL):
-                    await _guess_sleep(gid, 1)
-                    if _guess_loop_should_stop(gid):
+                    await _guess_sleep(gid, 1, data)
+                    if _guess_loop_should_stop(gid, data):
                         await guess_music_audio.finish()
 
         for _ in range(STAGE_FINAL_GRACE):
-            await _guess_sleep(gid, 1)
-            if _guess_loop_should_stop(gid):
+            await _guess_sleep(gid, 1, data)
+            if _guess_loop_should_stop(gid, data):
                 await guess_music_audio.finish()
 
-        if _guess_loop_should_stop(gid):
+        if _guess_loop_should_stop(gid, data):
             await guess_music_audio.finish()
-        cur = guess.Group[gid]
+        cur = data
         cur.end = True
         await guess_score.reset_all_streaks(gid)
-        guess.end(gid)
+        guess.end(gid, expected=data)
         await _send_guess_answer_bundle(
             guess_music_audio, event, data, gid, header='答案是：',
         )
         await guess_music_audio.finish()
     except GuessSendAborted:
         await guess_music_audio.finish()
+    except BaseException:
+        guess.end_prepare(gid)
+        if data is not None:
+            guess.end(gid, expected=data)
+        else:
+            _release_game_session(gid)
+        raise
 
 
 @guess_music_chart.handle()
@@ -1249,7 +1303,10 @@ async def _(event: MessageEvent):
     gid = get_event_group_id(event)
     if not guess.is_enabled(gid):
         await guess_music_chart.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True)
-    if _letter_busy(gid) or _rating_or_impostor_busy(gid) or not await guess.try_begin_prepare(gid):
+    if not await _reserve_game_session(gid, 'chart'):
+        await guess_music_chart.finish(_GUESS_BUSY_HINT, reply_message=True)
+    if not await guess.try_begin_prepare(gid):
+        _release_game_session(gid)
         await guess_music_chart.finish(_GUESS_BUSY_HINT, reply_message=True)
 
     data = None
@@ -1272,6 +1329,8 @@ async def _(event: MessageEvent):
             guess.startchart(gid, data)
         finally:
             guess.end_prepare(gid)
+            if gid not in guess.Group:
+                _release_game_session(gid)
 
         video_path = Path(data.video_path).resolve()
         has_bgm = bool(data.video_path_bgm and Path(data.video_path_bgm).is_file())
@@ -1327,11 +1386,11 @@ async def _(event: MessageEvent):
 
         if has_bgm:
             for _ in range(CHART_STAGE_INTERVAL):
-                await _guess_sleep(gid, 1)
-                if _guess_loop_should_stop(gid):
+                await _guess_sleep(gid, 1, data)
+                if _guess_loop_should_stop(gid, data):
                     await guess_music_chart.finish()
 
-            if _guess_loop_should_stop(gid):
+            if _guess_loop_should_stop(gid, data):
                 await guess_music_chart.finish()
 
             bgm_path = Path(data.video_path_bgm).resolve()
@@ -1358,20 +1417,18 @@ async def _(event: MessageEvent):
                     timeout=GUESS_SEND_TIMEOUT_VIDEO,
                 )
             cur = guess.Group.get(gid)
-            if cur is None or cur.end:
+            if cur is not data or cur.end:
                 await guess_music_chart.finish()
             cur.hint_step = 2
             cur.bgm_at = time.time()
-            data = cur
-
             remaining = CHART_STAGE_FINAL_GRACE
             await _guess_notify(
                 guess_music_chart, event,
                 f'曲末 BGM 已放出！⏳ 还剩 {remaining}秒 作答时间哟！',
             )
             for _ in range(CHART_STAGE_FINAL_GRACE):
-                await _guess_sleep(gid, 1)
-                if _guess_loop_should_stop(gid):
+                await _guess_sleep(gid, 1, data)
+                if _guess_loop_should_stop(gid, data):
                     await guess_music_chart.finish()
                 remaining -= 1
                 if remaining in CHART_COUNTDOWN_MARKS:
@@ -1387,8 +1444,8 @@ async def _(event: MessageEvent):
                 f'⏳ 还剩 {remaining}秒 作答时间哟！',
             )
             for _ in range(total_sec):
-                await _guess_sleep(gid, 1)
-                if _guess_loop_should_stop(gid):
+                await _guess_sleep(gid, 1, data)
+                if _guess_loop_should_stop(gid, data):
                     await guess_music_chart.finish()
                 remaining -= 1
                 if remaining in CHART_COUNTDOWN_MARKS:
@@ -1397,18 +1454,25 @@ async def _(event: MessageEvent):
                         f'⏳ 还剩 {remaining}秒 作答时间哟！',
                     )
 
-        if _guess_loop_should_stop(gid):
+        if _guess_loop_should_stop(gid, data):
             await guess_music_chart.finish()
-        cur = guess.Group[gid]
+        cur = data
         cur.end = True
         await guess_score.reset_all_streaks(gid)
-        guess.end(gid)
+        guess.end(gid, expected=data)
         await _send_guess_answer_bundle(
             guess_music_chart, event, data, gid, header='答案是：',
         )
         await guess_music_chart.finish()
     except GuessSendAborted:
         await guess_music_chart.finish()
+    except BaseException:
+        guess.end_prepare(gid)
+        if data is not None:
+            guess.end(gid, expected=data)
+        else:
+            _release_game_session(gid)
+        raise
 
 
 @update_guess_audio.handle()
@@ -1547,7 +1611,7 @@ async def _(event: MessageEvent):
             first_stage=_guess_first_stage(data),
             first_guess=first_guess,
         )
-        guess.end(gid)
+        guess.end(gid, expected=data)
         try:
             await _send_guess_answer_bundle(
                 guess_music_solve, event, data, gid,
@@ -1868,7 +1932,7 @@ async def _(event: MessageEvent, matched=RegexMatched()):
         await guess_rating_start.finish('请在群内使用。', reply_message=True)
     if not guess.is_enabled(gid):
         await guess_rating_start.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True)
-    if _guess_or_letter_busy(gid):
+    if not await _reserve_game_session(gid, 'rating'):
         await guess_rating_start.finish(_GUESS_BUSY_HINT, reply_message=True)
 
     difficulty, duration = _parse_rating_match(matched)
@@ -1880,6 +1944,7 @@ async def _(event: MessageEvent, matched=RegexMatched()):
 
     # 立即加锁，防止并发重复开局
     if not rating_guess.lock(gid):
+        _release_game_session(gid)
         await guess_rating_start.finish(_GUESS_BUSY_HINT, reply_message=True)
 
     try:
@@ -1966,10 +2031,9 @@ async def _(event: MessageEvent, matched=RegexMatched()):
     remaining = duration
     while remaining > 0:
         await asyncio.sleep(1)
-        if not rating_guess.is_busy(gid):
+        if rating_guess.get(gid) is not data:
             reveal_task.cancel()
             return
-        data = rating_guess.get(gid)
         if data and data.end:
             break
         remaining -= 1
@@ -1980,7 +2044,7 @@ async def _(event: MessageEvent, matched=RegexMatched()):
             )
 
     # 结算
-    if not rating_guess.is_busy(gid):
+    if rating_guess.get(gid) is not data:
         reveal_task.cancel()
         return
 
@@ -2041,7 +2105,7 @@ async def _(event: MessageEvent, matched=RegexMatched()):
         log.warning(f'[GuessRating] 发送揭晓图失败 gid={gid}: {e}')
         await _safe_matcher_send(guess_rating_start, event, result_text, gid, fatal=False)
 
-    rating_guess.end(gid)
+    rating_guess.end(gid, expected=data)
     await guess_rating_start.finish()
 
 
@@ -2131,7 +2195,7 @@ async def _(event: MessageEvent):
         await guess_impostor_start.finish(
             '该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True,
         )
-    if _guess_or_letter_busy(gid):
+    if not await _reserve_game_session(gid, 'impostor'):
         await guess_impostor_start.finish(_GUESS_BUSY_HINT, reply_message=True)
 
     await _guess_notify(
@@ -2139,6 +2203,7 @@ async def _(event: MessageEvent):
         '🕵️ 正在抽取B50并制作内鬼卡…', reply=True,
     )
     if not impostor_guess.lock(gid):
+        _release_game_session(gid)
         await guess_impostor_start.finish(_GUESS_BUSY_HINT, reply_message=True)
 
     bot = resolve_event_bot(event)
@@ -2193,7 +2258,7 @@ async def _(event: MessageEvent):
         答对按速度获得积分与BREAK；题主和内鬼本人不参与奖励。
     ''')
     try:
-        image_seg = await asyncio.to_thread(impostor_image_segment, charts)
+        image_seg = await run_image_cpu(impostor_image_segment, charts)
         await _safe_matcher_send(
             guess_impostor_start,
             event,
@@ -2213,7 +2278,7 @@ async def _(event: MessageEvent):
     while remaining > 0:
         await asyncio.sleep(1)
         current = impostor_guess.get(gid)
-        if current is None or current.end:
+        if current is not data or current.end:
             return
         remaining -= 1
         if remaining in (30, 10, 5):
@@ -2221,6 +2286,8 @@ async def _(event: MessageEvent):
                 guess_impostor_start, event, f'⏳ 找内鬼还剩 {remaining}秒！',
             )
 
+    if impostor_guess.get(gid) is not data:
+        return
     settlement = impostor_guess.settle(gid)
     if settlement is None:
         return
@@ -2261,7 +2328,7 @@ async def _(event: MessageEvent):
     result_text = '\n'.join(result_lines)
 
     try:
-        reveal_seg = await asyncio.to_thread(
+        reveal_seg = await run_image_cpu(
             impostor_image_segment,
             charts,
             reveal_index=settlement.answer,
@@ -2280,7 +2347,7 @@ async def _(event: MessageEvent):
             guess_impostor_start, event, result_text, gid, fatal=False,
         )
 
-    impostor_guess.end(gid)
+    impostor_guess.end(gid, expected=data)
     await guess_impostor_start.finish()
 
 
@@ -2382,7 +2449,7 @@ async def _duel_send_round_prompt(
         f'请在 {DUEL_ROUND_DURATION} 秒内发送「左」或「右」。'
     )
     try:
-        seg = await asyncio.to_thread(duel_image_segment, round_obj, reveal=False)
+        seg = await run_image_cpu(duel_image_segment, round_obj, reveal=False)
         await _safe_matcher_send(
             guess_duel_start,
             event,
@@ -2409,10 +2476,11 @@ async def _(event: MessageEvent):
         await guess_duel_start.finish(
             '该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True,
         )
-    if _guess_or_letter_busy(gid):
+    if not await _reserve_game_session(gid, 'duel'):
         await guess_duel_start.finish(_GUESS_BUSY_HINT, reply_message=True)
 
     if not duel_guess.lock(gid):
+        _release_game_session(gid)
         await guess_duel_start.finish(_GUESS_BUSY_HINT, reply_message=True)
 
     try:
@@ -2457,7 +2525,7 @@ async def _(event: MessageEvent):
             remaining = data.round_durations
             while remaining > 0:
                 current = duel_guess.get(gid)
-                if current is None or current.end:
+                if current is not data or current.end:
                     return
                 await asyncio.sleep(1)
                 remaining -= 1
@@ -2468,7 +2536,7 @@ async def _(event: MessageEvent):
                     )
 
             current = duel_guess.get(gid)
-            if current is None or current.end:
+            if current is not data or current.end:
                 return
             # 结算本轮
             eliminated, survivors, all_clear = duel_guess.settle_round(gid)
@@ -2486,7 +2554,7 @@ async def _(event: MessageEvent):
                     f'（保留前 {r_idx - 1} 轮积分）'
                 )
             try:
-                reveal_seg = await asyncio.to_thread(
+                reveal_seg = await run_image_cpu(
                     duel_image_segment, round_obj, reveal=True,
                 )
                 await _safe_matcher_send(
@@ -2594,7 +2662,7 @@ async def _(event: MessageEvent):
             '\n'.join(result_lines), gid, fatal=False,
         )
     finally:
-        duel_guess.end(gid)
+        duel_guess.end(gid, expected=data)
     await guess_duel_start.finish()
 
 

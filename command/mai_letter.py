@@ -29,6 +29,9 @@ from ..libraries.maimaidx_guess_letter import (
 from ..libraries.maimaidx_guess_score import guess_score
 from ..libraries.maimaidx_guess_rating import rating_guess
 from ..libraries.maimaidx_guess_impostor import impostor_guess
+from ..libraries.maimaidx_guess_duel import duel_guess
+from ..libraries.maimaidx_game_session import game_session_gate
+from ..libraries.maimaidx_image_executor import run_image_cpu
 from ..libraries.maimaidx_guess_sync import MAIN_GROUP_REDIRECT, guess_sync
 from ..libraries.maimaidx_letter_rank_draw import (
     image_b64,
@@ -202,7 +205,7 @@ async def _send_board(matcher, event: MessageEvent, board, *, text: str = "") ->
             reply_message=False,
         )
         return
-    msg = await asyncio.to_thread(board_image_segment, board)
+    msg = await run_image_cpu(board_image_segment, board)
     if text:
         msg = text + msg
     payload = ensure_sender_mention(msg, event) if use_qq_mode(event) else msg
@@ -307,10 +310,10 @@ async def _maybe_finish_board(
     msg = Message("\n".join(settlement_lines) + "\n")
     try:
         split_im = await render_settlement_split(settlement)
-        msg += MessageSegment.image(await asyncio.to_thread(image_b64, split_im))
+        msg += MessageSegment.image(await run_image_cpu(image_b64, split_im))
     except Exception as exc:
         log.warning(f"[LetterGuess] 结算分成图失败：{type(exc).__name__}: {exc}")
-    msg += await asyncio.to_thread(board_image_segment, board)
+    msg += await run_image_cpu(board_image_segment, board)
     await matcher.send(
         adapt_guess_outbound(msg, event=event),
         reply_message=resolve_reply_message(event, reply_message=True),
@@ -444,9 +447,22 @@ async def _(matcher, event: MessageEvent, args: Message = CommandArg()):
             )
         await letter_open.finish(_HELP, reply_message=True)
 
-    if guess.is_busy(gid) or rating_guess.is_busy(gid) or impostor_guess.is_busy(gid):
+    def _game_busy(group_id) -> bool:
+        return (
+            guess.is_busy(group_id)
+            or letter_guess.is_playing(group_id)
+            or rating_guess.is_busy(group_id)
+            or impostor_guess.is_busy(group_id)
+            or duel_guess.is_busy(group_id)
+        )
+
+    if not await game_session_gate.acquire(
+        gid,
+        mode='letter',
+        busy_check=_game_busy,
+    ):
         await letter_open.finish(
-            "该群已有正在进行的猜歌/猜曲绘/猜曲子/猜铺面/猜Rating/B50找内鬼，请先结束当前游戏。",
+            "该群已有正在进行的猜歌/猜曲绘/猜曲子/猜铺面/猜Rating/B50找内鬼/极限二选一或开字母，请先结束当前游戏。",
             reply_message=True,
         )
     try:
@@ -457,25 +473,30 @@ async def _(matcher, event: MessageEvent, args: Message = CommandArg()):
             display_mode=letter_stats.get_display_mode(gid),
         )
     except Exception as exc:
+        game_session_gate.release(gid)
         log.warning(f"[LetterGuess] 开局失败：{type(exc).__name__}: {exc}")
         await letter_open.finish(f"开局失败：{exc}", reply_message=True)
     th = letter_stats.thresholds_for(gid)
     banner = letter_triple_banner()
     banner_line = f"{banner}\n" if banner else ""
     goals_line = letter_stats.daily_goals_line(gid)
-    await _send_board(
-        letter_open,
-        event,
-        board,
-        text=(
-            f"🎮 舞萌开字母开始！共 {len(board.songs)} 首歌。\n"
-            f"{banner_line}"
-            "直接发字母开字符，直接发别名/曲名猜歌。\n"
-            "全部解开后按用时与贡献结算；局内不计分。\n"
-            f"{th.format_lines()}\n"
-            f"{goals_line}\n"
-        ),
-    )
+    try:
+        await _send_board(
+            letter_open,
+            event,
+            board,
+            text=(
+                f"🎮 舞萌开字母开始！共 {len(board.songs)} 首歌。\n"
+                f"{banner_line}"
+                "直接发字母开字符，直接发别名/曲名猜歌。\n"
+                "全部解开后按用时与贡献结算；局内不计分。\n"
+                f"{th.format_lines()}\n"
+                f"{goals_line}\n"
+            ),
+        )
+    except BaseException:
+        letter_guess.end(gid)
+        raise
     await letter_open.finish()
 
 

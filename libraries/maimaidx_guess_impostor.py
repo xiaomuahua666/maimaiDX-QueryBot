@@ -80,12 +80,23 @@ class GuessImpostorManager:
 
     def unlock(self, gid: int) -> None:
         self.locked.discard(gid)
+        from .maimaidx_game_session import game_session_gate
+        game_session_gate.release(gid)
 
     def get(self, gid: int) -> Optional[GuessImpostorData]:
         return self.groups.get(gid)
 
-    def end(self, gid: int) -> Optional[GuessImpostorData]:
+    def end(
+        self,
+        gid: int,
+        *,
+        expected: Optional[GuessImpostorData] = None,
+    ) -> Optional[GuessImpostorData]:
+        if expected is not None and self.groups.get(gid) is not expected:
+            return None
         self.locked.discard(gid)
+        from .maimaidx_game_session import game_session_gate
+        game_session_gate.release(gid)
         return self.groups.pop(gid, None)
 
     def start(

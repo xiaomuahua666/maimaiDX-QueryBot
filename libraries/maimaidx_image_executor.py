@@ -19,9 +19,10 @@ def _env_int(name: str, default: int) -> int:
 
 
 _CPU_COUNT = max(1, int(os.cpu_count() or 4))
-# 32 核机器默认 8：比原先在事件循环内串行绘制更流畅，同时保留 24 核余量。
+# Pillow/封面合成独立于事件循环；默认按半数 CPU 并发并设置上限，
+# 让多局小游戏绘图有余量，同时避免无限制线程把机器打满。
 IMAGE_WORKERS = _env_int(
-    'MAIMAIDX_IMAGE_WORKERS', min(8, max(4, _CPU_COUNT // 4)),
+    'MAIMAIDX_IMAGE_WORKERS', min(12, max(4, _CPU_COUNT // 2)),
 )
 _EXECUTOR: concurrent.futures.ThreadPoolExecutor | None = None
 

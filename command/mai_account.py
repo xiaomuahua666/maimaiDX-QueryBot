@@ -58,7 +58,14 @@ from ..libraries.maimaidx_processing_time import (
 )
 from ..libraries.maimaidx_reaction import react_processing
 from ..libraries.maimaidx_status_api import build_live_status_payload
-from ..libraries.maimaidx_sw_api import SwApiError, format_user_region_block, sw_api
+from ..libraries.maimaidx_sw_api import (
+    SwApiError,
+    find_sw_api_error,
+    format_sw_api_quota_error,
+    format_user_region_block,
+    is_sw_api_quota_error,
+    sw_api,
+)
 from .mai_agreement import agreement_prompt, has_user_agreed
 
 account_help = on_command("mai账号", aliases={"账号帮助", "mai账户"})
@@ -832,6 +839,9 @@ async def _render_account_status(
                 account_db.mark_qrcode_result(binding.user_key, False)
                 lines.append("🎫 票券情况：二维码已过期，请重新发送最新 SGID")
                 return "\n".join(lines)
+            if is_sw_api_quota_error(exc):
+                lines.append(f"🎫 票券情况：{_exception_detail(exc)}")
+                return "\n".join(lines)
             lines.append("🎫 票券情况：暂时无法获取")
     return "\n".join(lines)
 
@@ -1359,6 +1369,9 @@ def _result_text(result: dict) -> str:
 
 def _exception_detail(exc: BaseException) -> str:
     """保证面向用户和审计日志的异常原因永不为空。"""
+    sw_error = find_sw_api_error(exc)
+    if sw_error is not None and sw_error.is_quota_exceeded:
+        return format_sw_api_quota_error(sw_error)
     if isinstance(exc, (asyncio.TimeoutError, TimeoutError, httpx.TimeoutException)):
         return "请求超时，上游服务未在规定时间内响应"
     if isinstance(exc, httpx.ConnectError):
@@ -1790,6 +1803,11 @@ async def _(
         rating = binding.rating
     except Exception as exc:
         ref = _log(key, "bind", "error", str(exc))
+        if is_sw_api_quota_error(exc):
+            finish_pending(pending_key)
+            await account_bind.finish(
+                recall_notice + _exception_detail(exc) + f"\nRef_ID: {ref}"
+            )
         await retry(f"{type(exc).__name__}（Ref_ID: {ref}）")
 
     # PC 凭据同步失败不回滚已经验真的绑定，避免用户重复提交敏感凭据。
@@ -1884,6 +1902,11 @@ async def _(
             text = await _render_account_status(event, binding, preview)
             ref = _log(key, "status", "success", "preview_source=sgid_cache")
         except Exception as exc:
+            if is_sw_api_quota_error(exc):
+                ref = _log(key, "status", "error", _exception_detail(exc))
+                await account_status.finish(
+                    _exception_detail(exc) + f"\nRef_ID: {ref}", reply_message=True
+                )
             account_db.mark_qrcode_result(key, False)
             matcher.state["status_cache_error"] = type(exc).__name__
             cache_label = "缓存验证失败，需刷新"
@@ -1950,6 +1973,13 @@ async def _(
             binding, qrcode, save_qrcode=True
         )
     except Exception as exc:
+        if is_sw_api_quota_error(exc):
+            ref = _log(key, "status", "error", _exception_detail(exc))
+            finish_pending(pending_key)
+            await account_status.finish(
+                recall_notice + _exception_detail(exc) + f"\nRef_ID: {ref}",
+                reply_message=True,
+            )
         await retry(type(exc).__name__)
     text = await _render_account_status(event, binding, preview)
     ref = _log(key, "status", "success", "preview_source=user_refresh")
@@ -2250,6 +2280,9 @@ async def _upload(
             )
             qrcode = binding.qrcode
     except Exception as exc:
+        if is_sw_api_quota_error(exc):
+            ref = _log(key, "upload", "error", _exception_detail(exc))
+            return _upload_failure_message(exc) + f"\nRef_ID: {ref}"
         account_db.mark_qrcode_result(key, False)
         ref = _log(key, "upload", "error", f"sgid_preview={type(exc).__name__}")
         return f"上传失败：二维码验证失败（{type(exc).__name__}）\nRef_ID: {ref}"
@@ -2840,7 +2873,7 @@ async def _():
     try:
         result = await sw_api.health()
     except Exception as exc:
-        await account_ping.finish(f"AWMC API 连接失败：{exc}")
+        await account_ping.finish(f"AWMC API 连接失败：{_exception_detail(exc)}")
     await account_ping.finish("AWMC API 连接正常\n" + _result_text(result))
 
 
@@ -2869,6 +2902,8 @@ async def _execute_ticket_now(
                 binding, credential, save_qrcode=bool(qrcode_override)
             )
         except Exception as exc:
+            if is_sw_api_quota_error(exc):
+                raise
             if not qrcode_override or credential == binding.qrcode:
                 account_db.mark_qrcode_result(key, False)
             raise TicketQrcodeError(
@@ -3243,6 +3278,12 @@ async def continue_pending_account_retry(
             await _read_verified_preview(binding, qrcode, save_qrcode=True)
     except Exception as exc:
         remember_pending_account_retry(key, operation, payload, expires_at=expires_at)
+        if is_sw_api_quota_error(exc):
+            ref = _log(key, operation, "error", _exception_detail(exc))
+            return (
+                f"❌ 自动继续{operation}暂时无法完成：{_exception_detail(exc)}\n"
+                f"原操作仍在续跑窗口内保留，本次不扣 BREAK。\nRef_ID: {ref}"
+            )
         if _is_sgid_expired_error(exc):
             account_db.mark_qrcode_result(key, False)
             return _pending_qrcode_prompt("已过期，需刷新", "原操作")
@@ -3911,7 +3952,11 @@ async def _(event: MessageEvent):
                 event=event,
                 reply_message=True,
             )
-        await plugin_finish(account_region, f"查询失败：{exc}", event=event)
+        await plugin_finish(
+            account_region,
+            f"查询失败：{_exception_detail(exc)}",
+            event=event,
+        )
     # 与 maibot 一致：用 regionId → WAHLAP_REGIONS 映射省份名，勿依赖 regionName。
     await plugin_finish(
         account_region, format_user_region_block(result), event=event
@@ -3926,7 +3971,11 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
     try:
         result = await sw_api.get_opt(title_ver)
     except Exception as exc:
-        await plugin_finish(account_opt, f"查询失败：{exc}", event=event)
+        await plugin_finish(
+            account_opt,
+            f"查询失败：{_exception_detail(exc)}",
+            event=event,
+        )
     await plugin_finish(
         account_opt, json.dumps(result, ensure_ascii=False, indent=2)[:3000], event=event
     )

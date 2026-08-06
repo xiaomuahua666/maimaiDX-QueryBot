@@ -1,6 +1,7 @@
 import asyncio
 import json
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -103,7 +104,152 @@ def format_user_region_block(result: dict) -> str:
 
 
 class SwApiError(RuntimeError):
-    pass
+    """AWMC API failure with optional structured quota metadata."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        error_code: str = "",
+        retry_at: str = "",
+        retry_after_seconds: Optional[int] = None,
+        quota: Optional[dict] = None,
+    ) -> None:
+        super().__init__(message)
+        self.error_code = str(error_code or "")
+        self.retry_at = str(retry_at or "")
+        self.retry_after_seconds = retry_after_seconds
+        self.quota = dict(quota or {})
+
+    @property
+    def is_quota_exceeded(self) -> bool:
+        return self.error_code.lower() == "quota_exceeded"
+
+    @classmethod
+    def from_payload(
+        cls,
+        payload: Any,
+        *,
+        fallback: str = "AWMC API 请求失败",
+    ) -> "SwApiError":
+        """Build an error without discarding gateway quota metadata."""
+        if not isinstance(payload, dict):
+            return cls(str(payload or fallback))
+
+        quota = payload.get("quota")
+        if not isinstance(quota, dict):
+            quota = {}
+        error_value = payload.get("error")
+        error_code = str(
+            error_value
+            if isinstance(error_value, str)
+            else payload.get("errorCode") or payload.get("code") or ""
+        )
+        message = str(
+            payload.get("msg")
+            or payload.get("message")
+            or (error_value if isinstance(error_value, str) else "")
+            or fallback
+        )
+        retry_at = str(
+            payload.get("retryAt")
+            or payload.get("resetAt")
+            or quota.get("retryAt")
+            or quota.get("resetAt")
+            or ""
+        )
+        retry_after_raw = payload.get(
+            "retryAfterSeconds", quota.get("retryAfterSeconds")
+        )
+        try:
+            retry_after = (
+                max(0, int(retry_after_raw))
+                if retry_after_raw is not None
+                else None
+            )
+        except (TypeError, ValueError):
+            retry_after = None
+        return cls(
+            message,
+            error_code=error_code,
+            retry_at=retry_at,
+            retry_after_seconds=retry_after,
+            quota=quota,
+        )
+
+
+def find_sw_api_error(exc: BaseException) -> Optional[SwApiError]:
+    """Find a wrapped ``SwApiError`` without following cyclic causes."""
+    current: Optional[BaseException] = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, SwApiError):
+            return current
+        current = current.__cause__ or current.__context__
+    return None
+
+
+def is_sw_api_quota_error(exc: BaseException) -> bool:
+    error = find_sw_api_error(exc)
+    return bool(error and error.is_quota_exceeded)
+
+
+def format_sw_api_quota_error(
+    error: SwApiError,
+    *,
+    now: Optional[datetime] = None,
+) -> str:
+    """Return a concise user-facing quota message in China Standard Time."""
+    quota = error.quota
+    scope = str(quota.get("scope") or "").lower()
+    category = str(quota.get("category") or "").lower()
+    window = str(quota.get("window") or "").lower()
+    scope_label = "个人" if scope == "personal" else ""
+    category_label = {
+        "read": "读取",
+        "write": "写入",
+    }.get(category, "请求")
+    window_label = {
+        "1h": "1 小时",
+        "1d": "1 天",
+        "24h": "24 小时",
+    }.get(window, str(quota.get("windowLabel") or "当前周期"))
+
+    usage = ""
+    try:
+        used = int(quota.get("used"))
+        limit = int(quota.get("limit"))
+        requested = int(quota.get("requested"))
+        usage = f"（当前 {used}/{limit}，本次需要 {requested}）"
+    except (TypeError, ValueError):
+        pass
+
+    china_tz = timezone(timedelta(hours=8))
+    retry_dt: Optional[datetime] = None
+    if error.retry_at:
+        try:
+            parsed = datetime.fromisoformat(error.retry_at.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            retry_dt = parsed.astimezone(china_tz)
+        except ValueError:
+            retry_dt = None
+    if retry_dt is None and error.retry_after_seconds is not None:
+        current = now or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        retry_dt = (current + timedelta(seconds=error.retry_after_seconds)).astimezone(
+            china_tz
+        )
+
+    prefix = f"AWMC API {scope_label}{category_label}配额已达到 {window_label}上限{usage}。"
+    if retry_dt is not None:
+        return (
+            f"{prefix}\n请在 {retry_dt.strftime('%Y-%m-%d %H:%M:%S')}"
+            "（北京时间）后继续使用。"
+        )
+    return f"{prefix}\n请稍后再试。"
 
 
 # AWMC 公共网关默认根地址；可用 AWMC_API_BASE_URL 覆盖。
@@ -226,7 +372,7 @@ class SwApiClient:
         # made a completed item write look like ``SwApiError()`` to callers.
         error_value = data.get("error")
         if error_value not in (None, "", {}, []):
-            raise SwApiError(str(error_value))
+            raise SwApiError.from_payload(data, fallback=str(error_value))
 
         return_code = data.get("returnCode", data.get("ReturnCode"))
         if return_code is not None:
@@ -265,7 +411,9 @@ class SwApiClient:
                             or business_data.get("error")
                             or f"AWMC 业务失败（returnCode={nested_code}）"
                         )
-                        raise SwApiError(str(nested_error))
+                        raise SwApiError.from_payload(
+                            business_data, fallback=str(nested_error)
+                        )
             return business_data
 
         if "returnMessage" in data:
@@ -273,7 +421,7 @@ class SwApiClient:
 
         code = data.get("code")
         if code == -1:
-            raise SwApiError(str(data.get("msg", "未知错误")))
+            raise SwApiError.from_payload(data, fallback="未知错误")
 
         # user/music 等接口：成功时 code=0，msg 为 JSON 字符串
         if code in (0, 1) and "msg" in data:
@@ -288,7 +436,7 @@ class SwApiClient:
         if code == 0:
             return data
 
-        raise SwApiError(str(data.get("msg") or data.get("error") or "未知错误"))
+        raise SwApiError.from_payload(data, fallback="未知错误")
 
     @staticmethod
     def flatten_user_music(payload: Any) -> List[dict]:
@@ -355,6 +503,13 @@ class SwApiClient:
                     res = await client.request(
                         method, url, json=json_body, params=params
                     )
+                if res.status_code == 429:
+                    try:
+                        quota_error = SwApiError.from_payload(res.json())
+                    except (json.JSONDecodeError, ValueError, TypeError):
+                        quota_error = None
+                    if quota_error is not None and quota_error.is_quota_exceeded:
+                        break
                 if res.status_code not in (408, 429) and res.status_code < 500:
                     break
             except (httpx.TimeoutException, httpx.NetworkError) as exc:
@@ -375,14 +530,12 @@ class SwApiClient:
             try:
                 err_data = res.json()
                 if isinstance(err_data, dict):
-                    err_msg = str(
-                        err_data.get("error")
-                        or err_data.get("msg")
-                        or err_data.get("message")
-                        or ""
+                    structured_error = SwApiError.from_payload(
+                        err_data,
+                        fallback=f"HTTP {res.status_code}",
                     )
-                    if err_msg:
-                        raise SwApiError(err_msg)
+                    err_msg = str(structured_error)
+                    raise structured_error
             except json.JSONDecodeError:
                 pass
             except SwApiError:

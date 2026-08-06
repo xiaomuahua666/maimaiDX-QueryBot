@@ -132,12 +132,23 @@ class GuessRatingManager:
     def unlock(self, gid: int) -> None:
         """开局失败时释放锁。"""
         self.locked.discard(gid)
+        from .maimaidx_game_session import game_session_gate
+        game_session_gate.release(gid)
 
     def get(self, gid: int) -> Optional[GuessRatingData]:
         return self.groups.get(gid)
 
-    def end(self, gid: int) -> Optional[GuessRatingData]:
+    def end(
+        self,
+        gid: int,
+        *,
+        expected: Optional[GuessRatingData] = None,
+    ) -> Optional[GuessRatingData]:
+        if expected is not None and self.groups.get(gid) is not expected:
+            return None
         self.locked.discard(gid)
+        from .maimaidx_game_session import game_session_gate
+        game_session_gate.release(gid)
         return self.groups.pop(gid, None)
 
     def add_volunteer(self, gid: int, billing_id: int) -> None:

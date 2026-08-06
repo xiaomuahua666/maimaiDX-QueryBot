@@ -52,6 +52,7 @@ from ..libraries.maimaidx_user_operation import (
     finish_account_operation,
     try_begin_account_operation,
 )
+from ..libraries.maimaidx_sw_api import is_sw_api_quota_error
 
 update_pc = on_command('更新pc数', aliases={'更新PC数', '同步pc数', '同步PC数', '绑定机台', '登录机台'})
 my_pc = on_command('我的pc数', aliases={'我的PC数', '我的pc', '我的PC'})
@@ -361,6 +362,17 @@ async def _handle_sdgb_update(
         log.error(
             f'[SDGBPC] 用户 {qqid} 拉取失败 qrcode={qrcode_log_preview(qrcode_data)}: {e}'
         )
+        if is_sw_api_quota_error(e):
+            from .mai_account import _exception_detail
+
+            message = MessageSegment.reply(event.message_id) + MessageSegment.text(
+                '\n' + _exception_detail(e)
+            )
+            if retry_on_cached_failure:
+                await matcher.send(message)
+                return
+            await matcher.finish(message)
+            return
         from ..libraries.maimaidx_account_db import account_db
 
         account_db.mark_qrcode_result(str(qqid), False)
@@ -694,6 +706,24 @@ async def _process_auto_qrcode_for_account(
                 remember_pending_account_retry(
                     str(qqid), pending_account[0], pending_account[1], expires_at=pending_account[2]
                 )
+            if is_sw_api_quota_error(exc):
+                from .mai_account import _exception_detail, _log
+
+                detail = _exception_detail(exc)
+                ref = _log(
+                    str(qqid),
+                    'auto_qrcode',
+                    'error',
+                    f'source={source},error=quota_exceeded',
+                )
+                log.warning(
+                    f'[QrcodeAuto] AWMC 配额耗尽 source={source} qq={qqid}: {exc}'
+                )
+                await bot.send(
+                    event,
+                    recall_warning + f'{detail}\nRef_ID: {ref}',
+                )
+                return
             _qrcode_retry_release_dedupe(qqid, qrcode_data)
             account_db.mark_qrcode_result(str(qqid), False)
             attempt, exhausted = _qrcode_retry_failed(qqid)

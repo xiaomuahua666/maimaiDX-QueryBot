@@ -1096,9 +1096,23 @@ class Guess:
             options=guess_options
         )
 
-    def end(self, gid: Union[int, str]):
+    def end(
+        self,
+        gid: Union[int, str],
+        *,
+        expected: Optional[
+            Union[GuessDefaultData, GuessPicData, GuessAudioData, GuessChartData]
+        ] = None,
+    ):
         """结束猜歌"""
-        self.Group.pop(gid, None)
+        if expected is not None and self.Group.get(gid) is not expected:
+            return None
+        data = self.Group.pop(gid, None)
+        # Release the cross-mode admission reservation even when a game exits
+        # through a timeout or an outbound-send failure.
+        from .maimaidx_game_session import game_session_gate
+        game_session_gate.release(gid)
+        return data
 
     @staticmethod
     def _switch_key(gid: Union[int, str]) -> Union[int, str]:
