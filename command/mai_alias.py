@@ -9,8 +9,6 @@ import httpx
 from httpx_ws import WebSocketDisconnect, aconnect_ws
 from nonebot import get_bots, on_command, on_regex
 from nonebot.adapters.onebot.v11 import (
-    GROUP_ADMIN,
-    GROUP_OWNER,
     Bot,
     GroupMessageEvent,
     Message,
@@ -47,7 +45,7 @@ alias_agree = on_command('同意别名', aliases={'同意别称'})
 alias_status = on_command('当前投票', aliases={'当前别名投票', '当前别称投票'})
 alias_switch = on_regex(
     r'^([开启关闭]+)别名推送$',
-    permission=PLUGIN_ADMIN_ONLY | GROUP_OWNER | GROUP_ADMIN
+    permission=GUESS_GROUP_MANAGER,
 )
 alias_global_switch = on_regex(r'^全局([开启关闭]+)别名推送$', permission=PLUGIN_ADMIN_ONLY)
 alias_song = on_regex(r'^(id)?\s?(.+)\s?有什么别[名称]$', re.IGNORECASE)

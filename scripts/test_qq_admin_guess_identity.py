@@ -29,9 +29,10 @@ import nonebot
 
 nonebot.init()
 
-from nonebot_plugin_maimaidx.command import mai_break, mai_guess  # noqa: E402
+from nonebot_plugin_maimaidx.command import mai_alias, mai_break, mai_guess  # noqa: E402
 from nonebot_plugin_maimaidx.libraries import maimaidx_bot_admin  # noqa: E402
 from nonebot_plugin_maimaidx.libraries.maimaidx_bot_admin import (  # noqa: E402
+    GUESS_GROUP_MANAGER,
     PLUGIN_ADMIN_ONLY,
 )
 from nonebot_plugin_maimaidx.libraries.maimaidx_qq_bind import (  # noqa: E402
@@ -73,6 +74,18 @@ async def main() -> None:
         assert not maimaidx_bot_admin.is_plugin_admin("987654321")
         assert await PLUGIN_ADMIN_ONLY(None, _Event("official-admin-openid"))
         assert not await PLUGIN_ADMIN_ONLY(None, _Event("ordinary-openid"))
+        assert not await GUESS_GROUP_MANAGER(None, _Event("ordinary-openid"))
+
+        # Native OneBot GROUP_ADMIN/GROUP_OWNER checkers assume a group sender
+        # and crash on private FriendAuthor events.  Alias push must use the
+        # qbind-aware group-manager permission instead.
+        alias_checker_names = {
+            getattr(dependent.call, "__name__", "")
+            for dependent in mai_alias.alias_switch.permission.checkers
+        }
+        assert "_group_manager_or_plugin_admin" in alias_checker_names
+        assert "_group_admin" not in alias_checker_names
+        assert "_group_owner" not in alias_checker_names
 
         # All BREAK maintenance commands must use the qbind-aware permission.
         for name in (
