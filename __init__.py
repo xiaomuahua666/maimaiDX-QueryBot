@@ -110,11 +110,22 @@ async def get_music():
         from .libraries.maimaidx_guess_chart import (
             ADAPTIVE_ENABLED,
             schedule_chart_cache_background_fill,
+            schedule_chart_cache_auto_prepare,
+            schedule_chart_render_recovery,
+        )
+        from .libraries.maimaidx_guess_audio import (
+            schedule_audio_cache_auto_prepare,
+            schedule_audio_render_recovery,
         )
 
         schedule_chart_cache_background_fill()
+        # 启动时先恢复被重启打断的任务；没有待恢复任务时自动增量预制。
+        schedule_chart_render_recovery()
+        schedule_audio_render_recovery()
+        schedule_chart_cache_auto_prepare()
+        schedule_audio_cache_auto_prepare()
         if ADAPTIVE_ENABLED:
-            log.info('猜铺面自适应并发 + BGM 后台补洞已调度')
+            log.info('猜铺面自适应并发 + BGM 后台补洞 + 启动自动预制已调度')
         else:
             log.info('猜铺面 BGM 后台补洞已调度（固定并发）')
     except Exception as e:

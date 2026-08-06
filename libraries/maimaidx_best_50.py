@@ -342,6 +342,7 @@ class DrawBest(ScoreBaseImage):
         play_counts: Optional[dict[tuple[int, int], int]] = None,
         max_display: int = 50,
         compact_subtitle: Optional[str] = None,
+        source_label: Optional[str] = None,
         theme: str = None,
     ) -> None:
         from .maimaidx_theme import Theme, resolve_theme_path, get_user_theme
@@ -375,6 +376,7 @@ class DrawBest(ScoreBaseImage):
         # 最大显示条数（50=B50, 35=B35），用于 compact_layout 的副标题显示
         self.max_display = max_display
         self.compact_subtitle = compact_subtitle
+        self.source_label = source_label
 
     def _findRaPic(self) -> str:
         """
@@ -485,6 +487,12 @@ class DrawBest(ScoreBaseImage):
                 570, 172, 17,
                 f'B35: {sdrating} + B15: {dxrating} = {self.Rating}',
                 (0, 0, 0, 255), 'mm', 3, (255, 255, 255, 255)
+            )
+        if self.source_label:
+            self._sy.draw(
+                570, 198, 14,
+                f'数据源：{self.source_label}',
+                (70, 70, 70, 255), 'mm', 2, (255, 255, 255, 220)
             )
         draw_centered_design_footer(
             self._im,
@@ -1414,7 +1422,11 @@ async def generate_pc50(
         last_update = max(r.updated_at for r in pc_records)
         last_update_str = datetime.fromtimestamp(last_update).strftime('%Y-%m-%d %H:%M:%S')
 
-        userinfo = await maiApi.query_user_b50(qqid=qqid, username=username)
+        # 统一走 datasource；直接调用水鱼会让 AWMCNET 用户在 pc50 中变成
+        # “查无此人”，即使本地 PC 记录本身已经同步成功。
+        from .maimaidx_datasource import get_user_b50, get_user_source
+        source = get_user_source(qqid) if qqid else 'divingfish'
+        userinfo = await get_user_b50(qqid=qqid, username=username)
         sdBest = list(userinfo.charts.sd or [])
         dxBest = list(userinfo.charts.dx or [])
 
@@ -1433,8 +1445,20 @@ async def generate_pc50(
         )
 
         _prepare_b50_warnings(pc_userinfo, qqid, username)
-        draw_best = DrawBest(pc_userinfo, qqid, play_counts=play_counts or None)
-        msg = MessageSegment.image(image_to_base64(await draw_best.draw())) + MessageSegment.text(f'\n上次更新: {last_update_str}')
+        source_names = {
+            'awmcnet': 'AWMCNET',
+            'divingfish': '水鱼查分器',
+            'lxns': '落雪查分器',
+        }
+        draw_best = DrawBest(
+            pc_userinfo,
+            qqid,
+            play_counts=play_counts or None,
+            source_label=source_names.get(source, source),
+        )
+        msg = MessageSegment.image(image_to_base64(await draw_best.draw())) + MessageSegment.text(
+            f'\n数据源: {source_names.get(source, source)}\n上次更新: {last_update_str}'
+        )
     except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
         msg = str(e)
     except Exception as e:

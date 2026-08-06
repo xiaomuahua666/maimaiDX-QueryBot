@@ -27,6 +27,13 @@ import httpx
 from loguru import logger as log
 from playwright.async_api import async_playwright
 
+from .maimaidx_render_tasks import (
+    finish_task,
+    pending_tasks,
+    start_task,
+    update_task,
+)
+
 _PKG_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CHART_CDN = 'https://assets2.lxns.net/maimai/chart'
 # rev=8：多核并行录制/转码（同曲两阶段并行 + 预制并发）
@@ -90,7 +97,7 @@ def _env_bool(name: str, default: bool) -> bool:
 def _default_render_workers() -> int:
     """在线录制槽：宁少勿多，避免 Chromium 饿死查分/传分。"""
     n = _cpu_count()
-    # 多核机默认 2；硬顶 3。低峰可用 MAIMAIDX_CHART_RENDER_WORKERS 加大。
+    # 多核机默认 2；低峰时自适应可升到 RENDER_MAX（默认 4）。
     if n >= 16:
         return 2
     return 1
@@ -117,7 +124,8 @@ def _default_bg_fill_workers() -> int:
 
 
 def _default_render_max() -> int:
-    return 3 if _cpu_count() >= 16 else 2
+    # 16 核以上给低峰再留一个录制槽；自适应会在负载升高时主动降回去。
+    return 4 if _cpu_count() >= 16 else 2
 
 
 def _default_bg_fill_max() -> int:
@@ -1837,6 +1845,71 @@ def schedule_chart_cache_background_fill() -> None:
     )
 
 
+_render_recovery_task: Optional[asyncio.Task] = None
+_auto_prepare_task: Optional[asyncio.Task] = None
+
+
+async def _recover_chart_render_task(task: dict) -> None:
+    # 等曲库和热门池初始化完成，避免恢复任务抢在启动流程之前读取空池。
+    await asyncio.sleep(8)
+    try:
+        await build_hot_chart_cache(
+            force=bool(task.get('force')),
+            limit=task.get('limit'),
+        )
+        log.info('[GuessChart] 已自动恢复上次中断的谱面预制任务')
+        schedule_chart_cache_auto_prepare()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        log.warning(f'[GuessChart] 自动恢复谱面预制失败：{type(exc).__name__}: {exc}')
+
+
+def schedule_chart_render_recovery() -> None:
+    """启动后恢复上次被进程中断的谱面预制任务。"""
+    global _render_recovery_task
+    if _render_recovery_task is not None and not _render_recovery_task.done():
+        return
+    task = next((item for item in pending_tasks() if item.get('kind') == 'chart'), None)
+    if task is None:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    _render_recovery_task = loop.create_task(
+        _recover_chart_render_task(task), name='maimaidx-chart-render-recovery'
+    )
+
+
+async def _auto_prepare_chart_cache() -> None:
+    await asyncio.sleep(15)
+    try:
+        await build_hot_chart_cache()
+        log.info('[GuessChart] 启动后的增量谱面预制完成')
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        log.warning(f'[GuessChart] 启动自动谱面预制失败：{type(exc).__name__}: {exc}')
+
+
+def schedule_chart_cache_auto_prepare() -> None:
+    """每次启动自动检查热门池并增量预制缺失缓存。"""
+    global _auto_prepare_task
+    if _auto_prepare_task is not None and not _auto_prepare_task.done():
+        return
+    if any(item.get('kind') == 'chart' for item in pending_tasks()):
+        schedule_chart_render_recovery()
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    _auto_prepare_task = loop.create_task(
+        _auto_prepare_chart_cache(), name='maimaidx-chart-auto-prepare'
+    )
+
+
 async def build_hot_chart_cache(
     *,
     force: bool = False,
@@ -1856,6 +1929,9 @@ async def build_hot_chart_cache(
     build_limit = DEFAULT_CHART_BATCH_LIMIT if limit is None else max(1, int(limit))
     if force and limit is None:
         build_limit = len(pool)
+    task_id = start_task(
+        'chart', total=build_limit, force=force, limit=limit,
+    )
 
     ok_ids: List[str] = []
     skip_ids: List[str] = []
@@ -1914,6 +1990,8 @@ async def build_hot_chart_cache(
         f'ffmpeg_threads={FFMPEG_THREADS} cpu={_cpu_count()} '
         f'estimated_total={_format_duration(initial_eta)}'
     )
+
+    update_task(task_id, total=len(todo), message='已扫描热门池，准备渲染')
 
     async def _build_one(music, idx: int) -> Tuple[str, bool, str, dict]:
         nonlocal cancelled, done_count
@@ -1975,6 +2053,17 @@ async def build_hot_chart_cache(
                     f'render={RENDER_WORKERS}/{RENDER_MAX}'
                 )
                 set_chart_prepare_status(progress_msg)
+                processed = done_count
+                remaining = max(0, len(todo) - processed)
+                elapsed_for_eta = max(0.001, time.perf_counter() - batch_started)
+                eta = elapsed_for_eta / max(1, processed) * remaining if processed else initial_eta
+                update_task(
+                    task_id,
+                    processed=processed,
+                    total=len(todo),
+                    eta_seconds=eta,
+                    message=progress_msg,
+                )
                 log.info(f'[GuessChart] {progress_msg}')
             return mid, ok, msg, entry if isinstance(entry, dict) else {}
 
@@ -2002,6 +2091,7 @@ async def build_hot_chart_cache(
     holes_left = len(list_mute_without_bgm())
     ready_n = len(list_ready_chart_rounds())
     set_chart_prepare_status('预制结束')
+    finish_task(task_id)
     lines = [
         f'猜铺面热门池预制完成（rev={CHART_VIDEO_REV}）',
         f'扫描 {len(pool)} 首，补 BGM {bgm_filled}，新建完整 {len(ok_ids)}，'

@@ -16,6 +16,13 @@ from typing import Callable, Dict, List, Optional, Tuple
 import httpx
 from loguru import logger as log
 
+from .maimaidx_render_tasks import (
+    finish_task,
+    pending_tasks,
+    start_task,
+    update_task,
+)
+
 _PKG_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CDN_BASE = 'https://assets2.lxns.net/maimai/music'
 STAGE_COUNT = 4
@@ -815,6 +822,7 @@ async def build_hot_audio_cache(*, force: bool = False) -> str:
         1 for music in pool if not is_audio_ready(str(music.id))
     )
     initial_estimate = todo_count * AUDIO_ESTIMATE_SECONDS
+    task_id = start_task('audio', total=todo_count, force=force)
     log.info(
         f'[GuessAudio] 热门池烘焙开始 total={len(pool)} force={force} '
         f'demucs={"yes" if demucs_on else "no"} device={_demucs_device() if demucs_on else "-"} '
@@ -884,6 +892,13 @@ async def build_hot_audio_cache(*, force: bool = False) -> str:
             f'threads={_dynamic_cpu_threads()}/{AUDIO_CPU_THREADS_MAX}'
         )
         set_audio_prepare_status(progress_msg)
+        update_task(
+            task_id,
+            processed=processed,
+            total=todo_count,
+            eta_seconds=eta,
+            message=progress_msg,
+        )
         log.info(f'[GuessAudio] {progress_msg}')
 
     elapsed = time.perf_counter() - batch_t0
@@ -892,8 +907,70 @@ async def build_hot_audio_cache(*, force: bool = False) -> str:
         f'ok={len(ok_ids)} skip={len(skip_ids)} fail={len(fail_lines)} '
         f'cancelled={cancelled} elapsed={elapsed:.1f}s'
     )
+    finish_task(task_id)
     return _format_hot_batch_report(
         len(pool), ok_ids, skip_ids, fail_lines, cancelled=cancelled,
+    )
+
+
+_render_recovery_task: Optional[asyncio.Task] = None
+_auto_prepare_task: Optional[asyncio.Task] = None
+
+
+async def _recover_audio_render_task(task: dict) -> None:
+    await asyncio.sleep(8)
+    try:
+        await build_hot_audio_cache(force=bool(task.get('force')))
+        log.info('[GuessAudio] 已自动恢复上次中断的音频预制任务')
+        schedule_audio_cache_auto_prepare()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        log.warning(f'[GuessAudio] 自动恢复音频预制失败：{type(exc).__name__}: {exc}')
+
+
+def schedule_audio_render_recovery() -> None:
+    """启动后恢复上次被进程中断的音频预制任务。"""
+    global _render_recovery_task
+    if _render_recovery_task is not None and not _render_recovery_task.done():
+        return
+    task = next((item for item in pending_tasks() if item.get('kind') == 'audio'), None)
+    if task is None:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    _render_recovery_task = loop.create_task(
+        _recover_audio_render_task(task), name='maimaidx-audio-render-recovery'
+    )
+
+
+async def _auto_prepare_audio_cache() -> None:
+    await asyncio.sleep(20)
+    try:
+        await build_hot_audio_cache()
+        log.info('[GuessAudio] 启动后的增量音频预制完成')
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        log.warning(f'[GuessAudio] 启动自动音频预制失败：{type(exc).__name__}: {exc}')
+
+
+def schedule_audio_cache_auto_prepare() -> None:
+    """每次启动自动检查热门池并增量预制缺失缓存。"""
+    global _auto_prepare_task
+    if _auto_prepare_task is not None and not _auto_prepare_task.done():
+        return
+    if any(item.get('kind') == 'audio' for item in pending_tasks()):
+        schedule_audio_render_recovery()
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    _auto_prepare_task = loop.create_task(
+        _auto_prepare_audio_cache(), name='maimaidx-audio-auto-prepare'
     )
 
 

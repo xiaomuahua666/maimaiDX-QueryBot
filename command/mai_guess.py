@@ -49,6 +49,7 @@ from ..libraries.maimaidx_guess_chart import (
     summarize_pool_cache as summarize_chart_pool_cache,
     request_chart_batch_cancel,
 )
+from ..libraries.maimaidx_render_tasks import format_active_tasks
 from ..libraries.maimaidx_music import guess
 from ..libraries.maimaidx_reaction import REACT_EMOJI_CHECK, react_processing
 from ..libraries.maimaidx_model import (
@@ -157,6 +158,11 @@ update_guess_chart  = on_regex(
 guess_prepare_status = on_command(
     '猜歌预制状态',
     aliases={'猜谱面预制状态', '猜歌预制', '预制状态'},
+    permission=PLUGIN_ADMIN_ONLY,
+)
+render_status = on_command(
+    '渲染状态',
+    aliases={'查询渲染', '查询渲染任务', '渲染任务', '渲染进度', '预制任务状态'},
     permission=PLUGIN_ADMIN_ONLY,
 )
 guess_boost_grant   = on_command('发加倍卡', permission=GUESS_GROUP_MANAGER, rule=GROUP_MESSAGE)
@@ -1505,6 +1511,12 @@ async def _(event: MessageEvent):
         f'谱面任务：{chart_task}'
     )
     await plugin_finish(guess_prepare_status, text, event=event)
+
+
+@render_status.handle()
+async def _(event: MessageEvent):
+    """一次查看音频和谱面所有活动任务，包含可持久化 ETA。"""
+    await plugin_finish(render_status, format_active_tasks(), event=event)
 
 
 @guess_music_solve.handle()
