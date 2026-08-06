@@ -309,7 +309,10 @@ async def _send_song_info_then_pmyx_forward(
         return
     charge = take_break_charge_footer()
     charge_extra = '\n'.join(charge) if charge else ''
-    await matcher.send(attach_timing(msg, total, extra=charge_extra), reply_message=reply)
+    await matcher.send(
+        attach_timing(msg, total, extra=charge_extra, compact=bool(prefix)),
+        reply_message=reply,
+    )
     nickname = _bot_nickname(bot)
     all_nodes = []
     # 并发拉取三个数据源
