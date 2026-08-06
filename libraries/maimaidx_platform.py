@@ -1935,7 +1935,7 @@ def _qq_media_mention_prefix(mentions: List[Any]) -> str:
             tags.append(f'@{name}')
         elif seg_type == 'mention_everyone':
             tags.append('@全体成员')
-    return f'{" ".join(tags)}\n\n' if tags else ''
+    return ' '.join(tags) if tags else ''
 
 
 def _ensure_qq_media_text(parts: List[Any]) -> List[Any]:

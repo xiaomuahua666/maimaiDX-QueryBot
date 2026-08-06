@@ -140,18 +140,8 @@ def run_timed_call(fn: Callable[..., T], /, *args, **kwargs) -> tuple[T, float]:
     return result, time.perf_counter() - t0
 
 
-def attach_timing(
-    result: ImageResult,
-    total: float,
-    *,
-    extra: str = '',
-    compact: bool = False,
-) -> ImageResult:
-    """给图片消息追加耗时 footer；字符串（错误提示）原样返回。
-
-    ``compact`` is useful when a preceding text label and the timing footer
-    are rendered after the same image attachment on clients such as QQ.
-    """
+def attach_timing(result: ImageResult, total: float, *, extra: str = '') -> ImageResult:
+    """给图片消息追加耗时 footer；字符串（错误提示）原样返回。"""
     if isinstance(result, str):
         return result
     if result is None:
@@ -159,11 +149,7 @@ def attach_timing(
     from nonebot.adapters.onebot.v11 import Message, MessageSegment
 
     footer = timing_text(total)
-    if compact:
-        parts = [extra.strip(), footer] if extra.strip() else [footer]
-        text = ' ' + ' · '.join(parts)
-    else:
-        text = f'\n{extra}\n{footer}' if extra else f'\n{footer}'
+    text = f'\n{extra}\n{footer}' if extra else f'\n{footer}'
     if isinstance(result, Message):
         return result + Message(text)
     if isinstance(result, MessageSegment):
