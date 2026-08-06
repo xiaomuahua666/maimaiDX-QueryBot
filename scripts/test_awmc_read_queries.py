@@ -33,8 +33,8 @@ namespace = {
         1: "姓名框",
         2: "称号",
         9: "角色",
-        15: "钥匙",
     },
+    "_HIDDEN_ITEM_KINDS": frozenset({15}),
     "_GATE_NAMES": {
         1: "蓝色之门", 2: "白色之门", 3: "紫色之门", 4: "黑色之门",
         5: "黄色之门", 6: "红色之门", 7: "棱镜塔", 8: "表门",
@@ -62,15 +62,14 @@ items_payload = {
     "userItemList": [
         {"itemKind": 2, "itemId": 100, "stock": 1},
         {"itemKind": 9, "userItemList": [{"itemId": 200}, {"itemId": 201}]},
-        {"itemKind": 15, "itemId": 300},
     ]
 }
 rows = namespace["_flatten_user_items"](items_payload)
-assert len(rows) == 4
+assert len(rows) == 3
 items = namespace["_format_user_items"](items_payload)
 assert "称号（kind=2）：100" in items
 assert "角色（kind=9）：200、201" in items
-assert "钥匙（kind=15）：300" in items
+assert "钥匙" not in items
 
 gates = namespace["_format_gate_status"](
     {

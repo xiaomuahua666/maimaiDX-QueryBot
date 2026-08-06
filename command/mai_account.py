@@ -859,8 +859,8 @@ _ITEM_KIND_LABELS = {
     10: "搭档",
     11: "边框",
     12: "票券",
-    15: "钥匙",
 }
+_HIDDEN_ITEM_KINDS = frozenset({15})
 
 _ITEM_UPSERT_SUCCESS_NOTE = (
     "提示：只发道具时，可能会同时上传一条名为「MilK」、0 分的乐曲记录；"
@@ -908,6 +908,11 @@ def _flatten_user_items(payload: Any) -> list[dict]:
         kind = _pick(value, "itemKind", "ItemKind", default=inherited_kind)
         item_id = _pick(value, "itemId", "ItemId", "itemID", "ItemID")
         if item_id is not None:
+            try:
+                if int(kind) in _HIDDEN_ITEM_KINDS:
+                    return
+            except (TypeError, ValueError):
+                pass
             row = dict(value)
             if _pick(row, "itemKind", "ItemKind") is None and kind is not None:
                 row["itemKind"] = kind
@@ -1217,9 +1222,8 @@ _ITEM_KIND_INPUTS = {
     "搭档": 10, "partner": 10,
     "边框": 11, "frame": 11,
     "票券": 12, "ticket": 12,
-    "钥匙": 15, "key": 15,
 }
-_SUPPORTED_ITEM_KINDS = frozenset({1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 15})
+_SUPPORTED_ITEM_KINDS = frozenset({1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12})
 _MUSIC_ITEM_KINDS = frozenset({5, 6, 7})
 _INTERACTION_CANCEL_WORDS = {"取消", "cancel", "q", "退出", "00"}
 
@@ -1236,9 +1240,9 @@ def _parse_item_kind(value: str) -> int:
         kind = int(text)
     except ValueError as exc:
         raise ValueError("itemKind 必须是正整数或已知类型名称") from exc
-    if kind not in {1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 15}:
+    if kind not in _SUPPORTED_ITEM_KINDS:
         raise ValueError(
-            "暂只支持 itemKind：1、2、3、4、5、6、7、9、10、11、12、15"
+            "暂只支持 itemKind：1、2、3、4、5、6、7、9、10、11、12"
         )
     return kind
 
@@ -3816,7 +3820,7 @@ async def _(matcher: Matcher, event: MessageEvent, args: Message = CommandArg())
         "请输入 itemKind 数字或类型名称：\n"
         "1姓名框 / 2称号 / 3头像 / 4收藏品 / 5乐曲 / "
         "6 MASTER谱面解锁 / 7 Re:MASTER谱面解锁 / 9角色 / "
-        "10搭档 / 11边框 / 12票券 / 15钥匙\n"
+        "10搭档 / 11边框 / 12票券\n"
         "发送“取消”或 00 退出"
     ),
 )

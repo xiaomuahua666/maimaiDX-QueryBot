@@ -68,7 +68,8 @@ namespace = {
     "_DIFFICULTY_LABELS": {0: "BASIC", 1: "ADV", 2: "EXP", 3: "MAS", 4: "Re:MAS", 10: "宴"},
     "_COMBO_ALIASES": {"none": "none", "fc": "fc", "ap": "ap"},
     "_SYNC_ALIASES": {"none": "none", "fs": "fs", "fdx": "fsd"},
-    "_ITEM_KIND_INPUTS": {"称号": 2, "角色": 9, "钥匙": 15},
+    "_ITEM_KIND_INPUTS": {"称号": 2, "角色": 9},
+    "_SUPPORTED_ITEM_KINDS": frozenset({1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12}),
     "_INTERACTION_CANCEL_WORDS": {"取消", "cancel", "q", "退出", "00"},
 }
 exec(compile(ast.Module(body=selected, type_ignores=[]), str(PATH), "exec"), namespace)
@@ -111,7 +112,12 @@ deleted_music, deleted_level = namespace["_parse_music_delete_command"](
 )
 assert deleted_music is music and deleted_level == 4
 assert namespace["_parse_item_upsert_command"]("称号 123 add") == (2, 123, "add")
-assert namespace["_parse_item_upsert_command"]("15 456 删除") == (15, 456, "del")
+try:
+    namespace["_parse_item_upsert_command"]("15 456 删除")
+except ValueError as exc:
+    assert "itemKind" in str(exc)
+else:
+    raise AssertionError("itemKind=15 不应再允许用户提交")
 for cancel_word in ("取消", "cancel", "Q", "退出", "00"):
     assert namespace["_is_interaction_cancel"](cancel_word)
 
