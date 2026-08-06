@@ -775,6 +775,9 @@ class SwApiClient:
     async def upsert_item(
         self, qrcode: str, item_kind: int, item_id: int, operation: str
     ) -> Any:
+        # The item endpoint uses HTTP status as its success contract.  Its
+        # legacy body may contain returnCode=0 even after the mutation is
+        # accepted, so do not apply the stricter read/music envelope parser.
         data = await self._request(
             "POST",
             self._api_path("item/upsert"),
@@ -787,7 +790,7 @@ class SwApiClient:
             timeout=60,
             retry_count=0,
         )
-        return self._parse_envelope(data)
+        return data
 
     async def get_user_region(self, qrcode: str) -> dict:
         data = await self._request(

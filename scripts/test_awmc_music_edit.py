@@ -146,6 +146,12 @@ assert 'self._api_path("music/upsert")' in client_source
 assert 'self._api_path("music/delete")' in client_source
 assert 'self._api_path("ticket/clear")' in client_source
 assert 'self._api_path("item/upsert")' in client_source
+item_upsert_block = client_source[
+    client_source.index("    async def upsert_item("):
+    client_source.index("    async def get_user_region(")
+]
+assert "return data" in item_upsert_block
+assert "return self._parse_envelope(data)" not in item_upsert_block
 assert client_source.count("retry_count=0") >= 7
 assert "MilK" in (ROOT / "command" / "mai_account.py").read_text(encoding="utf-8")
 assert "只发道具时" in (ROOT / "command" / "mai_account.py").read_text(encoding="utf-8")
