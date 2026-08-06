@@ -66,6 +66,9 @@ setattr(awmc_makeup_checkin, '_maimaidx_busy_surcharge_exempt', True)
 my_awmc = on_command(
     '我的AWMC', aliases={'我的awmc', 'AWMC状态', 'awmc状态', '我的账号'}
 )
+break_economy = on_command(
+    'BREAK统计', aliases={'BREAK收支', '全局BREAK统计', 'AWMC经济', 'AWMC收支'}
+)
 awmc_admin_set = on_command('设置BREAK', permission=PLUGIN_ADMIN_ONLY)
 awmc_admin_add = on_command('增减BREAK', permission=PLUGIN_ADMIN_ONLY)
 awmc_admin_config = on_command('BREAK配置', permission=PLUGIN_ADMIN_ONLY)
@@ -104,6 +107,7 @@ setattr(awmc_help, '_maimaidx_qbind_exempt', True)
 for _debt_exempt_matcher in (
     awmc_checkin,
     my_awmc,
+    break_economy,
     awmc_help,
     break_red_packet_claim,
     break_red_packet_status,
@@ -171,6 +175,7 @@ async def _():
         '· 发红包 [总额] [份数] — 群内发送 BREAK 手气红包，也可按提示逐步输入\n'
         '· 抢红包 — 领取本群当前红包；红包状态 — 查看领取明细\n'
         '· 我的AWMC — 查看账号状态、使用统计；群内自动附带猜歌数据图\n'
+        '· BREAK统计 — 查看所有用户今日、近7天、近30天的 BREAK 收入与支出\n'
         '· 查分指令 — 每日首次实际请求查分器 API 免费，之后每次扣 1 BREAK（缓存命中另计）\n'
         '· 查歌/谱面详情 — 成功出图每次扣 1 BREAK（与查分共享每日首免；同次已因查分扣过则不重复）\n'
         + format_analysis_pricing_help()
@@ -184,6 +189,33 @@ async def _():
         '· 连续签到额外奖励（第 6 天起封顶）'
     )
     await awmc_help.finish(text, reply_message=True)
+
+
+def _format_break_economy_period(label: str, stats: dict) -> str:
+    gained = int(stats.get('gained', 0))
+    spent = int(stats.get('spent', 0))
+    net = gained - spent
+    net_text = f'+{net}' if net > 0 else str(net)
+    return (
+        f'{label}（{stats["since"]} 至 {stats["until"]}）\n'
+        f'  收入：{gained} BREAK　支出：{spent} BREAK　净变化：{net_text} BREAK'
+    )
+
+
+@break_economy.handle()
+async def _():
+    periods = (
+        ('今日', break_db.economy_totals(1)),
+        ('近 7 天累计', break_db.economy_totals(7)),
+        ('近 30 天累计', break_db.economy_totals(30)),
+    )
+    lines = [
+        '【BREAK 全体收支】',
+        '统计范围：所有用户；按自然日累计，不含当前余额。',
+        '',
+    ]
+    lines.extend(_format_break_economy_period(label, stats) for label, stats in periods)
+    await break_economy.finish('\n'.join(lines), reply_message=True)
 
 
 @break_transfer.handle()

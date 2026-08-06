@@ -14,7 +14,7 @@ from typing import List, Optional, Tuple
 from ..config import log
 from . import maimaidx_timing as _timing
 from .maimaidx_api_data import maiApi
-from .maimaidx_error import LxnsDataError
+from .maimaidx_error import LxnsDataError, MISSING_PLAYER_MESSAGE
 from .maimaidx_lxns_client import (
     dev_get_bests,
     dev_get_player_by_qq,
@@ -167,13 +167,7 @@ async def _get_awmcnet_records(
             'username': upstream_user.username,
             'rating': upstream_user.rating,
         }, upstream_records), upstream_records
-    raise LxnsDataError(
-        '用户不存在：AWMC NET.、水鱼和落雪均未找到可用成绩。\n\n'
-        '您可以打开微信中的「舞萌DX | 中二节奏」玩家二维码，\n'
-        '长按二维码并选择「识别图中二维码」，复制识别出的字符或网页地址发送给 Bot。\n'
-        '支持 SGWCMAID、wq.wahlap.net 的 img/req 链接。\n\n'
-        '实现自动创建AWMCNET资料！无需额外操作！'
-    )
+    raise LxnsDataError(MISSING_PLAYER_MESSAGE)
 
 
 # 不支持落雪的功能名 -> 用于提示文案

@@ -439,6 +439,10 @@ BOTNAME=maimai
 
 ### AWMCNET 自动同步与认领
 
+查询不到玩家时，请打开微信中的「舞萌DX | 中二节奏」玩家二维码，长按并选择
+「识别图中二维码」，将识别出的 SGWCMAID 或 `wq.wahlap.net` 的 `img/req` 链接发送给 Bot；
+Bot 会自动创建 AWMCNET 资料。
+
 配置 `AWMCNET_BOT_TOKEN` 后，用户通过 QQ 查询 B50 时会优先读取 AWMC NET.；
 只有 AWMC NET. 尚无账号/成绩或用户执行「刷新b50」时，Bot 才探测水鱼和落雪，
 并把可用的全量成绩镜像到 AWMC NET.。尚未注册的 QQ 会创建

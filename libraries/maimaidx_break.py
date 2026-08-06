@@ -15,7 +15,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from threading import RLock
 from typing import Any, Dict, List, Optional
@@ -1824,8 +1824,6 @@ class BreakDatabase:
         return int(row['c']) if row else 0
 
     def economy_report(self, days: int = 30) -> List[dict]:
-        from datetime import timedelta
-
         since = (date.today() - timedelta(days=max(1, days) - 1)).isoformat()
         rows = self._conn.execute(
             """SELECT date, SUM(break_gained) AS gained, SUM(break_spent) AS spent,
@@ -1836,6 +1834,35 @@ class BreakDatabase:
             (since,),
         ).fetchall()
         return [dict(row) for row in rows]
+
+    def economy_totals(self, days: int) -> dict:
+        """Return cumulative BREAK income and spending for a recent period.
+
+        ``break_daily_usage`` is the canonical aggregate used by the admin
+        economy report.  The range is inclusive of today, so ``days=7``
+        covers today and the six preceding calendar days.
+        """
+        days = max(1, int(days))
+        today = date.fromisoformat(self._today())
+        since = (today - timedelta(days=days - 1)).isoformat()
+        row = self._conn.execute(
+            """SELECT COALESCE(SUM(break_gained), 0) AS gained,
+                      COALESCE(SUM(break_spent), 0) AS spent,
+                      COUNT(DISTINCT CASE
+                          WHEN break_gained > 0 OR break_spent > 0
+                          THEN qqid END) AS active_users
+                 FROM break_daily_usage
+                WHERE date >= ? AND date <= ?""",
+            (since, today.isoformat()),
+        ).fetchone()
+        return {
+            'days': days,
+            'since': since,
+            'until': today.isoformat(),
+            'gained': int(row['gained']) if row else 0,
+            'spent': int(row['spent']) if row else 0,
+            'active_users': int(row['active_users']) if row else 0,
+        }
 
     def list_break_calls(
         self, *, limit: int = 200, offset: int = 0, user_id: str = '', reason: str = ''

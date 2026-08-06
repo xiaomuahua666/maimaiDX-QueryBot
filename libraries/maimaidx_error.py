@@ -2,6 +2,17 @@ from textwrap import dedent
 from typing import Optional
 
 
+MISSING_PLAYER_MESSAGE = dedent('''
+    用户不存在：AWMC NET.、水鱼和落雪均未找到可用成绩。
+
+    您可以打开微信中的「舞萌DX | 中二节奏」玩家二维码，
+    长按二维码并选择「识别图中二维码」，复制识别出的字符或网页地址发送给 Bot。
+    支持 SGWCMAID、wq.wahlap.net 的 img/req 链接。
+
+    发送后会自动创建 AWMCNET 资料，无需额外操作。
+''').strip()
+
+
 class UserNotFoundError(Exception):
 
     def __str__(self) -> str:
@@ -29,7 +40,7 @@ class LxnsDataError(UserNotFoundError):
 class UserNotExistsError(Exception):
 
     def __str__(self) -> str:
-        return '查询的用户不存在'
+        return MISSING_PLAYER_MESSAGE
 
 
 class UserDisabledQueryError(Exception):
