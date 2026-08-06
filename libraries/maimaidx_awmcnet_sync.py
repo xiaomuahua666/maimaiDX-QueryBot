@@ -34,18 +34,24 @@ def _record_payload(record: Any) -> dict:
     song_type = (
         "DX" if raw_type.lower() == "dx" or raw_id > 10000 else "SD"
     )
-    return {
+    payload = {
         "song_id": raw_id,
         "title": str(_value(record, "title", "") or ""),
         "type": song_type,
         "level_index": int(_value(record, "level_index", 0) or 0),
+        "level": str(_value(record, "level", "") or ""),
+        "level_label": str(_value(record, "level_label", "") or ""),
+        "ds": float(_value(record, "ds", 0) or 0),
         "achievements": float(_value(record, "achievements", 0) or 0),
+        "ra": int(_value(record, "ra", 0) or 0),
+        "rate": str(_value(record, "rate", "") or ""),
         "dxScore": int(
             _value(record, "dxScore", _value(record, "dx_score", 0)) or 0
         ),
         "fc": str(_value(record, "fc", "") or "").lower(),
         "fs": str(_value(record, "fs", "") or "").lower(),
     }
+    return payload
 
 
 def _chart_rating(userinfo: Any, key: str) -> int:

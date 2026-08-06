@@ -375,7 +375,8 @@ async def generate_how_weak(
     rank_list = _cache_get("how_weak_rank")
     # 缓存未命中时并行请求用户 b50 与全服排行，减少总等待时间
     if userinfo is None and rank_list is None:
-        u_fut = maiApi.query_user_b50(qqid=qqid, username=username)
+        from .maimaidx_datasource import get_user_b50
+        u_fut = get_user_b50(qqid=qqid, username=username)
         r_fut = maiApi.rating_ranking()
         u_res, r_res = await asyncio.gather(u_fut, r_fut, return_exceptions=True)
         if isinstance(u_res, (UserNotFoundError, UserNotExistsError)):
@@ -392,7 +393,8 @@ async def generate_how_weak(
     else:
         if userinfo is None:
             try:
-                userinfo = await maiApi.query_user_b50(qqid=qqid, username=username)
+                from .maimaidx_datasource import get_user_b50
+                userinfo = await get_user_b50(qqid=qqid, username=username)
                 _cache_set(cache_key_user, userinfo, ttl)
             except (UserNotFoundError, UserNotExistsError):
                 return '未绑定查分器或用户不存在，请先绑定后再试。'

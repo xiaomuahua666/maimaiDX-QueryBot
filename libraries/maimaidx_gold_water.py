@@ -10,7 +10,6 @@ from PIL import Image, ImageDraw
 from ..config import *
 from .maimaidx_theme import pic
 from .image import DrawText, draw_centered_design_footer, image_to_base64, music_picture
-from .maimaidx_api_data import maiApi
 from .maimaidx_error import UserDisabledQueryError, UserNotFoundError, UserNotExistsError, format_command_error
 from .maimaidx_model import ChartInfo, UserInfo
 from .maimaidx_music import mai
@@ -327,7 +326,8 @@ async def generate_gold_content(qqid: Optional[int] = None, username: Optional[s
     try:
         if username:
             qqid = None
-        userinfo = await maiApi.query_user_b50(qqid=qqid, username=username)
+        from .maimaidx_datasource import get_user_b50
+        userinfo = await get_user_b50(qqid=qqid, username=username)
         pairs = get_b50_gold_water_pairs(userinfo)
         if not pairs:
             return '没有可用的拟合难度数据，无法计算含金量'
@@ -346,7 +346,8 @@ async def generate_water_content(qqid: Optional[int] = None, username: Optional[
     try:
         if username:
             qqid = None
-        userinfo = await maiApi.query_user_b50(qqid=qqid, username=username)
+        from .maimaidx_datasource import get_user_b50
+        userinfo = await get_user_b50(qqid=qqid, username=username)
         pairs = get_b50_gold_water_pairs(userinfo)
         if not pairs:
             return '没有可用的拟合难度数据，无法计算含水量'

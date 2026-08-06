@@ -190,18 +190,11 @@ async def generate_head_to_head(
     nick_a: str,
     nick_b: str,
 ) -> Union[str, MessageSegment]:
-    from .maimaidx_api_data import maiApi
     from .maimaidx_datasource import get_user_records
 
     try:
-        user_a = await maiApi.query_user_b50(qqid=qqid_a)
-        user_b = await maiApi.query_user_b50(qqid=qqid_b)
-    except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
-        return str(e)
-
-    try:
-        _, rec_a = await get_user_records(qqid=qqid_a)
-        _, rec_b = await get_user_records(qqid=qqid_b)
+        user_a, rec_a = await get_user_records(qqid=qqid_a)
+        user_b, rec_b = await get_user_records(qqid=qqid_b)
     except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
         return str(e)
 

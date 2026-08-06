@@ -1075,11 +1075,10 @@ async def _fit_b50_common(
     try:
         if username:
             qqid = None
-        # 拟合 b50 依赖水鱼独有的 chart_stats(fit_diff)，强制走水鱼
-        from .maimaidx_datasource import get_user_b50
-        userinfo = await get_user_b50(qqid=qqid, username=username, force_source='divingfish')
-        dev = await maiApi.query_user_get_dev(qqid=qqid, username=username)
-        records = list(dev.records or [])
+        # 拟合定数来自本地曲库，玩家成绩仍应尊重其数据源偏好。
+        from .maimaidx_datasource import get_user_records
+        userinfo, records = await get_user_records(qqid=qqid, username=username)
+        records = list(records or [])
         records = filter_utage_records(records)
         with_fit = _apply_fit_ra(records)
         if not with_fit:
@@ -1498,7 +1497,8 @@ async def generate_pc_rank50(
         add_rating = 0
         rating = 0
         try:
-            userinfo = await maiApi.query_user_b50(qqid=qqid)
+            from .maimaidx_datasource import get_user_b50
+            userinfo = await get_user_b50(qqid=qqid)
             nickname = userinfo.nickname or userinfo.username or nickname
             plate = userinfo.plate
             add_rating = userinfo.additional_rating if userinfo.additional_rating is not None else 0
@@ -1553,7 +1553,8 @@ async def generate_pca50(
         last_update = max(r.updated_at for r in pc_records)
         last_update_str = datetime.fromtimestamp(last_update).strftime('%Y-%m-%d %H:%M:%S')
 
-        userinfo = await maiApi.query_user_b50(qqid=qqid, username=username)
+        from .maimaidx_datasource import get_user_b50
+        userinfo = await get_user_b50(qqid=qqid, username=username)
         sdBest = list(userinfo.charts.sd or [])
         dxBest = list(userinfo.charts.dx or [])
         allCharts = sdBest + dxBest
@@ -1827,7 +1828,15 @@ async def generate_version_b50(
             return f'未知版本：{version_name}'
         
         version_list, display_name = version_map[version_key]
-        all_records = await maiApi.query_user_plate(qqid=qqid, username=username, version=version_list)
+        from .maimaidx_datasource import get_user_records
+        user_basic, all_records = await get_user_records(
+            qqid=qqid, username=username
+        )
+        version_ids = {
+            int(m.id) for m in mai.total_list
+            if m.basic_info.version in set(version_list)
+        }
+        all_records = [r for r in all_records if int(r.song_id) in version_ids]
         if not all_records:
             return f'未找到 {display_name} 版本的曲目记录'
         
@@ -1842,8 +1851,6 @@ async def generate_version_b50(
         
         # 与常规 b50 一致：rating 用本 50 首之和，加框分用 user_basic 的 additional_rating（lxns 为 0）
         total_ra = int(sum(c.ra for c in top50_charts))
-        from .maimaidx_datasource import get_user_b50
-        user_basic = await get_user_b50(qqid=qqid, username=username)
         additional_rating = user_basic.additional_rating if user_basic.additional_rating is not None else 0
         
         userinfo = UserInfo(

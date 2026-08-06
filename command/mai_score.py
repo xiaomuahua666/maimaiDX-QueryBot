@@ -533,7 +533,7 @@ async def _how_weak(
         raise IgnoredException('功能已禁用')
     qqid = resolve_score_qqid(event, user_id)
     username = message.extract_plain_text().strip() or None
-    await _finish_score(how_weak, generate_how_weak(qqid=qqid, username=username), None if username else qqid, username=username or None, unsupported_feature='我有多菜',
+    await _finish_score(how_weak, generate_how_weak(qqid=qqid, username=username), None if username else qqid, username=username or None,
         billing_qqid=event.user_id,
     )
 
@@ -893,7 +893,7 @@ async def _fit_b50(
         raise IgnoredException('功能已禁用')
     qqid = resolve_score_qqid(event, user_id)
     username = message.extract_plain_text().strip()
-    await _finish_score(fit_b50, generate_fit_b50(qqid, username), None if username else qqid, username=username or None, unsupported_feature='拟合b50',
+    await _finish_score(fit_b50, generate_fit_b50(qqid, username), None if username else qqid, username=username or None,
         billing_qqid=event.user_id,
     )
 
@@ -908,7 +908,7 @@ async def _fit_all_b50(
         raise IgnoredException('功能已禁用')
     qqid = resolve_score_qqid(event, user_id)
     username = message.extract_plain_text().strip()
-    await _finish_score(fit_all_b50, generate_fit_all_b50(qqid, username), None if username else qqid, username=username or None, unsupported_feature='拟合ab50',
+    await _finish_score(fit_all_b50, generate_fit_all_b50(qqid, username), None if username else qqid, username=username or None,
         billing_qqid=event.user_id,
     )
 
@@ -1505,7 +1505,7 @@ async def _plate_count_stats(event: MessageEvent, user_id: Optional[int] = Depen
         )
         return
 
-    note = "数据来源：本次指令实时拉取全量成绩（query_user_get_dev，未写入本地）"
+    note = f"数据来源：本次指令按偏好实时拉取全量成绩（{_source_label(qqid)}，未写入本地）"
     tip = ""
     if data_storage.is_enabled(qqid):
         tip = "\n提示：你已开启数据存储，发送「立即存储数据」后下次将优先用本地快照。"
@@ -1548,7 +1548,7 @@ async def _gold_content(
         raise IgnoredException('功能已禁用')
     qqid = resolve_score_qqid(event, user_id)
     username = message.extract_plain_text().strip()
-    await _finish_score(gold_content, generate_gold_content(qqid, username), None if username else qqid, username=username or None, unsupported_feature='含金量',
+    await _finish_score(gold_content, generate_gold_content(qqid, username), None if username else qqid, username=username or None,
         billing_qqid=event.user_id,
     )
 
@@ -1563,7 +1563,7 @@ async def _water_content(
         raise IgnoredException('功能已禁用')
     qqid = resolve_score_qqid(event, user_id)
     username = message.extract_plain_text().strip()
-    await _finish_score(water_content, generate_water_content(qqid, username), None if username else qqid, username=username or None, unsupported_feature='含水量',
+    await _finish_score(water_content, generate_water_content(qqid, username), None if username else qqid, username=username or None,
         billing_qqid=event.user_id,
     )
 

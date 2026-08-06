@@ -119,7 +119,8 @@ async def _(event: MessageEvent, match = RegexMatched()):
         if (point := match.group(1)) and ('推分' in point or '上分' in point or '加分' in point):
             try:
                 score_qqid = resolve_score_qqid(event)
-                user = await maiApi.query_user_b50(qqid=score_qqid)
+                from ..libraries.maimaidx_datasource import get_user_b50
+                user = await get_user_b50(qqid=score_qqid)
                 r = random.randint(0, 1)
                 _ra = 0
                 ignore = []
@@ -205,7 +206,8 @@ async def _(event: MessageEvent):
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event_group_data_id(event), 'ranking'):
         raise IgnoredException('功能已禁用')
     try:
-        user = await maiApi.query_user_b50(qqid=resolve_score_qqid(event))
+        from ..libraries.maimaidx_datasource import get_user_b50
+        user = await get_user_b50(qqid=resolve_score_qqid(event))
         rank_data = await maiApi.rating_ranking()
         for num, rank in enumerate(rank_data):
             if rank.username == user.username:

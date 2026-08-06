@@ -447,7 +447,8 @@ async def draw_music_info(
     try:
         if qqid:
             if user is None:
-                player = await maiApi.query_user_b50(qqid=qqid)
+                from .maimaidx_datasource import get_user_b50
+                player = await get_user_b50(qqid=qqid)
             else:
                 player = user
             # bestlist: 查分器 B15(dx) 或 B35(sd) 成绩列表
@@ -562,31 +563,20 @@ async def draw_music_play_data(qqid: int, music_id: str) -> Union[str, MessageSe
         `Union[str, MessageSegment]`
     """
     try:
-        diff: List[Union[None, PlayInfoDev, PlayInfoDefault]]
-        if maiconfig.maimaidxtoken:
-            data = await maiApi.query_user_post_dev(qqid=qqid, music_id=music_id)
-            if not data:
-                raise MusicNotPlayError
+        from .maimaidx_datasource import get_user_records
 
-            music = mai.total_list.by_id(music_id)
-            diff = [None for _ in music.ds]
-            for _d in data:
-                diff[_d.level_index] = _d
-            dev = True
-        else:
-            version = list(set(_v for _v in plate_to_dx_version.values()))
-            data = await maiApi.query_user_plate(qqid=qqid, version=version)
-
-            music = mai.total_list.by_id(music_id)
-            _temp = [None for _ in music.ds]
-            diff = copy.deepcopy(_temp)
-
-            for _d in data:
-                if _d.song_id == int(music_id):
-                    diff[_d.level_index] = _d
-            if diff == _temp:
-                raise MusicNotPlayError
-            dev = False
+        _userinfo, records = await get_user_records(qqid=qqid)
+        data = [r for r in records if str(r.song_id) == str(music_id)]
+        if not data:
+            raise MusicNotPlayError
+        music = mai.total_list.by_id(music_id)
+        diff: List[Union[None, PlayInfoDev, PlayInfoDefault]] = [
+            None for _ in music.ds
+        ]
+        for record in data:
+            if 0 <= int(record.level_index) < len(diff):
+                diff[record.level_index] = record
+        dev = True
 
         from .maimaidx_theme import Theme as _Th, resolve_theme_path as _rtp
         _theme = _Th.get_default().value
@@ -719,8 +709,8 @@ async def draw_rating_table(qqid: int, rating: str, isfc: bool = False) -> Union
             )
         TableImageAssets.ensure_loaded()
         assets = TableImageAssets
-        version = list(set(_v for _v in plate_to_dx_version.values()))
-        obj = await maiApi.query_user_plate(qqid=qqid, version=version)
+        from .maimaidx_datasource import get_user_records
+        _userinfo, obj = await get_user_records(qqid=qqid)
 
         from ..config import COMBO_SP, STATISTICS_KEYS, SYNC_D_SP, score_Rank_l
 
@@ -936,7 +926,8 @@ async def draw_plate_table(
         slot_num = 5 if is_wu else 4
 
         playerdata: List[PlayInfoDefault] = []
-        obj = await maiApi.query_user_plate(qqid=qqid, version=ver)
+        from .maimaidx_datasource import get_user_records
+        _userinfo, obj = await get_user_records(qqid=qqid)
         for _d in obj:
             if _d.song_id not in music_id_list:
                 continue

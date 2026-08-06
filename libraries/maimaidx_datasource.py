@@ -61,7 +61,36 @@ def _awmcnet_records(player: dict) -> List[PlayInfoDev]:
     records: List[PlayInfoDev] = []
     for raw in player.get('records') or []:
         try:
-            records.append(PlayInfoDev(**raw))
+            if not isinstance(raw, dict):
+                continue
+            # Older AWMCNET snapshots may contain only portable score fields.
+            # Restore chart metadata from the local library before validating
+            # the shared PlayInfoDev model used by all renderers.
+            item = dict(raw)
+            song_id = int(item.get('song_id', item.get('id', 0)) or 0)
+            level_index = int(item.get('level_index', item.get('levelIndex', 0)) or 0)
+            music_list = getattr(mai, 'total_list', None)
+            music = music_list.by_id(str(song_id)) if music_list is not None else None
+            if music is not None and 0 <= level_index < len(music.ds):
+                item.setdefault('title', music.title)
+                item.setdefault('type', music.type)
+                item.setdefault('level', music.level[level_index])
+                item.setdefault('ds', round(float(music.ds[level_index]), 1))
+            item['song_id'] = song_id
+            item['level_index'] = level_index
+            item.setdefault('title', '')
+            item.setdefault('type', 'DX' if song_id >= 10000 else 'SD')
+            item.setdefault('level', '')
+            item.setdefault('ds', 0.0)
+            item.setdefault('level_label', _LEVEL_LABELS[min(level_index, 4)])
+            if not item.get('level_label'):
+                item['level_label'] = _LEVEL_LABELS[min(level_index, 4)]
+            if not item.get('rate') and float(item.get('ds') or 0) > 0:
+                compute_ra = _import_compute_ra()
+                item['ra'], item['rate'] = compute_ra(
+                    float(item['ds']), float(item.get('achievements') or 0), israte=True
+                )
+            records.append(PlayInfoDev(**item))
         except Exception as exc:
             log.warning(f'[datasource] AWMCNET record ignored: {exc}')
     return records

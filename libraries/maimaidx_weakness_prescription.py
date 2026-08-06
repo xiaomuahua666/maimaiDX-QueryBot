@@ -198,8 +198,10 @@ async def generate_weakness_prescription(qqid: int) -> Union[str, MessageSegment
     import asyncio
     from ..config import maiconfig
     from .maimaidx_wmc_api import WmcAPI, make_chart_key, resolve_wmc_base_url
+    from .maimaidx_datasource import get_user_records
+
     try:
-        userinfo = await maiApi.query_user_b50(qqid=qqid)
+        userinfo, records = await get_user_records(qqid=qqid)
     except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
         return str(e)
 
@@ -245,13 +247,6 @@ async def generate_weakness_prescription(qqid: int) -> Union[str, MessageSegment
     ref_ds, _, _ = _b50_ds_ref(userinfo)
     ds_min = max(0.0, ref_ds - 1.2)
     ds_max = ref_ds + _DS_BAND
-
-    from .maimaidx_datasource import get_user_records
-
-    try:
-        _ui, records = await get_user_records(qqid=qqid)
-    except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
-        return str(e)
 
     records = filter_utage_records(records or [])
     if not records:

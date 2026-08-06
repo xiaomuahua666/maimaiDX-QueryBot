@@ -513,47 +513,21 @@ async def get_group_member_song_scores(
 
     sem = asyncio.Semaphore(_GROUP_SONG_SCORE_CONCURRENCY)
 
-    # 检查是否有开发者 TOKEN
-    has_dev_token = bool(getattr(maiconfig, 'maimaidxtoken', None))
-    log.debug(f"[get_group_member_song_scores] has_dev_token={has_dev_token}")
-
     async def _fetch_one(m: dict) -> Optional[Tuple[int, str, dict]]:
         uid = m.get("user_id")
         if uid is None:
             return None
         async with sem:
             try:
-                if has_dev_token:
-                    # 使用开发者接口查询指定曲目成绩
-                    records = await maiApi.query_user_post_dev(qqid=int(uid), music_id=music_id)
-                    if not records:
-                        return None
-
-                    # 筛选指定难度的记录
-                    level_records = [r for r in records if getattr(r, 'level_index', 3) == level_index]
-                    if not level_records:
-                        return None
-
-                    # 取最高达成率的记录
-                    best = max(level_records, key=lambda x: x.achievements)
-                else:
-                    # 没有 TOKEN，使用 plate 接口获取全量成绩后筛选
-                    from .maimaidx_best_50 import plate_to_dx_version
-                    version = list(set(_v for _v in plate_to_dx_version.values()))
-                    records = await maiApi.query_user_plate(qqid=int(uid), version=version)
-                    if not records:
-                        return None
-
-                    # 筛选指定曲目和难度的记录
-                    song_records = [
-                        r for r in records
-                        if str(r.song_id) == str(music_id) and getattr(r, 'level_index', 3) == level_index
-                    ]
-                    if not song_records:
-                        return None
-
-                    # 取最高达成率的记录
-                    best = max(song_records, key=lambda x: x.achievements)
+                _userinfo, records = await get_user_records(qqid=int(uid))
+                song_records = [
+                    r for r in records
+                    if str(r.song_id) == str(music_id)
+                    and getattr(r, 'level_index', 3) == level_index
+                ]
+                if not song_records:
+                    return None
+                best = max(song_records, key=lambda x: x.achievements)
 
                 name = _display_name(m)
                 score_info = {

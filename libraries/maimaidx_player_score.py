@@ -112,11 +112,10 @@ def _parse_level_plan(plan: str) -> tuple[int, float | int]:
 
 
 async def _fetch_level_plate_records(qqid: int, username: Optional[str]):
-    if maiApi.token:
-        devobj = await maiApi.query_user_get_dev(qqid=qqid, username=username)
-        return devobj.records
-    version = list(set(_v for _v in list(plate_to_dx_version.values())))
-    return await maiApi.query_user_plate(qqid=qqid, username=username, version=version)
+    from .maimaidx_datasource import get_user_records
+
+    _userinfo, records = await get_user_records(qqid=qqid, username=username)
+    return records
 
 
 async def level_plate_summary_text(
@@ -603,8 +602,8 @@ async def rise_score_data(
         `Union[Image.Image, str]`
     """
     try:
-        user = await maiApi.query_user_b50(qqid=qqid, username=username)
-        records = await maiApi.query_user_plate(qqid=qqid, username=username, version=list(plate_to_dx_version.values()))
+        from .maimaidx_datasource import get_user_records
+        user, records = await get_user_records(qqid=qqid, username=username)
         old_records: DefaultDict[int, Dict[int, float]] = defaultdict(dict)
         for m in records:
             old_records[m.song_id][m.level_index] = m.achievements
@@ -689,7 +688,10 @@ async def player_plate_data(
     ver, _ver = version_map.get(version, ([plate_to_dx_version.get(version)], version))
     
     try:
-        verlist = await maiApi.query_user_plate(qqid=qqid, username=username, version=ver)
+        from .maimaidx_datasource import get_user_records
+        _userinfo, verlist = await get_user_records(
+            qqid=qqid, username=username
+        )
     except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
         return str(e)
     
@@ -807,12 +809,8 @@ async def level_process_data(
         `Union[MessageSegment, str]`
     """
     try:
-        if maiApi.token:
-            devobj = await maiApi.query_user_get_dev(qqid=qqid, username=username)
-            obj = devobj.records
-        else:
-            version = list(set(_v for _v in list(plate_to_dx_version.values())))
-            obj = await maiApi.query_user_plate(qqid=qqid, username=username, version=version)
+        from .maimaidx_datasource import get_user_records
+        _userinfo, obj = await get_user_records(qqid=qqid, username=username)
         music = mai.total_list.by_plan(level)
 
         planlist = [0, 0, 0]
@@ -942,18 +940,11 @@ async def level_achievement_list_data(
         `Union[MessageSegment, str]
     """
     try:
-        data: Union[List[PlayInfoDefault], List[PlayInfoDev]] = []
-        if maiconfig.maimaidxtoken:
-            obj = await maiApi.query_user_get_dev(qqid=qqid, username=username)
-            data = obj.records
-        else:
-            version = list(set(_v for _v in list(plate_to_dx_version.values())))
-            obj = await maiApi.query_user_plate(qqid=qqid, username=username, version=version)
-            for _d in obj:
-                music = mai.total_list.by_id(_d.song_id)
-                _d.ds = round(float(music.ds[_d.level_index]), 1)
-                _d.ra, _d.rate = computeRa(_d.ds, _d.achievements, israte=True)
-            data = obj
+        from .maimaidx_datasource import get_user_records
+        _userinfo, records = await get_user_records(
+            qqid=qqid, username=username
+        )
+        data: Union[List[PlayInfoDefault], List[PlayInfoDev]] = list(records)
 
         if isinstance(rating, str):
             newdata = sorted(list(filter(lambda x: x.level == rating, data)), key=lambda z: z.achievements, reverse=True)
