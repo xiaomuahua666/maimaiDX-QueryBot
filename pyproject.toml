@@ -45,6 +45,9 @@ dependencies = [
     "openai>=1.0.0,<2.0.0",
 ]
 
+[project.optional-dependencies]
+feishu-ops = ["lark-oapi>=1.7.2,<2.0.0"]
+
 [project.urls]
 "Homepage" = "https://github.com/AWMC-TEAM/maimaiDX-QueryBot"
 "Source" = "https://github.com/AWMC-TEAM/maimaiDX-QueryBot"

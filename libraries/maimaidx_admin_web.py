@@ -166,6 +166,10 @@ def register_admin_web() -> bool:
     async def update_break(user_id: str, request: Request):
         authorize(request)
         body = await request.json()
+        source = str(body.get("source") or "webui").strip()
+        actor = str(body.get("actor") or source).strip()
+        if source not in {"webui", "feishu_ops"} or not actor or len(actor) > 128:
+            raise HTTPException(status_code=400, detail="来源或操作者无效")
         try:
             qqid, amount = int(user_id), int(body.get("amount", 0))
         except (TypeError, ValueError):
@@ -174,32 +178,59 @@ def register_admin_web() -> bool:
         if mode == "set":
             balance = break_db.admin_set_balance(qqid, amount)
         elif mode == "add":
-            balance = break_db.add_balance(qqid, amount, "web_admin", meta={"source": "webui"})
+            reason = "feishu_admin" if source == "feishu_ops" else "web_admin"
+            balance = break_db.add_balance(
+                qqid, amount, reason, meta={"source": source, "by": actor}
+            )
         else:
             raise HTTPException(status_code=400, detail="mode 仅支持 add/set")
         ref = audit_action(
             "web.update_break", user_id,
-            {"mode": mode, "amount": amount, "balance": balance},
+            {
+                "mode": mode,
+                "amount": amount,
+                "balance": balance,
+                "source": source,
+                "actor": actor,
+            },
         )
         return {"ok": True, "balance": balance, "ref_id": ref}
 
     async def ban(user_id: str, request: Request):
         authorize(request)
         body = await request.json()
+        source = str(body.get("source") or "webui").strip()
+        actor = str(body.get("actor") or source).strip()
+        if source not in {"webui", "feishu_ops"} or not actor or len(actor) > 128:
+            raise HTTPException(status_code=400, detail="来源或操作者无效")
         hours = max(0.0, float(body.get("hours", 0) or 0))
         reason = str(body.get("reason") or "WebUI 管理员封禁")
         expires = time.time() + hours * 3600 if hours else None
-        admin_audit.ban_user(user_id, reason, "webui", expires_at=expires)
+        admin_audit.ban_user(user_id, reason, actor, expires_at=expires)
         ref = audit_action(
             "web.ban_user", user_id,
-            {"reason": reason, "hours": hours, "expires_at": expires},
+            {
+                "reason": reason,
+                "hours": hours,
+                "expires_at": expires,
+                "source": source,
+                "actor": actor,
+            },
         )
         return {"ok": True, "expires_at": expires, "ref_id": ref}
 
     async def unban(user_id: str, request: Request):
         authorize(request)
+        source = str(request.query_params.get("source") or "webui").strip()
+        actor = str(request.query_params.get("actor") or source).strip()
+        if source not in {"webui", "feishu_ops"} or not actor or len(actor) > 128:
+            raise HTTPException(status_code=400, detail="来源或操作者无效")
         changed = admin_audit.unban_user(user_id)
-        ref = audit_action("web.unban_user", user_id, {"changed": changed})
+        ref = audit_action(
+            "web.unban_user",
+            user_id,
+            {"changed": changed, "source": source, "actor": actor},
+        )
         return {"ok": changed, "ref_id": ref}
 
     async def traces(request: Request, search: str = "", status: str = "", limit: int = 100, offset: int = 0):
