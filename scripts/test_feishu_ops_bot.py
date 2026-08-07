@@ -21,6 +21,10 @@ assert MODULE.parse_command("发放BREAK 12345 100") == (
     "break_add",
     ["12345", "100"],
 )
+assert MODULE.parse_command("查询REF REF-ABCDEF1234567890") == (
+    "ref_query",
+    ["REF-ABCDEF1234567890"],
+)
 
 raw = (
     "2026 INFO token=abc ROBOT1.0_secret QQ 123456 "
@@ -47,6 +51,13 @@ assert MODULE.sanitize_logs([message_line, "2026 INFO startup complete"]) == [
 assert MODULE.sanitize_logs(
     ["2026 INFO ok", "2026 ERROR failed"], errors_only=True
 ) == ["2026 ERROR failed"]
+assert MODULE.sanitize_logs(
+    [
+        "2026 WARNING nonebot_plugin_maimaidx | [wmc] API 非 200 path=/charts/x status=404",
+        "2026 INFO Event will be handled by Matcher(type='message')",
+        "2026 INFO useful processing log",
+    ]
+) == ["2026 INFO useful processing log"]
 
 status = {
     "state": "running",
@@ -64,15 +75,19 @@ status = {
     "load_15": 0.3,
     "deployed_commit": "0123456789abcdef",
     "n_restarts": 0,
+    "qq_connected": True,
 }
 member_card = MODULE.status_card(status, is_admin=False)
 admin_card = MODULE.status_card(status, is_admin=True)
 assert member_card["header"]["template"] == "green"
 assert "1小时 1分钟" in member_card["elements"][0]["text"]["content"]
+waiting_card = MODULE.status_card({**status, "qq_connected": False}, is_admin=False)
+assert waiting_card["header"]["template"] == "orange"
+assert "等待 QQ 连接" in waiting_card["elements"][0]["text"]["content"]
 member_buttons = member_card["elements"][2]["actions"]
 admin_buttons = admin_card["elements"][2]["actions"]
 assert len(member_buttons) == 3
-assert len(admin_buttons) == 4
+assert len(admin_buttons) == 5
 
 confirm = MODULE.confirmation_card(
     "确认", "发放 100 BREAK", "break_confirm", user_id="123", amount=100

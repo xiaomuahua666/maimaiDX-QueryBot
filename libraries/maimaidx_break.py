@@ -1864,6 +1864,40 @@ class BreakDatabase:
             'active_users': int(row['active_users']) if row else 0,
         }
 
+    def analysis_token_report(self, days: int = 1) -> dict:
+        """Aggregate recorded LLM token usage without exposing user IDs."""
+        since = time.time() - max(1, int(days)) * 86400
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT meta FROM break_log
+                   WHERE reason='b50_analysis_settlement' AND created_at >= ?
+                   ORDER BY id DESC LIMIT 5000""",
+                (since,),
+            ).fetchall()
+        result = {
+            'days': max(1, int(days)),
+            'calls': 0,
+            'usage_available_calls': 0,
+            'input_tokens': 0,
+            'output_tokens': 0,
+            'total_tokens': 0,
+            'cached_input_tokens': 0,
+        }
+        for row in rows:
+            try:
+                meta = json.loads(row['meta'] or '{}')
+            except (TypeError, ValueError):
+                meta = {}
+            result['calls'] += 1
+            if meta.get('available'):
+                result['usage_available_calls'] += 1
+            for key in ('input_tokens', 'output_tokens', 'total_tokens', 'cached_input_tokens'):
+                try:
+                    result[key] += max(0, int(meta.get(key) or 0))
+                except (TypeError, ValueError):
+                    pass
+        return result
+
     def list_break_calls(
         self, *, limit: int = 200, offset: int = 0, user_id: str = '', reason: str = ''
     ) -> List[dict]:

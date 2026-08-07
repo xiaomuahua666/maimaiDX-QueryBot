@@ -9,6 +9,13 @@ first_pid() {
     pgrep -f "$1" 2>/dev/null | head -n 1 || true
 }
 
+process_alive() {
+    local pid="$1" state
+    [[ -n "$pid" ]] || return 1
+    state="$(ps -o stat= -p "$pid" 2>/dev/null | tr -d ' ')"
+    [[ -n "$state" && "$state" != Z* ]]
+}
+
 supervisor_pid="$(first_pid "$SUPERVISOR_PATTERN")"
 bot_pid="$(first_pid "$BOT_PATTERN")"
 deployed_commit=""
@@ -25,7 +32,7 @@ if [[ -d "${REPO_DIR}/.git" ]]; then
     fi
 fi
 
-if [[ -n "$bot_pid" ]] && kill -0 "$bot_pid" 2>/dev/null; then
+if process_alive "$bot_pid"; then
     state="running"
     uptime_seconds="$(ps -o etimes= -p "$bot_pid" 2>/dev/null | tr -d ' ' || true)"
     uptime_seconds="${uptime_seconds:-0}"
@@ -33,7 +40,7 @@ if [[ -n "$bot_pid" ]] && kill -0 "$bot_pid" 2>/dev/null; then
     if (( deployed_at_epoch > bot_started_at_epoch )); then
         state="updating"
     fi
-elif [[ -n "$supervisor_pid" ]] && kill -0 "$supervisor_pid" 2>/dev/null; then
+elif process_alive "$supervisor_pid"; then
     state="restarting"
     bot_pid=""
 else

@@ -30,7 +30,17 @@ MAX_BREAK_GRANT = 100_000
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 MENTION_RE = re.compile(r"@_user_\d+\s*")
 MESSAGE_EVENT_RE = re.compile(
-    r"(?=.*\[SUCCESS\])(?=.*\bEventType\.)(?=.*\bMessage\b)", re.I
+    r"(?:\[EventType\.[^\]]*(?:MESSAGE|MESSAGE_CREATE)|"
+    r"Message\s+[^\n]{0,180}\s+from\s+[0-9A-F]{8,}|"
+    r"\[Text\(type='text'|\[Attachment\(type=)",
+    re.I,
+)
+PROCESSING_NOISE_RE = re.compile(
+    r"(?:Event will be handled by Matcher|Matcher\(type=.*\) running complete)",
+    re.I,
+)
+EXPECTED_404_RE = re.compile(
+    r"nonebot_plugin_maimaidx.*\[wmc\].*status[=:] ?404\b", re.I
 )
 SECRET_RE = re.compile(
     r"(?i)\b(token|secret|password|authorization|qrcode|app_secret)\b"
@@ -111,6 +121,24 @@ def parse_command(text: str) -> tuple[str, list[str]]:
         "logs": "logs",
         "错误": "errors",
         "errors": "errors",
+        "概览": "overview",
+        "业务概览": "overview",
+        "指令调用": "commands",
+        "指令统计": "commands",
+        "命令统计": "commands",
+        "查询ref": "ref_query",
+        "查询refid": "ref_query",
+        "ref": "ref_query",
+        "refid": "ref_query",
+        "今日token": "analysis_tokens",
+        "今日锐评token": "analysis_tokens",
+        "锐评token": "analysis_tokens",
+        "token消耗": "analysis_tokens",
+        "消息量": "messages",
+        "消息统计": "messages",
+        "awmcapi": "api_report",
+        "api统计": "api_report",
+        "api调用": "api_report",
         "管理": "admin",
         "重启bot": "restart",
         "重启": "restart",
@@ -146,7 +174,9 @@ def redact_log_line(line: str) -> str:
 def sanitize_logs(lines: list[str], *, errors_only: bool = False) -> list[str]:
     result: list[str] = []
     for line in lines:
-        if MESSAGE_EVENT_RE.search(line):
+        if MESSAGE_EVENT_RE.search(line) or PROCESSING_NOISE_RE.search(line):
+            continue
+        if EXPECTED_404_RE.search(line):
             continue
         if errors_only and not re.search(
             r"\b(WARNING|WARN|ERROR|CRITICAL)\b|Traceback|Exception", line, re.I
@@ -195,7 +225,9 @@ def _card(title: str, content: str, *, template: str = "blue", actions=None) -> 
         {"tag": "div", "text": {"tag": "lark_md", "content": content}}
     ]
     if actions:
-        elements.extend([{"tag": "hr"}, {"tag": "action", "actions": actions}])
+        elements.append({"tag": "hr"})
+        for offset in range(0, len(actions), 5):
+            elements.append({"tag": "action", "actions": actions[offset : offset + 5]})
     return {
         "config": {"wide_screen_mode": True},
         "header": {
@@ -221,10 +253,21 @@ def menu_card(*, is_admin: bool) -> dict:
         actions.append(_button("管理操作", "admin_menu"))
         content += (
             "\n\n**管理员命令**\n"
+            "`概览` · `指令调用` · `消息量` · `今日锐评Token` · `AWMC API`\n"
+            "`查询REF <REF_ID>`\n"
             "`重启Bot` · `启动Bot` · `停止Bot`\n"
             "`查询BREAK <QQ>` · `发放BREAK <QQ> <数量>` · "
             "`设置BREAK <QQ> <余额>`\n"
             "`封禁 <用户ID> <小时> <原因>` · `解封 <用户ID>`"
+        )
+        actions.extend(
+            [
+                _button("业务概览", "overview"),
+                _button("指令调用", "commands"),
+                _button("消息量", "messages"),
+                _button("锐评 Token", "analysis_tokens"),
+                _button("AWMC API", "api_report"),
+            ]
         )
     return _card("AWMC Bot 运维菜单", content, actions=actions)
 
@@ -241,18 +284,32 @@ def bootstrap_card(chat_id: str, open_id: str) -> dict:
 
 def status_card(status: dict[str, Any], *, is_admin: bool) -> dict:
     state = str(status.get("state") or "unknown")
-    state_map = {
-        "running": ("🟢 运行中", "green"),
-        "updating": ("🟡 更新中", "orange"),
-        "restarting": ("🟡 重启中", "orange"),
-        "stopped": ("🔴 已停止", "red"),
-    }
-    state_text, template = state_map.get(state, ("⚪ 状态未知", "grey"))
+    qq_connected = status.get("qq_connected")
+    process_text = {
+        "running": "🟢 运行中",
+        "updating": "🟡 更新中",
+        "restarting": "🟡 重启中",
+        "stopped": "🔴 已停止",
+    }.get(state, "⚪ 状态未知")
+    if state == "running" and qq_connected is True:
+        template = "green"
+        qq_text = "🟢 QQ 已连接"
+    elif state == "running":
+        template = "orange"
+        qq_text = "🟡 等待 QQ 连接"
+    elif state in {"updating", "restarting"}:
+        template = "orange"
+        qq_text = "🟡 等待 QQ 连接"
+    else:
+        template = "red"
+        qq_text = "🔴 QQ 未连接"
     sha = str(status.get("deployed_commit") or "-")[:7]
     rss_mib = float(status.get("rss_kib") or 0) / 1024
     disk_percent = float(status.get("disk_percent") or 0)
     content = (
-        f"**Bot：** {state_text}\n"
+        f"**运行状态：** {process_text}\n"
+        f"**部署状态：** 已部署本次提交 `{sha}`\n"
+        f"**QQ 连接：** {qq_text}\n"
         f"**systemd：** `{status.get('active_state', '-')}` / "
         f"`{status.get('sub_state', '-')}` · Result `{status.get('result', '-')}`\n"
         f"**进程：** Supervisor `{status.get('supervisor_pid') or '-'}` · "
@@ -270,8 +327,95 @@ def status_card(status: dict[str, Any], *, is_admin: bool) -> dict:
         _button("错误", "errors", limit=30),
     ]
     if is_admin:
-        actions.append(_button("管理", "admin_menu"))
+        actions.extend(
+            [
+                _button("管理", "admin_menu"),
+                _button("业务概览", "overview"),
+            ]
+        )
     return _card("AWMC Bot 运行状态", content, template=template, actions=actions)
+
+
+def _fmt_count(value: Any) -> str:
+    try:
+        return f"{int(value):,}"
+    except (TypeError, ValueError):
+        return "0"
+
+
+def command_stats_card(rows: list[dict[str, Any]]) -> dict:
+    lines = ["**近 7 日指令调用**"]
+    for row in rows[:20]:
+        lines.append(
+            f"`{str(row.get('command') or '-')[:40]}`：{_fmt_count(row.get('calls'))} 次，"
+            f"成功 {_fmt_count(row.get('success'))}，错误 {_fmt_count(row.get('errors'))}，"
+            f"平均 {row.get('avg_ms', 0)} ms"
+        )
+    return _card(
+        "指令调用统计", "\n".join(lines) if len(lines) > 1 else "暂无指令审计数据。"
+    )
+
+
+def ref_card(trace: dict[str, Any] | None, ref_id: str) -> dict:
+    if not trace:
+        return _card("REF_ID 查询", f"未找到 `{ref_id}`。", template="orange")
+    steps = trace.get("steps") or []
+    lines = [
+        f"REF_ID：`{trace.get('ref_id', ref_id)}`",
+        f"命令：`{trace.get('command', '-')}`",
+        f"状态：`{trace.get('status', '-')}` · 耗时 `{trace.get('duration_ms') or 0} ms`",
+        f"步骤：`{len(steps)}` 个",
+    ]
+    for step in steps[-8:]:
+        lines.append(f"· `{step.get('step_name', '-')}` → `{step.get('status', '-')}`")
+    return _card(
+        "REF_ID 查询",
+        "\n".join(lines),
+        template="green" if trace.get("status") == "success" else "red",
+    )
+
+
+def analysis_tokens_card(report: dict[str, Any]) -> dict:
+    content = (
+        f"统计范围：近 `{report.get('days', 1)}` 日\n"
+        f"锐评调用：**{_fmt_count(report.get('calls'))}** 次\n"
+        f"输入 Token：**{_fmt_count(report.get('input_tokens'))}**\n"
+        f"输出 Token：**{_fmt_count(report.get('output_tokens'))}**\n"
+        f"总 Token：**{_fmt_count(report.get('total_tokens'))}**\n"
+        f"缓存输入：**{_fmt_count(report.get('cached_input_tokens'))}**\n"
+        f"有 usage 的调用：`{report.get('usage_available_calls', 0)}` 次"
+    )
+    return _card("今日锐评 Token 消耗", content)
+
+
+def api_report_card(
+    report: dict[str, Any], runtime: dict[str, Any] | None = None
+) -> dict:
+    runtime = runtime or {}
+    lines = [
+        f"模式：`{runtime.get('awmc_api_mode', '-')}` · Token 配置："
+        f"`{'已配置' if runtime.get('awmc_api_token_configured') else '未配置'}`",
+        f"近 `{report.get('days', 1)}` 日调用：**{_fmt_count(report.get('calls'))}** 次",
+        f"成功：`{report.get('success', 0)}` · 错误：`{report.get('errors', 0)}` · "
+        f"预期 404（已隐藏）：`{report.get('not_found_404', 0)}`",
+    ]
+    for row in (report.get("paths") or [])[:8]:
+        lines.append(
+            f"· `{str(row.get('path') or '-')[:60]}`：{row.get('calls', 0)} 次，"
+            f"错误 {row.get('errors', 0)}"
+        )
+    return _card("AWMC API 调用统计", "\n".join(lines))
+
+
+def message_stats_card(rows: list[dict[str, Any]]) -> dict:
+    total = sum(int(row.get("messages") or 0) for row in rows)
+    lines = [f"近 1 日记录消息量：**{_fmt_count(total)}** 条"]
+    for row in rows[:15]:
+        lines.append(
+            f"· 群 `{str(row.get('group_id') or '-')[:24]}` · 用户 `{str(row.get('user_id') or '-')[:24]}`："
+            f"{_fmt_count(row.get('messages'))} 条"
+        )
+    return _card("消息量统计", "\n".join(lines))
 
 
 def logs_card(lines: list[str], *, errors_only: bool, is_admin: bool) -> dict:
@@ -451,6 +595,29 @@ class AdminClient:
         rows = self._request(f"/users?{query}")
         return next((row for row in rows if str(row.get("user_id")) == user_id), None)
 
+    def runtime(self) -> dict[str, Any]:
+        return self._request("/runtime")
+
+    def command_ranking(self, days: int = 7) -> list[dict[str, Any]]:
+        return self._request(f"/commands?days={max(1, min(int(days), 30))}")
+
+    def get_trace(self, ref_id: str) -> dict[str, Any] | None:
+        try:
+            return self._request(f"/traces/{quote(ref_id.upper(), safe='')}")
+        except RuntimeError as exc:
+            if "HTTP 404" in str(exc):
+                return None
+            raise
+
+    def analysis_tokens(self, days: int = 1) -> dict[str, Any]:
+        return self._request(f"/analysis/tokens?days={max(1, min(int(days), 30))}")
+
+    def api_report(self, days: int = 1) -> dict[str, Any]:
+        return self._request(f"/api-report?days={max(1, min(int(days), 30))}")
+
+    def message_ranking(self, days: int = 1) -> list[dict[str, Any]]:
+        return self._request(f"/messages?days={max(1, min(int(days), 30))}&limit=100")
+
     def update_break(self, user_id: str, amount: int, mode: str, actor: str) -> dict:
         return self._request(
             f"/users/{quote(user_id, safe='')}/break",
@@ -550,7 +717,13 @@ class FeishuOpsBot:
 
     def _safe_status_card(self, is_admin: bool) -> dict:
         try:
-            return status_card(self.system.status(), is_admin=is_admin)
+            status = self.system.status()
+            try:
+                status.update(self.admin.runtime())
+            except Exception as exc:
+                LOG.warning("runtime query failed: %s", type(exc).__name__)
+                status["qq_connected"] = None
+            return status_card(status, is_admin=is_admin)
         except Exception as exc:
             LOG.exception("status query failed")
             return _card(
@@ -570,6 +743,54 @@ class FeishuOpsBot:
                 f"`{type(exc).__name__}`：{str(exc)[:300]}",
                 template="red",
             )
+
+    def _safe_business_card(self, kind: str) -> dict:
+        try:
+            if kind == "overview":
+                runtime = self.admin.runtime()
+                commands = self.admin.command_ranking(7)
+                tokens = self.admin.analysis_tokens(1)
+                messages = self.admin.message_ranking(1)
+                api_report = self.admin.api_report(1)
+                content = (
+                    f"**QQ：** {'已连接' if runtime.get('qq_connected') else '等待连接'}\n"
+                    f"**适配器：** `{', '.join(runtime.get('adapters') or ['-'])}`\n"
+                    f"**指令调用（7日）：** `{sum(int(x.get('calls') or 0) for x in commands)}` 次\n"
+                    f"**消息量（今日）：** `{sum(int(x.get('messages') or 0) for x in messages)}` 条\n"
+                    f"**锐评 Token（今日）：** `{tokens.get('total_tokens', 0)}`\n"
+                    f"**AWMC API（今日）：** `{api_report.get('calls', 0)}` 次，"
+                    f"错误 `{api_report.get('errors', 0)}`"
+                )
+                return _card(
+                    "AWMC Bot 业务概览",
+                    content,
+                    actions=[
+                        _button("指令调用", "commands"),
+                        _button("消息量", "messages"),
+                        _button("锐评 Token", "analysis_tokens"),
+                        _button("AWMC API", "api_report"),
+                    ],
+                )
+            if kind == "commands":
+                return command_stats_card(self.admin.command_ranking(7))
+            if kind == "analysis_tokens":
+                return analysis_tokens_card(self.admin.analysis_tokens(1))
+            if kind == "api_report":
+                return api_report_card(self.admin.api_report(1), self.admin.runtime())
+            if kind == "messages":
+                return message_stats_card(self.admin.message_ranking(1))
+            if kind == "ref_query":
+                return _card(
+                    "REF_ID 查询", "请使用 `查询REF <REF_ID>`。", template="orange"
+                )
+        except Exception as exc:
+            LOG.exception("business query failed: %s", kind)
+            return _card(
+                "业务查询失败",
+                f"查询 `{kind}` 时发生 `{type(exc).__name__}`：{str(exc)[:300]}",
+                template="red",
+            )
+        return menu_card(is_admin=True)
 
     def handle_message(self, data: Any) -> None:
         event = data.event
@@ -609,6 +830,20 @@ class FeishuOpsBot:
             return self._safe_logs_card(limit, command == "errors", is_admin)
         if not is_admin:
             return _card("权限不足", "该操作仅限飞书运维管理员。", template="red")
+        if command in {
+            "overview",
+            "commands",
+            "analysis_tokens",
+            "messages",
+            "api_report",
+        }:
+            return self._safe_business_card(command)
+        if command == "ref_query":
+            if len(args) != 1 or not re.fullmatch(
+                r"REF-[A-Z0-9]{8,32}", args[0].upper()
+            ):
+                raise ValueError("用法：查询REF <REF-十六位编号>")
+            return ref_card(self.admin.get_trace(args[0]), args[0].upper())
         if command == "admin":
             return admin_menu_card()
         if command in {"start", "stop", "restart"}:
@@ -697,6 +932,14 @@ class FeishuOpsBot:
             )
         if not is_admin:
             return self._response(toast="该操作仅限管理员")
+        if action in {
+            "overview",
+            "commands",
+            "analysis_tokens",
+            "messages",
+            "api_report",
+        }:
+            return self._response(self._safe_business_card(action), "查询已刷新")
         if action == "admin_menu":
             return self._response(admin_menu_card())
         if action == "control_prepare":
@@ -819,6 +1062,11 @@ class FeishuOpsBot:
             "ops_logs": lambda: self._safe_logs_card(30, False, True),
             "ops_errors": lambda: self._safe_logs_card(30, True, True),
             "ops_admin": admin_menu_card,
+            "ops_overview": lambda: self._safe_business_card("overview"),
+            "ops_commands": lambda: self._safe_business_card("commands"),
+            "ops_messages": lambda: self._safe_business_card("messages"),
+            "ops_analysis_tokens": lambda: self._safe_business_card("analysis_tokens"),
+            "ops_api_report": lambda: self._safe_business_card("api_report"),
         }
         factory = cards.get(key)
         if factory:

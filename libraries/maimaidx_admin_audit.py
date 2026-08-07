@@ -326,6 +326,52 @@ class AdminAuditDatabase:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def api_report(self, days: int = 1, limit: int = 20) -> dict:
+        """Summarize AWMC API calls already captured in audit steps."""
+        since = time.time() - max(1, int(days)) * 86400
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT status, detail FROM audit_steps
+                   WHERE step_name='http.awmc' AND started_at >= ?
+                   ORDER BY id DESC LIMIT 5000""",
+                (since,),
+            ).fetchall()
+        total = success = errors = not_found = 0
+        paths: dict[str, dict[str, int]] = {}
+        for row in rows:
+            total += 1
+            status = str(row["status"] or "")
+            if status == "success":
+                success += 1
+            else:
+                errors += 1
+            try:
+                detail = json.loads(row["detail"] or "{}")
+            except (TypeError, ValueError):
+                detail = {}
+            path = str(detail.get("path") or "unknown")[:160]
+            item = paths.setdefault(path, {"calls": 0, "errors": 0, "404": 0})
+            item["calls"] += 1
+            if status != "success":
+                item["errors"] += 1
+            if str(detail.get("status_code")) == "404":
+                not_found += 1
+                item["404"] += 1
+        top_paths = [
+            {"path": path, **values}
+            for path, values in sorted(
+                paths.items(), key=lambda item: item[1]["calls"], reverse=True
+            )[: max(1, min(int(limit), 50))]
+        ]
+        return {
+            "days": max(1, int(days)),
+            "calls": total,
+            "success": success,
+            "errors": errors,
+            "not_found_404": not_found,
+            "paths": top_paths,
+        }
+
     def ban_user(
         self, user_id: str, reason: str, actor: str, *, expires_at: Optional[float] = None
     ) -> None:

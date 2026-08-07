@@ -142,6 +142,31 @@ def register_admin_web() -> bool:
         })
         return data
 
+    async def runtime(request: Request):
+        authorize(request)
+        from nonebot import get_bots
+
+        bots = get_bots()
+        qq_bots = []
+        adapters = set()
+        for key, bot in bots.items():
+            adapter = getattr(bot, "adapter", None)
+            get_name = getattr(adapter, "get_name", None) if adapter is not None else None
+            adapter_name = str(get_name() if callable(get_name) else (get_name or type(bot).__name__))
+            blob = " ".join((str(key), type(bot).__module__, type(bot).__name__, type(adapter).__module__ if adapter is not None else "")).lower()
+            adapters.add(adapter_name)
+            if str(key).lower().startswith("qq:") or "adapters.qq" in blob:
+                qq_bots.append(str(key))
+        return {
+            "bot_count": len(bots),
+            "qq_bot_count": len(qq_bots),
+            "qq_connected": bool(qq_bots),
+            "adapters": sorted(adapters),
+            "platform": str(getattr(maiconfig, "maimaidx_platform", "")),
+            "awmc_api_mode": str(getattr(maiconfig, "awmc_api_mode", "")),
+            "awmc_api_token_configured": bool(str(getattr(maiconfig, "awmc_public_gateway_token", "") or "")),
+        }
+
     async def users(request: Request, search: str = "", limit: int = 100, offset: int = 0):
         authorize(request)
         break_rows = {str(r["qqid"]): r for r in break_db.list_users(limit=500, search=search)}
@@ -249,6 +274,14 @@ def register_admin_web() -> bool:
     async def commands(request: Request, days: int = 7):
         authorize(request)
         return admin_audit.command_ranking(days=days)
+
+    async def api_report(request: Request, days: int = 1):
+        authorize(request)
+        return admin_audit.api_report(days=days)
+
+    async def analysis_tokens(request: Request, days: int = 1):
+        authorize(request)
+        return break_db.analysis_token_report(days=days)
 
     async def groups(request: Request):
         authorize(request)
@@ -363,6 +396,7 @@ def register_admin_web() -> bool:
     routes = [
         (root, page, ["GET"]),
         (api_root + "/summary", summary, ["GET"]),
+        (api_root + "/runtime", runtime, ["GET"]),
         (api_root + "/users", users, ["GET"]),
         (api_root + "/users/{user_id}/break", update_break, ["POST"]),
         (api_root + "/users/{user_id}/ban", ban, ["POST"]),
@@ -370,6 +404,8 @@ def register_admin_web() -> bool:
         (api_root + "/traces", traces, ["GET"]),
         (api_root + "/traces/{ref_id}", trace_detail, ["GET"]),
         (api_root + "/commands", commands, ["GET"]),
+        (api_root + "/api-report", api_report, ["GET"]),
+        (api_root + "/analysis/tokens", analysis_tokens, ["GET"]),
         (api_root + "/groups", groups, ["GET"]),
         (api_root + "/groups/{group_id}/features/{feature}", set_feature, ["POST"]),
         (api_root + "/messages", messages, ["GET"]),
