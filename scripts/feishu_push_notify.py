@@ -93,12 +93,19 @@ def _status_view(status: dict[str, Any], pushed_sha: str) -> dict[str, str]:
     state = status.get("state", "unknown")
     deployed_sha = str(status.get("deployed_commit") or "")
     deployed_matches = bool(deployed_sha and deployed_sha == pushed_sha)
+    qq_connected = status.get("qq_connected")
 
+    if state == "running" and deployed_matches and qq_connected is True:
+        return {
+            "title": "main 更新已部署，QQ 已连接",
+            "template": "green",
+            "label": "🟢 运行中，已部署本次提交，QQ 已连接",
+        }
     if state == "running" and deployed_matches:
         return {
-            "title": "main 更新已部署",
-            "template": "green",
-            "label": "🟢 运行中，已部署本次提交",
+            "title": "main 更新已部署，等待 QQ 连接",
+            "template": "orange",
+            "label": "🟡 运行中，已部署本次提交，等待 QQ 连接",
         }
     if state == "running":
         return {
@@ -145,14 +152,15 @@ def build_card(
     deployed_display = deployed_sha[:7] if deployed_sha != "unknown" else deployed_sha
     details = (
         f"**仓库：** [{commit['repo_name']}]({commit['repo_url']})\n"
-        f"**提交：** [`{commit['short_sha']}`]({commit['commit_url']}) "
+        f"**提交：** [{commit['short_sha']}]({commit['commit_url']}) "
         f"{commit['message']}\n"
         f"**作者 / 推送者：** {commit['author']} / {commit['pusher']}\n"
-        f"**推送：** {commit['commit_count']} 个 commit → `main`\n"
+        f"**推送：** {commit['commit_count']} 个 commit → main\n"
         f"**机器人：** {status_text['label']}\n"
-        f"**生产版本：** `{deployed_display}` · PID "
-        f"`{status.get('bot_pid') or '-'}` · 运行 "
-        f"`{_duration(status.get('uptime_seconds'))}`"
+        f"**QQ 连接：** {'已连接' if status.get('qq_connected') is True else '等待连接' if status.get('qq_connected') is False else '未知'}\n"
+        f"**生产版本：** {deployed_display} · PID "
+        f"{status.get('bot_pid') or '-'} · 运行 "
+        f"{_duration(status.get('uptime_seconds'))}"
     )
 
     return {

@@ -22,6 +22,7 @@ deployed_commit=""
 deployed_at_epoch=0
 uptime_seconds=0
 bot_started_at_epoch=0
+qq_connected="null"
 
 if [[ -d "${REPO_DIR}/.git" ]]; then
     deployed_commit="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)"
@@ -48,11 +49,28 @@ else
     bot_pid=""
 fi
 
-printf '{"state":"%s","supervisor_pid":%s,"bot_pid":%s,"uptime_seconds":%s,"bot_started_at_epoch":%s,"deployed_commit":"%s","deployed_at_epoch":%s}\n' \
+# The restricted status command may safely expose only this boolean from the
+# loopback Admin API. During a restart the API is unavailable, so keep null.
+admin_token="${MAIMAIDX_ADMIN_WEB_TOKEN:-}"
+if [[ -z "$admin_token" && -f /www/bot/awmc/.env ]]; then
+    admin_token="$(sed -n 's/^MAIMAIDX_ADMIN_WEB_TOKEN=//p' /www/bot/awmc/.env | head -n 1)"
+fi
+if [[ "$state" == "running" && -n "$admin_token" ]]; then
+    runtime_json="$(curl -fsS --max-time 3 \
+        -H "Authorization: Bearer $admin_token" \
+        http://127.0.0.1:8099/maimaidx/admin/api/runtime 2>/dev/null || true)"
+    case "$runtime_json" in
+        *'"qq_connected":true'*) qq_connected="true" ;;
+        *'"qq_connected":false'*) qq_connected="false" ;;
+    esac
+fi
+
+printf '{"state":"%s","supervisor_pid":%s,"bot_pid":%s,"uptime_seconds":%s,"bot_started_at_epoch":%s,"deployed_commit":"%s","deployed_at_epoch":%s,"qq_connected":%s}\n' \
     "$state" \
     "${supervisor_pid:-null}" \
     "${bot_pid:-null}" \
     "$uptime_seconds" \
     "$bot_started_at_epoch" \
     "$deployed_commit" \
-    "$deployed_at_epoch"
+    "$deployed_at_epoch" \
+    "$qq_connected"

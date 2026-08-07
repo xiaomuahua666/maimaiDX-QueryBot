@@ -34,6 +34,15 @@ def _mask(value: str, head: int = 4, tail: int = 3) -> str:
     return value[:head] + "…" + value[-tail:]
 
 
+def _resolve_user_id(user_id: str) -> tuple[str, str]:
+    """Resolve an official QQ openid to its bound legacy QQ number."""
+    requested = str(user_id).strip()
+    if requested.isdigit():
+        return requested, requested
+    mapped = qq_bind_db.get_legacy_qq(requested)
+    return (str(mapped), requested) if mapped is not None else (requested, requested)
+
+
 _HTML = r"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>maimaiDX QueryBot 管理台</title>
@@ -226,6 +235,7 @@ def register_admin_web() -> bool:
 
     async def ban(user_id: str, request: Request):
         authorize(request)
+        resolved_user_id, requested_user_id = _resolve_user_id(user_id)
         body = await request.json()
         source = str(body.get("source") or "webui").strip()
         actor = str(body.get("actor") or source).strip()
@@ -234,10 +244,12 @@ def register_admin_web() -> bool:
         hours = max(0.0, float(body.get("hours", 0) or 0))
         reason = str(body.get("reason") or "WebUI 管理员封禁")
         expires = time.time() + hours * 3600 if hours else None
-        admin_audit.ban_user(user_id, reason, actor, expires_at=expires)
+        admin_audit.ban_user(resolved_user_id, reason, actor, expires_at=expires)
         ref = audit_action(
-            "web.ban_user", user_id,
+            "web.ban_user", resolved_user_id,
             {
+                "requested_user_id": requested_user_id,
+                "resolved_user_id": resolved_user_id,
                 "reason": reason,
                 "hours": hours,
                 "expires_at": expires,
@@ -245,21 +257,39 @@ def register_admin_web() -> bool:
                 "actor": actor,
             },
         )
-        return {"ok": True, "expires_at": expires, "ref_id": ref}
+        return {
+            "ok": True,
+            "requested_user_id": requested_user_id,
+            "user_id": resolved_user_id,
+            "expires_at": expires,
+            "ref_id": ref,
+        }
 
     async def unban(user_id: str, request: Request):
         authorize(request)
+        resolved_user_id, requested_user_id = _resolve_user_id(user_id)
         source = str(request.query_params.get("source") or "webui").strip()
         actor = str(request.query_params.get("actor") or source).strip()
         if source not in {"webui", "feishu_ops"} or not actor or len(actor) > 128:
             raise HTTPException(status_code=400, detail="来源或操作者无效")
-        changed = admin_audit.unban_user(user_id)
+        changed = admin_audit.unban_user(resolved_user_id)
         ref = audit_action(
             "web.unban_user",
-            user_id,
-            {"changed": changed, "source": source, "actor": actor},
+            resolved_user_id,
+            {
+                "requested_user_id": requested_user_id,
+                "resolved_user_id": resolved_user_id,
+                "changed": changed,
+                "source": source,
+                "actor": actor,
+            },
         )
-        return {"ok": changed, "ref_id": ref}
+        return {
+            "ok": changed,
+            "requested_user_id": requested_user_id,
+            "user_id": resolved_user_id,
+            "ref_id": ref,
+        }
 
     async def traces(request: Request, search: str = "", status: str = "", limit: int = 100, offset: int = 0):
         authorize(request)

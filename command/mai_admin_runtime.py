@@ -189,9 +189,15 @@ def _event_summary(event: Event) -> dict:
         segment_types = []
     try:
         text_len = len(event.get_plaintext())
+        request_text = str(redact(event.get_plaintext()))[:500]
     except Exception:
         text_len = 0
-    return {"message_length": text_len, "segment_types": segment_types[:30]}
+        request_text = ""
+    return {
+        "request": request_text,
+        "message_length": text_len,
+        "segment_types": segment_types[:30],
+    }
 
 
 def _event_request_key(bot: Bot, event: Event) -> str:

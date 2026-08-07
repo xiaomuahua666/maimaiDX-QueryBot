@@ -41,6 +41,7 @@ running = MODULE.build_card(
     {
         "state": "running",
         "deployed_commit": SHA,
+        "qq_connected": True,
         "bot_pid": 56303,
         "uptime_seconds": 3661,
     },
@@ -48,12 +49,20 @@ running = MODULE.build_card(
 )
 assert running["msg_type"] == "interactive"
 assert running["card"]["header"]["template"] == "green"
-assert running["card"]["header"]["title"]["content"] == "main 更新已部署"
+assert running["card"]["header"]["title"]["content"] == "main 更新已部署，QQ 已连接"
 content = running["card"]["elements"][0]["text"]["content"]
 for expected in ("0123456", "fix: verify Feishu card", "56303", "1h 1m"):
     assert expected in content, expected
 buttons = running["card"]["elements"][2]["actions"]
 assert [button["text"]["content"] for button in buttons] == ["查看提交", "运行记录"]
+
+waiting = MODULE.build_card(
+    EVENT,
+    {"state": "running", "deployed_commit": SHA, "qq_connected": False},
+    ENV,
+)
+assert waiting["card"]["header"]["template"] == "orange"
+assert "等待 QQ 连接" in waiting["card"]["header"]["title"]["content"]
 
 stopped = MODULE.build_card(
     EVENT,

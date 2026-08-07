@@ -100,7 +100,7 @@ message_card = MODULE.message_stats_card(
     days=7,
 )
 message_text = message_card["elements"][0]["text"]["content"]
-assert "近 7 日消息榜单" in message_text
+assert "统计窗口：最近 7 天" in message_text
 assert "QQ 200：3 条" in message_text
 assert "ABCDEF" not in message_text
 assert "100：5 条" in message_text
@@ -126,6 +126,31 @@ quota_text = quota_card["elements"][0]["text"]["content"]
 assert "限额触发：1 次" in quota_text
 assert "使用 10/10" in quota_text
 
+trace_card = MODULE.ref_card(
+    {
+        "ref_id": "REF-ABCDEF1234567890",
+        "command": "b50",
+        "user_id": "123456789",
+        "group_id": "987654321",
+        "status": "success",
+        "duration_ms": 1250,
+        "input_summary": '{"request":"b50 12","message_length":5}',
+        "steps": [
+            {
+                "step_name": "http.awmc",
+                "status": "success",
+                "duration_ms": 500,
+                "detail": '{"path":"/v1/user/data","status_code":200}',
+            }
+        ],
+    },
+    "REF-ABCDEF1234567890",
+)
+trace_text = trace_card["elements"][0]["text"]["content"]
+assert "触发人：123456789" in trace_text
+assert "请求摘要" in trace_text
+assert "返回摘要" in trace_text
+
 confirm = MODULE.confirmation_card(
     "确认", "发放 100 BREAK", "break_confirm", user_id="123", amount=100
 )
@@ -137,6 +162,11 @@ with tempfile.TemporaryDirectory() as directory:
     store = MODULE.ActionStore(Path(directory) / "actions.sqlite3")
     assert store.claim("request-1", "break.update", "ou_admin") is True
     assert store.claim("request-1", "break.update", "ou_admin") is False
+    assert store.is_admin("ou_admin") is False
+    store.grant_admin("ou_admin", "ou_super")
+    assert store.is_admin("ou_admin") is True
+    assert store.revoke_admin("ou_admin") is True
+    assert store.is_admin("ou_admin") is False
 
 admin_source = (ROOT / "libraries" / "maimaidx_admin_web.py").read_text(
     encoding="utf-8"

@@ -33,7 +33,7 @@ jobs:
           chmod 600 ~/.ssh/bot_status ~/.ssh/known_hosts
           echo "configured=true" >> "$GITHUB_OUTPUT"
 
-      - name: Wait for deployment and read bot status
+      - name: Wait for deployment and read initial bot status
         id: bot-status
         env:
           SSH_CONFIGURED: ${{ steps.ssh-config.outputs.configured }}
@@ -53,7 +53,7 @@ jobs:
                 status_json="$(jq -c . <<<"$response")"
                 state="$(jq -r '.state' <<<"$response")"
                 deployed_commit="$(jq -r '.deployed_commit' <<<"$response")"
-                if [[ "$state" == "running" && "$deployed_commit" == "$GITHUB_SHA" ]]; then
+                if [[ "$deployed_commit" == "$GITHUB_SHA" && "$state" != "stopped" ]]; then
                   break
                 fi
               else
@@ -68,9 +68,54 @@ jobs:
             echo EOF
           } >> "$GITHUB_OUTPUT"
 
-      - name: Send Feishu card
+          echo "qq_connected=$(jq -r '.qq_connected // "unknown"' <<<"$status_json")" >> "$GITHUB_OUTPUT"
+
+      - name: Send waiting-for-QQ notice
+        if: steps.bot-status.outputs.qq_connected != 'true'
         env:
           FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
           FEISHU_WEBHOOK_SECRET: ${{ secrets.FEISHU_WEBHOOK_SECRET }}
           BOT_STATUS_JSON: ${{ steps.bot-status.outputs.json }}
+        run: python scripts/feishu_push_notify.py
+
+      - name: Wait for QQ connection
+        id: qq-status
+        env:
+          SSH_CONFIGURED: ${{ steps.ssh-config.outputs.configured }}
+          SSH_HOST: ${{ vars.BOT_STATUS_SSH_HOST }}
+          SSH_PORT: ${{ vars.BOT_STATUS_SSH_PORT || '22' }}
+          SSH_USER: ${{ vars.BOT_STATUS_SSH_USER || 'root' }}
+          INITIAL_STATUS_JSON: ${{ steps.bot-status.outputs.json }}
+        run: |
+          status_json="$INITIAL_STATUS_JSON"
+          if [[ "$(jq -r '.qq_connected // "unknown"' <<<"$status_json")" != "true" \
+            && "$SSH_CONFIGURED" == "true" && -n "$SSH_HOST" ]]; then
+            for attempt in {1..12}; do
+              if response="$(ssh -i ~/.ssh/bot_status \
+                -p "$SSH_PORT" \
+                -o BatchMode=yes \
+                -o ConnectTimeout=10 \
+                "$SSH_USER@$SSH_HOST" 2>/dev/null)" \
+                && jq -e '.state and .deployed_commit' <<<"$response" >/dev/null; then
+                status_json="$(jq -c . <<<"$response")"
+                qq_connected="$(jq -r '.qq_connected // "unknown"' <<<"$status_json")"
+                deployed_commit="$(jq -r '.deployed_commit' <<<"$status_json")"
+                if [[ "$qq_connected" == "true" && "$deployed_commit" == "$GITHUB_SHA" ]]; then
+                  break
+                fi
+              fi
+              [[ "$attempt" == 12 ]] || sleep 10
+            done
+          fi
+          {
+            echo 'json<<EOF'
+            echo "$status_json"
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Send Feishu card
+        env:
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+          FEISHU_WEBHOOK_SECRET: ${{ secrets.FEISHU_WEBHOOK_SECRET }}
+          BOT_STATUS_JSON: ${{ steps.qq-status.outputs.json }}
         run: python scripts/feishu_push_notify.py

@@ -64,6 +64,7 @@ class OpsConfig:
     app_secret: str = field(repr=False)
     allowed_chat_ids: frozenset[str]
     admin_open_ids: frozenset[str]
+    super_admin_open_ids: frozenset[str]
     admin_api_url: str
     admin_api_token: str = field(repr=False)
     state_db: Path
@@ -82,6 +83,9 @@ class OpsConfig:
             ),
             admin_open_ids=parse_id_set(
                 os.environ.get("FEISHU_OPS_ADMIN_OPEN_IDS", "")
+            ),
+            super_admin_open_ids=parse_id_set(
+                os.environ.get("FEISHU_OPS_SUPER_ADMIN_OPEN_IDS", "")
             ),
             admin_api_url=os.environ.get(
                 "MAIMAIDX_ADMIN_API_URL",
@@ -140,6 +144,11 @@ def parse_command(text: str) -> tuple[str, list[str]]:
         "api统计": "api_report",
         "api调用": "api_report",
         "管理": "admin",
+        "权限": "permissions",
+        "权限管理": "permissions",
+        "管理员列表": "permissions",
+        "授权管理员": "grant_admin",
+        "撤销管理员": "revoke_admin",
         "重启bot": "restart",
         "重启": "restart",
         "启动bot": "start",
@@ -261,7 +270,7 @@ def _card(
     }
 
 
-def menu_card(*, is_admin: bool) -> dict:
+def menu_card(*, is_admin: bool, is_super_admin: bool = False) -> dict:
     content = (
         "**群成员命令**\n"
         "状态 · 日志 30 · 错误 30 · 菜单\n\n"
@@ -276,23 +285,28 @@ def menu_card(*, is_admin: bool) -> dict:
         actions.append(_button("管理操作", "admin_menu"))
         content += (
             "\n\n**管理员命令**\n"
-            "概览 · 指令调用 · 消息量 [3|7|30] · 今日锐评Token · AWMC API\n"
+            "概览 · 指令调用 · 消息量 [1|3|7|30] · 今日锐评Token · AWMC API\n"
             "查询REF <REF_ID>\n"
             "重启Bot · 启动Bot · 停止Bot\n"
             "查询BREAK <QQ> · 发放BREAK <QQ> <数量> · "
             "设置BREAK <QQ> <余额>\n"
             "封禁 <用户ID> <小时> <原因> · 解封 <用户ID>"
         )
+        if is_super_admin:
+            content += "\n权限管理 · 授权管理员 <open_id> · 撤销管理员 <open_id>"
         actions.extend(
             [
                 _button("业务概览", "overview"),
                 _button("指令调用", "commands"),
-                _button("消息量", "messages", days=3),
+                _button("消息量", "messages", days=1),
                 _button("锐评 Token", "analysis_tokens"),
                 _button("AWMC API", "api_report"),
             ]
         )
-    return _card("AWMC Bot 运维菜单", content, actions=actions, include_menu=False)
+    return _card(
+        "AWMC Bot 运维菜单", content, template="turquoise", actions=actions,
+        include_menu=False
+    )
 
 
 def bootstrap_card(chat_id: str, open_id: str) -> dict:
@@ -375,22 +389,49 @@ def command_stats_card(rows: list[dict[str, Any]]) -> dict:
             f"平均 {row.get('avg_ms', 0)} ms"
         )
     return _card(
-        "指令调用统计", "\n".join(lines) if len(lines) > 1 else "暂无指令审计数据。"
+        "指令调用统计",
+        "\n".join(lines) if len(lines) > 1 else "暂无指令审计数据。",
+        template="indigo",
     )
 
 
 def ref_card(trace: dict[str, Any] | None, ref_id: str) -> dict:
     if not trace:
         return _card("REF_ID 查询", f"未找到 {ref_id}。", template="orange")
+
+    def detail_text(value: Any, limit: int = 500) -> str:
+        if value in (None, ""):
+            return "-"
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except (TypeError, ValueError):
+                pass
+        if isinstance(value, (dict, list, tuple)):
+            value = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        return str(value).replace("```", "'''")[:limit]
+
     steps = trace.get("steps") or []
     lines = [
         f"REF_ID：{trace.get('ref_id', ref_id)}",
         f"命令：{trace.get('command', '-')}",
+        f"触发人：{trace.get('user_id') or '-'}",
+        f"触发群：{trace.get('group_id') or '私聊'}",
         f"状态：{trace.get('status', '-')} · 耗时 {trace.get('duration_ms') or 0} ms",
-        f"步骤：{len(steps)} 个",
+        f"请求摘要：{detail_text(trace.get('input_summary'), 700)}",
     ]
-    for step in steps[-8:]:
-        lines.append(f"· {step.get('step_name', '-')} → {step.get('status', '-')}")
+    if trace.get("error_type"):
+        lines.append(
+            f"错误：{trace.get('error_type')} · {detail_text(trace.get('error_message'), 500)}"
+        )
+    lines.append(f"请求/返回步骤：{len(steps)} 个")
+    for index, step in enumerate(steps[-10:], max(1, len(steps) - 9)):
+        lines.append(
+            f"{index}. {step.get('step_name', '-')} → {step.get('status', '-')} "
+            f"({step.get('duration_ms') or 0} ms)"
+        )
+        if step.get("detail"):
+            lines.append(f"   返回摘要：{detail_text(step.get('detail'), 420)}")
     return _card(
         "REF_ID 查询",
         "\n".join(lines),
@@ -408,7 +449,7 @@ def analysis_tokens_card(report: dict[str, Any]) -> dict:
         f"缓存输入：**{_fmt_count(report.get('cached_input_tokens'))}**\n"
         f"有 usage 的调用：{report.get('usage_available_calls', 0)} 次"
     )
-    return _card("今日锐评 Token 消耗", content)
+    return _card("今日锐评 Token 消耗", content, template="yellow")
 
 
 def api_report_card(
@@ -440,10 +481,10 @@ def api_report_card(
             f"· {str(row.get('path') or '-')[:60]}：{row.get('calls', 0)} 次，"
             f"错误 {row.get('errors', 0)}"
         )
-    return _card("AWMC API 调用统计", "\n".join(lines))
+    return _card("AWMC API 调用统计", "\n".join(lines), template="turquoise")
 
 
-def message_stats_card(rows: list[dict[str, Any]], *, days: int = 3) -> dict:
+def message_stats_card(rows: list[dict[str, Any]], *, days: int = 1) -> dict:
     """Show rankings only for numeric QQ/group IDs; official encrypted IDs are omitted."""
     users: dict[str, int] = {}
     groups: dict[str, int] = {}
@@ -456,7 +497,14 @@ def message_stats_card(rows: list[dict[str, Any]], *, days: int = 3) -> dict:
         users[user_id] = users.get(user_id, 0) + messages
         groups[group_id] = groups.get(group_id, 0) + messages
 
-    lines = [f"近 {days} 日消息榜单", "", "用户 TOP 10"]
+    total = sum(users.values())
+    lines = [
+        f"统计窗口：最近 {days} 天",
+        f"有效消息总量：**{_fmt_count(total)}** 条",
+        "（未绑定的官方加密 ID 不计入榜单和总量）",
+        "",
+        "用户 TOP 10",
+    ]
     if users:
         lines.extend(
             f"{index}. QQ {user_id}：{_fmt_count(count)} 条"
@@ -477,11 +525,12 @@ def message_stats_card(rows: list[dict[str, Any]], *, days: int = 3) -> dict:
     else:
         lines.append("暂无可展示的数字群数据。")
     actions = [
+        _button("近 1 日", "messages", days=1),
         _button("近 3 日", "messages", days=3),
         _button("近 7 日", "messages", days=7),
         _button("近 30 日", "messages", days=30),
     ]
-    return _card("消息量统计", "\n".join(lines), actions=actions)
+    return _card("消息量统计", "\n".join(lines), template="green", actions=actions)
 
 
 def logs_card(lines: list[str], *, errors_only: bool, is_admin: bool) -> dict:
@@ -503,19 +552,38 @@ def logs_card(lines: list[str], *, errors_only: bool, is_admin: bool) -> dict:
     )
 
 
-def admin_menu_card() -> dict:
+def admin_menu_card(*, is_super_admin: bool = False) -> dict:
+    actions = [
+        _button("重启 Bot", "control_prepare", operation="restart"),
+        _button("启动 Bot", "control_prepare", operation="start"),
+        _button("停止 Bot", "control_prepare", operation="stop"),
+        _button("运行状态", "status"),
+    ]
+    if is_super_admin:
+        actions.append(_button("权限管理", "permissions"))
     return _card(
         "AWMC Bot 管理操作",
         "Bot 启停操作需要二次确认。BREAK 与封禁操作请使用管理员命令，"
         "机器人会生成带一次性请求 ID 的确认卡片。",
         template="orange",
-        actions=[
-            _button("重启 Bot", "control_prepare", operation="restart"),
-            _button("启动 Bot", "control_prepare", operation="start"),
-            _button("停止 Bot", "control_prepare", operation="stop"),
-            _button("运行状态", "status"),
-        ],
+        actions=actions,
     )
+
+
+def permissions_card(admins: list[dict[str, Any]], super_admin_ids: frozenset[str]) -> dict:
+    lines = ["**当前运维管理员**"]
+    for open_id in sorted(super_admin_ids):
+        lines.append(f"超级管理员：{open_id}")
+    for row in admins:
+        lines.append(f"管理员：{row.get('open_id', '-')}")
+    if len(lines) == 1:
+        lines.append("暂无额外管理员。")
+    lines.extend([
+        "",
+        "授权：授权管理员 <open_id>",
+        "撤销：撤销管理员 <open_id>",
+    ])
+    return _card("飞书权限管理", "\n".join(lines), template="orange")
 
 
 def confirmation_card(title: str, summary: str, action: str, **value: Any) -> dict:
@@ -547,6 +615,47 @@ class ActionStore:
                 "request_id TEXT PRIMARY KEY, action TEXT NOT NULL, "
                 "actor TEXT NOT NULL, created_at REAL NOT NULL)"
             )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS ops_admins ("
+                "open_id TEXT PRIMARY KEY, granted_by TEXT NOT NULL, "
+                "created_at REAL NOT NULL, active INTEGER NOT NULL DEFAULT 1)"
+            )
+
+    def is_admin(self, open_id: str) -> bool:
+        with sqlite3.connect(self.path) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM ops_admins WHERE open_id = ? AND active = 1",
+                (str(open_id),),
+            ).fetchone()
+        return row is not None
+
+    def list_admins(self) -> list[dict[str, Any]]:
+        with sqlite3.connect(self.path) as conn:
+            rows = conn.execute(
+                "SELECT open_id, granted_by, created_at FROM ops_admins "
+                "WHERE active = 1 ORDER BY created_at"
+            ).fetchall()
+        return [
+            {"open_id": str(row[0]), "granted_by": str(row[1]), "created_at": row[2]}
+            for row in rows
+        ]
+
+    def grant_admin(self, open_id: str, actor: str) -> None:
+        with sqlite3.connect(self.path) as conn:
+            conn.execute(
+                "INSERT INTO ops_admins(open_id, granted_by, created_at, active) "
+                "VALUES (?, ?, ?, 1) ON CONFLICT(open_id) DO UPDATE SET "
+                "granted_by = excluded.granted_by, created_at = excluded.created_at, active = 1",
+                (str(open_id), str(actor), time.time()),
+            )
+
+    def revoke_admin(self, open_id: str) -> bool:
+        with sqlite3.connect(self.path) as conn:
+            cur = conn.execute(
+                "UPDATE ops_admins SET active = 0 WHERE open_id = ? AND active = 1",
+                (str(open_id),),
+            )
+            return cur.rowcount > 0
 
     def claim(self, request_id: str, action: str, actor: str) -> bool:
         try:
@@ -682,7 +791,7 @@ class AdminClient:
     def api_report(self, days: int = 1) -> dict[str, Any]:
         return self._request(f"/api-report?days={max(1, min(int(days), 30))}")
 
-    def message_ranking(self, days: int = 3) -> list[dict[str, Any]]:
+    def message_ranking(self, days: int = 1) -> list[dict[str, Any]]:
         return self._request(f"/messages?days={max(1, min(int(days), 30))}&limit=100")
 
     def update_break(self, user_id: str, amount: int, mode: str, actor: str) -> dict:
@@ -732,7 +841,14 @@ class FeishuOpsBot:
         )
 
     def is_admin(self, open_id: str) -> bool:
-        return open_id in self.config.admin_open_ids
+        return (
+            open_id in self.config.admin_open_ids
+            or open_id in self.config.super_admin_open_ids
+            or self.actions.is_admin(open_id)
+        )
+
+    def is_super_admin(self, open_id: str) -> bool:
+        return open_id in self.config.super_admin_open_ids
 
     def is_allowed_chat(self, chat_id: str) -> bool:
         return chat_id in self.config.allowed_chat_ids
@@ -811,7 +927,7 @@ class FeishuOpsBot:
                 template="red",
             )
 
-    def _safe_business_card(self, kind: str, *, days: int = 3) -> dict:
+    def _safe_business_card(self, kind: str, *, days: int = 1) -> dict:
         try:
             if kind == "overview":
                 runtime = self.admin.runtime()
@@ -833,7 +949,7 @@ class FeishuOpsBot:
                     content,
                     actions=[
                         _button("指令调用", "commands"),
-                        _button("消息量", "messages", days=3),
+                        _button("消息量", "messages", days=1),
                         _button("锐评 Token", "analysis_tokens"),
                         _button("AWMC API", "api_report"),
                     ],
@@ -845,7 +961,7 @@ class FeishuOpsBot:
             if kind == "api_report":
                 return api_report_card(self.admin.api_report(1), self.admin.runtime())
             if kind == "messages":
-                selected_days = days if days in {3, 7, 30} else 3
+                selected_days = days if days in {1, 3, 7, 30} else 1
                 return message_stats_card(
                     self.admin.message_ranking(selected_days), days=selected_days
                 )
@@ -881,16 +997,21 @@ class FeishuOpsBot:
             card = self._dispatch_command(command, args, open_id, is_admin)
         except Exception as exc:
             LOG.exception("command failed: %s", command)
-            card = _card(
-                "操作失败", f"{type(exc).__name__}：{str(exc)[:300]}", template="red"
-            )
+            if isinstance(exc, ValueError):
+                card = _card("命令参数不正确", str(exc)[:500], template="orange")
+            else:
+                card = _card(
+                    "操作失败", f"{type(exc).__name__}：{str(exc)[:300]}", template="red"
+                )
         self._reply_card(message.message_id, card)
 
     def _dispatch_command(
         self, command: str, args: list[str], open_id: str, is_admin: bool
     ) -> dict:
         if command == "menu":
-            return menu_card(is_admin=is_admin)
+            return menu_card(
+                is_admin=is_admin, is_super_admin=self.is_super_admin(open_id)
+            )
         if command == "identity":
             return _card("飞书身份", f"open_id：{open_id}")
         if command == "status":
@@ -898,6 +1019,27 @@ class FeishuOpsBot:
         if command in {"logs", "errors"}:
             limit = min(MAX_LOG_LINES, max(1, int(args[0]) if args else 30))
             return self._safe_logs_card(limit, command == "errors", is_admin)
+        is_super_admin = self.is_super_admin(open_id)
+        if command == "permissions":
+            if not is_super_admin:
+                return _card("权限不足", "权限管理仅限超级管理员。", template="red")
+            return permissions_card(
+                self.actions.list_admins(), self.config.super_admin_open_ids
+            )
+        if command in {"grant_admin", "revoke_admin"}:
+            if not is_super_admin:
+                return _card("权限不足", "授权管理员仅限超级管理员。", template="red")
+            if len(args) != 1 or not re.fullmatch(r"(?:ou|on)_[A-Za-z0-9_-]{6,128}", args[0]):
+                raise ValueError(
+                    "用法：授权管理员 <飞书 open_id> 或 撤销管理员 <飞书 open_id>"
+                )
+            grant = command == "grant_admin"
+            return confirmation_card(
+                f"确认{'授权' if grant else '撤销'}管理员",
+                f"目标 open_id：{args[0]}",
+                "admin_grant_confirm" if grant else "admin_revoke_confirm",
+                target_open_id=args[0],
+            )
         if not is_admin:
             return _card("权限不足", "该操作仅限飞书运维管理员。", template="red")
         if command in {
@@ -907,10 +1049,10 @@ class FeishuOpsBot:
             "messages",
             "api_report",
         }:
-            days = 3
+            days = 1
             if command == "messages" and args:
-                if len(args) != 1 or not args[0].isdigit() or int(args[0]) not in {3, 7, 30}:
-                    raise ValueError("用法：消息量 [3|7|30]")
+                if len(args) != 1 or not args[0].isdigit() or int(args[0]) not in {1, 3, 7, 30}:
+                    raise ValueError("用法：消息量 [1|3|7|30]")
                 days = int(args[0])
             return self._safe_business_card(command, days=days)
         if command == "ref_query":
@@ -920,7 +1062,7 @@ class FeishuOpsBot:
                 raise ValueError("用法：查询REF <REF-十六位编号>")
             return ref_card(self.admin.get_trace(args[0]), args[0].upper())
         if command == "admin":
-            return admin_menu_card()
+            return admin_menu_card(is_super_admin=is_super_admin)
         if command in {"start", "stop", "restart"}:
             labels = {"start": "启动", "stop": "停止", "restart": "重启"}
             return confirmation_card(
@@ -931,7 +1073,9 @@ class FeishuOpsBot:
             )
         if command == "break_get":
             if len(args) != 1 or not args[0].isdigit():
-                raise ValueError("用法：查询BREAK <QQ号>")
+                raise ValueError(
+                    "用法：查询BREAK QQ号\n示例：查询BREAK 123456789"
+                )
             row = self.admin.get_user(args[0])
             if row is None:
                 return _card(
@@ -964,7 +1108,10 @@ class FeishuOpsBot:
             )
         if command == "ban":
             if len(args) < 2:
-                raise ValueError("用法：封禁 <用户ID> <小时，0=永久> [原因]")
+                raise ValueError(
+                    "用法：封禁 QQ号或官方 open_id + 小时 + 原因\n"
+                    "示例：封禁 123456789 24 接口滥用"
+                )
             hours = float(args[1])
             if not 0 <= hours <= 24 * 365:
                 raise ValueError("封禁时长范围为 0～8760 小时")
@@ -987,7 +1134,9 @@ class FeishuOpsBot:
                 "unban_confirm",
                 user_id=args[0],
             )
-        return menu_card(is_admin=is_admin)
+        return menu_card(
+            is_admin=is_admin, is_super_admin=self.is_super_admin(open_id)
+        )
 
     def handle_card_action(self, data: Any) -> dict:
         event = data.event
@@ -999,7 +1148,12 @@ class FeishuOpsBot:
         if not self.is_allowed_chat(chat_id) and not is_admin:
             return self._response(toast="该群未获授权")
         if action == "menu":
-            return self._response(menu_card(is_admin=is_admin), "已返回主菜单")
+            return self._response(
+                menu_card(
+                    is_admin=is_admin, is_super_admin=self.is_super_admin(open_id)
+                ),
+                "已返回主菜单",
+            )
         if action == "status":
             return self._response(self._safe_status_card(is_admin), "状态已刷新")
         if action in {"logs", "errors"}:
@@ -1009,6 +1163,12 @@ class FeishuOpsBot:
             )
         if not is_admin:
             return self._response(toast="该操作仅限管理员")
+        if action == "permissions":
+            if not self.is_super_admin(open_id):
+                return self._response(toast="该操作仅限超级管理员")
+            return self._response(
+                permissions_card(self.actions.list_admins(), self.config.super_admin_open_ids)
+            )
         if action in {
             "overview",
             "commands",
@@ -1016,12 +1176,14 @@ class FeishuOpsBot:
             "messages",
             "api_report",
         }:
-            days = int(value.get("days") or 3)
+            days = int(value.get("days") or 1)
             return self._response(
                 self._safe_business_card(action, days=days), "查询已刷新"
             )
         if action == "admin_menu":
-            return self._response(admin_menu_card())
+            return self._response(
+                admin_menu_card(is_super_admin=self.is_super_admin(open_id))
+            )
         if action == "control_prepare":
             operation = str(value.get("operation") or "")
             labels = {"start": "启动", "stop": "停止", "restart": "重启"}
@@ -1037,6 +1199,10 @@ class FeishuOpsBot:
             )
         if action == "control_confirm":
             return self._handle_control(value, open_id, chat_id)
+        if action in {"admin_grant_confirm", "admin_revoke_confirm"}:
+            return self._handle_admin_permission(
+                value, open_id, grant=action == "admin_grant_confirm"
+            )
         if action == "break_confirm":
             return self._handle_break(value, open_id)
         if action == "ban_confirm":
@@ -1080,6 +1246,26 @@ class FeishuOpsBot:
         return self._response(
             _card("操作已提交", f"正在执行 {operation}，结果会发送到当前群。"),
             "操作已提交",
+        )
+
+    def _handle_admin_permission(self, value: dict, actor: str, *, grant: bool) -> dict:
+        if not self.is_super_admin(actor):
+            return self._response(toast="该操作仅限超级管理员")
+        target = str(value.get("target_open_id") or "").strip()
+        if not re.fullmatch(r"(?:ou|on)_[A-Za-z0-9_-]{6,128}", target):
+            return self._response(toast="open_id 格式无效")
+        action = "admin.grant" if grant else "admin.revoke"
+        if not self._claim(value, action, actor):
+            return self._response(toast="该请求已经执行或已失效")
+        if grant:
+            self.actions.grant_admin(target, actor)
+            message = f"已授权 {target} 为运维管理员。"
+        else:
+            changed = self.actions.revoke_admin(target)
+            message = f"已撤销 {target} 的运维管理员权限。" if changed else "该用户没有额外管理员权限。"
+        return self._response(
+            permissions_card(self.actions.list_admins(), self.config.super_admin_open_ids),
+            message,
         )
 
     def _handle_break(self, value: dict, actor: str) -> dict:
@@ -1141,7 +1327,9 @@ class FeishuOpsBot:
             "ops_status": lambda: self._safe_status_card(True),
             "ops_logs": lambda: self._safe_logs_card(30, False, True),
             "ops_errors": lambda: self._safe_logs_card(30, True, True),
-            "ops_admin": admin_menu_card,
+            "ops_admin": lambda: admin_menu_card(
+                is_super_admin=self.is_super_admin(open_id)
+            ),
             "ops_overview": lambda: self._safe_business_card("overview"),
             "ops_commands": lambda: self._safe_business_card("commands"),
             "ops_messages": lambda: self._safe_business_card("messages"),
