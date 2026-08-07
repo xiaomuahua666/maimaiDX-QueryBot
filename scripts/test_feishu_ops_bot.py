@@ -97,4 +97,8 @@ for required in (
 ):
     assert required in admin_source, required
 
+bot_source = (ROOT / "scripts" / "feishu_ops_bot.py").read_text(encoding="utf-8")
+assert '"im.message.reaction.created_v1"' in bot_source
+assert "register_p2_customized_event" in bot_source
+
 print("Feishu operations bot checks: OK")

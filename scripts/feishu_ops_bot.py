@@ -861,11 +861,18 @@ def main() -> None:
         except Exception:
             LOG.exception("menu handler failed")
 
+    def ignore_reaction_event(_data: Any) -> None:
+        # The app has this unrelated subscription; do not log reaction contents.
+        return None
+
     handler = (
         lark.EventDispatcherHandler.builder("", "")
         .register_p2_im_message_receive_v1(on_message)
         .register_p2_card_action_trigger(on_card)
         .register_p2_application_bot_menu_v6(on_menu)
+        .register_p2_customized_event(
+            "im.message.reaction.created_v1", ignore_reaction_event
+        )
         .build()
     )
     LOG.info(
