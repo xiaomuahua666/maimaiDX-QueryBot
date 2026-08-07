@@ -17,6 +17,8 @@ from ..libraries.tool import qqhash
 
 update_data         = on_command('更新maimai数据', permission=PLUGIN_ADMIN_ONLY)
 maimaidxhelp        = on_command('帮助maimaiDX', aliases={'帮助maimaidx'})
+short_help          = on_command('帮助', aliases={'help'})
+setattr(short_help, '_maimaidx_qbind_exempt', True)
 maimaidxrepo        = on_command('项目地址maimaiDX', aliases={'项目地址maimaidx'})
 # Documentation commands do not need a bound score account.
 setattr(maimaidxhelp, '_maimaidx_qbind_exempt', True)
@@ -43,6 +45,13 @@ async def _():
     await finish_timed_sync(
         maimaidxhelp,
         lambda: MessageSegment.image(image_to_base64(Image.open(Root / 'maimaidxhelp.png'))),
+    )
+
+
+@short_help.handle()
+async def _():
+    await short_help.finish(
+        '机器人帮助请前往\nhttps://wiki.awmc.team/guide/bot/intro',
     )
 
 
