@@ -27,7 +27,7 @@
     {"name":"十段","song_ids":[840,11207,11412,227],"level_indexes":[3,3,3,3],"life":{"initial":900,"great":2,"good":2,"miss":5,"heal":30}},
     {"name":"真初段","song_ids":[11010,11133,759,136],"level_indexes":[3,3,3,2],"life":{"initial":50,"great":2,"good":3,"miss":5,"heal":10}},
     {"name":"真二段","song_ids":[791,11199,191,11532],"level_indexes":[3,3,2,3],"life":{"initial":50,"great":2,"good":3,"miss":5,"heal":10}},
-    {"name":"真三段","song_ids":[11735,794,239,709],"level_indexes":[3,3,2,3],"life":{"initial":50,"great":2,"good":3,"miss":5,"heal":10}},
+    {"name":"真三段","song_ids":[11599,794,239,709],"level_indexes":[3,3,2,3],"life":{"initial":50,"great":2,"good":3,"miss":5,"heal":10}},
     {"name":"真四段","song_ids":[11715,581,204,453],"level_indexes":[3,2,3,3],"life":{"initial":50,"great":2,"good":3,"miss":5,"heal":10}},
     {"name":"真五段","song_ids":[11583,11653,448,673],"level_indexes":[3,3,3,3],"life":{"initial":50,"great":2,"good":3,"miss":5,"heal":10}},
     {"name":"真六段","song_ids":[11316,11710,11177,700],"level_indexes":[3,3,3,3],"life":{"initial":50,"great":2,"good":3,"miss":5,"heal":10}},
