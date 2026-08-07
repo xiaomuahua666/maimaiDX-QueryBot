@@ -178,6 +178,30 @@ class SwApiError(RuntimeError):
         )
 
 
+def _audit_response_summary(value: Any) -> dict[str, Any]:
+    """Keep useful response metadata in REF traces without storing full payloads."""
+    if isinstance(value, dict):
+        summary: dict[str, Any] = {
+            "type": "object",
+            "keys": [str(key)[:80] for key in list(value)[:40]],
+        }
+        for key in (
+            "code", "returnCode", "status", "message", "msg", "error",
+            "length", "count", "taskId", "done",
+        ):
+            if key in value and isinstance(value[key], (str, int, float, bool, type(None))):
+                summary[key] = value[key]
+        return summary
+    if isinstance(value, list):
+        first = value[0] if value and isinstance(value[0], dict) else None
+        return {
+            "type": "array",
+            "length": len(value),
+            "first_keys": [str(key)[:80] for key in list(first)[:40]] if first else [],
+        }
+    return {"type": type(value).__name__}
+
+
 def find_sw_api_error(exc: BaseException) -> Optional[SwApiError]:
     """Find a wrapped ``SwApiError`` without following cyclic causes."""
     current: Optional[BaseException] = exc
@@ -545,6 +569,10 @@ class SwApiClient:
                     "status_code": res.status_code,
                     "error": err_msg,
                     "error_code": structured_error.error_code,
+                    "response": {
+                        "error_code": structured_error.error_code,
+                        "message": err_msg,
+                    },
                 }
                 if structured_error.quota:
                     detail["quota"] = structured_error.quota
@@ -573,7 +601,12 @@ class SwApiClient:
         admin_audit.add_step(
             "http.awmc",
             "success",
-            {"method": method, "path": path, "status_code": res.status_code},
+            {
+                "method": method,
+                "path": path,
+                "status_code": res.status_code,
+                "response": _audit_response_summary(data),
+            },
             started_at=audit_started,
         )
         # AWMC 账号 API 成功后静默留出短暂间隔，避免同一账号
