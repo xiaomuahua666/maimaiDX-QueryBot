@@ -486,6 +486,7 @@ def api_report_card(
 
 def message_stats_card(rows: list[dict[str, Any]], *, days: int = 1) -> dict:
     """Show rankings only for numeric QQ/group IDs; official encrypted IDs are omitted."""
+    window_days = max(1, int(days))
     users: dict[str, int] = {}
     groups: dict[str, int] = {}
     for row in rows:
@@ -498,9 +499,13 @@ def message_stats_card(rows: list[dict[str, Any]], *, days: int = 1) -> dict:
         groups[group_id] = groups.get(group_id, 0) + messages
 
     total = sum(users.values())
+    average_per_second = total / (window_days * 86400)
+    average_per_minute = total / (window_days * 1440)
     lines = [
-        f"统计窗口：最近 {days} 天",
+        f"统计窗口：最近 {window_days} 天",
         f"有效消息总量：**{_fmt_count(total)}** 条",
+        f"平均每秒消息：**{average_per_second:.6f}** 条",
+        f"平均每分钟消息：**{average_per_minute:.6f}** 条",
         "（未绑定的官方加密 ID 不计入榜单和总量）",
         "",
         "用户 TOP 10",

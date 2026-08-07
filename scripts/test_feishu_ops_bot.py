@@ -104,6 +104,8 @@ assert "统计窗口：最近 7 天" in message_text
 assert "QQ 200：3 条" in message_text
 assert "ABCDEF" not in message_text
 assert "100：5 条" in message_text
+assert "平均每秒消息：**0.000008** 条" in message_text
+assert "平均每分钟消息：**0.000496** 条" in message_text
 assert message_card["elements"][-1]["actions"][-1]["value"]["action"] == "menu"
 
 quota_card = MODULE.api_report_card(
