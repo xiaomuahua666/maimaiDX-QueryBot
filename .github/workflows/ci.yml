@@ -41,3 +41,4 @@ jobs:
           python scripts/test_plate_playinfo_dev.py
           python scripts/test_rating_table_manifest.py
           python scripts/test_bot_supervisor.py
+          python scripts/test_feishu_push_notify.py

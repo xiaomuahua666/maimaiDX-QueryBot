@@ -1,0 +1,77 @@
+name: Notify main push
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Configure restricted status access
+        id: ssh-config
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.BOT_STATUS_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.BOT_STATUS_SSH_KNOWN_HOSTS }}
+        run: |
+          if [[ -z "$SSH_PRIVATE_KEY" || -z "$SSH_KNOWN_HOSTS" ]]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/bot_status
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/bot_status ~/.ssh/known_hosts
+          echo "configured=true" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for deployment and read bot status
+        id: bot-status
+        env:
+          SSH_CONFIGURED: ${{ steps.ssh-config.outputs.configured }}
+          SSH_HOST: ${{ vars.BOT_STATUS_SSH_HOST }}
+          SSH_PORT: ${{ vars.BOT_STATUS_SSH_PORT || '22' }}
+          SSH_USER: ${{ vars.BOT_STATUS_SSH_USER || 'root' }}
+        run: |
+          status_json='{"state":"unknown","detail":"production status access is not configured"}'
+          if [[ "$SSH_CONFIGURED" == "true" && -n "$SSH_HOST" ]]; then
+            for attempt in {1..9}; do
+              if response="$(ssh -i ~/.ssh/bot_status \
+                -p "$SSH_PORT" \
+                -o BatchMode=yes \
+                -o ConnectTimeout=10 \
+                "$SSH_USER@$SSH_HOST" 2>/dev/null)" \
+                && jq -e '.state and .deployed_commit' <<<"$response" >/dev/null; then
+                status_json="$(jq -c . <<<"$response")"
+                state="$(jq -r '.state' <<<"$response")"
+                deployed_commit="$(jq -r '.deployed_commit' <<<"$response")"
+                if [[ "$state" == "running" && "$deployed_commit" == "$GITHUB_SHA" ]]; then
+                  break
+                fi
+              else
+                status_json='{"state":"unknown","detail":"production status check failed"}'
+              fi
+              [[ "$attempt" == 9 ]] || sleep 15
+            done
+          fi
+          {
+            echo 'json<<EOF'
+            echo "$status_json"
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Send Feishu card
+        env:
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+          FEISHU_WEBHOOK_SECRET: ${{ secrets.FEISHU_WEBHOOK_SECRET }}
+          BOT_STATUS_JSON: ${{ steps.bot-status.outputs.json }}
+          BOT_STATUS_PAGE_URL: https://status.awmc.cc/status/maimai
+        run: python scripts/feishu_push_notify.py
