@@ -954,9 +954,11 @@ async def draw_plate_table(
             if _d.song_id not in music_id_list:
                 continue
             _music = mai.total_list.by_id(_d.song_id)
-            _d.table_level = _music.level
-            _d.ds = round(float(_music.ds[_d.level_index]), 1)
-            playerdata.append(_d)
+            if _music is None or not 0 <= _d.level_index < len(_music.ds):
+                continue
+            playerdata.append(
+                _d.model_copy(update={'ds': round(float(_music.ds[_d.level_index]), 1)})
+            )
 
         # 按 reversed(levelList) 分组，组内按定数降序（与 update_plate 底图一致）
         level_songs: Dict[str, Dict[str, List[Optional[PlayInfoDefault]]]] = {
@@ -971,10 +973,13 @@ async def draw_plate_table(
             if not is_wu and _d.level_index == 4:
                 continue
             sid = str(_d.song_id)
-            if is_wu and _d.song_id in wu_remaster and len(_d.table_level) > 4:
-                _key = _d.table_level[4]
+            _music = mai.total_list.by_id(_d.song_id)
+            if _music is None or len(_music.level) <= 3:
+                continue
+            if is_wu and _d.song_id in wu_remaster and len(_music.level) > 4:
+                _key = _music.level[4]
             else:
-                _key = _d.table_level[3]
+                _key = _music.level[3]
             if _key not in level_songs or sid not in level_songs[_key]:
                 continue
             if _d.level_index < len(level_songs[_key][sid]):

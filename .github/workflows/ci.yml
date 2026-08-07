@@ -38,5 +38,6 @@ jobs:
           python scripts/test_footer_integrity.py
           python scripts/test_help_short_reply.py
           python scripts/test_star_plate_badge_path.py
+          python scripts/test_plate_playinfo_dev.py
           python scripts/test_rating_table_manifest.py
           python scripts/test_bot_supervisor.py
