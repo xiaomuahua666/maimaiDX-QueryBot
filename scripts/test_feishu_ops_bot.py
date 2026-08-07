@@ -89,7 +89,12 @@ with tempfile.TemporaryDirectory() as directory:
 admin_source = (ROOT / "libraries" / "maimaidx_admin_web.py").read_text(
     encoding="utf-8"
 )
-for required in ('"feishu_ops"', 'body.get("actor")', 'body.get("source")'):
+for required in (
+    '"feishu_ops"',
+    'body.get("actor")',
+    'body.get("source")',
+    'globals()["Request"] = Request',
+):
     assert required in admin_source, required
 
 print("Feishu operations bot checks: OK")

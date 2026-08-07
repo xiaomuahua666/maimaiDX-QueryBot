@@ -80,6 +80,8 @@ def register_admin_web() -> bool:
     except ImportError:
         log.warning("管理 WebUI 已启用，但未安装 FastAPI")
         return False
+    # FastAPI resolves postponed annotations on nested routes from module globals.
+    globals()["Request"] = Request
 
     port = int(getattr(maiconfig, "maimaidx_admin_web_port", 8099) or 0)
     if not 0 <= port <= 65535:
