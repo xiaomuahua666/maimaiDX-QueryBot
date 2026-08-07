@@ -73,5 +73,4 @@ jobs:
           FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
           FEISHU_WEBHOOK_SECRET: ${{ secrets.FEISHU_WEBHOOK_SECRET }}
           BOT_STATUS_JSON: ${{ steps.bot-status.outputs.json }}
-          BOT_STATUS_PAGE_URL: https://status.awmc.cc/status/maimai
         run: python scripts/feishu_push_notify.py

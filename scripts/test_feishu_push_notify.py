@@ -52,6 +52,8 @@ assert running["card"]["header"]["title"]["content"] == "main 更新已部署"
 content = running["card"]["elements"][0]["text"]["content"]
 for expected in ("0123456", "fix: verify Feishu card", "56303", "1h 1m"):
     assert expected in content, expected
+buttons = running["card"]["elements"][2]["actions"]
+assert [button["text"]["content"] for button in buttons] == ["查看提交", "运行记录"]
 
 stopped = MODULE.build_card(
     EVENT,

@@ -141,9 +141,6 @@ def build_card(
         f"{env.get('GITHUB_REPOSITORY', commit['repo_name'])}/actions/runs/"
         f"{env.get('GITHUB_RUN_ID', '')}"
     )
-    status_page_url = env.get(
-        "BOT_STATUS_PAGE_URL", "https://status.awmc.cc/status/maimai"
-    )
     deployed_sha = str(status.get("deployed_commit") or "unknown")
     deployed_display = deployed_sha[:7] if deployed_sha != "unknown" else deployed_sha
     details = (
@@ -182,11 +179,6 @@ def build_card(
                             "tag": "button",
                             "text": {"tag": "plain_text", "content": "运行记录"},
                             "url": run_url,
-                        },
-                        {
-                            "tag": "button",
-                            "text": {"tag": "plain_text", "content": "服务状态"},
-                            "url": status_page_url,
                         },
                     ],
                 },
