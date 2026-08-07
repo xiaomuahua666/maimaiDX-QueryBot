@@ -880,6 +880,28 @@ def _plate_get_icon(play: PlayInfoDefault, plan: str, theme: str) -> Image.Image
     return Image.open(pic(f'UI_CHR_PlayBonus_{fsl[play.fs]}.png')).convert('RGBA').resize((60, 60))
 
 
+def _plate_badge_paths(version: str, plate_key: str, plan: str) -> List[Path]:
+    """Return badge candidates for split-name and combined-name asset packs."""
+    suffix = '極' if plan == '极' else plan
+    prefixes = dict.fromkeys((version, plate_key))
+    return [plate_versiondir / f'{prefix}{suffix}.png' for prefix in prefixes if prefix]
+
+
+def _load_plate_badge(version: str, plate_key: str, plan: str) -> Optional[Image.Image]:
+    candidates = _plate_badge_paths(version, plate_key, plan)
+    for path in candidates:
+        try:
+            with Image.open(path) as image:
+                image.load()
+                return image.convert('RGBA').resize((1000, 161))
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError) as exc:
+            log.warning(f'完成表徽标资源损坏: {path.name}: {type(exc).__name__}: {exc}')
+    log.error(f'完成表徽标资源不可用: {[path.name for path in candidates]}')
+    return None
+
+
 async def draw_plate_table(
     qqid: int,
     version: str,
@@ -998,11 +1020,13 @@ async def draw_plate_table(
 
         progress_bg = assets.plate_progress_wu_bg if is_wu else assets.plate_progress_bg
         im.alpha_composite(progress_bg, (175, 20))
-        # 徽标按组合键+plan命名（如 宙&星極.png），用 _ver 而非短名 version
-        im.alpha_composite(
-            Image.open(plate_versiondir / f'{_ver}{"極" if plan == "极" else plan}.png').convert('RGBA').resize((1000, 161)),
-            (200, 45),
-        )
+        badge = _load_plate_badge(version, _ver, plan)
+        if badge is None:
+            return (
+                f'{version}{plan}完成表徽标资源缺失或损坏。\n'
+                '请联系管理员更新静态资源后再试。'
+            )
+        im.alpha_composite(badge, (200, 45))
 
         slot_counts = [0 for _ in range(slot_num)]
         finished_songs: set[int] = set()
