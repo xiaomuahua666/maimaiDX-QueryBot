@@ -996,10 +996,11 @@ class FeishuOpsBot:
         try:
             card = self._dispatch_command(command, args, open_id, is_admin)
         except Exception as exc:
-            LOG.exception("command failed: %s", command)
             if isinstance(exc, ValueError):
+                LOG.info("command usage rejected: %s", command)
                 card = _card("命令参数不正确", str(exc)[:500], template="orange")
             else:
+                LOG.exception("command failed: %s", command)
                 card = _card(
                     "操作失败", f"{type(exc).__name__}：{str(exc)[:300]}", template="red"
                 )
