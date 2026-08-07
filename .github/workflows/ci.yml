@@ -2,7 +2,18 @@ name: CI
 
 on:
   push:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
   pull_request:
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -10,12 +21,22 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Verify signed attribution
-        run: python scripts/test_footer_integrity.py
       - name: Compile Python sources
         run: python -m compileall -q .
+      - name: Check shell scripts
+        run: bash -n scripts/*.sh
+      - name: Run fast regression tests
+        run: |
+          python scripts/test_footer_integrity.py
+          python scripts/test_help_short_reply.py
+          python scripts/test_star_plate_badge_path.py
+          python scripts/test_rating_table_manifest.py
+          python scripts/test_bot_supervisor.py
