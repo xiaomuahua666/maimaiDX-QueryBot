@@ -17,6 +17,7 @@ from ..config import driver, log, maiconfig
 from .maimaidx_account_db import account_db
 from .maimaidx_admin_audit import admin_audit
 from .maimaidx_break import DEFAULT_CONFIG, break_db
+from .maimaidx_qq_bind import qq_bind_db
 
 
 _REGISTERED = False
@@ -309,7 +310,22 @@ def register_admin_web() -> bool:
 
     async def messages(request: Request, group_id: str = "", days: int = 7, limit: int = 100):
         authorize(request)
-        return admin_audit.message_ranking(group_id=group_id, days=days, limit=limit)
+        rows = admin_audit.message_ranking(group_id=group_id, days=days, limit=limit)
+        normalized = []
+        for row in rows:
+            item = dict(row)
+            raw_user_id = str(item.get("user_id") or "")
+            raw_group_id = str(item.get("group_id") or "")
+            if not raw_user_id.isdigit():
+                mapped_user_id = qq_bind_db.get_legacy_qq(raw_user_id)
+                if mapped_user_id is not None:
+                    item["user_id"] = str(mapped_user_id)
+            if not raw_group_id.isdigit():
+                mapped_group_id = qq_bind_db.get_group_legacy_id(raw_group_id)
+                if mapped_group_id is not None:
+                    item["group_id"] = str(mapped_group_id)
+            normalized.append(item)
+        return normalized
 
     async def economy(request: Request, days: int = 30):
         authorize(request)
