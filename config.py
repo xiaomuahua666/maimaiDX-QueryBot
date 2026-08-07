@@ -82,7 +82,11 @@ class Config(BaseModel):
     # AWMC NET 默认成绩库：站点地址内置，可通过环境变量覆盖；填写 Bot Token 后启用。
     awmcnet_sync_url: str = "https://net.wmc.pub"
     awmcnet_bot_token: Optional[str] = None
-    awmcnet_sync_timeout_seconds: float = 8.0
+    # AWMCNET may return 429 while the previous snapshot is still committing.
+    awmcnet_sync_timeout_seconds: float = 12.0
+    awmcnet_sync_retry_count: int = 5
+    awmcnet_sync_retry_delay_seconds: float = 1.5
+    awmcnet_sync_retry_max_delay_seconds: float = 8.0
     # 账号二维码本地缓存时间。0 表示永久保留，单位秒。
     awmc_qrcode_cache_seconds: int = 0
     # mymai/成绩上传复用最近一次已验证 SGID 的时长；0 表示每次重新询问。

@@ -141,6 +141,34 @@ async def test_empty_sync_is_not_reported_as_success() -> None:
         awmcnet._connection = original_connection
 
 
+async def test_sync_retries_uploading_429() -> None:
+    """A transient 'upload in progress' response must not fail the upload."""
+    original_connection = awmcnet._connection
+    try:
+        awmcnet._connection = lambda: ("https://net.wmc.pub", "test", 8.0)
+        busy = MagicMock()
+        busy.status_code = 429
+        busy.text = '{"detail":"成绩正在上传中"}'
+        busy.headers = {"Retry-After": "0"}
+        success = MagicMock()
+        success.status_code = 200
+        success.json.return_value = {"status": "ok", "stored_records": 1}
+        client = AsyncMock()
+        client.post.side_effect = [busy, success]
+        context = MagicMock()
+        context.__aenter__ = AsyncMock(return_value=client)
+        context.__aexit__ = AsyncMock(return_value=None)
+        with (
+            patch.object(awmcnet.httpx, "AsyncClient", return_value=context),
+            patch.object(awmcnet.asyncio, "sleep", new=AsyncMock()),
+        ):
+            result = await awmcnet._post_sync({"qq": 12345, "records": [RECORD]})
+        assert result == {"status": "ok", "stored_records": 1}
+        assert client.post.await_count == 2
+    finally:
+        awmcnet._connection = original_connection
+
+
 async def test_force_refresh_keeps_newer_awmcnet_snapshot() -> None:
     """A stale upstream must not overwrite a score uploaded moments ago."""
     fresh_record = {**RECORD, "achievements": 100.0, "dxScore": 2500}
@@ -178,6 +206,7 @@ async def test_force_refresh_keeps_newer_awmcnet_snapshot() -> None:
 
 asyncio.run(test_datasource())
 asyncio.run(test_empty_sync_is_not_reported_as_success())
+asyncio.run(test_sync_retries_uploading_429())
 asyncio.run(test_force_refresh_keeps_newer_awmcnet_snapshot())
 test_first_notice()
 test_trend_text()
