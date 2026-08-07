@@ -539,16 +539,21 @@ class SwApiClient:
             except json.JSONDecodeError:
                 pass
             except SwApiError:
+                detail = {
+                    "method": method,
+                    "path": path,
+                    "status_code": res.status_code,
+                    "error": err_msg,
+                    "error_code": structured_error.error_code,
+                }
+                if structured_error.quota:
+                    detail["quota"] = structured_error.quota
+                if structured_error.retry_at:
+                    detail["retry_at"] = structured_error.retry_at
+                if structured_error.retry_after_seconds is not None:
+                    detail["retry_after_seconds"] = structured_error.retry_after_seconds
                 admin_audit.add_step(
-                    "http.awmc",
-                    "error",
-                    {
-                        "method": method,
-                        "path": path,
-                        "status_code": res.status_code,
-                        "error": err_msg,
-                    },
-                    started_at=audit_started,
+                    "http.awmc", "error", detail, started_at=audit_started
                 )
                 raise
             admin_audit.add_step(

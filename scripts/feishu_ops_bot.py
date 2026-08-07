@@ -220,14 +220,37 @@ def _button(text: str, action: str, *, primary: bool = False, **value: Any) -> d
     return button
 
 
-def _card(title: str, content: str, *, template: str = "blue", actions=None) -> dict:
+def _card(
+    title: str,
+    content: str,
+    *,
+    template: str = "blue",
+    actions=None,
+    include_menu: bool = True,
+    plain_text: bool = False,
+) -> dict:
+    card_actions = list(actions or [])
+    if include_menu and not any(
+        str(item.get("value", {}).get("action") or "") == "menu"
+        for item in card_actions
+        if isinstance(item, dict)
+    ):
+        card_actions.append(_button("主菜单", "menu"))
     elements: list[dict[str, Any]] = [
-        {"tag": "div", "text": {"tag": "lark_md", "content": content}}
+        {
+            "tag": "div",
+            "text": {
+                "tag": "plain_text" if plain_text else "lark_md",
+                "content": content,
+            },
+        }
     ]
-    if actions:
+    if card_actions:
         elements.append({"tag": "hr"})
-        for offset in range(0, len(actions), 5):
-            elements.append({"tag": "action", "actions": actions[offset : offset + 5]})
+        for offset in range(0, len(card_actions), 5):
+            elements.append(
+                {"tag": "action", "actions": card_actions[offset : offset + 5]}
+            )
     return {
         "config": {"wide_screen_mode": True},
         "header": {
@@ -241,7 +264,7 @@ def _card(title: str, content: str, *, template: str = "blue", actions=None) -> 
 def menu_card(*, is_admin: bool) -> dict:
     content = (
         "**群成员命令**\n"
-        "`状态` · `日志 30` · `错误 30` · `菜单`\n\n"
+        "状态 · 日志 30 · 错误 30 · 菜单\n\n"
         "日志会过滤聊天正文并脱敏用户标识和凭据。"
     )
     actions = [
@@ -253,31 +276,31 @@ def menu_card(*, is_admin: bool) -> dict:
         actions.append(_button("管理操作", "admin_menu"))
         content += (
             "\n\n**管理员命令**\n"
-            "`概览` · `指令调用` · `消息量` · `今日锐评Token` · `AWMC API`\n"
-            "`查询REF <REF_ID>`\n"
-            "`重启Bot` · `启动Bot` · `停止Bot`\n"
-            "`查询BREAK <QQ>` · `发放BREAK <QQ> <数量>` · "
-            "`设置BREAK <QQ> <余额>`\n"
-            "`封禁 <用户ID> <小时> <原因>` · `解封 <用户ID>`"
+            "概览 · 指令调用 · 消息量 [3|7|30] · 今日锐评Token · AWMC API\n"
+            "查询REF <REF_ID>\n"
+            "重启Bot · 启动Bot · 停止Bot\n"
+            "查询BREAK <QQ> · 发放BREAK <QQ> <数量> · "
+            "设置BREAK <QQ> <余额>\n"
+            "封禁 <用户ID> <小时> <原因> · 解封 <用户ID>"
         )
         actions.extend(
             [
                 _button("业务概览", "overview"),
                 _button("指令调用", "commands"),
-                _button("消息量", "messages"),
+                _button("消息量", "messages", days=3),
                 _button("锐评 Token", "analysis_tokens"),
                 _button("AWMC API", "api_report"),
             ]
         )
-    return _card("AWMC Bot 运维菜单", content, actions=actions)
+    return _card("AWMC Bot 运维菜单", content, actions=actions, include_menu=False)
 
 
 def bootstrap_card(chat_id: str, open_id: str) -> dict:
     return _card(
         "运维机器人等待授权",
         "管理员尚未配置允许的群和用户。请将下面两项交给部署管理员：\n"
-        f"**chat_id:** `{chat_id}`\n"
-        f"**open_id:** `{open_id}`",
+        f"**chat_id:** {chat_id}\n"
+        f"**open_id:** {open_id}",
         template="orange",
     )
 
@@ -308,18 +331,18 @@ def status_card(status: dict[str, Any], *, is_admin: bool) -> dict:
     disk_percent = float(status.get("disk_percent") or 0)
     content = (
         f"**运行状态：** {process_text}\n"
-        f"**部署状态：** 已部署本次提交 `{sha}`\n"
+        f"**部署状态：** 已部署本次提交 {sha}\n"
         f"**QQ 连接：** {qq_text}\n"
-        f"**systemd：** `{status.get('active_state', '-')}` / "
-        f"`{status.get('sub_state', '-')}` · Result `{status.get('result', '-')}`\n"
-        f"**进程：** Supervisor `{status.get('supervisor_pid') or '-'}` · "
-        f"NoneBot `{status.get('bot_pid') or '-'}`\n"
+        f"**systemd：** {status.get('active_state', '-')} / "
+        f"{status.get('sub_state', '-')} · Result {status.get('result', '-')}\n"
+        f"**进程：** Supervisor {status.get('supervisor_pid') or '-'} · "
+        f"NoneBot {status.get('bot_pid') or '-'}\n"
         f"**运行时长：** {format_duration(status.get('uptime_seconds'))}\n"
-        f"**资源：** CPU `{status.get('cpu_percent', 0)}%` · "
-        f"内存 `{rss_mib:.1f} MiB` · 磁盘 `{disk_percent:.1f}%`\n"
-        f"**系统负载：** `{status.get('load_1', 0):.2f}` / "
-        f"`{status.get('load_5', 0):.2f}` / `{status.get('load_15', 0):.2f}`\n"
-        f"**生产版本：** `{sha}` · systemd 重启 `{status.get('n_restarts', 0)}` 次"
+        f"**资源：** CPU {status.get('cpu_percent', 0)}% · "
+        f"内存 {rss_mib:.1f} MiB · 磁盘 {disk_percent:.1f}%\n"
+        f"**系统负载：** {status.get('load_1', 0):.2f} / "
+        f"{status.get('load_5', 0):.2f} / {status.get('load_15', 0):.2f}\n"
+        f"**生产版本：** {sha} · systemd 重启 {status.get('n_restarts', 0)} 次"
     )
     actions = [
         _button("刷新", "status", primary=True),
@@ -347,7 +370,7 @@ def command_stats_card(rows: list[dict[str, Any]]) -> dict:
     lines = ["**近 7 日指令调用**"]
     for row in rows[:20]:
         lines.append(
-            f"`{str(row.get('command') or '-')[:40]}`：{_fmt_count(row.get('calls'))} 次，"
+            f"{str(row.get('command') or '-')[:40]}：{_fmt_count(row.get('calls'))} 次，"
             f"成功 {_fmt_count(row.get('success'))}，错误 {_fmt_count(row.get('errors'))}，"
             f"平均 {row.get('avg_ms', 0)} ms"
         )
@@ -358,16 +381,16 @@ def command_stats_card(rows: list[dict[str, Any]]) -> dict:
 
 def ref_card(trace: dict[str, Any] | None, ref_id: str) -> dict:
     if not trace:
-        return _card("REF_ID 查询", f"未找到 `{ref_id}`。", template="orange")
+        return _card("REF_ID 查询", f"未找到 {ref_id}。", template="orange")
     steps = trace.get("steps") or []
     lines = [
-        f"REF_ID：`{trace.get('ref_id', ref_id)}`",
-        f"命令：`{trace.get('command', '-')}`",
-        f"状态：`{trace.get('status', '-')}` · 耗时 `{trace.get('duration_ms') or 0} ms`",
-        f"步骤：`{len(steps)}` 个",
+        f"REF_ID：{trace.get('ref_id', ref_id)}",
+        f"命令：{trace.get('command', '-')}",
+        f"状态：{trace.get('status', '-')} · 耗时 {trace.get('duration_ms') or 0} ms",
+        f"步骤：{len(steps)} 个",
     ]
     for step in steps[-8:]:
-        lines.append(f"· `{step.get('step_name', '-')}` → `{step.get('status', '-')}`")
+        lines.append(f"· {step.get('step_name', '-')} → {step.get('status', '-')}")
     return _card(
         "REF_ID 查询",
         "\n".join(lines),
@@ -377,13 +400,13 @@ def ref_card(trace: dict[str, Any] | None, ref_id: str) -> dict:
 
 def analysis_tokens_card(report: dict[str, Any]) -> dict:
     content = (
-        f"统计范围：近 `{report.get('days', 1)}` 日\n"
+        f"统计范围：近 {report.get('days', 1)} 日\n"
         f"锐评调用：**{_fmt_count(report.get('calls'))}** 次\n"
         f"输入 Token：**{_fmt_count(report.get('input_tokens'))}**\n"
         f"输出 Token：**{_fmt_count(report.get('output_tokens'))}**\n"
         f"总 Token：**{_fmt_count(report.get('total_tokens'))}**\n"
         f"缓存输入：**{_fmt_count(report.get('cached_input_tokens'))}**\n"
-        f"有 usage 的调用：`{report.get('usage_available_calls', 0)}` 次"
+        f"有 usage 的调用：{report.get('usage_available_calls', 0)} 次"
     )
     return _card("今日锐评 Token 消耗", content)
 
@@ -392,30 +415,73 @@ def api_report_card(
     report: dict[str, Any], runtime: dict[str, Any] | None = None
 ) -> dict:
     runtime = runtime or {}
+    quota = report.get("quota") or {}
     lines = [
-        f"模式：`{runtime.get('awmc_api_mode', '-')}` · Token 配置："
-        f"`{'已配置' if runtime.get('awmc_api_token_configured') else '未配置'}`",
-        f"近 `{report.get('days', 1)}` 日调用：**{_fmt_count(report.get('calls'))}** 次",
-        f"成功：`{report.get('success', 0)}` · 错误：`{report.get('errors', 0)}` · "
-        f"预期 404（已隐藏）：`{report.get('not_found_404', 0)}`",
+        f"模式：{runtime.get('awmc_api_mode', '-')} · Token 配置："
+        f"{'已配置' if runtime.get('awmc_api_token_configured') else '未配置'}",
+        f"近 {report.get('days', 1)} 日调用：**{_fmt_count(report.get('calls'))}** 次",
+        f"成功：{report.get('success', 0)} · 错误：{report.get('errors', 0)} · "
+        f"预期 404（已隐藏）：{report.get('not_found_404', 0)}",
+        f"限额触发：{quota.get('exceeded', 0)} 次 · 已观测配额：{quota.get('observed', 0)} 次",
     ]
+    latest = quota.get("latest") or {}
+    if latest:
+        scope = str(latest.get("scope") or "-")
+        category = str(latest.get("category") or "-")
+        window = str(latest.get("windowLabel") or latest.get("window") or "-")
+        used = latest.get("used")
+        limit = latest.get("limit")
+        usage = f"{used}/{limit}" if used is not None and limit is not None else "未知"
+        lines.append(f"最近配额：{scope} · {category} · {window} · 使用 {usage}")
+    else:
+        lines.append("最近配额：上游尚未返回 used/limit 明细")
     for row in (report.get("paths") or [])[:8]:
         lines.append(
-            f"· `{str(row.get('path') or '-')[:60]}`：{row.get('calls', 0)} 次，"
+            f"· {str(row.get('path') or '-')[:60]}：{row.get('calls', 0)} 次，"
             f"错误 {row.get('errors', 0)}"
         )
     return _card("AWMC API 调用统计", "\n".join(lines))
 
 
-def message_stats_card(rows: list[dict[str, Any]]) -> dict:
-    total = sum(int(row.get("messages") or 0) for row in rows)
-    lines = [f"近 1 日记录消息量：**{_fmt_count(total)}** 条"]
-    for row in rows[:15]:
-        lines.append(
-            f"· 群 `{str(row.get('group_id') or '-')[:24]}` · 用户 `{str(row.get('user_id') or '-')[:24]}`："
-            f"{_fmt_count(row.get('messages'))} 条"
+def message_stats_card(rows: list[dict[str, Any]], *, days: int = 3) -> dict:
+    """Show rankings only for numeric QQ/group IDs; official encrypted IDs are omitted."""
+    users: dict[str, int] = {}
+    groups: dict[str, int] = {}
+    for row in rows:
+        user_id = str(row.get("user_id") or "")
+        group_id = str(row.get("group_id") or "")
+        if not user_id.isdigit() or not group_id.isdigit():
+            continue
+        messages = max(0, int(row.get("messages") or 0))
+        users[user_id] = users.get(user_id, 0) + messages
+        groups[group_id] = groups.get(group_id, 0) + messages
+
+    lines = [f"近 {days} 日消息榜单", "", "用户 TOP 10"]
+    if users:
+        lines.extend(
+            f"{index}. QQ {user_id}：{_fmt_count(count)} 条"
+            for index, (user_id, count) in enumerate(
+                sorted(users.items(), key=lambda item: item[1], reverse=True)[:10], 1
+            )
         )
-    return _card("消息量统计", "\n".join(lines))
+    else:
+        lines.append("暂无可展示的数字 QQ 数据。")
+    lines.extend(["", "群 TOP 10"])
+    if groups:
+        lines.extend(
+            f"{index}. 群 {group_id}：{_fmt_count(count)} 条"
+            for index, (group_id, count) in enumerate(
+                sorted(groups.items(), key=lambda item: item[1], reverse=True)[:10], 1
+            )
+        )
+    else:
+        lines.append("暂无可展示的数字群数据。")
+    actions = [
+        _button("近 3 日", "messages", days=3),
+        _button("近 7 日", "messages", days=7),
+        _button("近 30 日", "messages", days=30),
+    ]
+    return _card("消息量统计", "\n".join(lines), actions=actions)
 
 
 def logs_card(lines: list[str], *, errors_only: bool, is_admin: bool) -> dict:
@@ -430,9 +496,10 @@ def logs_card(lines: list[str], *, errors_only: bool, is_admin: bool) -> dict:
         actions.append(_button("管理", "admin_menu"))
     return _card(
         f"AWMC Bot {label}",
-        f"已脱敏，最多显示 {MAX_LOG_LINES} 行。\n```text\n{body}\n```",
+        f"已脱敏，最多显示 {MAX_LOG_LINES} 行。\n{body}",
         template="red" if errors_only and lines else "blue",
         actions=actions,
+        plain_text=True,
     )
 
 
@@ -455,7 +522,7 @@ def confirmation_card(title: str, summary: str, action: str, **value: Any) -> di
     request_id = value.pop("request_id", uuid4().hex)
     return _card(
         title,
-        f"{summary}\n\n请求 ID：`{request_id[:12]}`",
+        f"{summary}\n\n请求 ID：{request_id[:12]}",
         template="red",
         actions=[
             _button(
@@ -615,7 +682,7 @@ class AdminClient:
     def api_report(self, days: int = 1) -> dict[str, Any]:
         return self._request(f"/api-report?days={max(1, min(int(days), 30))}")
 
-    def message_ranking(self, days: int = 1) -> list[dict[str, Any]]:
+    def message_ranking(self, days: int = 3) -> list[dict[str, Any]]:
         return self._request(f"/messages?days={max(1, min(int(days), 30))}&limit=100")
 
     def update_break(self, user_id: str, amount: int, mode: str, actor: str) -> dict:
@@ -728,7 +795,7 @@ class FeishuOpsBot:
             LOG.exception("status query failed")
             return _card(
                 "状态查询失败",
-                f"`{type(exc).__name__}`：{str(exc)[:300]}",
+                f"{type(exc).__name__}：{str(exc)[:300]}",
                 template="red",
             )
 
@@ -740,11 +807,11 @@ class FeishuOpsBot:
             LOG.exception("log query failed")
             return _card(
                 "日志查询失败",
-                f"`{type(exc).__name__}`：{str(exc)[:300]}",
+                f"{type(exc).__name__}：{str(exc)[:300]}",
                 template="red",
             )
 
-    def _safe_business_card(self, kind: str) -> dict:
+    def _safe_business_card(self, kind: str, *, days: int = 3) -> dict:
         try:
             if kind == "overview":
                 runtime = self.admin.runtime()
@@ -754,19 +821,19 @@ class FeishuOpsBot:
                 api_report = self.admin.api_report(1)
                 content = (
                     f"**QQ：** {'已连接' if runtime.get('qq_connected') else '等待连接'}\n"
-                    f"**适配器：** `{', '.join(runtime.get('adapters') or ['-'])}`\n"
-                    f"**指令调用（7日）：** `{sum(int(x.get('calls') or 0) for x in commands)}` 次\n"
-                    f"**消息量（今日）：** `{sum(int(x.get('messages') or 0) for x in messages)}` 条\n"
-                    f"**锐评 Token（今日）：** `{tokens.get('total_tokens', 0)}`\n"
-                    f"**AWMC API（今日）：** `{api_report.get('calls', 0)}` 次，"
-                    f"错误 `{api_report.get('errors', 0)}`"
+                    f"**适配器：** {', '.join(runtime.get('adapters') or ['-'])}\n"
+                    f"**指令调用（7日）：** {sum(int(x.get('calls') or 0) for x in commands)} 次\n"
+                    f"**消息量（今日）：** {sum(int(x.get('messages') or 0) for x in messages)} 条\n"
+                    f"**锐评 Token（今日）：** {tokens.get('total_tokens', 0)}\n"
+                    f"**AWMC API（今日）：** {api_report.get('calls', 0)} 次，"
+                    f"错误 {api_report.get('errors', 0)}"
                 )
                 return _card(
                     "AWMC Bot 业务概览",
                     content,
                     actions=[
                         _button("指令调用", "commands"),
-                        _button("消息量", "messages"),
+                        _button("消息量", "messages", days=3),
                         _button("锐评 Token", "analysis_tokens"),
                         _button("AWMC API", "api_report"),
                     ],
@@ -778,16 +845,19 @@ class FeishuOpsBot:
             if kind == "api_report":
                 return api_report_card(self.admin.api_report(1), self.admin.runtime())
             if kind == "messages":
-                return message_stats_card(self.admin.message_ranking(1))
+                selected_days = days if days in {3, 7, 30} else 3
+                return message_stats_card(
+                    self.admin.message_ranking(selected_days), days=selected_days
+                )
             if kind == "ref_query":
                 return _card(
-                    "REF_ID 查询", "请使用 `查询REF <REF_ID>`。", template="orange"
+                    "REF_ID 查询", "请使用 查询REF <REF_ID>。", template="orange"
                 )
         except Exception as exc:
             LOG.exception("business query failed: %s", kind)
             return _card(
                 "业务查询失败",
-                f"查询 `{kind}` 时发生 `{type(exc).__name__}`：{str(exc)[:300]}",
+                f"查询 {kind} 时发生 {type(exc).__name__}：{str(exc)[:300]}",
                 template="red",
             )
         return menu_card(is_admin=True)
@@ -812,7 +882,7 @@ class FeishuOpsBot:
         except Exception as exc:
             LOG.exception("command failed: %s", command)
             card = _card(
-                "操作失败", f"`{type(exc).__name__}`：{str(exc)[:300]}", template="red"
+                "操作失败", f"{type(exc).__name__}：{str(exc)[:300]}", template="red"
             )
         self._reply_card(message.message_id, card)
 
@@ -822,7 +892,7 @@ class FeishuOpsBot:
         if command == "menu":
             return menu_card(is_admin=is_admin)
         if command == "identity":
-            return _card("飞书身份", f"open_id：`{open_id}`")
+            return _card("飞书身份", f"open_id：{open_id}")
         if command == "status":
             return self._safe_status_card(is_admin)
         if command in {"logs", "errors"}:
@@ -837,7 +907,12 @@ class FeishuOpsBot:
             "messages",
             "api_report",
         }:
-            return self._safe_business_card(command)
+            days = 3
+            if command == "messages" and args:
+                if len(args) != 1 or not args[0].isdigit() or int(args[0]) not in {3, 7, 30}:
+                    raise ValueError("用法：消息量 [3|7|30]")
+                days = int(args[0])
+            return self._safe_business_card(command, days=days)
         if command == "ref_query":
             if len(args) != 1 or not re.fullmatch(
                 r"REF-[A-Z0-9]{8,32}", args[0].upper()
@@ -850,7 +925,7 @@ class FeishuOpsBot:
             labels = {"start": "启动", "stop": "停止", "restart": "重启"}
             return confirmation_card(
                 f"确认{labels[command]} Bot",
-                f"即将对 `{SERVICE_NAME}` 执行 `{command}`。",
+                f"即将对 {SERVICE_NAME} 执行 {command}。",
                 "control_confirm",
                 operation=command,
             )
@@ -860,12 +935,12 @@ class FeishuOpsBot:
             row = self.admin.get_user(args[0])
             if row is None:
                 return _card(
-                    "BREAK 查询", f"未找到用户 `{args[0]}`。", template="orange"
+                    "BREAK 查询", f"未找到用户 {args[0]}。", template="orange"
                 )
             return _card(
                 "BREAK 查询",
-                f"用户：`{args[0]}`\n余额：**{row.get('break', 0)} BREAK**\n"
-                f"封禁：`{bool(row.get('banned'))}`",
+                f"用户：{args[0]}\n余额：**{row.get('break', 0)} BREAK**\n"
+                f"封禁：{bool(row.get('banned'))}",
             )
         if command in {"break_add", "break_set"}:
             if len(args) != 2 or not args[0].isdigit():
@@ -881,7 +956,7 @@ class FeishuOpsBot:
             verb = "发放" if mode == "add" else "设置余额为"
             return confirmation_card(
                 "确认 BREAK 操作",
-                f"目标用户：`{args[0]}`\n{verb}：**{amount} BREAK**",
+                f"目标用户：{args[0]}\n{verb}：**{amount} BREAK**",
                 "break_confirm",
                 user_id=args[0],
                 amount=amount,
@@ -896,7 +971,7 @@ class FeishuOpsBot:
             reason = " ".join(args[2:]).strip() or "飞书管理员封禁"
             return confirmation_card(
                 "确认封禁用户",
-                f"用户：`{args[0]}`\n时长：`{'永久' if hours == 0 else f'{hours:g} 小时'}`\n"
+                f"用户：{args[0]}\n时长：{'永久' if hours == 0 else f'{hours:g} 小时'}\n"
                 f"原因：{reason[:200]}",
                 "ban_confirm",
                 user_id=args[0],
@@ -908,7 +983,7 @@ class FeishuOpsBot:
                 raise ValueError("用法：解封 <用户ID>")
             return confirmation_card(
                 "确认解封用户",
-                f"用户：`{args[0]}`",
+                f"用户：{args[0]}",
                 "unban_confirm",
                 user_id=args[0],
             )
@@ -923,6 +998,8 @@ class FeishuOpsBot:
         is_admin = self.is_admin(open_id)
         if not self.is_allowed_chat(chat_id) and not is_admin:
             return self._response(toast="该群未获授权")
+        if action == "menu":
+            return self._response(menu_card(is_admin=is_admin), "已返回主菜单")
         if action == "status":
             return self._response(self._safe_status_card(is_admin), "状态已刷新")
         if action in {"logs", "errors"}:
@@ -939,7 +1016,10 @@ class FeishuOpsBot:
             "messages",
             "api_report",
         }:
-            return self._response(self._safe_business_card(action), "查询已刷新")
+            days = int(value.get("days") or 3)
+            return self._response(
+                self._safe_business_card(action, days=days), "查询已刷新"
+            )
         if action == "admin_menu":
             return self._response(admin_menu_card())
         if action == "control_prepare":
@@ -950,7 +1030,7 @@ class FeishuOpsBot:
             return self._response(
                 confirmation_card(
                     f"确认{labels[operation]} Bot",
-                    f"即将对 `{SERVICE_NAME}` 执行 `{operation}`。",
+                    f"即将对 {SERVICE_NAME} 执行 {operation}。",
                     "control_confirm",
                     operation=operation,
                 )
@@ -985,7 +1065,7 @@ class FeishuOpsBot:
                 LOG.exception("service control failed")
                 card = _card(
                     "Bot 管理失败",
-                    f"`{type(exc).__name__}`：{str(exc)[:300]}",
+                    f"{type(exc).__name__}：{str(exc)[:300]}",
                     template="red",
                 )
             if chat_id:
@@ -998,7 +1078,7 @@ class FeishuOpsBot:
             target=worker, name=f"control-{operation}", daemon=True
         ).start()
         return self._response(
-            _card("操作已提交", f"正在执行 `{operation}`，结果会发送到当前群。"),
+            _card("操作已提交", f"正在执行 {operation}，结果会发送到当前群。"),
             "操作已提交",
         )
 
@@ -1016,8 +1096,8 @@ class FeishuOpsBot:
         return self._response(
             _card(
                 "BREAK 操作完成",
-                f"用户：`{user_id}`\n当前余额：**{result['balance']} BREAK**\n"
-                f"REF_ID：`{result.get('ref_id', '-')}`",
+                f"用户：{user_id}\n当前余额：**{result['balance']} BREAK**\n"
+                f"REF_ID：{result.get('ref_id', '-')}",
                 template="green",
             ),
             "BREAK 已更新",
@@ -1044,7 +1124,7 @@ class FeishuOpsBot:
         return self._response(
             _card(
                 f"用户{label}完成",
-                f"用户：`{user_id}`\nREF_ID：`{result.get('ref_id', '-')}`",
+                f"用户：{user_id}\nREF_ID：{result.get('ref_id', '-')}",
                 template="green",
             ),
             f"已{label}",

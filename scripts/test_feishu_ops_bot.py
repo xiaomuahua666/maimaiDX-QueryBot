@@ -81,13 +81,50 @@ member_card = MODULE.status_card(status, is_admin=False)
 admin_card = MODULE.status_card(status, is_admin=True)
 assert member_card["header"]["template"] == "green"
 assert "1小时 1分钟" in member_card["elements"][0]["text"]["content"]
+assert "`" not in member_card["elements"][0]["text"]["content"]
 waiting_card = MODULE.status_card({**status, "qq_connected": False}, is_admin=False)
 assert waiting_card["header"]["template"] == "orange"
 assert "等待 QQ 连接" in waiting_card["elements"][0]["text"]["content"]
 member_buttons = member_card["elements"][2]["actions"]
 admin_buttons = admin_card["elements"][2]["actions"]
-assert len(member_buttons) == 3
+assert len(member_buttons) == 4
 assert len(admin_buttons) == 5
+assert member_buttons[-1]["value"]["action"] == "menu"
+
+message_card = MODULE.message_stats_card(
+    [
+        {"group_id": "100", "user_id": "200", "messages": 3},
+        {"group_id": "100", "user_id": "201", "messages": 2},
+        {"group_id": "encrypted", "user_id": "ABCDEF", "messages": 999},
+    ],
+    days=7,
+)
+message_text = message_card["elements"][0]["text"]["content"]
+assert "近 7 日消息榜单" in message_text
+assert "QQ 200：3 条" in message_text
+assert "ABCDEF" not in message_text
+assert "100：5 条" in message_text
+assert message_card["elements"][-1]["actions"][-1]["value"]["action"] == "menu"
+
+quota_card = MODULE.api_report_card(
+    {
+        "days": 1,
+        "calls": 10,
+        "success": 9,
+        "errors": 1,
+        "not_found_404": 0,
+        "quota": {
+            "exceeded": 1,
+            "observed": 1,
+            "latest": {"scope": "personal", "category": "read", "window": "1h", "used": 10, "limit": 10},
+        },
+        "paths": [],
+    },
+    {"awmc_api_mode": "public", "awmc_api_token_configured": True},
+)
+quota_text = quota_card["elements"][0]["text"]["content"]
+assert "限额触发：1 次" in quota_text
+assert "使用 10/10" in quota_text
 
 confirm = MODULE.confirmation_card(
     "确认", "发放 100 BREAK", "break_confirm", user_id="123", amount=100

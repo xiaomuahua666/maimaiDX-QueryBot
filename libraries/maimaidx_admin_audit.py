@@ -337,6 +337,8 @@ class AdminAuditDatabase:
                 (since,),
             ).fetchall()
         total = success = errors = not_found = 0
+        quota_exceeded = quota_observed = 0
+        latest_quota: Optional[dict[str, Any]] = None
         paths: dict[str, dict[str, int]] = {}
         for row in rows:
             total += 1
@@ -349,6 +351,23 @@ class AdminAuditDatabase:
                 detail = json.loads(row["detail"] or "{}")
             except (TypeError, ValueError):
                 detail = {}
+            if not isinstance(detail, dict):
+                detail = {}
+            if str(detail.get("error_code") or "").lower() == "quota_exceeded":
+                quota_exceeded += 1
+            raw_quota = detail.get("quota")
+            if isinstance(raw_quota, dict) and raw_quota:
+                quota_observed += 1
+                if latest_quota is None:
+                    latest_quota = {
+                        key: raw_quota[key]
+                        for key in (
+                            "scope", "category", "window", "windowLabel",
+                            "used", "limit", "requested", "retryAt", "resetAt",
+                            "retryAfterSeconds",
+                        )
+                        if key in raw_quota
+                    }
             path = str(detail.get("path") or "unknown")[:160]
             item = paths.setdefault(path, {"calls": 0, "errors": 0, "404": 0})
             item["calls"] += 1
@@ -369,6 +388,11 @@ class AdminAuditDatabase:
             "success": success,
             "errors": errors,
             "not_found_404": not_found,
+            "quota": {
+                "exceeded": quota_exceeded,
+                "observed": quota_observed,
+                "latest": latest_quota,
+            },
             "paths": top_paths,
         }
 
