@@ -20,3 +20,4 @@ from .mai_pmyx import *
 from .mai_qq_bind import *
 from .mai_forum_bind import *
 from .mai_rank_course import *
+from .mai_howto import *
