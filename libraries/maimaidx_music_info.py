@@ -999,7 +999,7 @@ async def draw_plate_table(
         progress_bg = assets.plate_progress_wu_bg if is_wu else assets.plate_progress_bg
         im.alpha_composite(progress_bg, (175, 20))
         im.alpha_composite(
-            Image.open(plate_versiondir / f'{version}{"極" if plan == "极" else plan}.png').convert('RGBA').resize((1000, 161)),
+            Image.open(plate_versiondir / f'{_ver}{"極" if plan == "极" else plan}.png').convert('RGBA').resize((1000, 161)),
             (200, 45),
         )
 
