@@ -61,6 +61,14 @@ stopped = MODULE.build_card(
 assert stopped["card"]["header"]["template"] == "red"
 assert "需要人工检查" in stopped["card"]["elements"][0]["text"]["content"]
 
+updating = MODULE.build_card(
+    EVENT,
+    {"state": "updating", "deployed_commit": SHA, "bot_pid": 56303},
+    ENV,
+)
+assert updating["card"]["header"]["template"] == "orange"
+assert "等待新进程启动" in updating["card"]["elements"][0]["text"]["content"]
+
 assert MODULE._duration(59) == "59s"
 assert MODULE._duration(90061) == "1d 1h 1m"
 

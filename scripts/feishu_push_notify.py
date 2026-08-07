@@ -106,6 +106,12 @@ def _status_view(status: dict[str, Any], pushed_sha: str) -> dict[str, str]:
             "template": "orange",
             "label": "🟡 运行中，等待自动更新",
         }
+    if state == "updating":
+        return {
+            "title": "main 已更新，Bot 更新中",
+            "template": "orange",
+            "label": "🟡 旧进程仍在服务，等待新进程启动",
+        }
     if state == "restarting":
         return {
             "title": "main 已更新，Bot 重启中",
