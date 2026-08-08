@@ -816,63 +816,11 @@ def computeRa(
     return data
 
 
-# 拟合 b50：直接按表上 ra 算，定数 1.0～15.0、达成率档位 → rating，不做公式兜底
-# 档位阈值必须从高到低排列，以便 _get_fit_b50_table_column 按“第一个 achievement >= thresh”得到正确评级
-_FIT_B50_TABLE_THRESHOLDS: List[Tuple[float, float, str]] = [
-    (100.5, 22.4, 'SSSp'),
-    (100.0, 21.6, 'SSS'),
-    (99.999, 21.4, 'SSS'),
-    (99.5, 21.1, 'SSp'),
-    (99.0, 20.8, 'SSp'),
-    (98.0, 20.3, 'SS'),
-    (97.0, 20.0, 'SS'),
-    (96.0, 20.2, 'Sp'),
-    (95.0, 20.0, 'Sp'),
-    (94.0, 15.2, 'AA'),
-    (91.0, 20.96, 'S'),
-    (90.0, 13.6, 'A'),
-    (80.0, 12.0, 'BBB'),
-    (75.0, 11.2, 'BB'),
-    (70.0, 9.6, 'B'),
-    (60.0, 8.0, 'C'),
-    (50.0, 7.0, 'D'),
-]
-
-_FIT_B50_LEVEL_MIN = 1.0
-_FIT_B50_LEVEL_MAX = 15.0
-
-
-def _build_fit_b50_rating_table() -> dict:
-    """按表生成 (level, 档位索引) -> rating；level 1.0～15.0 步进 0.1，每格用 定数×达成率×系数 取整。"""
-    table = {}
-    levels = [round(i * 0.1, 1) for i in range(10, 151)]
-    for lev in levels:
-        for idx, (thresh, coef, _) in enumerate(_FIT_B50_TABLE_THRESHOLDS):
-            ratio = 1.005 if thresh >= 100.5 else thresh / 100
-            table[(lev, idx)] = round(lev * ratio * coef)
-    return table
-
-
-_FIT_B50_RATING_TABLE: dict = _build_fit_b50_rating_table()
-
-
-def _get_fit_b50_table_column(achievement: float) -> Tuple[int, str]:
-    """按达成率取表列索引与 RANK：从高到低第一个 achievement >= 阈值的列；<50 用最后一列。"""
-    for idx, (thresh, _, rate) in enumerate(_FIT_B50_TABLE_THRESHOLDS):
-        if achievement >= thresh:
-            return (idx, rate)
-    return (len(_FIT_B50_TABLE_THRESHOLDS) - 1, 'D')
-
-
+# 拟合 b50：复用标准 computeRa，仅把 ds 替换为拟合定数 fit_diff。
+# 评级阈值和系数与真实 b50 完全一致，避免拟合图标/分数与真实 b50 出现偏差。
 def computeRa_fit_b50(ds: float, achievement: float) -> Tuple[int, str]:
-    """
-    拟合 b50 单曲 rating：只查表，直接按表上的 ra。定数 1.0～15.0，超出按边界；达成率对档位取列。
-    """
-    level_key = round(ds, 1)
-    level_key = max(_FIT_B50_LEVEL_MIN, min(_FIT_B50_LEVEL_MAX, level_key))
-    col_idx, rate = _get_fit_b50_table_column(achievement)
-    ra = _FIT_B50_RATING_TABLE[(level_key, col_idx)]
-    return (ra, rate)
+    """拟合 b50 单曲 rating：(ra, rate)，ra=fit_diff×达成率×标准系数。"""
+    return computeRa(ds, achievement, israte=True)
 
 
 # FC 状态：fc / fcp（不含 ap / app）；AP 状态：ap / app
