@@ -23,6 +23,7 @@ jobs:
           fetch-depth: 1
 
       - name: Send Feishu card
+        continue-on-error: true
         env:
           FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
           FEISHU_WEBHOOK_SECRET: ${{ secrets.FEISHU_WEBHOOK_SECRET }}

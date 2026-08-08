@@ -72,6 +72,7 @@ jobs:
 
       - name: Send waiting-for-QQ notice
         if: steps.bot-status.outputs.qq_connected != 'true'
+        continue-on-error: true
         env:
           FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
           FEISHU_WEBHOOK_SECRET: ${{ secrets.FEISHU_WEBHOOK_SECRET }}
@@ -115,6 +116,7 @@ jobs:
           echo "qq_connected=$(jq -r '.qq_connected // "unknown"' <<<"$status_json")" >> "$GITHUB_OUTPUT"
 
       - name: Send Feishu card
+        continue-on-error: true
         env:
           FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
           FEISHU_WEBHOOK_SECRET: ${{ secrets.FEISHU_WEBHOOK_SECRET }}
