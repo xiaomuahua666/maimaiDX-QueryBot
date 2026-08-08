@@ -83,4 +83,41 @@ assert "等待新进程启动" in updating["card"]["elements"][0]["text"]["conte
 assert MODULE._duration(59) == "59s"
 assert MODULE._duration(90061) == "1d 1h 1m"
 
+
+# PR card tests
+PR_EVENT = {
+    "action": "opened",
+    "pull_request": {
+        "number": 42,
+        "title": "feat: add PR notification",
+        "body": "This PR adds PR notifications to Feishu.",
+        "html_url": "https://github.com/AWMC-TEAM/maimaiDX-QueryBot/pull/42",
+        "state": "open",
+        "merged": False,
+        "user": {"login": "Michaelwucoc", "avatar_url": ""},
+        "base": {"ref": "main"},
+        "head": {"ref": "feat/pr-notify"},
+    },
+    "repository": {
+        "full_name": "AWMC-TEAM/maimaiDX-QueryBot",
+        "html_url": "https://github.com/AWMC-TEAM/maimaiDX-QueryBot",
+    },
+}
+
+pr_opened = MODULE.build_pr_card(PR_EVENT, ENV)
+assert pr_opened["msg_type"] == "interactive"
+assert pr_opened["card"]["header"]["template"] == "blue"
+assert "feat: add PR notification" in pr_opened["card"]["header"]["title"]["content"]
+pr_content = pr_opened["card"]["elements"][0]["text"]["content"]
+for expected in ("#42", "feat/pr-notify", "main", "Michaelwucoc", "PR 已创建"):
+    assert expected in pr_content, expected
+pr_buttons = pr_opened["card"]["elements"][2]["actions"]
+assert [b["text"]["content"] for b in pr_buttons] == ["查看 PR", "运行记录"]
+
+pr_merged = dict(PR_EVENT, action="closed")
+pr_merged["pull_request"] = dict(PR_EVENT["pull_request"], state="closed", merged=True)
+pr_merged_card = MODULE.build_pr_card(pr_merged, ENV)
+assert pr_merged_card["card"]["header"]["template"] == "green"
+assert "已合并" in pr_merged_card["card"]["elements"][0]["text"]["content"]
+
 print("Feishu push notification checks: OK")

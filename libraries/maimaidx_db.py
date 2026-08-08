@@ -45,6 +45,10 @@ class UnifiedCursor:
     def _convert(self, sql: str) -> str:
         if self._backend != 'mysql':
             return sql
+        # CAST(x AS TEXT) → CAST(x AS CHAR)  (MySQL 不支持 TEXT 作为 CAST 目标类型)
+        sql = re.sub(
+            r'CAST\(([^)]+)\s+AS\s+TEXT\)', r'CAST(\1 AS CHAR)', sql, flags=re.IGNORECASE,
+        )
         # INSERT OR IGNORE → INSERT IGNORE
         sql = sql.replace('INSERT OR IGNORE INTO', 'INSERT IGNORE INTO')
         # ON CONFLICT(col) DO UPDATE SET x = excluded.x → ON DUPLICATE KEY UPDATE x = VALUES(x)

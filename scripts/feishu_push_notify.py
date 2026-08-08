@@ -227,6 +227,106 @@ def send(webhook_url: str, payload: dict[str, Any]) -> None:
         raise RuntimeError(f"Feishu webhook rejected the message: {body}")
 
 
+
+def build_pr_card(event: dict[str, Any], env: dict[str, str]) -> dict[str, Any]:
+    """Build a Feishu card for a pull_request event."""
+    pr = event.get("pull_request") or {}
+    repo = event.get("repository") or {}
+    action = str(event.get("action") or "")
+
+    repo_name = str(repo.get("full_name") or env.get("GITHUB_REPOSITORY") or "")
+    repo_url = str(repo.get("html_url") or f"{env.get('GITHUB_SERVER_URL', 'https://github.com')}/{repo_name}")
+    pr_url = str(pr.get("html_url") or "")
+    pr_number = pr.get("number") or env.get("GITHUB_REF_NAME", "").split("/")[0]
+    pr_title = str(pr.get("title") or "(untitled)")
+    pr_body = (str(pr.get("body") or "").strip())[:240]
+    pr_state = str(pr.get("state") or "")
+    merged = bool(pr.get("merged"))
+
+    user = pr.get("user") or {}
+    user_name = str(user.get("login") or "")
+
+    base_ref = str((pr.get("base") or {}).get("ref") or "")
+    head_ref = str((pr.get("head") or {}).get("ref") or "")
+
+    action_labels = {
+        "opened": ("PR 已创建", "blue"),
+        "reopened": ("PR 已重新打开", "blue"),
+        "closed": ("PR 已合并" if merged else "PR 已关闭", "green" if merged else "grey"),
+        "synchronize": ("PR 有新提交", "orange"),
+        "ready_for_review": ("PR 已准备好评审", "blue"),
+        "review_requested": ("PR 请求评审", "blue"),
+        "approved": ("PR 已通过评审", "green"),
+        "merged": ("PR 已合并", "green"),
+    }
+    label, template = action_labels.get(action, (f"PR: {action}", "blue"))
+
+    details_lines = [
+        f"**仓库：** [{repo_name}]({repo_url})",
+        f"**PR：** [#{pr_number} {pr_title}]({pr_url})",
+        f"**分支：** `{head_ref}` → `{base_ref}`",
+        f"**作者：** {user_name}",
+        f"**状态：** {_pr_state_text(merged, pr_state, action)}",
+        f"**操作：** {label}",
+    ]
+    if pr_body:
+        details_lines.append("**描述：**")
+        details_lines.append(pr_body)
+    details = "\n".join(details_lines)
+
+    run_url = (
+        f"{env.get('GITHUB_SERVER_URL', 'https://github.com')}/"
+        f"{env.get('GITHUB_REPOSITORY', repo_name)}/actions/runs/"
+        f"{env.get('GITHUB_RUN_ID', '')}"
+    )
+
+    elements = [
+        {"tag": "div", "text": {"tag": "lark_md", "content": details}},
+        {"tag": "hr"},
+        {
+            "tag": "action",
+            "actions": [
+                {
+                    "tag": "button",
+                    "type": "primary",
+                    "text": {"tag": "plain_text", "content": "查看 PR"},
+                    "url": pr_url,
+                },
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "运行记录"},
+                    "url": run_url,
+                },
+            ],
+        },
+    ]
+
+    return {
+        "msg_type": "interactive",
+        "card": {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "template": template,
+                "title": {"tag": "plain_text", "content": f"[PR] {pr_title}"},
+            },
+            "elements": elements,
+        },
+    }
+
+
+def _pr_state_text(merged: bool, pr_state: str, action: str) -> str:
+    if merged:
+        return "已合并"
+    if pr_state == "closed":
+        return "已关闭"
+    if action == "ready_for_review":
+        return "待评审"
+    if action == "review_requested":
+        return "请求评审"
+    return "进行中"
+
+
+
 def main() -> None:
     webhook_url = os.environ.get("FEISHU_WEBHOOK_URL", "").strip()
     if not webhook_url:
@@ -234,8 +334,13 @@ def main() -> None:
 
     event_path = Path(os.environ["GITHUB_EVENT_PATH"])
     event = json.loads(event_path.read_text(encoding="utf-8"))
-    status = json.loads(os.environ.get("BOT_STATUS_JSON") or '{"state":"unknown"}')
-    payload = build_card(event, status, dict(os.environ))
+    env_map = dict(os.environ)
+    event_name = env_map.get("GITHUB_EVENT_NAME", "")
+    if event_name == "pull_request" or "pull_request" in event:
+        payload = build_pr_card(event, env_map)
+    else:
+        status = json.loads(os.environ.get("BOT_STATUS_JSON") or '{"state":"unknown"}')
+        payload = build_card(event, status, env_map)
     signing_secret = os.environ.get("FEISHU_WEBHOOK_SECRET", "").strip()
     if signing_secret:
         _add_signature(payload, signing_secret)

@@ -37,9 +37,9 @@ jobs:
         id: bot-status
         env:
           SSH_CONFIGURED: ${{ steps.ssh-config.outputs.configured }}
-          SSH_HOST: ${{ vars.BOT_STATUS_SSH_HOST }}
-          SSH_PORT: ${{ vars.BOT_STATUS_SSH_PORT || '22' }}
-          SSH_USER: ${{ vars.BOT_STATUS_SSH_USER || 'root' }}
+          SSH_HOST: ${{ secrets.BOT_STATUS_SSH_HOST }}
+          SSH_PORT: ${{ secrets.BOT_STATUS_SSH_PORT || '22' }}
+          SSH_USER: ${{ secrets.BOT_STATUS_SSH_USER || 'root' }}
         run: |
           status_json='{"state":"unknown","detail":"production status access is not configured"}'
           if [[ "$SSH_CONFIGURED" == "true" && -n "$SSH_HOST" ]]; then
@@ -82,9 +82,9 @@ jobs:
         id: qq-status
         env:
           SSH_CONFIGURED: ${{ steps.ssh-config.outputs.configured }}
-          SSH_HOST: ${{ vars.BOT_STATUS_SSH_HOST }}
-          SSH_PORT: ${{ vars.BOT_STATUS_SSH_PORT || '22' }}
-          SSH_USER: ${{ vars.BOT_STATUS_SSH_USER || 'root' }}
+          SSH_HOST: ${{ secrets.BOT_STATUS_SSH_HOST }}
+          SSH_PORT: ${{ secrets.BOT_STATUS_SSH_PORT || '22' }}
+          SSH_USER: ${{ secrets.BOT_STATUS_SSH_USER || 'root' }}
           INITIAL_STATUS_JSON: ${{ steps.bot-status.outputs.json }}
         run: |
           status_json="$INITIAL_STATUS_JSON"
@@ -112,6 +112,7 @@ jobs:
             echo "$status_json"
             echo EOF
           } >> "$GITHUB_OUTPUT"
+          echo "qq_connected=$(jq -r '.qq_connected // "unknown"' <<<"$status_json")" >> "$GITHUB_OUTPUT"
 
       - name: Send Feishu card
         env:
