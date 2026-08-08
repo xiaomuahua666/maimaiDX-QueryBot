@@ -710,7 +710,8 @@ def _image_segment(bio) -> "MessageSegment":
 
 
 async def render_group_rating_board(bot, group_id: int, top_n: int = 10,
-                                    self_qq: Optional[int] = None):
+                                    self_qq: Optional[int] = None,
+                                    user_name: str = 'Milk'):
     rows = await get_group_member_ratings(bot, group_id)
     if not rows:
         return '群内暂无已绑定查分器的成员。'
@@ -725,13 +726,13 @@ async def render_group_rating_board(bot, group_id: int, top_n: int = 10,
     bio = await render_rating_ranking(
         take, title='群 Rating 排行',
         subtitle=f'共 {len(rows)} 人 · 显示前 {len(take)} 名',
-        self_qq=self_qq, self_rank=self_rank, all_rows=rows,
+        self_qq=self_qq, self_rank=self_rank, all_rows=rows, user_name=user_name,
     )
     return _image_segment(bio)
 
 
 async def render_group_weak_board(bot, group_id: int, self_qq: int,
-                                 half: int = 5):
+                                 half: int = 5, user_name: str = 'Milk'):
     """我在群里有多菜：以请求用户为中心，渲染其前后各 half 位的排名上下文图。"""
     rows = await get_group_member_ratings(bot, group_id)
     if not rows:
@@ -739,14 +740,15 @@ async def render_group_weak_board(bot, group_id: int, self_qq: int,
     if self_qq is None or not any(uid == self_qq for uid, _, _ in rows):
         return '你尚未绑定查分器或未同意协议，无法参与群内排名。'
     from .maimaidx_leaderboard_image import render_my_rank_context
-    bio = await render_my_rank_context(rows, self_qq=self_qq, half=half)
+    bio = await render_my_rank_context(rows, self_qq=self_qq, half=half, user_name=user_name)
     if bio is None:
         return '未在群内排名中找到你，请先绑定查分器。'
     return _image_segment(bio)
 
 
 async def render_group_gain_board(bot, group_id: int, days: int = 7,
-                                  top_n: int = 15, self_qq: Optional[int] = None):
+                                  top_n: int = 15, self_qq: Optional[int] = None,
+                                  user_name: str = 'Milk'):
     days = max(1, min(90, int(days)))
     top_n = max(1, min(50, int(top_n)))
     cache_key = (group_id, days)
@@ -778,13 +780,14 @@ async def render_group_gain_board(bot, group_id: int, days: int = 7,
     bio = await render_gain_ranking(
         rows[:top_n], title='群吃分榜',
         subtitle=f'近 {days} 天 · rating 增量 · 共 {len(rows)} 人',
-        self_qq=self_qq,
+        self_qq=self_qq, user_name=user_name,
     )
     return _image_segment(bio)
 
 
 async def render_group_sun_lock_board(bot, group_id: int, mode: str = 'sun',
-                                      top_n: int = 15, self_qq: Optional[int] = None):
+                                      top_n: int = 15, self_qq: Optional[int] = None,
+                                      user_name: str = 'Milk'):
     mode = (mode or 'sun').lower()
     if mode not in ('sun', 'lock'):
         mode = 'sun'
@@ -832,7 +835,7 @@ async def render_group_sun_lock_board(bot, group_id: int, mode: str = 'sun',
     bio = await render_sun_lock_ranking(
         rows[:top_n], title=f'群{label}榜',
         subtitle=f'全量成绩中落在{label}区间的谱面条数 · 共 {len(rows)} 人',
-        mode=mode, self_qq=self_qq,
+        mode=mode, self_qq=self_qq, user_name=user_name,
     )
     return _image_segment(bio)
 
@@ -840,7 +843,8 @@ async def render_group_sun_lock_board(bot, group_id: int, mode: str = 'sun',
 async def render_group_song_board(bot, group_id: int, music_id: str,
                                   music_title: str, level_index: int = 3,
                                   top_n: int = 10, self_qq: Optional[int] = None,
-                                  cover_path: Optional[str] = None):
+                                  cover_path: Optional[str] = None,
+                                  user_name: str = 'Milk'):
     rows = await get_group_member_song_scores(bot, group_id, music_id, level_index)
     if not rows:
         diff_name = get_difficulty_name(level_index)
@@ -853,6 +857,6 @@ async def render_group_song_board(bot, group_id: int, music_id: str,
         level_index=level_index,
         total_players=len(rows),
         self_qq=self_qq,
-        cover_path=cover_path,
+        cover_path=cover_path, user_name=user_name,
     )
     return _image_segment(bio)

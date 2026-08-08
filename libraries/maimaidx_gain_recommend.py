@@ -296,5 +296,14 @@ async def generate_today_gain_recommendation_image(qqid: int, top_n: int = 12):
     from PIL import Image
     from .maimaidx_leaderboard_image import render_gain_recommendation
     from .image import image_to_base64
-    bio = render_gain_recommendation(groups, summary)
+
+    # 用户昵称 + 近 14 天 rating 趋势 + 当前 rating
+    snaps = _load_recent_snapshots(qqid, limit=14)
+    trend = [(s.date, int(s.rating)) for s in snaps if s.rating is not None]
+    current_rating = int(trend[-1][1]) if trend else None
+    user_name = (snaps[-1].nickname if snaps else '') or str(qqid)
+    bio = render_gain_recommendation(
+        groups, summary, user_name=user_name,
+        rating_trend=trend, current_rating=current_rating,
+    )
     return MessageSegment.image(image_to_base64(Image.open(bio)))

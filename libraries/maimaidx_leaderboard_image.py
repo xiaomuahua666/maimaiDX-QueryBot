@@ -219,6 +219,34 @@ def _stacked_bar(im, x, y, w, h, segments, radius=8):
     im.alpha_composite(bar, (x, y))
 
 
+def _sparkline(im, x, y, w, h, values, color, fill_alpha=70):
+    """绘制迷你 rating 趋势折线 + 渐变填充。values 为等间距数值序列。"""
+    if not values or len(values) < 2:
+        return
+    d = ImageDraw.Draw(im)
+    lo = min(values)
+    hi = max(values)
+    span = (hi - lo) or 1
+    pad = 6
+    n = len(values)
+    pts = []
+    for i, v in enumerate(values):
+        px = x + (w * i / (n - 1) if n > 1 else 0)
+        py = y + h - pad - (h - 2 * pad) * (v - lo) / span
+        pts.append((px, py))
+    layer = Image.new('RGBA', (w + 2, h + 2), (0, 0, 0, 0))
+    ld = ImageDraw.Draw(layer)
+    poly = [(int(pts[0][0]) - x, h - 1)]
+    poly += [(int(px) - x, int(py)) for px, py in pts]
+    poly += [(int(pts[-1][0]) - x, h - 1)]
+    ld.polygon(poly, fill=color[:3] + (fill_alpha,))
+    im.alpha_composite(layer, (x, y))
+    d.line(pts, fill=color, width=3, joint='curve')
+    ex, ey = pts[-1]
+    d.ellipse((ex - 5, ey - 5, ex + 5, ey + 5), fill=(255, 255, 255, 255))
+    d.ellipse((ex - 3, ey - 3, ex + 3, ey + 3), fill=color)
+
+
 # ----------------------------------------------------------------------
 # 背景与装饰
 # ----------------------------------------------------------------------
@@ -241,9 +269,10 @@ def _make_bg(w: int, h: int) -> Image.Image:
 
 
 def _brand_mark(im: Image.Image, w: int, label: str = 'Milk'):
-    """左上角品牌标识：简洁文字小牌。"""
+    """左上角品牌标识：显示请求用户名，过长时截断以避免与标题重叠。"""
     d = ImageDraw.Draw(im)
     font = _font_bold(20)
+    label = _truncate(d, image_safe_text(label or 'Milk'), font, 180)
     tw = _text_len(d, label, font)
     chip_w = int(tw + 36)
     box = (36, 30, 36 + chip_w, 78)
@@ -468,6 +497,7 @@ async def render_rating_ranking(
     self_qq: Optional[int] = None,
     self_rank: Optional[int] = None,
     all_rows: Optional[Sequence[Tuple[int, str, int]]] = None,
+    user_name: str = 'Milk',
 ) -> BytesIO:
     """rows: 显示的前 N 行 [(uid, name, rating), ...] 已降序；
     all_rows: 全群数据，用于统计面板（默认等于 rows）。"""
@@ -484,7 +514,7 @@ async def render_rating_ranking(
 
     im = _make_bg(width, total_h)
     d = ImageDraw.Draw(im)
-    _brand_mark(im, width)
+    _brand_mark(im, width, user_name)
     _period_chip(im, width, 'Rating')
     avatars = await _fetch_avatars([r[0] for r in rows])
 
@@ -631,6 +661,7 @@ async def render_my_rank_context(
     rows: Sequence[Tuple[int, str, int]],
     self_qq: int,
     half: int = 5,
+    user_name: str = 'Milk',
 ) -> Optional[BytesIO]:
     """以请求用户为中心的群 Rating 排名上下文：展示用户排名/百分位，以及前后各 half 位。
 
@@ -666,7 +697,7 @@ async def render_my_rank_context(
 
     im = _make_bg(width, total_h)
     d = ImageDraw.Draw(im)
-    _brand_mark(im, width)
+    _brand_mark(im, width, user_name)
     _period_chip(im, width, '我的排名')
     avatars = await _fetch_avatars([r[0] for _, r in window])
 
@@ -768,6 +799,7 @@ async def render_song_leaderboard(
     total_players: Optional[int] = None,
     self_qq: Optional[int] = None,
     cover_path: Optional[str] = None,
+    user_name: str = 'Milk',
 ) -> BytesIO:
     """rows: [(uid, name, score_info), ...] score_info: achievements/fc/fs/dxScore..."""
     width = 1080
@@ -783,7 +815,7 @@ async def render_song_leaderboard(
 
     im = _make_bg(width, total_h)
     d = ImageDraw.Draw(im)
-    _brand_mark(im, width)
+    _brand_mark(im, width, user_name)
     _period_chip(im, width, '单曲排行')
     avatars = await _fetch_avatars([r[0] for r in rows])
 
@@ -961,6 +993,7 @@ async def render_gain_ranking(
     rows: Sequence[Tuple[int, str, int, int, int]],
     title: str, subtitle: str,
     self_qq: Optional[int] = None,
+    user_name: str = 'Milk',
 ) -> BytesIO:
     width = 1080
     mx = 40
@@ -974,7 +1007,7 @@ async def render_gain_ranking(
 
     im = _make_bg(width, total_h)
     d = ImageDraw.Draw(im)
-    _brand_mark(im, width)
+    _brand_mark(im, width, user_name)
     _period_chip(im, width, '吃分榜')
     avatars = await _fetch_avatars([r[0] for r in rows])
 
@@ -1036,6 +1069,7 @@ async def render_sun_lock_ranking(
     title: str, subtitle: str,
     mode: str = 'sun',
     self_qq: Optional[int] = None,
+    user_name: str = 'Milk',
 ) -> BytesIO:
     width = 1080
     mx = 40
@@ -1049,7 +1083,7 @@ async def render_sun_lock_ranking(
 
     im = _make_bg(width, total_h)
     d = ImageDraw.Draw(im)
-    _brand_mark(im, width)
+    _brand_mark(im, width, user_name)
     _period_chip(im, width, '寸止/锁血' if mode == 'sun' else '锁血/寸止')
     avatars = await _fetch_avatars([r[0] for r in rows])
 
@@ -1113,7 +1147,10 @@ _ZONE_META = {
 
 
 def render_gain_recommendation(sections: Dict[str, List[dict]],
-                               summary_lines: List[str]) -> BytesIO:
+                               summary_lines: List[str],
+                               user_name: str = 'Milk',
+                               rating_trend: Optional[Sequence[Tuple[str, int]]] = None,
+                               current_rating: Optional[int] = None) -> BytesIO:
     width = 1080
     mx = 40
     inner_w = width - mx * 2
@@ -1121,7 +1158,16 @@ def render_gain_recommendation(sections: Dict[str, List[dict]],
     gap = 12
     section_gap = 18
 
-    y = 130
+    # ---------- Hero：当前 rating + 趋势图 + 统计 ----------
+    hero_y = 118
+    hero_h = 164
+    # 候选总数 / 理论可吃净增（各区净增之和）
+    total_candidates = sum(len(v or []) for v in sections.values())
+    total_net = sum(int(p.get('net_gain', 0))
+                    for v in sections.values() for p in (v or []))
+
+    # ---------- 计算各分区高度 ----------
+    y = hero_y + hero_h + 20
     for zone in ('稳赚', '均衡', '冲刺'):
         items = sections.get(zone) or []
         if not items:
@@ -1133,18 +1179,80 @@ def render_gain_recommendation(sections: Dict[str, List[dict]],
 
     im = _make_bg(width, total_h)
     d = ImageDraw.Draw(im)
-    _brand_mark(im, width)
+    _brand_mark(im, width, user_name)
     _period_chip(im, width, '吃分推荐')
     _draw_title(d, mx + 150, 44, 32, '今日吃分推荐', _TEXT)
     _draw_title(d, mx + 150, 86, 17, ' · '.join(summary_lines), _TEXT_SOFT)
 
-    y = 140
+    # Hero 卡片
+    _card(im, (mx, hero_y, mx + inner_w, hero_y + hero_h), radius=24,
+          fill=(255, 255, 255, 230))
+    # 左：当前 rating
+    cr_x = mx + 30
+    d.text((cr_x, hero_y + 24), '当前 Rating', font=_font_bold(16), fill=_MUTED)
+    if current_rating is not None:
+        num_font46 = _font_mono(46)
+        num_text = f'{current_rating}'
+        d.text((cr_x, hero_y + 48), num_text, font=num_font46, fill=_TEXT)
+        # 游戏 rating 徽章紧贴数字右侧，按文字宽度定位避免重叠
+        num_w = int(_text_len(d, num_text, num_font46))
+        badge_h = 30
+        badge_right = cr_x + num_w + 18 + rating_badge_width(badge_h)
+        _draw_rating_badge(im, badge_right, hero_y + 48 + 23, current_rating, height=badge_h)
+    else:
+        d.text((cr_x, hero_y + 54), '—', font=_font_mono(46), fill=_MUTED)
+    # 左下：推荐汇总
+    sum_font = _font_bold(15)
+    d.text((cr_x, hero_y + hero_h - 36),
+           f'推荐 {total_candidates} 首  ·  理论可吃 ', font=sum_font, fill=_MUTED)
+    sum_w = int(_text_len(d, f'推荐 {total_candidates} 首  ·  理论可吃 ', sum_font))
+    d.text((cr_x + sum_w, hero_y + hero_h - 36), f'+{total_net} ra',
+           font=_font_bold(15), fill=_GREEN)
+
+    # 中/右：趋势迷你图
+    trend_x = mx + 320
+    trend_w = inner_w - 340 - 20
+    d.text((trend_x, hero_y + 22), 'Rating 走势', font=_font_bold(16), fill=_MUTED)
+    if rating_trend and len(rating_trend) >= 2:
+        vals = [int(v) for _, v in rating_trend]
+        first_lbl, first_v = rating_trend[0][0], int(rating_trend[0][1])
+        last_lbl, last_v = rating_trend[-1][0], int(rating_trend[-1][1])
+        delta = last_v - first_v
+        peak = max(vals)
+        trend_color = _GREEN if delta >= 0 else _RED
+        _sparkline(im, trend_x, hero_y + 40, trend_w, 70, vals, trend_color)
+        # 起止标签
+        d.text((trend_x, hero_y + 114), f'{first_lbl}  {first_v}',
+               font=_font_mono(13), fill=_MUTED)
+        d.text((trend_x + trend_w, hero_y + 114), f'{last_v}  {last_lbl}',
+               font=_font_mono(13), fill=_MUTED, anchor='rt')
+        # 变化胶囊
+        sign = '+' if delta >= 0 else ''
+        chip_txt = f'{sign}{delta}'
+        cf = _font_bold(18)
+        cw = int(_text_len(d, chip_txt, cf)) + 24
+        _card(im, (trend_x + trend_w - cw, hero_y + 18,
+                   trend_x + trend_w, hero_y + 46), radius=14,
+              fill=trend_color[:3] + (235,), shadow=False)
+        d.text((trend_x + trend_w - cw // 2, hero_y + 32), chip_txt,
+               font=cf, fill=(255, 255, 255, 255), anchor='mm')
+        # 峰值小字
+        d.text((trend_x + 100, hero_y + 22), f'区间最高 {peak}',
+               font=_font_bold(14), fill=_TEXT_SOFT)
+    else:
+        _card(im, (trend_x, hero_y + 44, trend_x + trend_w, hero_y + 112),
+              radius=16, fill=(240, 243, 250, 255), shadow=False)
+        d.text((trend_x + trend_w // 2, hero_y + 78),
+               '存档不足，暂无趋势（开启数据存储后积累历史）',
+               font=_font_bold(15), fill=_MUTED, anchor='mm')
+
+    # ---------- 分区推荐卡片 ----------
+    y = hero_y + hero_h + 20
     for zone in ('稳赚', '均衡', '冲刺'):
         items = sections.get(zone) or []
         if not items:
             continue
         meta = _ZONE_META[zone]
-        # 分区标题
         _card(im, (mx, y, mx + 170, y + 42), radius=21,
               fill=meta['color'][:3] + (235,), shadow=False)
         d.text((mx + 24, y + 21), f"{meta['icon']} {zone}",
@@ -1156,19 +1264,16 @@ def render_gain_recommendation(sections: Dict[str, List[dict]],
         for p in items:
             box = (mx, y, mx + inner_w, y + card_h)
             _card(im, box, radius=18, fill=(255, 255, 255, 245), border=_CARD_BORDER)
-            # 方形曲绘
             cov_size = 76
             try:
                 cov = Image.open(music_picture(p.get('song_id'))).convert('RGBA').resize((cov_size, cov_size))
             except Exception:
                 cov = _cover_placeholder(cov_size, "♪", meta["color"])
             im.alpha_composite(cov, (mx + 14, y + 16))
-            # 曲名
             nfont = _font_bold(23)
             d.text((mx + 104, y + 16),
                    _truncate(d, p['title'], nfont, 360),
                    font=nfont, fill=_TEXT)
-            # 难度
             lvl_font = _font_bold(15)
             lvl_text = f' {p["level"]} '
             lw = _text_len(d, lvl_text, lvl_font) + 16
@@ -1179,20 +1284,17 @@ def render_gain_recommendation(sections: Dict[str, List[dict]],
             d.text((mx + 104 + int(lw) + 12, y + 65),
                    f"拟合 {p['fit_diff']:.2f} / 定数 {p['ds']:.2f}",
                    font=_font_bold(15), fill=_TEXT_SOFT, anchor='lm')
-            # 达成率变化
             d.text((mx + 470, y + 24), f"{p['achv_now']:.4f}%",
                    font=_font_mono(20), fill=_MUTED)
             d.text((mx + 470, y + 56),
                    f"→ {p['achv_target']:.1f}%  (需 +{p['need']:.4f})",
                    font=_font_bold(15), fill=_TEXT)
-            # 成功率条
             prob_x = mx + 720
             prob_w = inner_w - 720 - 130
             prob = max(0.0, min(1.0, float(p['probability'])))
             _bar(im, prob_x, y + 32, prob_w, 14, prob, meta['color'])
             d.text((prob_x, y + 54), f"成功率 {prob * 100:.0f}%",
                    font=_font_bold(14), fill=_TEXT_SOFT)
-            # 净增
             d.text((mx + inner_w - 24, y + card_h // 2 - 4),
                    f"+{int(p['net_gain'])}",
                    font=_font_mono(34),

@@ -254,7 +254,7 @@ def render_report(
 
     im = _make_bg(width, total_h)
     d = ImageDraw.Draw(im)
-    _brand_mark(im, width)
+    _brand_mark(im, width, nickname)
     _period_chip(im, width, period_tag)
 
     # 标题

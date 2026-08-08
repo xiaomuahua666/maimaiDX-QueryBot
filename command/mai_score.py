@@ -562,7 +562,8 @@ async def _group_weak(event: MessageEvent):
     self_id = int(getattr(bot, 'self_id', event.self_id))
     nickname = str(getattr(bot, 'nickname', None) or 'Bot')
     board_text = await render_group_weak_board(
-        bot, event.group_id, self_qq=resolve_score_qqid(event)
+        bot, event.group_id, self_qq=resolve_score_qqid(event),
+        user_name=_display_name_from_sender(event.sender),
     )
     await plugin_finish(
         group_weak,
@@ -601,7 +602,8 @@ async def _group_rating_leaderboard(event: MessageEvent, message: Message = Comm
     if not nickname:
         nickname = 'Bot'
     board_text = await render_group_rating_board(
-        bot, event.group_id, top_n=top_n, self_qq=resolve_score_qqid(event)
+        bot, event.group_id, top_n=top_n, self_qq=resolve_score_qqid(event),
+        user_name=_display_name_from_sender(event.sender),
     )
     await plugin_finish(
         group_rating_leaderboard,
@@ -658,7 +660,8 @@ async def _group_gain_board(event: MessageEvent, message: Message = CommandArg()
         bot = get_bot(str(event.self_id))
     self_id = int(getattr(bot, 'self_id', event.self_id))
     result = await render_group_gain_board(
-        bot, event.group_id, days=days, top_n=top_n, self_qq=resolve_score_qqid(event)
+        bot, event.group_id, days=days, top_n=top_n, self_qq=resolve_score_qqid(event),
+        user_name=_display_name_from_sender(event.sender),
     )
     await plugin_finish(group_gain_board, result, event=event, reply_message=False)
 
@@ -683,7 +686,8 @@ async def _group_sun_board(event: MessageEvent, message: Message = CommandArg())
         bot = get_bot(str(event.self_id))
     self_id = int(getattr(bot, 'self_id', event.self_id))
     result = await render_group_sun_lock_board(
-        bot, event.group_id, mode='sun', top_n=top_n, self_qq=resolve_score_qqid(event)
+        bot, event.group_id, mode='sun', top_n=top_n, self_qq=resolve_score_qqid(event),
+        user_name=_display_name_from_sender(event.sender),
     )
     await plugin_finish(group_sun_board, result, event=event, reply_message=False)
 
@@ -708,7 +712,8 @@ async def _group_lock_board(event: MessageEvent, message: Message = CommandArg()
         bot = get_bot(str(event.self_id))
     self_id = int(getattr(bot, 'self_id', event.self_id))
     result = await render_group_sun_lock_board(
-        bot, event.group_id, mode='lock', top_n=top_n, self_qq=resolve_score_qqid(event)
+        bot, event.group_id, mode='lock', top_n=top_n, self_qq=resolve_score_qqid(event),
+        user_name=_display_name_from_sender(event.sender),
     )
     await plugin_finish(group_lock_board, result, event=event, reply_message=False)
 

@@ -226,28 +226,38 @@ def test_smoke_no_assets(mods):
     all_rows = _rating_rows(25)
     bio = _run(lb.render_rating_ranking(all_rows[:8], title="群 Rating 排行",
                                         subtitle="共 25 人 · 显示前 8 名",
-                                        self_qq=1002, self_rank=3, all_rows=all_rows))
+                                        self_qq=1002, self_rank=3, all_rows=all_rows,
+                                        user_name="Losoy"))
     im = _assert_png(bio, "群Rating榜", min_h=800)
     print(f"  群Rating榜 {im.size} OK（全群25人统计）")
 
     bio = _run(lb.render_song_leaderboard(
         _song_rows(5), "Restricted Access", "Master", level_index=3,
-        total_players=5, self_qq=1001))
+        total_players=5, self_qq=1001, user_name="Losoy"))
     im = _assert_png(bio, "单曲榜", min_h=800)
     print(f"  单曲榜 {im.size} OK")
 
-    bio = _run(lb.render_gain_ranking(_gain_rows(6), "群吃分榜", "近7天", self_qq=1002))
+    bio = _run(lb.render_gain_ranking(_gain_rows(6), "群吃分榜", "近7天",
+                                      self_qq=1002, user_name="Losoy"))
     im = _assert_png(bio, "吃分榜", min_h=600)
     print(f"  吃分榜 {im.size} OK")
 
-    bio = _run(lb.render_sun_lock_ranking(_sun_lock_rows(5), "寸止榜", "近7天", mode="sun"))
+    bio = _run(lb.render_sun_lock_ranking(_sun_lock_rows(5), "寸止榜", "近7天",
+                                          mode="sun", user_name="Losoy"))
     im = _assert_png(bio, "寸止榜", min_h=600)
     print(f"  寸止榜 {im.size} OK")
 
+    trend = [("07-27", 15820), ("07-30", 15860), ("08-01", 15900),
+             ("08-04", 15930), ("08-06", 15980), ("08-09", 16017)]
     bio = lb.render_gain_recommendation(_gain_sections(),
-                                        ["昨日存档 2026-08-08", "能力样本 12 天", "候选 36 首"])
+                                        ["昨日存档 2026-08-08", "能力样本 14 天", "候选 36 首"],
+                                        user_name="Losoy",
+                                        rating_trend=trend, current_rating=16017)
     im = _assert_png(bio, "吃分推荐", min_h=400)
-    print(f"  吃分推荐 {im.size} OK")
+    print(f"  吃分推荐(含趋势) {im.size} OK")
+    # 无趋势/无当前 rating 也不能崩
+    bio = lb.render_gain_recommendation(_gain_sections(), ["摘要"], user_name="Losoy")
+    _assert_png(bio, "吃分推荐无趋势", min_h=400)
 
     data = _report_data()
     for tag, pts, labs, min_h in [

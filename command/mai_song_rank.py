@@ -21,6 +21,15 @@ from ..libraries.maimaidx_score_formatter import (
 )
 from ..libraries.maimaidx_song_resolver import SongResolver
 from ..libraries.image import music_picture
+
+
+def _sender_name(event) -> str:
+    sender = getattr(event, 'sender', None)
+    card = (getattr(sender, 'card', None) or '').strip() if sender else ''
+    if card:
+        return card
+    nick = (getattr(sender, 'nickname', None) or '').strip() if sender else ''
+    return nick or '未知'
 from ..libraries.maimaidx_platform import (
     format_forward_nodes_as_text,
     plugin_finish,
@@ -195,6 +204,7 @@ async def _song_rank(event: MessageEvent, matched = RegexMatched()):
             bot, event.group_id, music_id, music_title, level_index,
             top_n=top_n or 11, self_qq=current_qqid,
             cover_path=str(music_picture(music_id)),
+            user_name=_sender_name(event),
         )
         await plugin_finish(
             song_rank,
@@ -211,6 +221,7 @@ async def _song_rank(event: MessageEvent, matched = RegexMatched()):
         bot, event.group_id, music_id, music_title, level_index,
         top_n=top_n, self_qq=current_qqid,
         cover_path=str(music_picture(music_id)),
+        user_name=_sender_name(event),
     )
     await plugin_finish(
         song_rank,
