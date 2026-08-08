@@ -330,7 +330,8 @@ def _pr_state_text(merged: bool, pr_state: str, action: str) -> str:
 def main() -> None:
     webhook_url = os.environ.get("FEISHU_WEBHOOK_URL", "").strip()
     if not webhook_url:
-        raise SystemExit("FEISHU_WEBHOOK_URL is not configured")
+        print("FEISHU_WEBHOOK_URL is not configured; skipping Feishu notification")
+        return
 
     event_path = Path(os.environ["GITHUB_EVENT_PATH"])
     event = json.loads(event_path.read_text(encoding="utf-8"))
