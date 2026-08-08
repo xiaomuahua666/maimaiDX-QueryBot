@@ -22,7 +22,6 @@ from ..config import footer_generated
 from .image import DrawText, image_safe_text, music_picture
 from .maimaidx_game_assets import (
     bold_font,
-    bold_font_path,
     draw_rank_sprite,
     draw_rating_badge,
     num_font,
@@ -30,7 +29,6 @@ from .maimaidx_game_assets import (
     rating_badge_width,
 )
 
-_BOLD_PATH = bold_font_path()
 
 # ----------------------------------------------------------------------
 # 调色板（明亮 maimai 风）
@@ -110,6 +108,10 @@ def _font_bold(size: int):
 def _font_mono(size: int):
     # 数字统一使用 Torus SemiBold（与 B50 达成率数字一致）
     return num_font(size)
+
+def _draw_title(d, x, y, size, text, color, anchor_pos='lt'):
+    """标题/文案统一走 _font_bold 回退链路（缺字体也不崩），并做符号替换。"""
+    d.text((x, y), image_safe_text(text), font=_font_bold(size), fill=color, anchor=anchor_pos)
 
 
 # ----------------------------------------------------------------------
@@ -487,10 +489,9 @@ async def render_rating_ranking(
     avatars = await _fetch_avatars([r[0] for r in rows])
 
     # 大标题
-    dt = DrawText(d, str(_BOLD_PATH))
-    dt.draw(mx + 120, 44, 34, title, _TEXT, 'lt')
+    _draw_title(d, mx + 120, 44, 34, title, _TEXT)
     if subtitle:
-        dt.draw(mx + 120, 88, 18, subtitle, _TEXT_SOFT, 'lt')
+        _draw_title(d, mx + 120, 88, 18, subtitle, _TEXT_SOFT)
 
     y = header_h + 20
     max_ra = max((r[2] for r in rows), default=1) or 1
@@ -845,9 +846,8 @@ async def render_gain_ranking(
     _period_chip(im, width, '吃分榜')
     avatars = await _fetch_avatars([r[0] for r in rows])
 
-    dt = DrawText(d, str(_BOLD_PATH))
-    dt.draw(mx + 150, 44, 32, title, _TEXT, 'lt')
-    dt.draw(mx + 150, 86, 18, subtitle, _TEXT_SOFT, 'lt')
+    _draw_title(d, mx + 150, 44, 32, title, _TEXT)
+    _draw_title(d, mx + 150, 86, 18, subtitle, _TEXT_SOFT)
 
     y = 140
     max_delta = max((abs(r[4]) for r in rows), default=1) or 1
@@ -921,9 +921,8 @@ async def render_sun_lock_ranking(
     _period_chip(im, width, '寸止/锁血' if mode == 'sun' else '锁血/寸止')
     avatars = await _fetch_avatars([r[0] for r in rows])
 
-    dt = DrawText(d, str(_BOLD_PATH))
-    dt.draw(mx + 150, 44, 32, title, _TEXT, 'lt')
-    dt.draw(mx + 150, 86, 18, subtitle, _TEXT_SOFT, 'lt')
+    _draw_title(d, mx + 150, 44, 32, title, _TEXT)
+    _draw_title(d, mx + 150, 86, 18, subtitle, _TEXT_SOFT)
 
     main_color = _GOLD if mode == 'sun' else (120, 200, 255, 255)
     max_main = max((r[2] if mode == 'sun' else r[3] for r in rows), default=1) or 1
@@ -949,14 +948,14 @@ async def render_sun_lock_ranking(
         d.text((mx + 146, y + 16), _truncate(d, name, nfont, 340),
                font=nfont, fill=_TEXT)
         d.text((mx + 146, y + 54), f'{other_label} {other} 条',
-               font=_font_mono(16), fill=_TEXT_SOFT)
+               font=_font_bold(16), fill=_TEXT_SOFT)
         bar_x = mx + 500
         bar_w = inner_w - 500 - 130
         _bar(im, bar_x, y + 38, bar_w, 14, cnt / max_main, main_color)
         d.text((mx + inner_w - 24, y + row_h // 2), f'{cnt}',
                font=_font_mono(32), fill=main_color, anchor='rm')
         d.text((mx + inner_w - 24, y + row_h - 14), '条',
-               font=_font_mono(13), fill=_MUTED, anchor='rt')
+               font=_font_bold(13), fill=_MUTED, anchor='rt')
         y += row_h + gap
 
     panel_y = y + 10
@@ -1004,9 +1003,8 @@ def render_gain_recommendation(sections: Dict[str, List[dict]],
     d = ImageDraw.Draw(im)
     _brand_mark(im, width)
     _period_chip(im, width, '吃分推荐')
-    dt = DrawText(d, str(_BOLD_PATH))
-    dt.draw(mx + 150, 44, 32, '今日吃分推荐', _TEXT, 'lt')
-    dt.draw(mx + 150, 86, 17, ' · '.join(summary_lines), _TEXT_SOFT, 'lt')
+    _draw_title(d, mx + 150, 44, 32, '今日吃分推荐', _TEXT)
+    _draw_title(d, mx + 150, 86, 17, ' · '.join(summary_lines), _TEXT_SOFT)
 
     y = 140
     for zone in ('稳赚', '均衡', '冲刺'):

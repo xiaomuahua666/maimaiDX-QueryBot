@@ -12,7 +12,7 @@ from typing import Dict, List, Optional, Tuple
 from PIL import Image, ImageDraw, ImageFilter
 
 from ..config import log
-from .image import DrawText, music_picture
+from .image import music_picture
 from .maimaidx_game_assets import draw_rating_badge, num_font, rating_badge_width
 # 直接复用排行榜渲染器中的基础元件，保持视觉统一
 from .maimaidx_leaderboard_image import (
@@ -169,7 +169,7 @@ def _diff_distribution(im, x, y, w, h, dist: List[int]):
     # 图例
     lx = x + 24
     ly = bar_y + bar_h + 14
-    lf = _font_mono(14)
+    lf = _font_bold(14)
     bf = _font_bold(14)
     for i in range(5):
         c = dist[i]

@@ -374,29 +374,119 @@ def test_all_rows_decouples_stats(mods):
     print(f"  全群统计解耦 OK（25人图高 {im.height} >= 3人图高 {im_small.height}）")
 
 
+
+def test_no_chinese_in_mono_font():
+    """静态扫描：_font_mono（西文/数字字体）不得渲染含中文/全角符号的字面量，防止豆腐块。"""
+    cjk_ranges = [
+        (0x3000, 0x303F), (0x4E00, 0x9FFF), (0xFF00, 0xFFEF),
+    ]
+
+    def has_cjk(text):
+        return any(any(lo <= ord(ch) <= hi for lo, hi in cjk_ranges) for ch in text)
+
+    def literal_text(node):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value if has_cjk(node.value) else None
+        if isinstance(node, ast.JoinedStr):
+            chars = []
+            for v in node.values:
+                if isinstance(v, ast.Constant) and isinstance(v.value, str):
+                    chars.append(v.value)
+            joined = "".join(chars)
+            return joined if has_cjk(joined) else None
+        return None
+
+    bad = []
+    for rel in ("libraries/maimaidx_leaderboard_image.py",
+                "libraries/maimaidx_report_image.py"):
+        tree = ast.parse((ROOT / rel).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "text"):
+                continue
+            font_arg = None
+            for kw in node.keywords:
+                if kw.arg == "font":
+                    font_arg = kw.value
+            if not (isinstance(font_arg, ast.Call) and isinstance(font_arg.func, ast.Name)
+                    and font_arg.func.id == "_font_mono"):
+                continue
+            text_arg = node.args[1] if len(node.args) >= 2 else None
+            hit = literal_text(text_arg) if text_arg is not None else None
+            if hit:
+                bad.append(f"{rel}:{node.lineno} 用 _font_mono 渲染含中文文本: {hit!r}")
+    assert not bad, "发现西文字体渲染中文（会显示豆腐块）：\n  " + "\n  ".join(bad)
+    print("  无 _font_mono 渲染中文（豆腐块防护）OK")
+
+
+def test_render_without_font_files(mods):
+    """字体文件全部缺失时，加载器回退 PIL 默认字体，渲染不应抛异常。"""
+    _, _, assets, lb, rep, _cfg = mods
+    # 只把内存中的字体路径指向不存在的文件（绝不删除磁盘上的真实字体）
+    assets.SIYUAN = Path("/nonexistent/missing-bold.ttf")
+    assets.TBFONT = Path("/nonexistent/missing-num.ttf")
+    _clear_asset_caches(assets)
+
+    # 不能崩溃；豆腐由 PIL 默认字体兜底（生产环境字体齐全，不会走到这里）
+    all_rows = _rating_rows(8)
+    bio = _run(lb.render_rating_ranking(all_rows[:5], all_rows=all_rows))
+    _assert_png(bio, "无字体-Rating榜", min_h=600)
+    bio = lb.render_gain_recommendation(_gain_sections(), ["摘要一", "能力样本"])
+    _assert_png(bio, "无字体-吃分推荐", min_h=300)
+    bio = rep.render_report("MAIMAI 日报", "Losoy", "2026-08-08 → 2026-08-09",
+                            [15900, 16017], ["08-08", "08-09"], _report_data(),
+                            period_tag="日报")
+    _assert_png(bio, "无字体-日报", min_h=1000)
+    print("  无字体文件回退不崩溃 OK")
+
+
+def test_canvas_fully_painted(mods):
+    """渲染图四角必须完全不透明且非纯黑，防止透明边/黑边造成的错位观感。"""
+    _, _, assets, lb, _, _ = mods
+    _clear_asset_caches(assets)
+    bio = _run(lb.render_rating_ranking(_rating_rows(6)[:6], all_rows=_rating_rows(6)))
+    im = Image.open(bio).convert("RGBA")
+    w, h = im.size
+    corners = [im.getpixel((0, 0)), im.getpixel((w - 1, 0)),
+               im.getpixel((0, h - 1)), im.getpixel((w - 1, h - 1))]
+    for px in corners:
+        assert px[3] == 255, f"角落存在透明像素 {px}，背景未填满"
+        assert not (px[0] == 0 and px[1] == 0 and px[2] == 0), f"角落出现纯黑 {px}"
+    print(f"  画布背景填满无透明/黑边 OK（四角 {corners[0]}）")
+
+
 def main():
     assert sys.version_info >= (3, 9), "需要 Python 3.9+"
     with TemporaryDirectory() as tmp:
         static_dir = Path(tmp)
         mods = _load_render_modules(static_dir)
 
-        print("[1/6] 无素材冒烟渲染")
+        print("[1/9] 无素材冒烟渲染")
         test_smoke_no_assets(mods)
 
-        print("[2/6] 贴图加载与几何/错位校验")
+        print("[2/9] 贴图加载与几何/错位校验")
         test_sprite_geometry(mods)
 
-        print("[3/6] 无素材回退")
+        print("[3/9] 无素材回退")
         test_fallback_when_assets_missing(mods)
 
-        print("[4/6] 方形曲绘 / 去爪印源码校验")
+        print("[4/9] 方形曲绘 / 去爪印源码校验")
         test_square_cover_and_no_paw(mods)
 
-        print("[5/6] 宴谱过滤源码校验")
+        print("[5/9] 宴谱过滤源码校验")
         test_utage_filter_source()
 
-        print("[6/6] 全群统计解耦")
+        print("[6/9] 全群统计解耦")
         test_all_rows_decouples_stats(mods)
+
+        print("[7/9] 西文字体渲染中文静态扫描")
+        test_no_chinese_in_mono_font()
+
+        print("[8/9] 无字体文件回退")
+        test_render_without_font_files(mods)
+
+        print("[9/9] 画布背景完整性")
+        test_canvas_fully_painted(mods)
 
     print("\nALL RENDER TESTS PASSED 🐾")
 
