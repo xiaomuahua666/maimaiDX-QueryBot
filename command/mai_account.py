@@ -1377,6 +1377,8 @@ def _exception_detail(exc: BaseException) -> str:
     sw_error = find_sw_api_error(exc)
     if sw_error is not None and sw_error.is_quota_exceeded:
         return format_sw_api_quota_error(sw_error)
+    if sw_error is not None and sw_error.is_connection_error:
+        return redact(str(sw_error)).strip() or "无法连接 AWMC 网关，请稍后重试"
     if isinstance(exc, (asyncio.TimeoutError, TimeoutError, httpx.TimeoutException)):
         return "请求超时，上游服务未在规定时间内响应"
     if isinstance(exc, httpx.ConnectError):

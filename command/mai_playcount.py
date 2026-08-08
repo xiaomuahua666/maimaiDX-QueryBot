@@ -52,7 +52,7 @@ from ..libraries.maimaidx_user_operation import (
     finish_account_operation,
     try_begin_account_operation,
 )
-from ..libraries.maimaidx_sw_api import is_sw_api_quota_error
+from ..libraries.maimaidx_sw_api import is_sw_api_connection_error, is_sw_api_quota_error
 
 update_pc = on_command('更新pc数', aliases={'更新PC数', '同步pc数', '同步PC数', '绑定机台', '登录机台'})
 my_pc = on_command('我的pc数', aliases={'我的PC数', '我的pc', '我的PC'})
@@ -359,12 +359,12 @@ async def _handle_sdgb_update(
                 qqid, qrcode_data, save_qrcode=not retry_on_cached_failure
             )
     except Exception as e:
+        from .mai_account import _exception_detail
+
         log.error(
             f'[SDGBPC] 用户 {qqid} 拉取失败 qrcode={qrcode_log_preview(qrcode_data)}: {e}'
         )
         if is_sw_api_quota_error(e):
-            from .mai_account import _exception_detail
-
             message = MessageSegment.reply(event.message_id) + MessageSegment.text(
                 '\n' + _exception_detail(e)
             )
@@ -389,7 +389,7 @@ async def _handle_sdgb_update(
             return
         await matcher.finish(
             MessageSegment.reply(event.message_id)
-            + MessageSegment.text(f'数据拉取失败: {e}。请检查 sw-api 服务或稍后重试。')
+            + MessageSegment.text(f'数据拉取失败：{_exception_detail(e)}。请稍后重试。')
         )
         return
 
@@ -722,6 +722,27 @@ async def _process_auto_qrcode_for_account(
                 await bot.send(
                     event,
                     recall_warning + f'{detail}\nRef_ID: {ref}',
+                )
+                return
+            if is_sw_api_connection_error(exc):
+                from .mai_account import _exception_detail, _log
+
+                detail = _exception_detail(exc)
+                ref = _log(
+                    str(qqid),
+                    'auto_qrcode',
+                    'error',
+                    f'source={source},error=connection_failed',
+                )
+                log.warning(
+                    f'[QrcodeAuto] AWMC 网关连接失败 source={source} qq={qqid} '
+                    f'({time.perf_counter() - t0:.2f}s): {exc}'
+                )
+                await bot.send(
+                    event,
+                    recall_warning
+                    + f'{detail}\n这不是配额问题，稍后重新发送最新二维码即可。\n'
+                    + f'Ref_ID: {ref}',
                 )
                 return
             _qrcode_retry_release_dedupe(qqid, qrcode_data)

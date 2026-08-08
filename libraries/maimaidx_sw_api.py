@@ -1,5 +1,6 @@
 import asyncio
 import json
+import random
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
@@ -114,16 +115,25 @@ class SwApiError(RuntimeError):
         retry_at: str = "",
         retry_after_seconds: Optional[int] = None,
         quota: Optional[dict] = None,
+        connection_failed: bool = False,
     ) -> None:
         super().__init__(message)
         self.error_code = str(error_code or "")
         self.retry_at = str(retry_at or "")
         self.retry_after_seconds = retry_after_seconds
         self.quota = dict(quota or {})
+        self.connection_failed = bool(connection_failed)
 
     @property
     def is_quota_exceeded(self) -> bool:
         return self.error_code.lower() == "quota_exceeded"
+
+    @property
+    def is_connection_error(self) -> bool:
+        return self.connection_failed or self.error_code.lower() in (
+            "connection_failed",
+            "network_unreachable",
+        )
 
     @classmethod
     def from_payload(
@@ -217,6 +227,11 @@ def find_sw_api_error(exc: BaseException) -> Optional[SwApiError]:
 def is_sw_api_quota_error(exc: BaseException) -> bool:
     error = find_sw_api_error(exc)
     return bool(error and error.is_quota_exceeded)
+
+
+def is_sw_api_connection_error(exc: BaseException) -> bool:
+    error = find_sw_api_error(exc)
+    return bool(error and error.is_connection_error)
 
 
 def format_sw_api_quota_error(
@@ -551,6 +566,7 @@ class SwApiClient:
         res: Optional[httpx.Response] = None
         last_error: Optional[Exception] = None
         for attempt in range(retry_count + 1):
+            this_attempt_network_error = False
             try:
                 async with httpx.AsyncClient(
                     timeout=httpx.Timeout(actual_timeout), headers=headers
@@ -569,8 +585,16 @@ class SwApiClient:
                     break
             except (httpx.TimeoutException, httpx.NetworkError) as exc:
                 last_error = exc
+                this_attempt_network_error = True
             if attempt < retry_count:
-                await asyncio.sleep(retry_delay * (attempt + 1))
+                # 网络/超时错误用指数退避 + 抖动，扛住网关瞬时抖动；
+                # 其余（5xx/429）走线性退避。
+                if this_attempt_network_error:
+                    backoff = min(retry_delay * (2 ** attempt), 15.0)
+                    backoff += random.uniform(0, 0.5)
+                    await asyncio.sleep(max(0.2, backoff))
+                else:
+                    await asyncio.sleep(retry_delay * (attempt + 1))
         if res is None:
             admin_audit.add_step(
                 "http.awmc",
@@ -578,7 +602,12 @@ class SwApiClient:
                 {"method": method, "path": path, "error": str(last_error or "request failed")},
                 started_at=audit_started,
             )
-            raise SwApiError(str(last_error or "AWMC API 请求失败"))
+            raise SwApiError(
+                "无法连接 AWMC 网关，可能是网络抖动，请稍后重试。"
+                f"（{type(last_error).__name__ if last_error else 'request failed'}）",
+                error_code="connection_failed",
+                connection_failed=True,
+            ) from last_error
         if res.status_code != 200:
             text = res.text[:200]
             err_msg = ""
