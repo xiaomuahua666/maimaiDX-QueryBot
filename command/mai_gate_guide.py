@@ -10,7 +10,7 @@ from ..libraries.maimaidx_platform import (
 )
 
 # 门名 -> 攻略子站（仅列出已验证存在独立子站的门）。
-# 棱镜塔 / 表门 / 希望之门 暂无独立攻略页，不在此列。
+# 棱镜塔 / 表门 / 希望之门 / 里门 暂无独立攻略页，不在此列。
 GATE_LINKS: dict[str, str] = {
     "蓝门": "https://blue.awmc.team",
     "青门": "https://blue.awmc.team",  # 蓝门在游戏内称"青门"，作为别名
@@ -19,13 +19,10 @@ GATE_LINKS: dict[str, str] = {
     "黑门": "https://black.awmc.team",
     "黄门": "https://yellow.awmc.team",
     "红门": "https://red.awmc.team",
-    "里门": "https://inner.awmc.team",
 }
 
 # 展示顺序（去重"青门"别名，只展示主名）
-_GATE_DISPLAY_ORDER = ["蓝门", "白门", "紫门", "黑门", "黄门", "红门", "里门"]
-# 暂无独立攻略页的门
-_NO_LINK_GATES = ["棱镜塔", "表门", "希望之门"]
+_GATE_DISPLAY_ORDER = ["蓝门", "白门", "紫门", "黑门", "黄门", "红门"]
 
 
 def _gate_link_message(gate_name: str, uid: str, event: MessageEvent) -> Message:
@@ -39,13 +36,24 @@ def _gate_link_message(gate_name: str, uid: str, event: MessageEvent) -> Message
 # ---- 被动触发：消息任意位置出现门名即触发 ----
 # priority=99 让它在大多数业务指令之后响应；
 # block=False 避免吞掉其他可能也想处理该消息的匹配器。
-gate_keyword = on_keyword(set(GATE_LINKS.keys()), priority=99, block=False)
+# "哪些门" 作为列出全部门链接的触发关键词一并收录。
+gate_keyword = on_keyword(set(GATE_LINKS.keys()) | {"哪些门"}, priority=99, block=False)
 
 
 @gate_keyword.handle()
 async def _(event: MessageEvent):
     uid = platform_user_id(event)
     text = event.get_message().extract_plain_text()
+    # "哪些门"：@ 触发者并列出全部门攻略链接
+    if "哪些门" in text:
+        lines = ["🚪 门攻略列表"]
+        for name in _GATE_DISPLAY_ORDER:
+            lines.append(f"{name}：{GATE_LINKS[name]} \u200b")
+        body = "\n".join(lines)
+        msg = build_mention_message(uid, f"\n{body}", event=event)
+        msg = ensure_sender_mention(msg, event)
+        await gate_keyword.finish(msg)
+        return
     # 取消息中第一个命中的门名
     for name in GATE_LINKS:
         if name in text:
@@ -82,7 +90,5 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
         # 无参数：列出所有门攻略链接
         lines = ["🚪 门攻略列表"]
         for name in _GATE_DISPLAY_ORDER:
-            lines.append(f"{name}：{GATE_LINKS[name]}")
-        if _NO_LINK_GATES:
-            lines.append(f"\n暂无独立攻略页：{' / '.join(_NO_LINK_GATES)}")
+            lines.append(f"{name}：{GATE_LINKS[name]} \u200b")
         await gate_command.finish("\n".join(lines), reply_message=True)
