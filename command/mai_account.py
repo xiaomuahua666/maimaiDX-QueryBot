@@ -1750,7 +1750,7 @@ async def _(matcher: Matcher, event: MessageEvent, args: Message = CommandArg())
     await _require_agreement(account_bind, event)
     raw = _arg_text(args)
     if _is_interaction_cancel(raw):
-        await account_item_upsert.finish("已取消道具修改，本次不扣 BREAK。")
+        await account_bind.finish("已取消舞萌账号绑定。")
     if raw:
         matcher.set_arg("qrcode", Message(raw))
     else:
@@ -3604,24 +3604,37 @@ async def _(matcher: Matcher, event: MessageEvent, args: Message = CommandArg())
         return
     try:
         music, level, score = _parse_music_upsert_command(raw)
-        text = await _run_music_write(
-            event,
-            service="awmc_music_upsert",
-            music=music,
-            level=level,
-            score=score,
-        )
     except Exception as exc:
         await _finish_music_write_error(
             account_music_upsert, event, "awmc_music_upsert", exc
         )
-    await account_music_upsert.finish(text, reply_message=True)
+    matcher.state["edit_music"] = music
+    matcher.state["edit_level"] = level
+    matcher.state["edit_score"] = score
+    matcher.set_arg("edit_song", Message(str(music.id)))
+    matcher.set_arg("edit_difficulty", Message(str(level)))
+    matcher.set_arg("edit_score", Message(raw))
+    dx_label = "DX 星级" if score.get("fuzzy") else "实际 DX 分"
+    mode = "简单模式" if score.get("fuzzy") else "专业模式"
+    await matcher.send(
+        f"⚠️ 即将写入《{music.title}》 {_DIFFICULTY_LABELS[level]} 成绩\n"
+        f"{mode} · {score['achievement']}% · {dx_label} {score['dxScore']} · "
+        f"{str(score['comboStatus']).upper()} / {str(score['syncStatus']).upper()}\n"
+        "成功后消耗 75 BREAK。",
+        reply_message=True,
+    )
 
 
-@account_music_upsert.got("edit_song", prompt="请输入歌曲名、别名或歌曲 ID：")
+@account_music_upsert.got(
+    "edit_song",
+    prompt="请输入歌曲名、别名或歌曲 ID；发送“取消”退出：",
+)
 async def _(matcher: Matcher, message: Message = Arg("edit_song")):
+    raw = _arg_text(message)
+    if _is_interaction_cancel(raw):
+        await account_music_upsert.finish("已取消成绩编辑，本次不扣 BREAK。")
     try:
-        music = _resolve_account_music(_arg_text(message))
+        music = _resolve_account_music(raw)
     except ValueError as exc:
         await matcher.reject(str(exc))
     matcher.state["edit_music"] = music
@@ -3632,12 +3645,15 @@ async def _(matcher: Matcher, message: Message = Arg("edit_song")):
     prompt=(
         "请选择难度（数字 0 BASIC / 1 ADVANCED / 2 EXPERT / 3 MASTER / "
         "4 Re:MASTER；没有 Re:MASTER 的歌曲只能选 0-3；也可发送绿/黄/红/紫/白；"
-        "宴谱发送宴）："
+        "宴谱发送宴）；发送“取消”退出："
     ),
 )
 async def _(matcher: Matcher, message: Message = Arg("edit_difficulty")):
+    raw = _arg_text(message)
+    if _is_interaction_cancel(raw):
+        await account_music_upsert.finish("已取消成绩编辑，本次不扣 BREAK。")
     music = matcher.state["edit_music"]
-    level = _parse_difficulty(_arg_text(message))
+    level = _parse_difficulty(raw)
     if level is None:
         await matcher.reject("无法识别难度，请重新发送。")
     try:
@@ -3652,23 +3668,53 @@ async def _(matcher: Matcher, message: Message = Arg("edit_difficulty")):
     prompt=(
         "请输入：<达成率> <DX分> [FC] [FS] [简单/专业]\n"
         "例如：100.5% 5 AP FDX（自动简单模式）\n"
-        "或：100.5% 2100 AP FDX 专业"
+        "或：100.5% 2100 AP FDX 专业\n"
+        "发送“取消”退出："
     ),
 )
 async def _(matcher: Matcher, event: MessageEvent, message: Message = Arg("edit_score")):
+    raw = _arg_text(message)
+    if _is_interaction_cancel(raw):
+        await account_music_upsert.finish("已取消成绩编辑，本次不扣 BREAK。")
     music = matcher.state["edit_music"]
     level = matcher.state["edit_level"]
     try:
-        score = _parse_score_options(_arg_text(message).split(), music, level)
+        score = _parse_score_options(raw.split(), music, level)
+    except ValueError as exc:
+        await matcher.reject(str(exc))
+    matcher.state["edit_score"] = score
+    dx_label = "DX 星级" if score.get("fuzzy") else "实际 DX 分"
+    mode = "简单模式" if score.get("fuzzy") else "专业模式"
+    await matcher.send(
+        f"⚠️ 即将写入《{music.title}》 {_DIFFICULTY_LABELS[level]} 成绩\n"
+        f"{mode} · {score['achievement']}% · {dx_label} {score['dxScore']} · "
+        f"{str(score['comboStatus']).upper()} / {str(score['syncStatus']).upper()}\n"
+        "成功后消耗 75 BREAK。",
+        reply_message=True,
+    )
+
+
+@account_music_upsert.got(
+    "edit_confirm",
+    prompt="确认请发送“确认修改”；发送其他内容或“取消”退出：",
+)
+async def _(matcher: Matcher, event: MessageEvent, message: Message = Arg("edit_confirm")):
+    raw = _arg_text(message)
+    if _is_interaction_cancel(raw) or raw != "确认修改":
+        await account_music_upsert.finish("已取消成绩编辑，本次不扣 BREAK。")
+    music = matcher.state["edit_music"]
+    level = matcher.state.get("edit_level")
+    score = matcher.state.get("edit_score")
+    if level is None or score is None:
+        await account_music_upsert.finish("会话已过期，请重新发起改成绩。")
+    try:
         text = await _run_music_write(
             event,
             service="awmc_music_upsert",
             music=music,
-            level=level,
+            level=int(level),
             score=score,
         )
-    except ValueError as exc:
-        await matcher.reject(str(exc))
     except Exception as exc:
         await _finish_music_write_error(
             account_music_upsert, event, "awmc_music_upsert", exc
@@ -3699,20 +3745,32 @@ async def _(matcher: Matcher, event: MessageEvent, args: Message = CommandArg())
         return
     try:
         music, level = _parse_music_delete_command(raw)
-        text = await _run_music_write(
-            event, service="awmc_music_delete", music=music, level=level
-        )
+        _validate_music_difficulty(music, level)
     except Exception as exc:
         await _finish_music_write_error(
             account_music_delete, event, "awmc_music_delete", exc
         )
-    await account_music_delete.finish(text, reply_message=True)
+    matcher.state["delete_music"] = music
+    matcher.state["delete_level"] = level
+    matcher.set_arg("delete_song", Message(str(music.id)))
+    matcher.set_arg("delete_difficulty", Message(str(level)))
+    await matcher.send(
+        f"⚠️ 即将删除《{music.title}》 {_DIFFICULTY_LABELS[level]} 成绩，"
+        "删除后无法由 Bot 自动恢复，成功后消耗 50 BREAK。",
+        reply_message=True,
+    )
 
 
-@account_music_delete.got("delete_song", prompt="请输入要删除成绩的歌曲名、别名或歌曲 ID：")
+@account_music_delete.got(
+    "delete_song",
+    prompt="请输入要删除成绩的歌曲名、别名或歌曲 ID；发送“取消”退出：",
+)
 async def _(matcher: Matcher, message: Message = Arg("delete_song")):
+    raw = _arg_text(message)
+    if _is_interaction_cancel(raw):
+        await account_music_delete.finish("已取消成绩删除，本次不扣 BREAK。")
     try:
-        music = _resolve_account_music(_arg_text(message))
+        music = _resolve_account_music(raw)
     except ValueError as exc:
         await matcher.reject(str(exc))
     matcher.state["delete_music"] = music
@@ -3723,21 +3781,45 @@ async def _(matcher: Matcher, message: Message = Arg("delete_song")):
     prompt=(
         "请选择要删除的难度（数字 0 BASIC / 1 ADVANCED / 2 EXPERT / 3 MASTER / "
         "4 Re:MASTER；没有 Re:MASTER 的歌曲只能选 0-3；或绿/黄/红/紫/白；"
-        "宴谱发送宴）："
+        "宴谱发送宴）；发送“取消”退出："
     ),
 )
-async def _(matcher: Matcher, event: MessageEvent, message: Message = Arg("delete_difficulty")):
+async def _(matcher: Matcher, message: Message = Arg("delete_difficulty")):
+    raw = _arg_text(message)
+    if _is_interaction_cancel(raw):
+        await account_music_delete.finish("已取消成绩删除，本次不扣 BREAK。")
     music = matcher.state["delete_music"]
-    level = _parse_difficulty(_arg_text(message))
+    level = _parse_difficulty(raw)
     if level is None:
         await matcher.reject("无法识别难度，请重新发送。")
     try:
         _validate_music_difficulty(music, level)
-        text = await _run_music_write(
-            event, service="awmc_music_delete", music=music, level=level
-        )
     except ValueError as exc:
         await matcher.reject(str(exc))
+    matcher.state["delete_level"] = level
+    await matcher.send(
+        f"⚠️ 即将删除《{music.title}》 {_DIFFICULTY_LABELS[level]} 成绩，"
+        "删除后无法由 Bot 自动恢复，成功后消耗 50 BREAK。",
+        reply_message=True,
+    )
+
+
+@account_music_delete.got(
+    "delete_confirm",
+    prompt="确认请发送“确认删除”；发送其他内容或“取消”退出：",
+)
+async def _(matcher: Matcher, event: MessageEvent, message: Message = Arg("delete_confirm")):
+    raw = _arg_text(message)
+    if _is_interaction_cancel(raw) or raw != "确认删除":
+        await account_music_delete.finish("已取消成绩删除，本次不扣 BREAK。")
+    music = matcher.state["delete_music"]
+    level = matcher.state.get("delete_level")
+    if level is None:
+        await account_music_delete.finish("会话已过期，请重新发起删成绩。")
+    try:
+        text = await _run_music_write(
+            event, service="awmc_music_delete", music=music, level=int(level)
+        )
     except Exception as exc:
         await _finish_music_write_error(
             account_music_delete, event, "awmc_music_delete", exc

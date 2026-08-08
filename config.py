@@ -66,6 +66,8 @@ class Config(BaseModel):
     awmc_user_items_timeout_seconds: float = 120.0
     # 道具写入（UpsertUserAllApi）服务端处理约需 90 秒，给 120 秒且不重试。
     awmc_item_upsert_timeout_seconds: float = 120.0
+    # 成绩写入/删除、票据清空等机台写操作统一超时；服务端处理可能较慢，给 120 秒且不重试。
+    awmc_music_write_timeout_seconds: float = 120.0
     # 本地 PC 成绩可用于落雪 OAuth 直传的新鲜度（秒）；默认与 SGID 缓存一致。
     awmc_lxns_pc_cache_seconds: float = 600.0
     # 等待全局机台锁的最长时间（秒）；0=无限等待。超时返回「机台繁忙」。

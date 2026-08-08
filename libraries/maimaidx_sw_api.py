@@ -868,33 +868,45 @@ class SwApiClient:
         return self._parse_envelope(data)
 
     async def upsert_music(self, qrcode: str, music: dict) -> Any:
+        write_timeout = float(
+            getattr(maiconfig, "awmc_music_write_timeout_seconds", 120.0)
+            or 120.0
+        )
         data = await self._request(
             "POST",
             self._api_path("music/upsert"),
             json_body=self._machine_body(qrcode, musicList=[music]),
-            timeout=60,
+            timeout=write_timeout,
             retry_count=0,
         )
         return self._parse_envelope(data)
 
     async def delete_music(self, qrcode: str, music_id: int, level: int) -> Any:
+        write_timeout = float(
+            getattr(maiconfig, "awmc_music_write_timeout_seconds", 120.0)
+            or 120.0
+        )
         data = await self._request(
             "POST",
             self._api_path("music/delete"),
             json_body=self._machine_body(
                 qrcode, musicList=[{"musicId": music_id, "level": level}]
             ),
-            timeout=60,
+            timeout=write_timeout,
             retry_count=0,
         )
         return self._parse_envelope(data)
 
     async def clear_tickets(self, qrcode: str) -> Any:
+        write_timeout = float(
+            getattr(maiconfig, "awmc_music_write_timeout_seconds", 120.0)
+            or 120.0
+        )
         data = await self._request(
             "POST",
             self._api_path("ticket/clear"),
             json_body=self._machine_body(qrcode),
-            timeout=60,
+            timeout=write_timeout,
             retry_count=0,
         )
         return self._parse_envelope(data)
