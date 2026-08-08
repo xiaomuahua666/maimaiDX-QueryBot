@@ -19,7 +19,7 @@ import httpx
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from ..config import footer_generated
-from .image import DrawText, image_safe_text
+from .image import DrawText, image_safe_text, music_picture
 from .maimaidx_game_assets import (
     bold_font,
     bold_font_path,
@@ -238,29 +238,15 @@ def _make_bg(w: int, h: int) -> Image.Image:
     return im
 
 
-def _draw_paw(d: ImageDraw.ImageDraw, cx: int, cy: int, scale: float = 1.0,
-              color=(124, 129, 255, 255)):
-    """绘制 Milk 专属猫爪印（我们的独特品牌标识，避免与他人设计雷同）。"""
-    r = int(6 * scale)
-    # 掌垫
-    d.ellipse((cx - r * 2, cy - int(r * 0.6), cx + r * 2, cy + int(r * 2.6)),
-              fill=color)
-    # 四个趾头
-    toes = [(-r * 2, -r * 2), (-1, -r * 2.4), (r, -r * 2.4), (r * 2, -r * 2)]
-    for tx, ty in toes:
-        d.ellipse((cx + tx - r, cy + ty - r, cx + tx + r, cy + ty + r), fill=color)
-
-
 def _brand_mark(im: Image.Image, w: int, label: str = 'Milk'):
-    """左上角 Milk 品牌标识：圆角小牌 + 猫爪。"""
+    """左上角品牌标识：简洁文字小牌。"""
     d = ImageDraw.Draw(im)
     font = _font_bold(20)
     tw = _text_len(d, label, font)
-    chip_w = int(tw + 64)
+    chip_w = int(tw + 36)
     box = (36, 30, 36 + chip_w, 78)
     _card(im, box, radius=24, fill=(255, 255, 255, 235), shadow=False)
-    _draw_paw(d, box[0] + 30, box[1] + 24, scale=1.1, color=_ACCENT)
-    d.text((box[0] + 56, box[1] + 24), label, font=font, fill=_ACCENT, anchor='lm')
+    d.text((box[0] + chip_w // 2, box[1] + 24), label, font=font, fill=_ACCENT, anchor='mm')
 
 
 def _period_chip(im: Image.Image, w: int, text: str):
@@ -280,7 +266,6 @@ def _period_chip(im: Image.Image, w: int, text: str):
 
 def _footer(im: Image.Image, w: int, h: int, extra: str = ''):
     d = ImageDraw.Draw(im)
-    # 底部：左侧猫爪 + “Milk Design”  +  机器人官方署名
     official = footer_generated()
     design = 'Milk Design'
     parts = [design, official]
@@ -293,9 +278,7 @@ def _footer(im: Image.Image, w: int, h: int, extra: str = ''):
     y = h - 50
     _card(im, (int(x), int(y), int(x + tw + 48), int(y + 38)), radius=19,
           fill=(255, 255, 255, 210), shadow=False)
-    # 猫爪
-    _draw_paw(d, int(x) + 22, y + 19, scale=0.7, color=_ACCENT)
-    d.text((int(x) + 42, y + 19), image_safe_text(text), font=font, fill=_TEXT_SOFT, anchor='lm')
+    d.text((w // 2, y + 19), image_safe_text(text), font=font, fill=_TEXT_SOFT, anchor='mm')
 
 
 def _finalize(im: Image.Image) -> BytesIO:
@@ -344,6 +327,18 @@ def _fallback_avatar(size: int, name: str, color) -> Image.Image:
     tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
     d.text((size / 2 - tw / 2 - bbox[0], size / 2 - th / 2 - bbox[1]),
            image_safe_text(initial), font=font, fill=(255, 255, 255, 255))
+    return img
+
+
+def _cover_placeholder(size: int, char: str = '♪', color=_ACCENT) -> Image.Image:
+    """方形曲绘占位图。"""
+    img = Image.new('RGBA', (size, size), color)
+    d = ImageDraw.Draw(img)
+    font = _font_bold(int(size * 0.5))
+    bbox = d.textbbox((0, 0), image_safe_text(char), font=font)
+    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    d.text((size / 2 - tw / 2 - bbox[0], size / 2 - th / 2 - bbox[1]),
+           image_safe_text(char), font=font, fill=(255, 255, 255, 255))
     return img
 
 
@@ -470,8 +465,10 @@ async def render_rating_ranking(
     subtitle: str = '',
     self_qq: Optional[int] = None,
     self_rank: Optional[int] = None,
+    all_rows: Optional[Sequence[Tuple[int, str, int]]] = None,
 ) -> BytesIO:
-    """rows: [(uid, name, rating), ...] 已降序。"""
+    """rows: 显示的前 N 行 [(uid, name, rating), ...] 已降序；
+    all_rows: 全群数据，用于统计面板（默认等于 rows）。"""
     width = 1080
     mx = 40
     inner_w = width - mx * 2
@@ -491,9 +488,9 @@ async def render_rating_ranking(
 
     # 大标题
     dt = DrawText(d, str(_BOLD_PATH))
-    dt.draw(mx + 150, 44, 34, title, _TEXT, 'lt')
+    dt.draw(mx + 120, 44, 34, title, _TEXT, 'lt')
     if subtitle:
-        dt.draw(mx + 150, 88, 18, subtitle, _TEXT_SOFT, 'lt')
+        dt.draw(mx + 120, 88, 18, subtitle, _TEXT_SOFT, 'lt')
 
     y = header_h + 20
     max_ra = max((r[2] for r in rows), default=1) or 1
@@ -538,14 +535,18 @@ async def render_rating_ranking(
     d.text((mx + 28, panel_y + 22), '全群 Rating 段位分布',
            font=_font_bold(20), fill=_TEXT)
 
-    ratings = [r[2] for r in rows]
+    # 统计基于全群数据，而非仅前 N 名
+    stats_rows = all_rows if all_rows is not None else rows
+    ratings = [r[2] for r in stats_rows]
+    total_count = len(stats_rows)
     avg = sum(ratings) / len(ratings) if ratings else 0
     median = sorted(ratings)[len(ratings) // 2] if ratings else 0
+    max_ra_all = max(ratings, default=0)
     box_w = (inner_w - 56 - 3 * 14) // 4
     sb_y = panel_y + 60
     for i, (val, lab) in enumerate([
-        (n, '总人数'), (f'{avg:.0f}', '平均分'),
-        (f'{max_ra}', '最高分'), (f'{median:.0f}', '中位数'),
+        (total_count, '总人数'), (f'{avg:.0f}', '平均分'),
+        (f'{max_ra_all}', '最高分'), (f'{median:.0f}', '中位数'),
     ]):
         _stat_box(im, mx + 28 + i * (box_w + 14), sb_y, box_w, 80, val, lab)
 
@@ -559,10 +560,10 @@ async def render_rating_ranking(
     total = sum(c for _, c, _ in bucket_counts) or 1
     donut_cx = mx + 150
     donut_cy = panel_y + 230
-    _donut(im, donut_cx, donut_cy, 80, bucket_counts, total, str(n), '总人数')
+    _donut(im, donut_cx, donut_cy, 80, bucket_counts, total, str(total_count), '总人数')
     _legend(im, mx + 280, panel_y + 150, bucket_counts, total)
 
-    _footer(im, width, total_h, f'共 {n} 人')
+    _footer(im, width, total_h, f'显示前 {n} / 共 {total_count} 人')
     return _finalize(im)
 
 
@@ -662,10 +663,11 @@ async def render_song_leaderboard(
         if cover_path and Path(cover_path).is_file():
             cover = Image.open(cover_path).convert('RGBA').resize((88, 88))
         else:
-            cover = _fallback_avatar(88, music_title[:1], _DIFF_COLORS[level_index])
+            cover = _cover_placeholder(88, '♪', _DIFF_COLORS[level_index])
     except Exception:
-        cover = _fallback_avatar(88, music_title[:1], _DIFF_COLORS[level_index])
-    _paste_round(im, cover, (mx + 16, hcard_y + 11), radius=14)
+        cover = _cover_placeholder(88, '♪', _DIFF_COLORS[level_index])
+    # 曲绘统一使用方形
+    im.alpha_composite(cover, (mx + 16, hcard_y + 11))
     d.text((mx + 124, hcard_y + 22),
            _truncate(d, music_title, _font_bold(28), inner_w - 340),
            font=_font_bold(28), fill=_TEXT)
@@ -1024,38 +1026,42 @@ def render_gain_recommendation(sections: Dict[str, List[dict]],
         for p in items:
             box = (mx, y, mx + inner_w, y + card_h)
             _card(im, box, radius=18, fill=(255, 255, 255, 245), border=_CARD_BORDER)
-            # 左侧色条
-            strip = Image.new('RGBA', (8, card_h - 20), meta['color'])
-            im.alpha_composite(strip, (mx + 14, y + 10))
+            # 方形曲绘
+            cov_size = 76
+            try:
+                cov = Image.open(music_picture(p.get('song_id'))).convert('RGBA').resize((cov_size, cov_size))
+            except Exception:
+                cov = _cover_placeholder(cov_size, "♪", meta["color"])
+            im.alpha_composite(cov, (mx + 14, y + 16))
             # 曲名
-            nfont = _font_bold(24)
-            d.text((mx + 36, y + 16),
-                   _truncate(d, p['title'], nfont, inner_w - 300),
+            nfont = _font_bold(23)
+            d.text((mx + 104, y + 16),
+                   _truncate(d, p['title'], nfont, 360),
                    font=nfont, fill=_TEXT)
             # 难度
             lvl_font = _font_bold(15)
             lvl_text = f' {p["level"]} '
             lw = _text_len(d, lvl_text, lvl_font) + 16
-            _card(im, (mx + 36, y + 54, mx + 36 + int(lw), y + 82),
+            _card(im, (mx + 104, y + 52, mx + 104 + int(lw), y + 78),
                   radius=14, fill=(90, 100, 140, 255), shadow=False)
-            d.text((mx + 44, y + 68), lvl_text, font=lvl_font,
+            d.text((mx + 112, y + 65), lvl_text, font=lvl_font,
                    fill=(255, 255, 255, 255), anchor='lm')
-            d.text((mx + 36 + int(lw) + 14, y + 68),
+            d.text((mx + 104 + int(lw) + 12, y + 65),
                    f"拟合 {p['fit_diff']:.2f} / 定数 {p['ds']:.2f}",
-                   font=_font_mono(15), fill=_TEXT_SOFT, anchor='lm')
+                   font=_font_bold(15), fill=_TEXT_SOFT, anchor='lm')
             # 达成率变化
             d.text((mx + 470, y + 24), f"{p['achv_now']:.4f}%",
                    font=_font_mono(20), fill=_MUTED)
             d.text((mx + 470, y + 56),
                    f"→ {p['achv_target']:.1f}%  (需 +{p['need']:.4f})",
-                   font=_font_mono(15), fill=_TEXT)
+                   font=_font_bold(15), fill=_TEXT)
             # 成功率条
             prob_x = mx + 720
             prob_w = inner_w - 720 - 130
             prob = max(0.0, min(1.0, float(p['probability'])))
             _bar(im, prob_x, y + 32, prob_w, 14, prob, meta['color'])
             d.text((prob_x, y + 54), f"成功率 {prob * 100:.0f}%",
-                   font=_font_mono(14), fill=_TEXT_SOFT)
+                   font=_font_bold(14), fill=_TEXT_SOFT)
             # 净增
             d.text((mx + inner_w - 24, y + card_h // 2 - 4),
                    f"+{int(p['net_gain'])}",

@@ -18,6 +18,7 @@ class _Ability:
 
 @dataclass
 class _Recommend:
+    song_id: int
     title: str
     level: str
     ds: float
@@ -208,6 +209,7 @@ async def _compute_today_gain(qqid: int, top_n: int = 12) -> str:
             prob = max(0.1, min(0.95, abi.improve_rate * ratio))
             score = net * prob
             cand = _Recommend(
+                song_id=int(r.song_id),
                 title=r.title,
                 level=r.level,
                 ds=ds,
@@ -239,6 +241,7 @@ async def _compute_today_gain(qqid: int, top_n: int = 12) -> str:
         if len(groups[p.zone]) >= 4:
             continue
         groups[p.zone].append({
+            'song_id': p.song_id,
             'title': p.title,
             'level': p.level,
             'ds': p.ds,

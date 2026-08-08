@@ -725,7 +725,7 @@ async def render_group_rating_board(bot, group_id: int, top_n: int = 10,
     bio = await render_rating_ranking(
         take, title='群 Rating 排行',
         subtitle=f'共 {len(rows)} 人 · 显示前 {len(take)} 名',
-        self_qq=self_qq, self_rank=self_rank,
+        self_qq=self_qq, self_rank=self_rank, all_rows=rows,
     )
     return _image_segment(bio)
 

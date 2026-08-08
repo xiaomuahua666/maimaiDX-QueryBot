@@ -12,12 +12,12 @@ from typing import Dict, List, Optional, Tuple
 from PIL import Image, ImageDraw, ImageFilter
 
 from ..config import log
-from .image import DrawText, music_picture, rounded_corners
+from .image import DrawText, music_picture
 from .maimaidx_game_assets import draw_rating_badge, num_font, rating_badge_width
 # 直接复用排行榜渲染器中的基础元件，保持视觉统一
 from .maimaidx_leaderboard_image import (
     _ACCENT, _CARD_BORDER, _DIFF_COLORS, _GOLD, _GREEN, _MUTED,
-    _RED, _TEXT, _TEXT_SOFT, _bar, _brand_mark, _card, _fallback_avatar,
+    _RED, _TEXT, _TEXT_SOFT, _bar, _brand_mark, _card, _cover_placeholder,
     _finalize, _font_bold, _font_mono, _footer, _make_bg, _paste_round,
     _period_chip, _stat_box, _text_len, _truncate,
 )
@@ -40,10 +40,9 @@ def _sign(v) -> str:
 def _cover(song_id: int, size: int = 72) -> Image.Image:
     try:
         p = music_picture(song_id)
-        img = Image.open(p).convert('RGBA').resize((size, size))
-        return rounded_corners(img, 12, (True, True, True, True))
+        return Image.open(p).convert('RGBA').resize((size, size))
     except Exception:
-        return _fallback_avatar(size, '♪', _ACCENT)
+        return _cover_placeholder(size, '♪', _ACCENT)
 
 
 def _song_card(im, x, y, w, title, level, achv, ra, *,
@@ -237,7 +236,8 @@ def render_report(
     curve_h = 260 if len(points) != 2 else 150
     y += curve_h + 16
     stats_h = 96
-    y += stats_h + 16
+    best_h = 104
+    y += stats_h + 12 + best_h + 16
     # 曲目卡两列
     cards_title_h = 36
     card_h = 92
@@ -290,19 +290,42 @@ def render_report(
     # ---------- 统计盒 ----------
     sy = cy + curve_h + 16
     best = data.get('best_entry')
-    best_txt = f'{best.title[:8]} +{best.ra_delta}' if best else '无'
     boxes = [
         (data.get('improved_count', 0), '提升曲目'),
         (data.get('new_count', 0), '新增进B50'),
         (data.get('total_improved_ra', 0), '总提升 ra'),
-        (best_txt, '最佳单曲'),
     ]
-    bw = (inner_w - 3 * 14) // 4
+    bw = (inner_w - 2 * 14) // 3
     for i, (val, lab) in enumerate(boxes):
         _stat_box(im, mx + i * (bw + 14), sy, bw, stats_h, val, lab)
 
+    # 最佳单曲横向卡片（方形曲绘 + 曲名 + 难度/达成率 + ra 增量）
+    by = sy + stats_h + 12
+    _card(im, (mx, by, mx + inner_w, by + best_h), radius=18,
+          fill=(255, 255, 255, 235), border=_CARD_BORDER)
+    d.text((mx + inner_w - 24, by + 14), '本期最佳单曲',
+           font=_font_bold(15), fill=_MUTED, anchor='rt')
+    if best:
+        rec = _find_record(data.get('new_b50'), best)
+        sid = int(rec.song_id) if rec else 0
+        cov = _cover(sid, 72)
+        im.alpha_composite(cov, (mx + 20, by + 16))
+        nf = _font_bold(24)
+        d.text((mx + 108, by + 26), _truncate(d, best.title, nf, inner_w - 340),
+               font=nf, fill=_TEXT)
+        d.text((mx + 108, by + 64),
+               f'[{best.level}]  {best.achv_now:.4f}%   +{best.achv_delta:.4f}%',
+               font=_font_mono(16), fill=_TEXT_SOFT)
+        delta_c = _delta_color(best.ra_delta)
+        d.text((mx + inner_w - 24, by + best_h // 2 - 6),
+               f'+{best.ra_delta}', font=_font_bold(40), fill=delta_c, anchor='rm')
+        d.text((mx + inner_w - 24, by + best_h - 18), 'ra',
+               font=_font_mono(14), fill=_MUTED, anchor='rt')
+    else:
+        d.text((mx + 24, by + 60), '本期无提升曲目', font=_font_bold(20), fill=_MUTED)
+
     # ---------- 曲目卡两列 ----------
-    ly0 = sy + stats_h + 16
+    ly0 = by + best_h + 16
     col_w = (inner_w - 16) // 2
     # 左：提升 TOP
     d.text((mx + 8, ly0), 'B50 提升 TOP', font=_font_bold(20), fill=_TEXT)

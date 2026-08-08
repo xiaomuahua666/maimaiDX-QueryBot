@@ -43,6 +43,8 @@ def _song_key(r: ScoreRecord) -> Tuple[int, int]:
 
 
 def _build_b50(records: List[ScoreRecord]) -> Tuple[List[ScoreRecord], List[ScoreRecord], List[ScoreRecord]]:
+    # 不计宴会场谱面（ID >= 100000）
+    records = [r for r in records if int(r.song_id) < 100000]
     sorted_records = sorted(records, key=lambda x: int(x.ra), reverse=True)
     b15 = sorted([r for r in sorted_records if _is_latest_version(r)], key=lambda x: int(x.ra), reverse=True)[:15]
     b35 = sorted([r for r in sorted_records if not _is_latest_version(r)], key=lambda x: int(x.ra), reverse=True)[:35]
