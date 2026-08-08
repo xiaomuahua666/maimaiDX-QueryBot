@@ -1,0 +1,405 @@
+#!/usr/bin/env python3
+"""
+排行榜 / 报告图片渲染回归测试。
+
+覆盖目标：
+  1. 五类渲染图（群 Rating 榜、单曲榜、吃分榜、寸止/锁血榜、今日吃分推荐、日报/周报）
+     在「无任何游戏素材」环境下能正常出图且不抛异常（验证缺失回退）。
+  2. 在「存在假游戏贴图」环境下，评级 / Rating 徽章贴图能被加载，
+     且 draw_rating_badge 返回宽度 == rating_badge_width()，保证徽章右对齐不错位。
+  3. 曲绘占位图为正方形；源码层面保证曲绘不被圆角裁剪。
+  4. 宴会场谱面（song_id >= 100000）在报告 B50 构建中被过滤。
+  5. 群 Rating 榜 all_rows 统计全群数据（行数与显示行数解耦）。
+
+CI 环境没有生产字体 / 贴图，本测试自建临时静态目录并通过 fake config 注入，
+不依赖 nonebot 运行时。
+"""
+from __future__ import annotations
+
+import asyncio
+import ast
+import importlib.util
+import logging
+import sys
+import types
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from PIL import Image
+
+ROOT = Path(__file__).resolve().parents[1]
+WIDTH = 1080
+
+
+# ----------------------------------------------------------------------
+# 隔离加载 libraries 渲染模块（注入 fake config，避免拉起 nonebot 运行时）
+# ----------------------------------------------------------------------
+def _load_render_modules(static_dir: Path):
+    pic_dir = static_dir / "mai" / "pic"
+    cover_dir = static_dir / "mai" / "cover"
+    font_dir = static_dir / "font"
+    pic_dir.mkdir(parents=True, exist_ok=True)
+    cover_dir.mkdir(parents=True, exist_ok=True)
+    font_dir.mkdir(parents=True, exist_ok=True)
+
+    # 一个最小可用的 TrueType（PIL 默认位图字体无法缩放，用仓库自带字体若存在）
+    cand_fonts = [
+        ROOT / "GenSenMaruGothicTW-Regular.ttf",
+        ROOT / "static" / "font" / "ResourceHanRoundedCN-Bold.ttf",
+    ]
+    font_path = next((p for p in cand_fonts if p.is_file()), None)
+
+    pkg = types.ModuleType("_lb_render_pkg")
+    pkg.__path__ = []
+    libpkg = types.ModuleType("_lb_render_pkg.libraries")
+    libpkg.__path__ = [str(ROOT / "libraries")]
+    sys.modules["_lb_render_pkg"] = pkg
+    sys.modules["_lb_render_pkg.libraries"] = libpkg
+
+    cfg = types.ModuleType("_lb_render_pkg.config")
+    cfg.Path = Path
+    cfg.static = static_dir
+    cfg.maimaidir = pic_dir
+    cfg.coverdir = cover_dir
+    cfg.log = logging.getLogger("lb-render-test")
+    cfg.footer_generated = lambda *a, **k: "QQ Group 123456 | Milk Test"
+    # 字体路径：存在用真字体，不存在给一个不存在的路径让加载器回退到 default
+    fake_font = str(font_path) if font_path else str(font_dir / "missing.ttf")
+    cfg.SIYUAN = Path(fake_font)
+    cfg.TBFONT = Path(fake_font)
+    cfg.SHANGGUMONO = Path(fake_font)
+    sys.modules["_lb_render_pkg.config"] = cfg
+
+    def _load(name: str, rel: str):
+        spec = importlib.util.spec_from_file_location(
+            "_lb_render_pkg.libraries." + name, str(ROOT / rel)
+        )
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["_lb_render_pkg.libraries." + name] = mod
+        spec.loader.exec_module(mod)
+        return mod
+
+    image_mod = _load("image", "libraries/image.py")
+    theme = _load("maimaidx_theme", "libraries/maimaidx_theme.py")
+    assets = _load("maimaidx_game_assets", "libraries/maimaidx_game_assets.py")
+    lb = _load("maimaidx_leaderboard_image", "libraries/maimaidx_leaderboard_image.py")
+    rep = _load("maimaidx_report_image", "libraries/maimaidx_report_image.py")
+    return image_mod, theme, assets, lb, rep, cfg
+
+
+def _make_fake_sprites(pic_dir: Path):
+    """在主题目录写入比例正确的假贴图，供加载/几何测试。"""
+    theme_dir = pic_dir / "prism_plus"
+    theme_dir.mkdir(parents=True, exist_ok=True)
+    # 评级贴图：任意比例的有效 PNG
+    for name in ("SSSp", "SSS", "SSp", "SS", "Sp", "S", "AAA", "AA", "A", "BBB", "BB", "B", "C", "D"):
+        Image.new("RGBA", (120, 60), (255, 100, 200, 255)).save(theme_dir / f"UI_TTR_Rank_{name}.png")
+    # Rating 等级条：必须是 664x130，与 rating_badge_width() 的基准比例一致
+    for n in range(1, 12):
+        Image.new("RGBA", (664, 130), (80, 120, 255, 255)).save(theme_dir / f"UI_CMN_DXRating_{n:02d}.png")
+    # 数字贴图
+    for d in range(10):
+        Image.new("RGBA", (17, 20), (255, 255, 255, 255)).save(pic_dir / f"UI_NUM_Drating_{d}.png")
+
+
+def _clear_asset_caches(assets):
+    for name in ("_load_rank_sprite", "_load_rating_bar", "_load_drating_digit"):
+        fn = getattr(assets, name, None)
+        if fn is not None:
+            fn.cache_clear()
+    assets.bold_font.cache_clear()
+    assets.num_font.cache_clear()
+
+
+# ----------------------------------------------------------------------
+# 测试数据
+# ----------------------------------------------------------------------
+def _rating_rows(n=25):
+    names = ["ARKKKKKK", "NIUNIU", "Losoy", "QMZBDX", "BAKA", "Redapple",
+             "Yota!", "测试用户名字很长很长的那种", "Player9", "Player10",
+             "Player11", "Player12", "Player13", "Player14", "Player15",
+             "Player16", "Player17", "Player18", "Player19", "Player20",
+             "Player21", "Player22", "Player23", "Player24", "Player25"]
+    rows = []
+    for i in range(n):
+        ra = 16017 - i * 173
+        rows.append((1000 + i, names[i] if i < len(names) else f"P{i}", max(ra, 1000)))
+    return rows
+
+
+def _song_rows(n=5):
+    rates = ["sssp", "sssp", "ssp", "s", "aa"]
+    rows = []
+    for i in range(n):
+        info = {
+            "achievements": 100.7 - i * 1.2,
+            "fc": "ap" if i == 0 else ("fc" if i == 1 else ""),
+            "fs": "fdx",
+            "dxScore": 2547 - i * 12,
+            "rate": rates[i],
+        }
+        rows.append((1000 + i, f"Player{i+1}", info))
+    return rows
+
+
+def _gain_rows(n=6):
+    return [(1000 + i, f"Player{i+1}", 15900 - i * 80, 16017 - i * 80, 117 - i * 18)
+            for i in range(n)]
+
+
+def _sun_lock_rows(n=5):
+    return [(1000 + i, f"Player{i+1}", 3 - i % 3, 2 - i % 2) for i in range(n)]
+
+
+def _gain_sections():
+    return {
+        "稳赚": [
+            {"song_id": 1000, "title": "Oshama Scramble!", "level": "13+", "ds": 13.6,
+             "fit_diff": 13.2, "achv_now": 99.8, "achv_target": 100.0, "need": 0.2,
+             "net_gain": 18, "probability": 0.72},
+            {"song_id": 1001, "title": "BREaK! BREaK!", "level": "13", "ds": 13.3,
+             "fit_diff": 13.0, "achv_now": 99.6, "achv_target": 100.0, "need": 0.4,
+             "net_gain": 15, "probability": 0.66},
+        ],
+        "均衡": [
+            {"song_id": 1002, "title": "PANTS", "level": "13+", "ds": 13.8,
+             "fit_diff": 13.5, "achv_now": 99.4, "achv_target": 99.5, "need": 0.1,
+             "net_gain": 12, "probability": 0.5},
+        ],
+        "冲刺": [
+            {"song_id": 1003, "title": "Caliburne", "level": "14", "ds": 14.2,
+             "fit_diff": 14.5, "achv_now": 98.5, "achv_target": 99.0, "need": 0.5,
+             "net_gain": 35, "probability": 0.25},
+        ],
+    }
+
+
+def _report_data():
+    class E:
+        def __init__(self, t, l, li, ds, ra, ad, an, sid=1000):
+            self.title = t; self.level = l; self.level_index = li; self.ds = ds
+            self.ra_delta = ra; self.achv_delta = ad; self.achv_now = an; self.song_id = sid
+
+    class R:
+        def __init__(self, sid, t):
+            self.song_id = sid; self.title = t; self.level = "13+"; self.level_index = 3
+            self.ds = 13.6; self.achievements = 99.8; self.rate = "sss"; self.ra = 280
+
+    best = E("Oshama Scramble!", "13+", 3, 13.6, 18, 0.2, 99.8, sid=1000)
+    return {
+        "rating_delta": 117, "old_rating": 15900, "new_rating": 16017,
+        "b35_delta": 40, "b15_delta": 77, "b35_new_sum": 9000, "b15_new_sum": 4000,
+        "b35_tail_delta": 3, "b15_tail_delta": 5,
+        "new_entries": [R(2000 + i, f"新曲{i}") for i in range(4)],
+        "improved": [best, E("PANTS", "14", 3, 14.0, 15, 0.1, 99.5, 1001),
+                     E("Caliburne", "14", 3, 14.2, 12, 0.3, 98.7, 1002)],
+        "improved_count": 12, "new_count": 3, "total_improved_ra": 86,
+        "best_entry": best, "diff_dist": [0, 1, 4, 6, 1],
+        "sun_list": [best], "lock_list": [E("Caliburne", "14", 3, 14.2, 8, 0.05, 99.9, 1002)],
+        "new_b50": [R(1000 + i, f"旧曲{i}") for i in range(35)] + [R(2000 + i, f"新曲{i}") for i in range(15)],
+    }
+
+
+# ----------------------------------------------------------------------
+# 断言工具
+# ----------------------------------------------------------------------
+def _assert_png(bio: bytes, label: str, *, min_h: int = 200, max_h: int = 4000):
+    im = Image.open(bio)
+    im.load()
+    assert im.format == "PNG", f"{label}: 输出不是 PNG"
+    assert im.width == WIDTH, f"{label}: 宽度 {im.width} != {WIDTH}"
+    assert min_h <= im.height <= max_h, f"{label}: 高度 {im.height} 超出合理范围 [{min_h},{max_h}]"
+    return im
+
+
+def _run(coro):
+    return asyncio.get_event_loop().run_until_complete(coro) if sys.version_info < (3, 10) else asyncio.run(coro)
+
+
+# ----------------------------------------------------------------------
+# 各测试
+# ----------------------------------------------------------------------
+def test_smoke_no_assets(mods):
+    _, _, assets, lb, rep, _ = mods
+    _clear_asset_caches(assets)
+
+    all_rows = _rating_rows(25)
+    bio = _run(lb.render_rating_ranking(all_rows[:8], title="群 Rating 排行",
+                                        subtitle="共 25 人 · 显示前 8 名",
+                                        self_qq=1002, self_rank=3, all_rows=all_rows))
+    im = _assert_png(bio, "群Rating榜", min_h=800)
+    print(f"  群Rating榜 {im.size} OK（全群25人统计）")
+
+    bio = _run(lb.render_song_leaderboard(
+        _song_rows(5), "Restricted Access", "Master", level_index=3,
+        total_players=5, self_qq=1001))
+    im = _assert_png(bio, "单曲榜", min_h=800)
+    print(f"  单曲榜 {im.size} OK")
+
+    bio = _run(lb.render_gain_ranking(_gain_rows(6), "群吃分榜", "近7天", self_qq=1002))
+    im = _assert_png(bio, "吃分榜", min_h=600)
+    print(f"  吃分榜 {im.size} OK")
+
+    bio = _run(lb.render_sun_lock_ranking(_sun_lock_rows(5), "寸止榜", "近7天", mode="sun"))
+    im = _assert_png(bio, "寸止榜", min_h=600)
+    print(f"  寸止榜 {im.size} OK")
+
+    bio = lb.render_gain_recommendation(_gain_sections(),
+                                        ["昨日存档 2026-08-08", "能力样本 12 天", "候选 36 首"])
+    im = _assert_png(bio, "吃分推荐", min_h=400)
+    print(f"  吃分推荐 {im.size} OK")
+
+    data = _report_data()
+    for tag, pts, labs, min_h in [
+        ("日报", [15900, 16017], ["08-08", "08-09"], 1200),
+        ("周报", [15900, 15940, 15980, 16000, 15990, 16017], [f"D{i}" for i in range(6)], 1200),
+    ]:
+        bio = rep.render_report(f"MAIMAI {tag}", "Losoy", "2026-08 → 2026-08",
+                                pts, labs, data, period_tag=tag)
+        im = _assert_png(bio, f"{tag}", min_h=min_h)
+        print(f"  {tag} {im.size} OK")
+
+
+def test_sprite_geometry(mods):
+    """有假贴图时：评级贴图可加载、Rating 徽章宽度契约一致、不越界错位。"""
+    _, _, assets, lb, _, cfg = mods
+    _make_fake_sprites(cfg.maimaidir)
+    _clear_asset_caches(assets)
+
+    # 评级贴图加载
+    for rate in ("sssp", "sss", "ssp", "ss", "sp", "s", "aaa", "aa", "a", "bbb", "bb", "b", "c", "d"):
+        assert assets.has_rank_sprite(rate), f"评级贴图 {rate} 未被加载"
+    canvas = Image.new("RGBA", (400, 100), (0, 0, 0, 0))
+    w, h = assets.draw_rank_sprite(canvas, 10, 20, height=40, rate_key="sssp")
+    assert h == 40 and w > 0, f"评级贴图几何异常 w={w} h={h}"
+    print(f"  评级贴图加载与等比缩放 OK（{w}x{h}）")
+
+    # Rating 徽章：draw 返回宽度必须等于 rating_badge_width()，否则右对齐会错位
+    for height in (30, 34, 40):
+        canvas = Image.new("RGBA", (800, 120), (0, 0, 0, 0))
+        right_x = 760
+        bw, bh = assets.draw_rating_badge(canvas, right_x - assets.rating_badge_width(height),
+                                          40, 16017, height=height)
+        expected_w = assets.rating_badge_width(height)
+        assert bw == expected_w, (
+            f"Rating 徽章宽度错位 h={height}: draw 返回 {bw}, rating_badge_width={expected_w}；"
+            f"UI_CMN_DXRating 贴图比例必须为 664x130")
+        # 徽章右边缘不应越过 right_x
+        assert right_x - assets.rating_badge_width(height) + bw <= right_x + 1
+    print("  Rating 徽章宽度契约一致（无错位）OK")
+
+    # 排行榜自身的右对齐封装
+    canvas = Image.new("RGBA", (WIDTH, 120), (0, 0, 0, 0))
+    bw, bh = lb._draw_rating_badge(canvas, WIDTH - 40, 60, 16017, height=34)
+    assert bw > 0 and bh == 34
+    print(f"  排行榜徽章封装 OK（{bw}x{bh}）")
+
+    # 用假贴图完整渲染一张 Rating 榜，确认不抛异常
+    all_rows = _rating_rows(12)
+    bio = _run(lb.render_rating_ranking(all_rows[:10], all_rows=all_rows))
+    _assert_png(bio, "带贴图Rating榜", min_h=800)
+    print("  带贴图 Rating 榜整图渲染 OK")
+
+
+def test_fallback_when_assets_missing(mods):
+    """无贴图时：draw_* 返回 (0,0)，调用方回退，不抛异常。"""
+    _, _, assets, lb, _, cfg = mods
+    # 清空主题目录
+    import shutil
+    for sub in cfg.maimaidir.glob("prism_plus"):
+        shutil.rmtree(sub, ignore_errors=True)
+    for p in cfg.maimaidir.glob("UI_NUM_Drating_*.png"):
+        p.unlink(missing_ok=True)
+    _clear_asset_caches(assets)
+
+    assert not assets.has_rank_sprite("sss")
+    canvas = Image.new("RGBA", (200, 80), (0, 0, 0, 0))
+    assert assets.draw_rank_sprite(canvas, 0, 0, height=40, rate_key="sss") == (0, 0)
+    assert assets.draw_rating_badge(canvas, 0, 0, 16017, height=34) == (0, 0)
+    # 排行榜封装应走到彩色胶囊回退，仍返回正宽度
+    bw, bh = lb._draw_rating_badge(canvas, WIDTH - 40, 40, 16017, height=34)
+    assert bw > 0 and bh == 34
+    print("  无素材回退（评级/Rating 胶囊）OK")
+
+
+def test_square_cover_and_no_paw(mods):
+    """曲绘占位图为正方形；源码不再含爪印绘制。"""
+    _, _, _, lb, _, _ = mods
+    for size in (48, 68, 72, 88):
+        im = lb._cover_placeholder(size)
+        assert im.size == (size, size), f"曲绘占位不是方形: {im.size}"
+    print("  曲绘占位图方形 OK")
+
+    src = (ROOT / "libraries" / "maimaidx_leaderboard_image.py").read_text(encoding="utf-8")
+    assert "_draw_paw" not in src, "仍存在爪印绘制函数 _draw_paw"
+    assert "paw" not in src.lower(), "源码仍引用 paw（爪印）"
+    print("  爪印已移除 OK")
+
+    # 单曲榜顶部曲绘必须走方形 alpha_composite（不是圆形/圆角）
+    assert "im.alpha_composite(cover, (mx + 16, hcard_y + 11))" in src
+    print("  单曲榜顶部曲绘方形粘贴 OK")
+
+
+def test_utage_filter_source():
+    """报告 B50 构建必须过滤宴会场谱面（song_id >= 100000）。"""
+    src = (ROOT / "libraries" / "maimaidx_progress_report.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    found = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "_build_b50":
+            body = ast.get_source_segment(src, node)
+            assert "100000" in body, "_build_b50 中未发现宴谱过滤阈值 100000"
+            assert "< 100000" in body, "_build_b50 未使用 '< 100000' 过滤宴谱"
+            found = True
+    assert found, "未找到 _build_b50 函数"
+    print("  报告 B50 宴谱过滤（song_id<100000）OK")
+
+    # 吃分推荐必须调用 filter_utage_records
+    rec_src = (ROOT / "libraries" / "maimaidx_gain_recommend.py").read_text(encoding="utf-8")
+    assert "filter_utage_records" in rec_src, "吃分推荐未过滤宴谱"
+    print("  吃分推荐宴谱过滤 OK")
+
+
+def test_all_rows_decouples_stats(mods):
+    """all_rows 行数与显示行数解耦：显示 3 人但统计全群 25 人也能出图。"""
+    _, _, assets, lb, _, _ = mods
+    _clear_asset_caches(assets)
+    all_rows = _rating_rows(25)
+    bio = _run(lb.render_rating_ranking(all_rows[:3], all_rows=all_rows))
+    im = _assert_png(bio, "全群统计", min_h=800)
+    # 全群人数 25 的统计面板应让图比只显示 3 人无统计时更高
+    bio_small = _run(lb.render_rating_ranking(all_rows[:3], all_rows=all_rows[:3]))
+    im_small = _assert_png(bio_small, "小样本", min_h=400)
+    assert im.height >= im_small.height
+    print(f"  全群统计解耦 OK（25人图高 {im.height} >= 3人图高 {im_small.height}）")
+
+
+def main():
+    assert sys.version_info >= (3, 9), "需要 Python 3.9+"
+    with TemporaryDirectory() as tmp:
+        static_dir = Path(tmp)
+        mods = _load_render_modules(static_dir)
+
+        print("[1/6] 无素材冒烟渲染")
+        test_smoke_no_assets(mods)
+
+        print("[2/6] 贴图加载与几何/错位校验")
+        test_sprite_geometry(mods)
+
+        print("[3/6] 无素材回退")
+        test_fallback_when_assets_missing(mods)
+
+        print("[4/6] 方形曲绘 / 去爪印源码校验")
+        test_square_cover_and_no_paw(mods)
+
+        print("[5/6] 宴谱过滤源码校验")
+        test_utage_filter_source()
+
+        print("[6/6] 全群统计解耦")
+        test_all_rows_decouples_stats(mods)
+
+    print("\nALL RENDER TESTS PASSED 🐾")
+
+
+if __name__ == "__main__":
+    main()
