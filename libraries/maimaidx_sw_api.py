@@ -359,6 +359,36 @@ class SwApiClient:
         return msg
 
     @staticmethod
+    def _is_business_success(payload: Any) -> bool:
+        """UpsertUserAllApi 成功契约：returnCode == 1。
+
+        道具写入网关偶发在非 200 HTTP 状态下仍返回业务成功包，需要单独识别。
+        """
+        if not isinstance(payload, dict):
+            return False
+
+        def code_is_one(value: Any) -> bool:
+            try:
+                return int(value) == 1
+            except (TypeError, ValueError):
+                return False
+
+        if code_is_one(payload.get("returnCode", payload.get("ReturnCode"))):
+            return True
+        business_data = payload.get("businessData")
+        if isinstance(business_data, dict) and code_is_one(
+            business_data.get("returnCode", business_data.get("ReturnCode"))
+        ):
+            return True
+        for key in ("returnMessage", "msg"):
+            nested = SwApiClient._parse_msg_payload(payload.get(key))
+            if isinstance(nested, dict) and code_is_one(
+                nested.get("returnCode", nested.get("ReturnCode"))
+            ):
+                return True
+        return False
+
+    @staticmethod
     def _parse_envelope(data: dict) -> Any:
         # Chime 3002 means the SGID is no longer usable.  Some gateways put
         # this failure inside an otherwise successful outer envelope, so
@@ -496,6 +526,7 @@ class SwApiClient:
         params: Optional[dict] = None,
         timeout: Optional[float] = None,
         retry_count: Optional[int] = None,
+        accept_business_success: bool = False,
     ) -> dict:
         self._check_available()
         url = f"{self.base_url}{path}"
@@ -554,6 +585,35 @@ class SwApiClient:
             try:
                 err_data = res.json()
                 if isinstance(err_data, dict):
+                    if accept_business_success and self._is_business_success(
+                        err_data
+                    ):
+                        admin_audit.add_step(
+                            "http.awmc",
+                            "success",
+                            {
+                                "method": method,
+                                "path": path,
+                                "status_code": res.status_code,
+                                "response": _audit_response_summary(err_data),
+                                "note": "business returnCode=1",
+                            },
+                            started_at=audit_started,
+                        )
+                        cooldown = max(
+                            0.0,
+                            float(
+                                getattr(
+                                    maiconfig,
+                                    "awmc_api_success_cooldown_seconds",
+                                    1.0,
+                                )
+                                or 0.0
+                            ),
+                        )
+                        if cooldown:
+                            await asyncio.sleep(cooldown)
+                        return err_data
                     structured_error = SwApiError.from_payload(
                         err_data,
                         fallback=f"HTTP {res.status_code}",
@@ -813,9 +873,12 @@ class SwApiClient:
     async def upsert_item(
         self, qrcode: str, item_kind: int, item_id: int, operation: str
     ) -> Any:
-        # The item endpoint uses HTTP status as its success contract.  Its
-        # legacy body may contain returnCode=0 even after the mutation is
-        # accepted, so do not apply the stricter read/music envelope parser.
+        # UpsertUserAllApi 服务端处理约需 90 秒；网关偶发在非 200 状态下
+        # 返回 returnCode=1 的业务成功包，按业务码识别成功，避免误报 AWMCError。
+        item_timeout = float(
+            getattr(maiconfig, "awmc_item_upsert_timeout_seconds", 120.0)
+            or 120.0
+        )
         data = await self._request(
             "POST",
             self._api_path("item/upsert"),
@@ -825,8 +888,9 @@ class SwApiClient:
                 itemId=item_id,
                 operation=operation,
             ),
-            timeout=60,
+            timeout=item_timeout,
             retry_count=0,
+            accept_business_success=True,
         )
         return data
 

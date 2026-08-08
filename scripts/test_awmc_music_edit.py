@@ -158,10 +158,13 @@ item_upsert_block = client_source[
 ]
 assert "return data" in item_upsert_block
 assert "return self._parse_envelope(data)" not in item_upsert_block
+assert "awmc_item_upsert_timeout_seconds" in item_upsert_block
+assert "accept_business_success=True" in item_upsert_block
 assert client_source.count("retry_count=0") >= 7
 assert "MilK" in (ROOT / "command" / "mai_account.py").read_text(encoding="utf-8")
-assert "只发道具时" in (ROOT / "command" / "mai_account.py").read_text(encoding="utf-8")
+assert "提交后请主人检查" in (ROOT / "command" / "mai_account.py").read_text(encoding="utf-8")
 assert "0 分的乐曲记录" in (ROOT / "command" / "mai_account.py").read_text(encoding="utf-8")
+assert "Rating 可能会短暂显示异常" in (ROOT / "command" / "mai_account.py").read_text(encoding="utf-8")
 assert "上机游玩清除票券" in (ROOT / "command" / "mai_account.py").read_text(encoding="utf-8")
 assert "mai清票（或清票）" in (ROOT / "command" / "mai_account.py").read_text(encoding="utf-8")
 

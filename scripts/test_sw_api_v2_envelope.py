@@ -12,6 +12,7 @@ tree = ast.parse(PATH.read_text(encoding="utf-8"))
 selected_names = {
     "SwApiError",
     "SwApiClient",
+    "_is_business_success",
     "find_sw_api_error",
     "is_sw_api_quota_error",
     "format_sw_api_quota_error",
@@ -51,6 +52,29 @@ assert client._parse_envelope(
 assert client._parse_envelope({"code": 0, "msg": '{"legacy":true}'}) == {
     "legacy": True
 }
+
+assert client._is_business_success(
+    {
+        "returnCode": 1,
+        "returnMessage": '{"returnCode":1,"apiName":"com.sega.maimai.api.UpsertUserAllApi"}',
+        "code": 0,
+        "msg": '{"returnCode":1,"apiName":"com.sega.maimai.api.UpsertUserAllApi"}',
+        "businessData": {
+            "returnCode": 1,
+            "apiName": "com.sega.maimai.api.UpsertUserAllApi",
+        },
+    }
+) is True
+assert client._is_business_success(
+    {"returnCode": 1, "returnMessage": "{}"}
+) is True
+assert client._is_business_success({"businessData": {"returnCode": 1}}) is True
+assert client._is_business_success(
+    {"code": 0, "msg": '{"returnCode":1,"apiName":"com.sega.maimai.api.UpsertUserAllApi"}'}
+) is True
+assert client._is_business_success({"returnCode": 0}) is False
+assert client._is_business_success({"returnCode": 102}) is False
+assert client._is_business_success({"code": 0, "msg": "not json"}) is False
 
 try:
     client._parse_envelope(
