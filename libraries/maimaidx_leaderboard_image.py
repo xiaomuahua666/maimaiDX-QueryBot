@@ -627,6 +627,138 @@ def _draw_fc_badge(im, x, y, fc, fs_code):
     return cx
 
 
+async def render_my_rank_context(
+    rows: Sequence[Tuple[int, str, int]],
+    self_qq: int,
+    half: int = 5,
+) -> Optional[BytesIO]:
+    """以请求用户为中心的群 Rating 排名上下文：展示用户排名/百分位，以及前后各 half 位。
+
+    rows: 全群已降序的 [(uid, name, rating), ...]。
+    找不到该用户时返回 None，由调用方给出文字提示。
+    """
+    width = 1080
+    mx = 40
+    inner_w = width - mx * 2
+    row_h = 90
+    gap = 12
+
+    total = len(rows)
+    self_idx = next((i for i, r in enumerate(rows) if r[0] == self_qq), None)
+    if self_idx is None:
+        return None
+    self_rank = self_idx + 1
+    self_rating = rows[self_idx][2]
+
+    start = max(0, self_idx - half)
+    end = min(total, self_idx + half + 1)
+    window = list(enumerate(rows[start:end], start=start))  # (abs_idx, (uid,name,ra))
+
+    # 百分位：超过的人数占比
+    exceeded = total - self_rank
+    percent = (exceeded / (total - 1) * 100.0) if total > 1 else 100.0
+
+    header_h = 230
+    n = len(window)
+    stats_h = 150
+    content_h = header_h + n * (row_h + gap) + stats_h + 30
+    total_h = content_h + 90
+
+    im = _make_bg(width, total_h)
+    d = ImageDraw.Draw(im)
+    _brand_mark(im, width)
+    _period_chip(im, width, '我的排名')
+    avatars = await _fetch_avatars([r[0] for _, r in window])
+
+    _draw_title(d, mx + 120, 44, 32, '我在群里的排名', _TEXT)
+    _draw_title(d, mx + 120, 86, 18, f'共 {total} 人 · 你周围的群友', _TEXT_SOFT)
+
+    # ---------- 顶部个人排名卡片 ----------
+    hcard_y = 120
+    hcard_h = 96
+    _card(im, (mx, hcard_y, mx + inner_w, hcard_y + hcard_h), radius=22,
+          fill=(255, 255, 255, 240), border=_ACCENT, border_w=3)
+    # 大号排名
+    rank_font = _font_mono(46)
+    d.text((mx + 36, hcard_y + hcard_h // 2), f'#{self_rank}',
+           font=rank_font, fill=_ACCENT, anchor='lm')
+    d.text((mx + 150, hcard_y + 24), f'第 {self_rank} 名 / 共 {total} 人',
+           font=_font_bold(22), fill=_TEXT)
+    # 百分位进度条
+    bar_x = mx + 150
+    bar_w = 380
+    d.text((bar_x, hcard_y + 58), f'超过了 {percent:.1f}% 的群友',
+           font=_font_bold(16), fill=_TEXT_SOFT)
+    _bar(im, bar_x, hcard_y + 82, bar_w, 12, percent / 100.0, _ACCENT,
+         bg=(225, 230, 242, 220))
+    # 右侧个人 rating 徽章
+    _draw_rating_badge(im, mx + inner_w - 24, hcard_y + hcard_h // 2, self_rating)
+
+    # ---------- 前后排名列表 ----------
+    y = header_h + 10
+    bar_max = max((r[2] for _, r in window), default=1)
+    bar_max = max(bar_max, int(math.ceil(bar_max / 1000) * 1000))
+
+    for abs_idx, (uid, name, ra) in window:
+        rank = abs_idx + 1
+        is_self = (uid == self_qq)
+        above = rows[abs_idx - 1] if abs_idx > 0 else None
+        diff_above = (above[2] - ra) if above is not None else None
+        box = (mx, y, mx + inner_w, y + row_h)
+        _card(im, box, radius=18,
+              fill=(238, 240, 255, 250) if is_self else (255, 255, 255, 245),
+              border=_ACCENT if is_self else _CARD_BORDER,
+              border_w=3 if is_self else 2)
+        _draw_rank_badge(im, mx + 34, y + row_h // 2, rank, radius=23)
+        av = _get_avatar(avatars, uid, name, rating_color(ra), 60)
+        _paste_round(im, av, (mx + 76, y + 15), radius=12)
+        nfont = _font_bold(24)
+        name_text = _truncate(d, name, nfont, 280)
+        d.text((mx + 150, y + 14), name_text, font=nfont, fill=_TEXT)
+        if is_self:
+            d.text((mx + 150 + _text_len(d, name_text, nfont) + 10, y + 20),
+                   '（你）', font=_font_bold(16), fill=_ACCENT)
+        # 与上一名分差
+        sub = None
+        if not is_self and diff_above is not None and diff_above > 0:
+            sub = (f'距上一名 {diff_above} ra', _MUTED)
+        elif is_self and diff_above is not None and diff_above > 0:
+            sub = (f'距上一名还差 {diff_above} ra', _RED)
+        elif is_self and abs_idx == 0:
+            sub = ('已经是群内第一啦！', _GREEN)
+        if sub:
+            d.text((mx + 150, y + 46), sub[0], font=_font_bold(14), fill=sub[1])
+        # 进度条
+        bar_x2 = mx + 150
+        bar_w2 = inner_w - 150 - 200
+        _bar(im, bar_x2, y + 66, bar_w2, 12, ra / bar_max, rating_color(ra),
+             bg=(225, 230, 242, 200))
+        _draw_rating_badge(im, mx + inner_w - 14, y + row_h // 2, ra)
+        y += row_h + gap
+
+    # ---------- 底部分布提示 ----------
+    panel_y = y + 8
+    _card(im, (mx, panel_y, mx + inner_w, panel_y + stats_h - 40), radius=22,
+          fill=(255, 255, 255, 200))
+    ratings = [r[2] for r in rows]
+    avg = sum(ratings) / len(ratings) if ratings else 0
+    gap_to_top = (rows[0][2] - self_rating) if total > 0 else 0
+    above_count = self_rank - 1
+    below_count = total - self_rank
+    summary = [
+        (f'{above_count}', '在你之上'),
+        (f'{below_count}', '在你之下'),
+        (f'{avg:.0f}', '群均 rating'),
+        (f'+{gap_to_top}' if gap_to_top > 0 else '0', '距榜首'),
+    ]
+    box_w = (inner_w - 56 - 3 * 14) // 4
+    for i, (val, lab) in enumerate(summary):
+        _stat_box(im, mx + 28 + i * (box_w + 14), panel_y + 22, box_w, 72, val, lab)
+
+    _footer(im, width, total_h, f'第 {self_rank} 名 / 共 {total} 人')
+    return _finalize(im)
+
+
 async def render_song_leaderboard(
     rows: Sequence[Tuple[int, str, dict]],
     music_title: str,

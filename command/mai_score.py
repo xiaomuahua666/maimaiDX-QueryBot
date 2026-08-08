@@ -33,6 +33,7 @@ from ..libraries.maimaidx_group_rating import (
     group_song_my_rank,
     group_song_leaderboard,
     render_group_rating_board,
+    render_group_weak_board,
     render_group_gain_board,
     render_group_sun_lock_board,
 )
@@ -560,8 +561,8 @@ async def _group_weak(event: MessageEvent):
         bot = get_bot(str(event.self_id))
     self_id = int(getattr(bot, 'self_id', event.self_id))
     nickname = str(getattr(bot, 'nickname', None) or 'Bot')
-    board_text = await render_group_rating_board(
-        bot, event.group_id, top_n=11, self_qq=resolve_score_qqid(event)
+    board_text = await render_group_weak_board(
+        bot, event.group_id, self_qq=resolve_score_qqid(event)
     )
     await plugin_finish(
         group_weak,

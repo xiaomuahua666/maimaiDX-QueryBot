@@ -440,6 +440,29 @@ def test_render_without_font_files(mods):
     print("  无字体文件回退不崩溃 OK")
 
 
+def test_my_rank_context(mods):
+    """我在群里有多菜：以用户为中心的前后排名上下文，覆盖中位/榜首/榜尾/未找到。"""
+    _, _, assets, lb, _, _ = mods
+    _clear_asset_caches(assets)
+    names = [f"Player{i}" for i in range(15)]
+    rows = [(1000 + i, names[i], 16017 - i * 120) for i in range(15)]
+
+    # 中位：显示前后各 5 名，自己高亮，真实排名
+    bio = _run(lb.render_my_rank_context(rows, self_qq=1002, half=5))
+    im = _assert_png(bio, "我的排名-中位", min_h=800)
+    print(f"  我的排名(中位 rank3) {im.size} OK")
+
+    # 榜首
+    bio = _run(lb.render_my_rank_context(rows, self_qq=1000, half=5))
+    _assert_png(bio, "我的排名-榜首", min_h=800)
+    # 榜尾
+    bio = _run(lb.render_my_rank_context(rows, self_qq=1014, half=5))
+    _assert_png(bio, "我的排名-榜尾", min_h=800)
+    # 未找到返回 None（调用方给文字提示）
+    assert _run(lb.render_my_rank_context(rows, self_qq=99999, half=5)) is None
+    print("  榜首/榜尾/未找到边界 OK")
+
+
 def test_canvas_fully_painted(mods):
     """渲染图四角必须完全不透明且非纯黑，防止透明边/黑边造成的错位观感。"""
     _, _, assets, lb, _, _ = mods
@@ -461,32 +484,35 @@ def main():
         static_dir = Path(tmp)
         mods = _load_render_modules(static_dir)
 
-        print("[1/9] 无素材冒烟渲染")
+        print("[1/10] 无素材冒烟渲染")
         test_smoke_no_assets(mods)
 
-        print("[2/9] 贴图加载与几何/错位校验")
+        print("[2/10] 贴图加载与几何/错位校验")
         test_sprite_geometry(mods)
 
-        print("[3/9] 无素材回退")
+        print("[3/10] 无素材回退")
         test_fallback_when_assets_missing(mods)
 
-        print("[4/9] 方形曲绘 / 去爪印源码校验")
+        print("[4/10] 方形曲绘 / 去爪印源码校验")
         test_square_cover_and_no_paw(mods)
 
-        print("[5/9] 宴谱过滤源码校验")
+        print("[5/10] 宴谱过滤源码校验")
         test_utage_filter_source()
 
-        print("[6/9] 全群统计解耦")
+        print("[6/10] 全群统计解耦")
         test_all_rows_decouples_stats(mods)
 
-        print("[7/9] 西文字体渲染中文静态扫描")
+        print("[7/10] 西文字体渲染中文静态扫描")
         test_no_chinese_in_mono_font()
 
-        print("[8/9] 无字体文件回退")
+        print("[8/10] 无字体文件回退")
         test_render_without_font_files(mods)
 
-        print("[9/9] 画布背景完整性")
+        print("[9/10] 画布背景完整性")
         test_canvas_fully_painted(mods)
+
+        print("[10/10] 我的排名上下文")
+        test_my_rank_context(mods)
 
     print("\nALL RENDER TESTS PASSED 🐾")
 

@@ -730,6 +730,21 @@ async def render_group_rating_board(bot, group_id: int, top_n: int = 10,
     return _image_segment(bio)
 
 
+async def render_group_weak_board(bot, group_id: int, self_qq: int,
+                                 half: int = 5):
+    """我在群里有多菜：以请求用户为中心，渲染其前后各 half 位的排名上下文图。"""
+    rows = await get_group_member_ratings(bot, group_id)
+    if not rows:
+        return '群内暂无已绑定查分器的成员，无法排名。'
+    if self_qq is None or not any(uid == self_qq for uid, _, _ in rows):
+        return '你尚未绑定查分器或未同意协议，无法参与群内排名。'
+    from .maimaidx_leaderboard_image import render_my_rank_context
+    bio = await render_my_rank_context(rows, self_qq=self_qq, half=half)
+    if bio is None:
+        return '未在群内排名中找到你，请先绑定查分器。'
+    return _image_segment(bio)
+
+
 async def render_group_gain_board(bot, group_id: int, days: int = 7,
                                   top_n: int = 15, self_qq: Optional[int] = None):
     days = max(1, min(90, int(days)))
