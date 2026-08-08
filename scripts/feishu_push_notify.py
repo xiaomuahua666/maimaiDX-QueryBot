@@ -337,7 +337,7 @@ def main() -> None:
     event = json.loads(event_path.read_text(encoding="utf-8"))
     env_map = dict(os.environ)
     event_name = env_map.get("GITHUB_EVENT_NAME", "")
-    if event_name == "pull_request" or "pull_request" in event:
+    if event_name in ("pull_request", "pull_request_target") or "pull_request" in event:
         payload = build_pr_card(event, env_map)
     else:
         status = json.loads(os.environ.get("BOT_STATUS_JSON") or '{"state":"unknown"}')

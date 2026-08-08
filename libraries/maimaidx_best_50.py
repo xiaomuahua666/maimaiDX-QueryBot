@@ -202,7 +202,7 @@ class ScoreBaseImage:
         """
         # y为第一排纵向坐标，dy为各行间距
         dy = 114
-        if data and type(data[0]) == ChartInfo:
+        if data and type(data[0]) is ChartInfo:
             # 当 height 非 0（compact_layout）时第二块紧接第一块，无视分组
             y = (height if height != 0 else 1085) if dx else 235
         else:

@@ -19,27 +19,152 @@ permissions:
   contents: read
 
 jobs:
-  verify:
+  lint:
+    name: Lint & Static Checks
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     env:
       PYTHONDONTWRITEBYTECODE: "1"
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Compile Python sources
+
+      - name: Install tooling
+        run: pip install ruff pyyaml
+
+      - name: Compile all Python sources
         run: python -m compileall -q .
-      - name: Check shell scripts
+
+      - name: Check shell scripts syntax
         run: bash -n scripts/*.sh
-      - name: Run fast regression tests
+
+      - name: Validate YAML workflows
         run: |
-          python scripts/test_footer_integrity.py
-          python scripts/test_help_short_reply.py
-          python scripts/test_star_plate_badge_path.py
-          python scripts/test_plate_playinfo_dev.py
-          python scripts/test_rating_table_manifest.py
-          python scripts/test_bot_supervisor.py
-          python scripts/test_feishu_push_notify.py
-          python scripts/test_feishu_ops_bot.py
+          python - <<'PY'
+          import glob, sys, yaml
+          failed = False
+          for path in glob.glob('.github/workflows/*.yml') + glob.glob('.github/workflows/*.yaml'):
+              try:
+                  with open(path, 'r', encoding='utf-8') as f:
+                      yaml.safe_load(f)
+                  print(f'OK  {path}')
+              except yaml.YAMLError as exc:
+                  failed = True
+                  print(f'BAD {path}: {exc}')
+          sys.exit(1 if failed else 0)
+          PY
+
+      - name: Validate JSON data files
+        run: |
+          python - <<'PY'
+          import glob, json, sys
+          targets = []
+          for pattern in ('static/**/*.json', 'data/**/*.json', 'libraries/**/*.json', '*.json'):
+              targets.extend(glob.glob(pattern, recursive=True))
+          targets = sorted(set(targets))
+          failed = 0
+          for path in targets:
+              try:
+                  with open(path, 'r', encoding='utf-8') as f:
+                      json.load(f)
+              except Exception as exc:
+                  failed += 1
+                  print(f'BAD {path}: {exc}')
+          print(f'Validated {len(targets)} JSON files, {failed} failed')
+          sys.exit(1 if failed else 0)
+          PY
+
+      - name: Ruff lint check
+        run: ruff check .
+
+  test:
+    name: Tests (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Run regression tests
+        run: |
+          set +e
+          total=0
+          passed=0
+          failed=0
+          fail_list=""
+          start_time=$SECONDS
+
+          # 需要 nonebot / 渲染 / 外部 API 的测试，CI 环境下跳过
+          skip_tests=(
+            "test_account_machine_flow.py"
+            "test_awmcnet_integration.py"
+            "test_fit_b50_rating_consistency.py"
+            "test_guess_rating_impostor.py"
+            "test_qq_admin_guess_identity.py"
+            "test_qq_break_expiry_routing.py"
+            "test_qq_break_identity.py"
+            "test_qq_command_dispatch.py"
+            "test_qq_command_matching.py"
+            "test_qq_direct_send_routing.py"
+            "test_qq_guess_active_delivery.py"
+            "test_qq_guess_legacy_mapping.py"
+            "test_qq_guess_rating_candidates.py"
+            "test_qq_image_reply.py"
+            "test_qq_media_mention.py"
+            "test_qq_score_report_billing.py"
+            "test_qrcode_image.py"
+            "test_render_tasks.py"
+            "test_ticket_queue_flow.py"
+          )
+
+          for f in scripts/test_*.py; do
+            basename=$(basename "$f")
+            skip=0
+            for s in "${skip_tests[@]}"; do
+              if [ "$basename" == "$s" ]; then skip=1; break; fi
+            done
+            [ "$skip" -eq 1 ] && continue
+
+            total=$((total + 1))
+            echo "▶ $basename"
+            output=$(python "$f" 2>&1)
+            rc=$?
+            if [ $rc -eq 0 ]; then
+              passed=$((passed + 1))
+            else
+              failed=$((failed + 1))
+              fail_list="$fail_list  ✗ $basename (exit $rc)\n"
+              echo "  ✗ FAILED"
+              echo "$output" | tail -20 | sed 's/^/    /'
+            fi
+          done
+
+          duration=$((SECONDS - start_time))
+          echo ""
+          echo "=============================="
+          echo "  Test Summary"
+          echo "=============================="
+          printf "  Passed:  %s\n" "$passed"
+          printf "  Failed:  %s\n" "$failed"
+          printf "  Total:   %s\n" "$total"
+          printf "  Time:    %ss\n" "$duration"
+          echo "=============================="
+
+          if [ "$failed" -gt 0 ]; then
+            echo ""
+            echo "Failed tests:"
+            printf "$fail_list"
+            exit 1
+          fi

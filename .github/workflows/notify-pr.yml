@@ -1,7 +1,12 @@
 name: Notify PR
 
+# fork PR 也能收到飞书通知：使用 pull_request_target 在 base 仓库上下文中运行，
+# 因此可以访问仓库 secrets。安全约束：
+#   1. 显式 checkout base 分支（不 checkout PR head），不执行 fork 提交的代码；
+#   2. persist-credentials: false；
+#   3. 通知脚本只用标准库读取事件 payload，不 import/运行仓库业务代码。
 on:
-  pull_request:
+  pull_request_target:
     types:
       - opened
       - reopened
@@ -20,7 +25,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
 
       - name: Send Feishu card
         continue-on-error: true

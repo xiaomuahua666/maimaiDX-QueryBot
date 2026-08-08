@@ -68,3 +68,33 @@ packages = [
 [tool.setuptools.package-data]
 "nonebot_plugin_maimaidx" = ["maimaidxhelp.png", "scripts/*.py"]
 "nonebot_plugin_maimaidx.libraries" = ["assets/*.json"]
+
+[tool.ruff]
+# 排除非运行时代码与产物目录
+exclude = [
+  ".venv",
+  "build",
+  "dist",
+  "notebooks",
+  ".git",
+  ".ruff_cache",
+  "nonebot_plugin_maimaidx.egg-info",
+]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+# 代码库历史上大量使用 import *、模块级副作用导入、单行分号、lambda 赋值等，
+# 这些风格规则暂不强求；CI 主要拦截真正的运行期错误（未定义名、重复定义、类型比较等）。
+ignore = [
+  "E402",  # module-import-not-at-top-of-file
+  "E702",  # multiple-statements-on-one-line-semicolon
+  "E722",  # bare-except
+  "E731",  # lambda-assignment
+  "E741",  # ambiguous-variable-name
+  "F401",  # unused-import
+  "F403",  # undefined-local-with-import-star
+  "F405",  # undefined-local-with-import-star-usage
+  "F541",  # f-string-missing-placeholders
+  "F811",  # redefined-while-unused
+  "F841",  # unused-variable
+]

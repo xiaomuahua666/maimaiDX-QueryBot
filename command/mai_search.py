@@ -649,7 +649,7 @@ async def _(bot: Bot, event: MessageEvent, end: str = Endswith()):
     if not alias_data:
         obj = await maiApi.get_songs(name)
         if obj:
-            if type(obj[0]) == AliasStatus:
+            if type(obj[0]) is AliasStatus:
                 msg = f'未找到别名为「{name}」的歌曲，但找到与此相同别名的投票：\n'
                 for _s in obj:
                     msg += f'- {_s.Tag}\n    ID {_s.SongID}: {name}\n'
