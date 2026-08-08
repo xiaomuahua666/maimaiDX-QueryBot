@@ -1432,6 +1432,77 @@ class BreakDatabase:
             claims=[(int(row['qqid']), int(row['amount'])) for row in claims],
         )
 
+    def cancel_red_packet(
+        self, qqid: int, group_id: int
+    ) -> RedPacketRefundResult:
+        """发送者或管理员主动收回本群当前进行中的红包，未领取余额退回发送者。
+
+        约束：
+        - 仅对 status='active' 的红包生效；completed/expired 已无可退金额或已退过。
+        - 发红包满 90 秒后才允许收回（防止发完立刻反悔）。
+        - 触发者必须是红包发送者或插件管理员。
+        - 退回逻辑与 expire_red_packets 严格一致：退余额、扣创建当日 break_spent
+          （带防负 CASE）、写 red_packet_refund 日志、状态置 expired。
+        """
+        from .maimaidx_bot_admin import is_plugin_admin
+
+        self.expire_red_packets()
+        current = time.time()
+        with self._lock:
+            packet = self._conn.execute(
+                """SELECT * FROM break_red_packet
+                   WHERE group_id=? AND status='active'
+                   ORDER BY created_at DESC LIMIT 1""",
+                (int(group_id),),
+            ).fetchone()
+            if not packet:
+                raise ValueError('本群当前没有进行中的红包')
+            packet_id = str(packet['id'])
+            sender = int(packet['sender_qqid'])
+            # 发红包满 90 秒后才允许收回
+            if current - float(packet['created_at']) < 90:
+                raise ValueError('红包发送未满 90 秒，暂时无法收回')
+            if sender != int(qqid) and not is_plugin_admin(int(qqid)):
+                raise ValueError('无权收回此红包')
+            refund = int(packet['remaining_amount'])
+            try:
+                if refund > 0:
+                    self._ensure_user(sender)
+                    self._conn.execute(
+                        'UPDATE break_users SET balance=balance+?, updated_at=? WHERE qqid=?',
+                        (refund, current, sender),
+                    )
+                    created_date = datetime.fromtimestamp(
+                        float(packet['created_at'])
+                    ).date().isoformat()
+                    self._conn.execute(
+                        """UPDATE break_daily_usage
+                            SET break_spent=CASE WHEN break_spent-? < 0 THEN 0 ELSE break_spent-? END
+                           WHERE qqid=? AND date=?""",
+                        (refund, refund, sender, created_date),
+                    )
+                    self._append_log(
+                        sender,
+                        refund,
+                        'red_packet_refund',
+                        meta={
+                            'packet_id': packet_id,
+                            'group_id': int(packet['group_id']),
+                        },
+                    )
+                self._conn.execute(
+                    """UPDATE break_red_packet
+                       SET status='expired', finished_at=? WHERE id=? AND status='active'""",
+                    (current, packet_id),
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+        return RedPacketRefundResult(
+            packet_id, int(packet['group_id']), sender, refund
+        )
+
     def lottery(self, qqid: int, count: int = 1) -> LotteryResult:
         count = max(1, min(int(count), 10))
         unit_cost = max(1, _parse_config_int(self.get_config('lottery_cost', '2'), 2))

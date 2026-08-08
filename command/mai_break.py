@@ -88,6 +88,9 @@ break_red_packet_claim = on_command(
 break_red_packet_status = on_command(
     '红包状态', aliases={'红包记录', '查看红包'}
 )
+break_red_packet_cancel = on_command(
+    '收回红包', aliases={'重置红包'}
+)
 break_gamble_all = on_command(
     '倾家荡产', aliases={'梭哈'}
 )
@@ -174,6 +177,7 @@ async def _():
         '· 贡献总榜 — 查看历史贡献总榜（首富榜）\n'
         '· 发红包 [总额] [份数] — 群内发送 BREAK 手气红包，也可按提示逐步输入\n'
         '· 抢红包 — 领取本群当前红包；红包状态 — 查看领取明细\n'
+        '· 收回红包 — 发红包满 90 秒可主动收回，未领余额退回发送者（重置红包 同义）\n'
         '· 我的AWMC — 查看账号状态、使用统计；群内自动附带猜歌数据图\n'
         '· BREAK统计 — 查看所有用户今日、近7天、近30天的 BREAK 收入与支出\n'
         '· 查分指令 — 每日首次实际请求查分器 API 免费，之后每次扣 1 BREAK（缓存命中另计）\n'
@@ -411,6 +415,23 @@ async def _(event: MessageEvent):
         f'总额 {status.total_amount} BREAK · {status.total_count} 份\n'
         f'剩余 {status.remaining_amount} BREAK · {status.remaining_count} 份\n'
         f'领取明细：\n{detail}',
+        reply_message=True,
+    )
+
+
+@break_red_packet_cancel.handle()
+async def _(event: MessageEvent):
+    await _require_break_agreement(break_red_packet_cancel, event)
+    group_id = _red_packet_group_id(event)
+    if group_id is None:
+        await break_red_packet_cancel.finish('BREAK 红包只能在群聊中收回。')
+    try:
+        result = break_db.cancel_red_packet(int(billing_user_id(event)), group_id)
+    except Exception as exc:
+        await break_red_packet_cancel.finish(f'收回失败：{exc}', reply_message=True)
+    await break_red_packet_cancel.finish(
+        f'🧧 红包 {result.packet_id} 已收回，'
+        f'剩余 {result.refund} BREAK 已退回发送者。',
         reply_message=True,
     )
 
