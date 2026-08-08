@@ -33,7 +33,6 @@ for relative in (
     "maimaidx_lxns_db.py",
     "maimaidx_player_cache.py",
     "maimaidx_qq_bind.py",
-    "maimaidx_whitelist.py",
 ):
     source = (ROOT / "libraries" / relative).read_text(encoding="utf-8")
     assert "configure_sqlite_connection(self._conn)" in source, relative

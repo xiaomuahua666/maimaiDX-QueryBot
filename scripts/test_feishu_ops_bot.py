@@ -185,4 +185,59 @@ bot_source = (ROOT / "scripts" / "feishu_ops_bot.py").read_text(encoding="utf-8"
 assert '"im.message.reaction.created_v1"' in bot_source
 assert "register_p2_customized_event" in bot_source
 
+# --- ban_list command ----------------------------------------------------
+assert MODULE.parse_command("封禁列表") == ("ban_list", [])
+assert MODULE.parse_command("封禁列表 全部") == ("ban_list", ["全部"])
+
+empty_bans = MODULE.bans_card([], all_bans=False)
+assert empty_bans["header"]["title"]["content"] == "封禁列表（生效中）"
+assert "暂无封禁记录" in empty_bans["elements"][0]["text"]["content"]
+all_bans_card = MODULE.bans_card([], all_bans=True)
+assert all_bans_card["header"]["title"]["content"] == "封禁列表（全部）"
+
+ban_rows = [
+    {
+        "user_id": "123",
+        "reason": "滥用接口",
+        "actor": "ou_super",
+        "created_at": 1700000000.0,
+        "expires_at": None,
+        "active": 1,
+    },
+    {
+        "user_id": "456",
+        "reason": "测试",
+        "actor": "ou_admin",
+        "created_at": 1700000000.0,
+        "expires_at": 1700003600.0,
+        "active": 1,
+    },
+]
+populated = MODULE.bans_card(ban_rows, all_bans=False)
+content = populated["elements"][0]["text"]["content"]
+assert "123" in content
+assert "456" in content
+assert "滥用接口" in content
+assert "永久" in content
+assert "共 **2** 条" in content
+
+inactive_rows = [
+    {
+        "user_id": "789",
+        "reason": "已解封",
+        "actor": "ou_admin",
+        "created_at": 1700000000.0,
+        "expires_at": None,
+        "active": 0,
+    }
+]
+inactive_card = MODULE.bans_card(inactive_rows, all_bans=True)
+assert "已解封/过期" in inactive_card["elements"][0]["text"]["content"]
+
+admin_api_source = (ROOT / "libraries" / "maimaidx_admin_web.py").read_text(
+    encoding="utf-8"
+)
+assert "async def bans(" in admin_api_source
+assert "/bans" in admin_api_source
+
 print("Feishu operations bot checks: OK")

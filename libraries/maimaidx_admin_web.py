@@ -370,6 +370,10 @@ def register_admin_web() -> bool:
             limit=limit, offset=offset, user_id=user_id, reason=reason,
         )
 
+    async def bans(request: Request, active_only: bool = True):
+        authorize(request)
+        return admin_audit.list_bans(active_only=active_only)
+
     async def break_config(request: Request):
         authorize(request)
         return {key: break_db.get_config(key, value) for key, value in DEFAULT_CONFIG.items()}
@@ -457,6 +461,7 @@ def register_admin_web() -> bool:
         (api_root + "/messages", messages, ["GET"]),
         (api_root + "/economy", economy, ["GET"]),
         (api_root + "/break/logs", break_logs, ["GET"]),
+        (api_root + "/bans", bans, ["GET"]),
         (api_root + "/config/break", break_config, ["GET"]),
         (api_root + "/config/break/{key}", set_break_config, ["POST"]),
         (api_root + "/config/agreement", agreement_config, ["GET"]),

@@ -160,6 +160,7 @@ def parse_command(text: str) -> tuple[str, list[str]]:
         "设置break": "break_set",
         "封禁": "ban",
         "解封": "unban",
+        "封禁列表": "ban_list",
         "身份": "identity",
         "whoami": "identity",
     }
@@ -290,7 +291,8 @@ def menu_card(*, is_admin: bool, is_super_admin: bool = False) -> dict:
             "重启Bot · 启动Bot · 停止Bot\n"
             "查询BREAK <QQ> · 发放BREAK <QQ> <数量> · "
             "设置BREAK <QQ> <余额>\n"
-            "封禁 <用户ID> <小时> <原因> · 解封 <用户ID>"
+            "封禁 <用户ID> <小时> <原因> · 解封 <用户ID>\n"
+            "封禁列表 [全部]"
         )
         if is_super_admin:
             content += "\n权限管理 · 授权管理员 <open_id> · 撤销管理员 <open_id>"
@@ -591,6 +593,35 @@ def permissions_card(admins: list[dict[str, Any]], super_admin_ids: frozenset[st
     return _card("飞书权限管理", "\n".join(lines), template="orange")
 
 
+def bans_card(rows: list[dict[str, Any]], *, all_bans: bool = False) -> dict:
+    """渲染封禁列表卡片。最多展示 50 条，超出显示总数。"""
+    title = "封禁列表（全部）" if all_bans else "封禁列表（生效中）"
+    if not rows:
+        return _card(title, "暂无封禁记录。", template="green")
+    lines = [f"共 **{len(rows)}** 条记录（展示前 50 条）：", ""]
+    for row in rows[:50]:
+        user_id = str(row.get("user_id") or "-")
+        reason = str(row.get("reason") or "未注明")[:60]
+        created = row.get("created_at")
+        created_text = (
+            time.strftime("%Y-%m-%d %H:%M", time.localtime(float(created)))
+            if created else "-"
+        )
+        expires = row.get("expires_at")
+        if expires:
+            expire_text = time.strftime("%Y-%m-%d %H:%M", time.localtime(float(expires)))
+        elif all_bans and not row.get("active"):
+            expire_text = "已解封/过期"
+        else:
+            expire_text = "永久"
+        actor = str(row.get("actor") or "-")[:30]
+        lines.append(
+            f"• {user_id}\n  原因：{reason}\n  操作者：{actor}\n"
+            f"  生效：{created_text}  到期：{expire_text}"
+        )
+    return _card(title, "\n".join(lines), template="orange")
+
+
 def confirmation_card(title: str, summary: str, action: str, **value: Any) -> dict:
     request_id = value.pop("request_id", uuid4().hex)
     return _card(
@@ -828,6 +859,10 @@ class AdminClient:
         return self._request(
             f"/users/{quote(user_id, safe='')}/ban?{query}", method="DELETE"
         )
+
+    def list_bans(self, active_only: bool = True) -> list[dict[str, Any]]:
+        query = urlencode({"active_only": "true" if active_only else "false"})
+        return self._request(f"/bans?{query}")
 
 
 class FeishuOpsBot:
@@ -1140,6 +1175,10 @@ class FeishuOpsBot:
                 "unban_confirm",
                 user_id=args[0],
             )
+        if command == "ban_list":
+            all_bans = bool(args) and args[0] in {"全部", "all", "历史"}
+            rows = self.admin.list_bans(active_only=not all_bans)
+            return bans_card(rows, all_bans=all_bans)
         return menu_card(
             is_admin=is_admin, is_super_admin=self.is_super_admin(open_id)
         )
