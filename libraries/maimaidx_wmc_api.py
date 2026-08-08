@@ -21,6 +21,41 @@ def make_chart_key(song_id: str, kind: str, diff: int) -> str:
     return f"{song_id}:{kind}:{diff}"
 
 
+def song_id_for_wmc(music) -> str:
+    """音乐对象 -> v.wmc.pub 的 song_id。
+
+    水鱼/LXNS 曲库中 DX 谱 id 形如 ``10044``（1 + 4 位 base id），
+    而 v.wmc.pub 使用去掉前导 ``1`` 与前导零后的 ``44``。
+    直接 ``id[1:]`` 会得到 ``0044`` 导致「谱面不存在」。
+    """
+    raw = str(getattr(music, "id", ""))
+    if getattr(music, "type", None) == "DX" and raw.startswith("1"):
+        suffix = raw[1:]
+        if suffix.isdigit():
+            suffix = str(int(suffix))
+        return suffix
+    return raw
+
+
+def kind_for_wmc(music) -> str:
+    """SD -> ``standard``，DX -> ``dx``。"""
+    return "standard" if getattr(music, "type", None) == "SD" else "dx"
+
+
+def diff_value_for_wmc(level_index: int) -> int:
+    """level_index(0-4) -> v.wmc.pub difficulty(2-6)。"""
+    return min(max(int(level_index) + 2, 2), 6)
+
+
+def chart_key_for_music(music, level_index: int) -> str:
+    """根据曲库 Music 对象与难度索引构造 chartKey。"""
+    return make_chart_key(
+        song_id_for_wmc(music),
+        kind_for_wmc(music),
+        diff_value_for_wmc(level_index),
+    )
+
+
 def build_preview_url(song_id: str, kind: str, diff: int) -> str:
     """生成谱面预览网页链接。"""
     return f"https://v.wmc.pub/?song={song_id}&kind={kind}&diff={diff}"

@@ -22,7 +22,16 @@ from ..libraries.maimaidx_music import feature_manager, guess, mai, maiApi
 from ..libraries.maimaidx_music_info import build_tags_forward_nodes, draw_music_info
 from ..libraries.maimaidx_multiver_chart import draw_multiver_chart
 from ..libraries.maimaidx_pmyx_api import PmyxAPI
-from ..libraries.maimaidx_wmc_api import WMC_DIFF_NAMES, WmcAPI, build_preview_url, make_chart_key, resolve_wmc_base_url
+from ..libraries.maimaidx_wmc_api import (
+    WMC_DIFF_NAMES,
+    WmcAPI,
+    build_preview_url,
+    diff_value_for_wmc,
+    kind_for_wmc,
+    make_chart_key,
+    resolve_wmc_base_url,
+    song_id_for_wmc,
+)
 from ..libraries.maimaidx_timing import attach_timing, finish_timed_sync, run_timed
 from ..libraries.maimaidx_platform import (
     billing_user_id,
@@ -76,10 +85,10 @@ def _chart_preview_links(music) -> list[tuple[str, str]]:
     # already identifies the action (preview/impression), so keep each
     # difficulty button to the familiar one-character colour label.
     diff_names = ['绿', '黄', '红', '紫', '白']
-    kind = 'standard' if music.type == 'SD' else 'dx'
-    song_id = music.id[1:] if music.type == 'DX' and music.id.startswith('1') else music.id
+    kind = kind_for_wmc(music)
+    song_id = song_id_for_wmc(music)
     return [
-        (diff_names[i], build_preview_url(song_id, kind, i + 2))
+        (diff_names[i], build_preview_url(song_id, kind, diff_value_for_wmc(i)))
         for i in range(min(len(music.ds), len(diff_names)))
     ]
 
@@ -109,13 +118,13 @@ async def _build_wmc_tags_forward_nodes(music, self_id: int, nickname: str) -> L
     if not wmc_key:
         return []
     api = WmcAPI(resolve_wmc_base_url(maiconfig), wmc_key)
-    wmc_sid = music.id[1:] if music.type == "DX" and music.id.startswith("1") else music.id
-    kind = "standard" if music.type == "SD" else "dx"
+    wmc_sid = song_id_for_wmc(music)
+    kind = kind_for_wmc(music)
     diff_labels = ['绿谱', '黄谱', '红谱', '紫谱', '白谱']
     # 并发拉取所有难度的 tags
     tasks = []
     for i in range(min(len(music.ds), len(diff_labels))):
-        key = make_chart_key(wmc_sid, kind, i + 2)
+        key = make_chart_key(wmc_sid, kind, diff_value_for_wmc(i))
         tasks.append(api.get_tags(key, radar_threshold=40, feature_threshold=0.5))
     if not tasks:
         return []
@@ -178,12 +187,12 @@ async def _build_pmyx_forward_nodes(
         if music:
             import asyncio
             api = WmcAPI(resolve_wmc_base_url(maiconfig), wmc_key)
-            wmc_sid = music.id[1:] if music.type == "DX" and music.id.startswith("1") else music.id
-            kind = "standard" if music.type == "SD" else "dx"
+            wmc_sid = song_id_for_wmc(music)
+            kind = kind_for_wmc(music)
             # 并发拉取所有难度的评论
             tasks = []
             for d in range(len(music.ds)):
-                key = make_chart_key(wmc_sid, kind, d + 2)
+                key = make_chart_key(wmc_sid, kind, diff_value_for_wmc(d))
                 tasks.append(api.get_comments(key, limit=15))
             results = await asyncio.gather(*tasks, return_exceptions=True)
             all_comments = []
@@ -199,7 +208,7 @@ async def _build_pmyx_forward_nodes(
             if not all_comments:
                 if include_write_links:
                     preview_urls = [
-                        build_preview_url(wmc_sid, kind, d + 2)
+                        build_preview_url(wmc_sid, kind, diff_value_for_wmc(d))
                         for d in range(len(music.ds))
                     ]
                     url_text = "\n".join(preview_urls)
@@ -225,7 +234,7 @@ async def _build_pmyx_forward_nodes(
             if include_write_links:
                 # OneBot 下保留可复制的写入 URL；QQ 由调用方发送键盘。
                 preview_urls = [
-                    build_preview_url(wmc_sid, kind, d + 2)
+                    build_preview_url(wmc_sid, kind, diff_value_for_wmc(d))
                     for d in range(len(music.ds))
                 ]
                 nodes.append(_pmyx_node(self_id, nickname, "写入谱面印象：\n" + "\n".join(preview_urls)))
@@ -723,8 +732,8 @@ async def _(event: MessageEvent, match=RegexMatched()):
     url = preview_links.get(
         diff_name,
         build_preview_url(
-            music.id[1:] if music.type == 'DX' and music.id.startswith('1') else music.id,
-            'standard' if music.type == 'SD' else 'dx',
+            song_id_for_wmc(music),
+            kind_for_wmc(music),
             diff_map[diff_name],
         ),
     )

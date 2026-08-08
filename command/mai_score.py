@@ -93,7 +93,14 @@ from ..libraries.maimaidx_weakness_prescription import generate_weakness_prescri
 from ..libraries.maimaidx_b50_risk import generate_b50_risk_warning
 from ..libraries.maimaidx_head_to_head import generate_head_to_head
 from ..libraries.maimaidx_rating_sandbox import generate_rating_sandbox
-from ..libraries.maimaidx_wmc_api import WmcAPI, make_chart_key, resolve_wmc_base_url
+from ..libraries.maimaidx_wmc_api import (
+    WmcAPI,
+    diff_value_for_wmc,
+    kind_for_wmc,
+    make_chart_key,
+    resolve_wmc_base_url,
+    song_id_for_wmc,
+)
 from ..libraries.maimaidx_update_plate import *
 
 best50       = on_command('b50', aliases={'B50'})
@@ -1786,9 +1793,9 @@ async def _(event: MessageEvent, user_id: Optional[int] = Depends(get_at_qq)):
                     music = mai.total_list.by_id(str(sid))
                     if not music:
                         continue
-                    wmc_sid = music.id[1:] if music.type == "DX" and music.id.startswith("1") else music.id
-                    kind = "standard" if music.type == "SD" else "dx"
-                    diff_val = min(max(li + 2, 2), 6)
+                    wmc_sid = song_id_for_wmc(music)
+                    kind = kind_for_wmc(music)
+                    diff_val = diff_value_for_wmc(li)
                     key = make_chart_key(wmc_sid, kind, diff_val)
                     tasks.append(api.get_tags(key, radar_threshold=30, feature_threshold=0.3))
                     task_keys.append((wmc_sid, kind, diff_val))

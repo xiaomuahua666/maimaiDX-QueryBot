@@ -13,8 +13,10 @@ from ..libraries.maimaidx_wmc_api import (
     WMC_DIFF_NAMES,
     WmcAPI,
     build_preview_url,
+    kind_for_wmc,
     make_chart_key,
     resolve_wmc_base_url,
+    song_id_for_wmc,
 )
 from ..libraries.maimaidx_platform import (
     build_markdown_link_message,
@@ -52,15 +54,12 @@ def _resolve_music(args: str) -> Optional[Tuple[str, str]]:
 
 
 def _song_id_for_wmc(music) -> str:
-    """音乐对象 -> v.wmc.pub 的 song_id（DX 谱去掉前导 1）。"""
-    raw = music.id
-    if music.type == "DX" and raw.startswith("1"):
-        return raw[1:]
-    return raw
+    """音乐对象 -> v.wmc.pub 的 song_id（DX 谱去掉前导 1 与前导零）。"""
+    return song_id_for_wmc(music)
 
 
 def _kind_str(music) -> str:
-    return "standard" if music.type == "SD" else "dx"
+    return kind_for_wmc(music)
 
 
 def _available_diffs(music) -> List[int]:

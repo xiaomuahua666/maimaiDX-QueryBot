@@ -37,6 +37,7 @@ def _get_dxrating_token() -> Optional[str]:
 from .image import rounded_corners, draw_centered_design_footer
 from .maimaidx_best_50 import *
 from .maimaidx_music import Music, mai
+from .maimaidx_wmc_api import diff_value_for_wmc, kind_for_wmc, song_id_for_wmc
 
 
 async def get_music_by_alias(alias: str) -> Optional[Music]:
@@ -231,9 +232,9 @@ def get_b50_tag_stats(userinfo, wmc_tags_cache: Optional[Dict[tuple, dict]] = No
             # 尝试 v.wmc.pub 缓存
             wmc_used = False
             if wmc_tags_cache:
-                wmc_sid = music.id[1:] if music.type == "DX" and music.id.startswith("1") else music.id
-                kind = "standard" if music.type == "SD" else "dx"
-                diff_val = min(max(level_index + 2, 2), 6)
+                wmc_sid = song_id_for_wmc(music)
+                kind = kind_for_wmc(music)
+                diff_val = diff_value_for_wmc(level_index)
                 cache_key = (wmc_sid, kind, diff_val)
                 tags_data = wmc_tags_cache.get(cache_key)
                 if tags_data:

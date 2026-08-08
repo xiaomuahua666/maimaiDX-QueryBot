@@ -18,6 +18,14 @@ from .maimaidx_error import UserDisabledQueryError, UserNotFoundError, UserNotEx
 from .maimaidx_music import mai
 from .maimaidx_music_info import get_b50_tag_stats, get_chart_tags_by_group
 from .maimaidx_tag_analysis import CONFIG_TAGS_ORDER
+from .maimaidx_wmc_api import (
+    WmcAPI,
+    diff_value_for_wmc,
+    kind_for_wmc,
+    make_chart_key,
+    resolve_wmc_base_url,
+    song_id_for_wmc,
+)
 
 ACCENT = (124, 129, 255, 255)
 TEXT = (45, 50, 95, 255)
@@ -127,6 +135,11 @@ def _short_title(title: str, n: int = 20) -> str:
     return t if len(t) <= n else t[: n - 1] + '…'
 
 
+def _wmc_config_tags(tags_data: dict) -> List[str]:
+    """从 v.wmc.pub /tags 响应中提取配置标签（radarTags）。"""
+    return [str(t.get('label', '')) for t in (tags_data or {}).get('radarTags', []) if t.get('label')]
+
+
 def _draw_prescription(
     nickname: str,
     weak_tags: List[Tuple[str, int]],
@@ -197,7 +210,6 @@ def _draw_prescription(
 async def generate_weakness_prescription(qqid: int) -> Union[str, MessageSegment]:
     import asyncio
     from ..config import maiconfig
-    from .maimaidx_wmc_api import WmcAPI, make_chart_key, resolve_wmc_base_url
     from .maimaidx_datasource import get_user_records
 
     try:
@@ -205,8 +217,9 @@ async def generate_weakness_prescription(qqid: int) -> Union[str, MessageSegment
     except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
         return str(e)
 
-    # 预拉取 v.wmc.pub 标签
+    # 预拉取 v.wmc.pub 标签（B50 谱面）
     wmc_cache = {}
+    api = None
     wmc_key = maiconfig.wmc_api_key
     if wmc_key:
         api = WmcAPI(resolve_wmc_base_url(maiconfig), wmc_key)
@@ -223,9 +236,9 @@ async def generate_weakness_prescription(qqid: int) -> Union[str, MessageSegment
                 music = mai.total_list.by_id(str(sid))
                 if not music:
                     continue
-                wmc_sid = music.id[1:] if music.type == "DX" and music.id.startswith("1") else music.id
-                kind = "standard" if music.type == "SD" else "dx"
-                diff_val = min(max(li + 2, 2), 6)
+                wmc_sid = song_id_for_wmc(music)
+                kind = kind_for_wmc(music)
+                diff_val = diff_value_for_wmc(li)
                 key = make_chart_key(wmc_sid, kind, diff_val)
                 tasks.append(api.get_tags(key, radar_threshold=30, feature_threshold=0.3))
                 task_keys.append((wmc_sid, kind, diff_val))
@@ -238,8 +251,8 @@ async def generate_weakness_prescription(qqid: int) -> Union[str, MessageSegment
     stats = get_b50_tag_stats(userinfo, wmc_tags_cache=wmc_cache or None)
     if not any(stats.get('配置', {}).values()):
         return (
-            '无法生成弱项处方：未加载谱面标签数据。\n'
-            '请配置 MAIMAIDX_DXRATING_TOKEN 或本地标签 JSON（dxrating_tags_json_path）。'
+            '无法生成弱项处方：B50 谱面暂无标签数据。\n'
+            '可能原因：未配置 WMC_API_KEY（v.wmc.pub 谱面印象），或当前 B50 曲目尚未被收录标签。'
         )
 
     weak_tags = _identify_weak_tags(stats)
@@ -262,7 +275,10 @@ async def generate_weakness_prescription(qqid: int) -> Union[str, MessageSegment
         for c in chart_list:
             b50_keys.add((int(c.song_id), int(c.level_index)))
 
-    picks: List[_Pick] = []
+    # 先筛出定数/达成率达标的候选，再批量补拉它们的 v.wmc.pub 标签，
+    # 避免本地标签 JSON 覆盖不全导致处方无曲可推。
+    candidate_records = []
+    seen_chart_keys = set()
     for r in records:
         achv = float(r.achievements)
         if achv >= _SSS_THRESHOLD:
@@ -272,13 +288,50 @@ async def generate_weakness_prescription(qqid: int) -> Union[str, MessageSegment
             continue
         if achv < _achv_floor_for(ds, ability):
             continue
-
         music = mai.total_list.by_id(str(r.song_id))
         title = (getattr(music, 'title', None) or getattr(r, 'title', '') or '').strip()
         if not title:
             continue
-        groups = get_chart_tags_by_group(title, int(r.level_index))
-        cfg_tags = groups.get('配置') or []
+        candidate_records.append((r, music, title))
+
+    if api and candidate_records:
+        tasks = []
+        task_meta = []
+        sem = asyncio.Semaphore(16)
+
+        async def _fetch_tags(cache_key: tuple, chart_key: str):
+            async with sem:
+                return await api.get_tags(chart_key, radar_threshold=30, feature_threshold=0.3)
+
+        for r, music, _title in candidate_records:
+            wmc_sid = song_id_for_wmc(music)
+            kind = kind_for_wmc(music)
+            diff_val = diff_value_for_wmc(int(r.level_index))
+            cache_key = (wmc_sid, kind, diff_val)
+            if cache_key in wmc_cache or cache_key in seen_chart_keys:
+                continue
+            seen_chart_keys.add(cache_key)
+            tasks.append(_fetch_tags(cache_key, make_chart_key(wmc_sid, kind, diff_val)))
+            task_meta.append(cache_key)
+        if tasks:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for k, r in zip(task_meta, results):
+                if isinstance(r, dict) and r.get("tags"):
+                    wmc_cache[k] = r["tags"]
+
+    picks: List[_Pick] = []
+    for r, music, title in candidate_records:
+        achv = float(r.achievements)
+        ds = float(r.ds)
+        wmc_sid = song_id_for_wmc(music)
+        kind = kind_for_wmc(music)
+        diff_val = diff_value_for_wmc(int(r.level_index))
+        tags_data = wmc_cache.get((wmc_sid, kind, diff_val))
+        if tags_data:
+            cfg_tags = _wmc_config_tags(tags_data)
+        else:
+            groups = get_chart_tags_by_group(title, int(r.level_index))
+            cfg_tags = groups.get('配置') or []
         matched = [t for t in cfg_tags if t in weak_set]
         if not matched:
             continue
