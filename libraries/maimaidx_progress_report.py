@@ -31,6 +31,8 @@ _CARD_H_TALL = 102  # 含 ra 增量 + 达成换行
 class _DiffEntry:
     title: str
     level: str
+    level_index: int
+    ds: float
     ra_delta: int
     achv_delta: float
     achv_now: float
@@ -113,6 +115,8 @@ def _analyze(old: DailySnapshot, new: DailySnapshot) -> Dict:
                 _DiffEntry(
                     title=nr.title,
                     level=nr.level,
+                    level_index=int(nr.level_index),
+                    ds=float(nr.ds or 0),
                     ra_delta=ra_delta,
                     achv_delta=achv_delta,
                     achv_now=float(nr.achievements),
@@ -120,14 +124,29 @@ def _analyze(old: DailySnapshot, new: DailySnapshot) -> Dict:
             )
     improved.sort(key=lambda x: (x.ra_delta, x.achv_delta), reverse=True)
 
+    # 提升曲目按难度分布
+    diff_dist = [0, 0, 0, 0, 0]
+    for e in improved:
+        if 0 <= e.level_index < 5:
+            diff_dist[e.level_index] += 1
+
     return {
         'rating_delta': int(new.rating) - int(old.rating),
+        'old_rating': int(old.rating),
+        'new_rating': int(new.rating),
         'b35_delta': sum(int(r.ra) for r in new_b35) - sum(int(r.ra) for r in old_b35),
         'b15_delta': sum(int(r.ra) for r in new_b15) - sum(int(r.ra) for r in old_b15),
+        'b35_new_sum': sum(int(r.ra) for r in new_b35),
+        'b15_new_sum': sum(int(r.ra) for r in new_b15),
         'b35_tail_delta': (int(new_b35[-1].ra) - int(old_b35[-1].ra)) if (old_b35 and new_b35) else 0,
         'b15_tail_delta': (int(new_b15[-1].ra) - int(old_b15[-1].ra)) if (old_b15 and new_b15) else 0,
         'new_entries': new_entries,
         'improved': improved,
+        'improved_count': len(improved),
+        'new_count': len(new_entries),
+        'total_improved_ra': sum(e.ra_delta for e in improved),
+        'best_entry': improved[0] if improved else None,
+        'diff_dist': diff_dist,
         'sun_list': [x for x in improved if _is_sun(x.achv_now)],
         'lock_list': [x for x in improved if _is_lock(x.achv_now)],
     }
@@ -450,7 +469,12 @@ async def generate_daily_report(qqid: int) -> MessageSegment | str:
     data = _analyze(yesterday, today)
     _, _, data['new_b50'] = _build_b50(today.records)
     nickname = today.nickname or str(qqid)
-    im = _draw_report('MAIMAI 日报', nickname, points, labels, data, _fmt_date(yesterday), _fmt_date(today))
+    from .maimaidx_report_image import render_report
+    im = Image.open(render_report(
+        'MAIMAI 日报', nickname,
+        f'{_fmt_date(yesterday)}  →  {_fmt_date(today)}',
+        points, labels, data, period_tag='日报',
+    ))
     log.debug(f'[progress_report] qq={qqid} daily delta={data["rating_delta"]}')
     return MessageSegment.image(image_to_base64(im))
 
@@ -470,7 +494,13 @@ async def generate_progress_report(qqid: int, period_days: int) -> MessageSegmen
     _, _, data['new_b50'] = _build_b50(latest.records)
     title = _report_title(period_days)
     nickname = latest.nickname or str(qqid)
-    im = _draw_report(title, nickname, points, labels, data, _fmt_date(oldest), _fmt_date(latest))
+    tag = '周报' if period_days <= 7 else ('月报' if period_days <= 31 else '年报')
+    from .maimaidx_report_image import render_report
+    im = Image.open(render_report(
+        title, nickname,
+        f'{_fmt_date(oldest)}  →  {_fmt_date(latest)}',
+        points, labels, data, period_tag=tag,
+    ))
     log.debug(f'[progress_report] qq={qqid} period={period_days} snapshots={len(snaps)} delta={data["rating_delta"]}')
     return MessageSegment.image(image_to_base64(im))
 
@@ -490,5 +520,10 @@ async def generate_progress_report_between(qqid: int, old_snapshot_id: str, new_
     data = _analyze(old, new)
     _, _, data['new_b50'] = _build_b50(new.records)
     nickname = new.nickname or str(qqid)
-    im = _draw_report('MAIMAI 存档对比', nickname, points, labels, data, _fmt_date(old), _fmt_date(new))
+    from .maimaidx_report_image import render_report
+    im = Image.open(render_report(
+        'MAIMAI 存档对比', nickname,
+        f'{_fmt_date(old)}  →  {_fmt_date(new)}',
+        points, labels, data, period_tag='对比',
+    ))
     return MessageSegment.image(image_to_base64(im))

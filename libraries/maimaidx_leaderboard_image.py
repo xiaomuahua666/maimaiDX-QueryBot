@@ -18,8 +18,19 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import httpx
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-from ..config import SIYUAN, TBFONT, footer_generated
+from ..config import footer_generated
 from .image import DrawText, image_safe_text
+from .maimaidx_game_assets import (
+    bold_font,
+    bold_font_path,
+    draw_rank_sprite,
+    draw_rating_badge,
+    num_font,
+    rating_color,
+    rating_badge_width,
+)
+
+_BOLD_PATH = bold_font_path()
 
 # ----------------------------------------------------------------------
 # 调色板（明亮 maimai 风）
@@ -92,35 +103,13 @@ _RATING_BUCKETS = [
 ]
 
 
-def _font_bold() -> Path:
-    for p in (SIYUAN, TBFONT):
-        if Path(p).is_file():
-            return Path(p)
-    return Path(SIYUAN)
+def _font_bold(size: int):
+    return bold_font(size)
 
 
-def _font_mono() -> Path:
-    from ..config import SHANGGUMONO
-    if Path(SHANGGUMONO).is_file():
-        return Path(SHANGGUMONO)
-    return _font_bold()
-
-
-def rating_color(rating: int) -> Tuple[int, int, int, int]:
-    for threshold, color in _RATING_TIERS:
-        if rating < threshold:
-            return color
-    return _RAINBOW
-
-
-def _rank_medal(rank: int):
-    if rank == 1:
-        return _GOLD, (150, 100, 20, 255)
-    if rank == 2:
-        return _SILVER, (110, 120, 140, 255)
-    if rank == 3:
-        return _BRONZE, (130, 80, 40, 255)
-    return _RANK_BG, _TEXT_SOFT
+def _font_mono(size: int):
+    # 数字统一使用 Torus SemiBold（与 B50 达成率数字一致）
+    return num_font(size)
 
 
 # ----------------------------------------------------------------------
@@ -192,18 +181,23 @@ def _truncate(d, text, font, max_w):
 
 def _bar(im, x, y, w, h, ratio, color, bg=(225, 230, 242, 255), radius=8):
     ratio = max(0.0, min(1.0, ratio))
+    # 简洁现代风：细轨道 + 纯色填充 + 末端小圆点，不加厚重高光
     d = ImageDraw.Draw(im)
     d.rounded_rectangle((x, y, x + w, y + h), radius=radius, fill=bg)
     if ratio <= 0:
         return
     fw = max(h, int(w * ratio))
-    bar = Image.new('RGBA', (fw, h), (0, 0, 0, 0))
-    bd = ImageDraw.Draw(bar)
-    bd.rounded_rectangle((0, 0, fw, h), radius=radius, fill=color)
-    if fw > 16:
-        bd.rounded_rectangle((2, 2, fw - 2, h // 2 - 1), radius=radius - 2,
-                             fill=(255, 255, 255, 70))
-    im.alpha_composite(bar, (x, y))
+    d.rounded_rectangle((x, y, x + fw, y + h), radius=radius, fill=color)
+    # 顶部极细高光线，增加质感但不抢戏
+    if h >= 10:
+        d.rounded_rectangle((x + 2, y + 1, x + fw - 2, y + h // 2 - 1),
+                            radius=max(2, radius - 2), fill=(255, 255, 255, 55))
+    # 末端圆点（滑块感）
+    if fw >= h + 2 and h >= 10:
+        cx = x + fw
+        cr = h // 2 + 2
+        d.ellipse((cx - cr, y - 2, cx + cr, y + h + 2), fill=(255, 255, 255, 235))
+        d.ellipse((cx - cr + 3, y + 1, cx + cr - 3, y + h - 1), fill=color)
 
 
 def _stacked_bar(im, x, y, w, h, segments, radius=8):
@@ -244,30 +238,64 @@ def _make_bg(w: int, h: int) -> Image.Image:
     return im
 
 
-def _title_chip(im: Image.Image, w: int, text: str):
+def _draw_paw(d: ImageDraw.ImageDraw, cx: int, cy: int, scale: float = 1.0,
+              color=(124, 129, 255, 255)):
+    """绘制 Milk 专属猫爪印（我们的独特品牌标识，避免与他人设计雷同）。"""
+    r = int(6 * scale)
+    # 掌垫
+    d.ellipse((cx - r * 2, cy - int(r * 0.6), cx + r * 2, cy + int(r * 2.6)),
+              fill=color)
+    # 四个趾头
+    toes = [(-r * 2, -r * 2), (-1, -r * 2.4), (r, -r * 2.4), (r * 2, -r * 2)]
+    for tx, ty in toes:
+        d.ellipse((cx + tx - r, cy + ty - r, cx + tx + r, cy + ty + r), fill=color)
+
+
+def _brand_mark(im: Image.Image, w: int, label: str = 'Milk'):
+    """左上角 Milk 品牌标识：圆角小牌 + 猫爪。"""
     d = ImageDraw.Draw(im)
-    font = ImageFont.truetype(str(_font_bold()), 22)
+    font = _font_bold(20)
+    tw = _text_len(d, label, font)
+    chip_w = int(tw + 64)
+    box = (36, 30, 36 + chip_w, 78)
+    _card(im, box, radius=24, fill=(255, 255, 255, 235), shadow=False)
+    _draw_paw(d, box[0] + 30, box[1] + 24, scale=1.1, color=_ACCENT)
+    d.text((box[0] + 56, box[1] + 24), label, font=font, fill=_ACCENT, anchor='lm')
+
+
+def _period_chip(im: Image.Image, w: int, text: str):
+    """右上角周期/类型小牌。"""
+    if not text:
+        return
+    d = ImageDraw.Draw(im)
+    font = _font_bold(18)
     tw = _text_len(d, text, font)
-    chip_w = int(tw + 44)
-    x2, y2 = w - 36, 36
-    box = (x2 - chip_w, y2, x2, y2 + 52)
-    _card(im, box, radius=26, fill=(255, 255, 255, 230), shadow=False)
-    d.text((box[0] + chip_w // 2, box[1] + 26), image_safe_text(text),
-           font=font, fill=_ACCENT, anchor='mm')
+    chip_w = int(tw + 36)
+    x1 = w - 36 - chip_w
+    box = (x1, 30, x1 + chip_w, 76)
+    _card(im, box, radius=23, fill=(255, 255, 255, 220), shadow=False)
+    d.text((x1 + chip_w // 2, box[1] + 23), image_safe_text(text),
+           font=font, fill=_TEXT_SOFT, anchor='mm')
 
 
 def _footer(im: Image.Image, w: int, h: int, extra: str = ''):
     d = ImageDraw.Draw(im)
-    text = footer_generated()
+    # 底部：左侧猫爪 + “Milk Design”  +  机器人官方署名
+    official = footer_generated()
+    design = 'Milk Design'
+    parts = [design, official]
     if extra:
-        text = extra + ' | ' + text
-    font = ImageFont.truetype(str(_font_bold()), 15)
+        parts.insert(1, extra)
+    text = '  ·  '.join(parts)
+    font = _font_bold(14)
     tw = _text_len(d, text, font)
     x = (w - tw) / 2 - 24
     y = h - 50
     _card(im, (int(x), int(y), int(x + tw + 48), int(y + 38)), radius=19,
           fill=(255, 255, 255, 210), shadow=False)
-    d.text((w // 2, y + 19), image_safe_text(text), font=font, fill=_TEXT_SOFT, anchor='mm')
+    # 猫爪
+    _draw_paw(d, int(x) + 22, y + 19, scale=0.7, color=_ACCENT)
+    d.text((int(x) + 42, y + 19), image_safe_text(text), font=font, fill=_TEXT_SOFT, anchor='lm')
 
 
 def _finalize(im: Image.Image) -> BytesIO:
@@ -311,7 +339,7 @@ def _fallback_avatar(size: int, name: str, color) -> Image.Image:
     d = ImageDraw.Draw(img)
     d.ellipse((0, 0, size, size), fill=color)
     initial = (name.strip() or '?')[0]
-    font = ImageFont.truetype(str(_font_bold()), int(size * 0.5))
+    font = _font_bold(int(size * 0.5))
     bbox = d.textbbox((0, 0), image_safe_text(initial), font=font)
     tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
     d.text((size / 2 - tw / 2 - bbox[0], size / 2 - th / 2 - bbox[1]),
@@ -330,6 +358,16 @@ def _get_avatar(avatars: Dict[int, Image.Image], qq: int, name: str, color,
 # ----------------------------------------------------------------------
 # 排名徽章 & rating 徽章
 # ----------------------------------------------------------------------
+def _rank_medal(rank: int):
+    if rank == 1:
+        return _GOLD, (150, 100, 20, 255)
+    if rank == 2:
+        return _SILVER, (110, 120, 140, 255)
+    if rank == 3:
+        return _BRONZE, (130, 80, 40, 255)
+    return (255, 255, 255, 235), _TEXT_SOFT
+
+
 def _draw_rank_badge(im: Image.Image, cx: int, cy: int, rank: int, radius: int = 26):
     fill, fg = _rank_medal(rank)
     d = ImageDraw.Draw(im)
@@ -341,33 +379,36 @@ def _draw_rank_badge(im: Image.Image, cx: int, cy: int, rank: int, radius: int =
     if rank <= 3:
         d.ellipse((cx - radius, cy - radius, cx + radius, cy + radius),
                   outline=(255, 255, 255, 230), width=3)
-    font = ImageFont.truetype(str(_font_mono()), 26 if rank < 100 else 20)
+    font = _font_mono(26 if rank < 100 else 20)
     d.text((cx, cy), str(rank), font=font, fill=fg, anchor='mm')
 
 
-def _draw_rating_pill(im: Image.Image, x: int, y: int, rating: int,
-                      font_size: int = 26) -> Tuple[int, int]:
-    """绘制 rating 徽章，返回徽章右下角坐标。"""
+def _draw_rating_badge(im: Image.Image, right_x: int, cy: int, rating: int,
+                       height: int = 34) -> Tuple[int, int]:
+    """右侧对齐绘制 rating 徽章：优先游戏 UI_CMN_DXRating 贴图，否则回退彩色胶囊。"""
+    bw, bh = draw_rating_badge(im, right_x - rating_badge_width(height),
+                               cy - height // 2, rating, height=height)
+    if bw > 0:
+        return bw, bh
+    # 回退：彩色胶囊
     color = rating_color(rating)
     d = ImageDraw.Draw(im)
-    mono = ImageFont.truetype(str(_font_mono()), font_size)
-    label = 'RATING'
-    lab_font = ImageFont.truetype(str(_font_bold()), 10)
+    mono = _font_mono(int(height * 0.7))
+    lab_font = _font_bold(10)
     num_w = _text_len(d, str(rating), mono)
-    pad = 14
-    pill_w = int(num_w + pad * 2 + 44)
-    pill_h = font_size + 16
+    pill_w = int(num_w + 24 + 44)
+    pill_h = height
+    x = right_x - pill_w
+    y = cy - pill_h // 2
     _card(im, (x, y, x + pill_w, y + pill_h), radius=pill_h // 2,
           fill=color, shadow=False)
-    # RATING 小标签
-    tag_w = 40
-    d.rounded_rectangle((x + 6, y + 6, x + 6 + tag_w, y + pill_h - 6),
+    d.rounded_rectangle((x + 6, y + 6, x + 46, y + pill_h - 6),
                         radius=(pill_h - 12) // 2, fill=(0, 0, 0, 90))
-    d.text((x + 6 + tag_w // 2, y + pill_h // 2), 'RATING',
-           font=lab_font, fill=(255, 255, 255, 230), anchor='mm')
-    d.text((x + 6 + tag_w + pad // 2 + num_w / 2, y + pill_h // 2),
-           str(rating), font=mono, fill=(255, 255, 255, 255), anchor='mm')
-    return x + pill_w, y + pill_h
+    d.text((x + 26, y + pill_h // 2), 'RATING', font=lab_font,
+           fill=(255, 255, 255, 230), anchor='mm')
+    d.text((x + 54 + num_w / 2, y + pill_h // 2), str(rating),
+           font=mono, fill=(255, 255, 255, 255), anchor='mm')
+    return pill_w, pill_h
 
 
 # ----------------------------------------------------------------------
@@ -376,8 +417,8 @@ def _draw_rating_pill(im: Image.Image, x: int, y: int, rating: int,
 def _stat_box(im, x, y, w, h, value, label, color=_TEXT):
     _card(im, (x, y, x + w, y + h), radius=16, fill=(255, 255, 255, 235), shadow=False)
     d = ImageDraw.Draw(im)
-    vfont = ImageFont.truetype(str(_font_mono()), 26)
-    lfont = ImageFont.truetype(str(_font_bold()), 14)
+    vfont = _font_mono(26)
+    lfont = _font_bold(14)
     d.text((x + w // 2, y + h // 2 - 10), str(value), font=vfont, fill=color, anchor='mm')
     d.text((x + w // 2, y + h // 2 + 18), str(label), font=lfont, fill=_MUTED, anchor='mm')
 
@@ -399,22 +440,22 @@ def _donut(im, cx, cy, r, data, total, center_text, center_sub):
     # 挖空
     inner = r - width
     d.ellipse((cx - inner, cy - inner, cx + inner, cy + inner), fill=_PINK_BOT)
-    cfont = ImageFont.truetype(str(_font_mono()), 34)
-    sfont = ImageFont.truetype(str(_font_bold()), 14)
+    cfont = _font_mono(34)
+    sfont = _font_bold(14)
     d.text((cx, cy - 12), str(center_text), font=cfont, fill=_TEXT, anchor='mm')
     d.text((cx, cy + 18), str(center_sub), font=sfont, fill=_MUTED, anchor='mm')
 
 
 def _legend(im, x, y, data, total, line_h=30):
     d = ImageDraw.Draw(im)
-    font = ImageFont.truetype(str(_font_bold()), 15)
-    num_font = ImageFont.truetype(str(_font_mono()), 15)
+    font = _font_bold(15)
+    num_font = _font_mono(15)
     for label, value, color in data:
         d.ellipse((x, y + 6, x + 14, y + 20), fill=color)
         d.text((x + 22, y + 4), label, font=font, fill=_TEXT_SOFT)
         cnt = f'{value}人'
         pct = f'{value / total * 100:.1f}%' if total else '0%'
-        d.text((x + 150, y + 4), cnt, font=num_font, fill=_TEXT)
+        d.text((x + 150, y + 4), cnt, font=font, fill=_TEXT)
         d.text((x + 210, y + 4), pct, font=num_font, fill=_MUTED)
         y += line_h
     return y
@@ -444,13 +485,15 @@ async def render_rating_ranking(
 
     im = _make_bg(width, total_h)
     d = ImageDraw.Draw(im)
+    _brand_mark(im, width)
+    _period_chip(im, width, 'Rating')
     avatars = await _fetch_avatars([r[0] for r in rows])
 
     # 大标题
-    dt = DrawText(d, _font_bold())
-    dt.draw(mx, 44, 34, title, _TEXT, 'lt')
+    dt = DrawText(d, str(_BOLD_PATH))
+    dt.draw(mx + 150, 44, 34, title, _TEXT, 'lt')
     if subtitle:
-        dt.draw(mx, 88, 18, subtitle, _TEXT_SOFT, 'lt')
+        dt.draw(mx + 150, 88, 18, subtitle, _TEXT_SOFT, 'lt')
 
     y = header_h + 20
     max_ra = max((r[2] for r in rows), default=1) or 1
@@ -470,22 +513,22 @@ async def render_rating_ranking(
         av = _get_avatar(avatars, uid, name, rating_color(ra), 66)
         _paste_round(im, av, (mx + 78, y + 15), radius=14)
         # 名字
-        nfont = ImageFont.truetype(str(_font_bold()), 26)
+        nfont = _font_bold(26)
         name_text = _truncate(d, name, nfont, 300)
         d.text((mx + 158, y + 22), name_text, font=nfont, fill=_TEXT)
         if is_self:
             d.text((mx + 158 + _text_len(d, name_text, nfont) + 10, y + 28),
-                   '（你）', font=ImageFont.truetype(str(_font_bold()), 16), fill=_ACCENT)
+                   '（你）', font=_font_bold(16), fill=_ACCENT)
         # 进度条 + 刻度
         bar_x = mx + 158
         bar_w = inner_w - 158 - 200
         _bar(im, bar_x, y + 58, bar_w, 14, ra / bar_max, rating_color(ra),
              bg=(225, 230, 242, 200))
-        sfont = ImageFont.truetype(str(_font_mono()), 12)
+        sfont = _font_mono(12)
         d.text((bar_x, y + 76), '0', font=sfont, fill=_MUTED)
         d.text((bar_x + bar_w, y + 76), f'{bar_max}', font=sfont, fill=_MUTED, anchor='rt')
         # rating 徽章
-        _draw_rating_pill(im, mx + inner_w - 178, y + (row_h - 42) // 2, ra)
+        _draw_rating_badge(im, mx + inner_w - 14, y + row_h // 2, ra)
         y += row_h + gap
 
     # ---------- 统计面板 ----------
@@ -493,7 +536,7 @@ async def render_rating_ranking(
     _card(im, (mx, panel_y, mx + inner_w, panel_y + stats_h - 20), radius=24,
           fill=(255, 255, 255, 200))
     d.text((mx + 28, panel_y + 22), '全群 Rating 段位分布',
-           font=ImageFont.truetype(str(_font_bold()), 20), fill=_TEXT)
+           font=_font_bold(20), fill=_TEXT)
 
     ratings = [r[2] for r in rows]
     avg = sum(ratings) / len(ratings) if ratings else 0
@@ -536,11 +579,16 @@ def _rate_label(rate_key: str) -> str:
 
 
 def _draw_rate_badge(im, x, y, rate_key, scale=1.0):
+    # 优先使用游戏内评级贴图（与 B50 一致）
+    h = int(44 * scale)
+    sw, sh = draw_rank_sprite(im, x, y + (int(40 * scale) - h) // 2, h, rate_key)
+    if sw > 0:
+        return sw, sh
     label = _rate_label(rate_key)
     color = _RATE_COLORS.get(label, _MUTED)
     d = ImageDraw.Draw(im)
-    fs = int(30 * scale)
-    font = ImageFont.truetype(str(_font_mono()), fs)
+    fs = int(28 * scale)
+    font = _font_mono(fs)
     tw = _text_len(d, label, font)
     w = int(tw + 24 * scale)
     h = int(40 * scale)
@@ -566,7 +614,7 @@ def _draw_fc_badge(im, x, y, fc, fs_code):
                   'fdx': (170, 130, 240, 255), 'fsd': (170, 130, 240, 255),
                   'fdxp': (200, 110, 230, 255), 'fsdp': (200, 110, 230, 255)}
         badges.append((labels.get(fs_code, fs_code.upper()), colors.get(fs_code, _BLUE)))
-    font = ImageFont.truetype(str(_font_bold()), 15)
+    font = _font_bold(15)
     cx = x
     for text, color in badges:
         tw = _text_len(d, text, font)
@@ -594,17 +642,19 @@ async def render_song_leaderboard(
     n = len(rows)
     row_h = 84
     gap = 12
-    header_h = 150
+    header_h = 220
     stats_h = 400
     content_h = header_h + n * (row_h + gap) + stats_h + 40
     total_h = content_h + 90
 
     im = _make_bg(width, total_h)
     d = ImageDraw.Draw(im)
+    _brand_mark(im, width)
+    _period_chip(im, width, '单曲排行')
     avatars = await _fetch_avatars([r[0] for r in rows])
 
     # 顶部曲绘卡片
-    hcard_y = 30
+    hcard_y = 92
     _card(im, (mx, hcard_y, mx + inner_w, hcard_y + 110), radius=22,
           fill=(255, 255, 255, 235))
     # 封面
@@ -617,11 +667,11 @@ async def render_song_leaderboard(
         cover = _fallback_avatar(88, music_title[:1], _DIFF_COLORS[level_index])
     _paste_round(im, cover, (mx + 16, hcard_y + 11), radius=14)
     d.text((mx + 124, hcard_y + 22),
-           _truncate(d, music_title, ImageFont.truetype(str(_font_bold()), 28), inner_w - 340),
-           font=ImageFont.truetype(str(_font_bold()), 28), fill=_TEXT)
+           _truncate(d, music_title, _font_bold(28), inner_w - 340),
+           font=_font_bold(28), fill=_TEXT)
     # 难度 pill
     diff_color = _DIFF_COLORS[min(level_index, 4)]
-    dfont = ImageFont.truetype(str(_font_bold()), 18)
+    dfont = _font_bold(18)
     dtext = f'{diff_name}'
     dw = _text_len(d, dtext, dfont)
     _card(im, (mx + 124, hcard_y + 64, mx + 124 + int(dw) + 32, hcard_y + 96),
@@ -630,7 +680,7 @@ async def render_song_leaderboard(
            fill=(255, 255, 255, 255), anchor='mm')
     # Top N 标签
     tag = f'群内 Top {n}'
-    tfont = ImageFont.truetype(str(_font_bold()), 16)
+    tfont = _font_bold(16)
     tw = _text_len(d, tag, tfont)
     _card(im, (mx + 124 + int(dw) + 46, hcard_y + 66,
                mx + 124 + int(dw) + 46 + int(tw) + 28, hcard_y + 94),
@@ -653,19 +703,19 @@ async def render_song_leaderboard(
         _draw_rank_badge(im, mx + 32, y + row_h // 2, rank, radius=24)
         av = _get_avatar(avatars, uid, name, rating_color(int(achv * 100)), 60)
         _paste_round(im, av, (mx + 70, y + 12), radius=12)
-        nfont = ImageFont.truetype(str(_font_bold()), 24)
+        nfont = _font_bold(24)
         d.text((mx + 144, y + 14), _truncate(d, name, nfont, 220), font=nfont, fill=_TEXT)
         d.text((mx + 144, y + 50), f'#{uid}',
-               font=ImageFont.truetype(str(_font_mono()), 13), fill=_MUTED)
+               font=_font_mono(13), fill=_MUTED)
         # 达成率
         d.text((mx + 380, y + row_h // 2), f'{achv:.4f}%',
-               font=ImageFont.truetype(str(_font_mono()), 34),
+               font=_font_mono(34),
                fill=_TEXT, anchor='lm')
         # DX 分
         dx = info.get('dxScore')
         if dx is not None:
             d.text((mx + 620, y + 20), f'{dx}',
-                   font=ImageFont.truetype(str(_font_mono()), 18), fill=_TEXT_SOFT)
+                   font=_font_mono(18), fill=_TEXT_SOFT)
         # FC/FS
         _draw_fc_badge(im, mx + 620, y + 48, info.get('fc'), info.get('fs'))
         # 评级徽章
@@ -678,7 +728,7 @@ async def render_song_leaderboard(
     _card(im, (mx, panel_y, mx + inner_w, panel_y + stats_h - 20), radius=24,
           fill=(255, 255, 255, 200))
     d.text((mx + 28, panel_y + 22), '成绩分布 · 本群',
-           font=ImageFont.truetype(str(_font_bold()), 20), fill=_TEXT)
+           font=_font_bold(20), fill=_TEXT)
 
     # 统计盒
     tp = total_players if total_players is not None else n
@@ -706,9 +756,9 @@ async def render_song_leaderboard(
     # 平均达成率条
     bar_y = panel_y + 156
     d.text((mx + 28, bar_y), '平均达成率',
-           font=ImageFont.truetype(str(_font_bold()), 15), fill=_TEXT_SOFT)
+           font=_font_bold(15), fill=_TEXT_SOFT)
     d.text((mx + inner_w - 28, bar_y), f'{mean_a:.4f}%',
-           font=ImageFont.truetype(str(_font_mono()), 16), fill=_TEXT, anchor='rt')
+           font=_font_mono(16), fill=_TEXT, anchor='rt')
     _bar(im, mx + 28, bar_y + 28, inner_w - 56, 14, mean_a / 101, _BLUE)
 
     # 评级分布
@@ -719,7 +769,7 @@ async def render_song_leaderboard(
             rate_counts[lbl] += 1
     seg_y = bar_y + 60
     d.text((mx + 28, seg_y), '评级分布',
-           font=ImageFont.truetype(str(_font_bold()), 15), fill=_TEXT_SOFT)
+           font=_font_bold(15), fill=_TEXT_SOFT)
     segs = [(c, _RATE_COLORS[k]) for k, c in rate_counts.items() if c > 0]
     if not segs:
         segs = [(1, (220, 224, 234, 255))]
@@ -727,7 +777,7 @@ async def render_song_leaderboard(
     # 图例
     lx = mx + 28
     ly = seg_y + 60
-    lfont = ImageFont.truetype(str(_font_mono()), 13)
+    lfont = _font_mono(13)
     for k, c in rate_counts.items():
         if c <= 0:
             continue
@@ -748,12 +798,12 @@ async def render_song_leaderboard(
         fc_segs = [(1, (220, 224, 234, 255))]
     fcy = ly + 30
     d.text((mx + 28, fcy), 'FC 分布',
-           font=ImageFont.truetype(str(_font_bold()), 15), fill=_TEXT_SOFT)
+           font=_font_bold(15), fill=_TEXT_SOFT)
     _stacked_bar(im, mx + 28, fcy + 26, inner_w - 56, 22, fc_segs)
     ap_n = sum(1 for r in rows if (r[2].get('fc') or '') in ('ap', 'app'))
     fc_n = sum(1 for r in rows if (r[2].get('fc') or '') in ('fc', 'fcp'))
     no_n = n - ap_n - fc_n
-    fl_font = ImageFont.truetype(str(_font_mono()), 13)
+    fl_font = _font_mono(13)
     fl_items = [
         (f'AP {ap_n}', (255, 196, 76, 255)),
         (f'FC {fc_n}', (72, 200, 130, 255)),
@@ -789,11 +839,13 @@ async def render_gain_ranking(
 
     im = _make_bg(width, total_h)
     d = ImageDraw.Draw(im)
+    _brand_mark(im, width)
+    _period_chip(im, width, '吃分榜')
     avatars = await _fetch_avatars([r[0] for r in rows])
 
-    dt = DrawText(d, _font_bold())
-    dt.draw(mx, 44, 32, title, _TEXT, 'lt')
-    dt.draw(mx, 86, 18, subtitle, _TEXT_SOFT, 'lt')
+    dt = DrawText(d, str(_BOLD_PATH))
+    dt.draw(mx + 150, 44, 32, title, _TEXT, 'lt')
+    dt.draw(mx + 150, 86, 18, subtitle, _TEXT_SOFT, 'lt')
 
     y = 140
     max_delta = max((abs(r[4]) for r in rows), default=1) or 1
@@ -810,21 +862,21 @@ async def render_gain_ranking(
         _draw_rank_badge(im, mx + 34, y + row_h // 2, rank, radius=24)
         av = _get_avatar(avatars, uid, name, rating_color(new_r), 60)
         _paste_round(im, av, (mx + 72, y + 16), radius=12)
-        nfont = ImageFont.truetype(str(_font_bold()), 24)
+        nfont = _font_bold(24)
         d.text((mx + 148, y + 16), _truncate(d, name, nfont, 340),
                font=nfont, fill=_TEXT)
         d.text((mx + 148, y + 54), f'{old_r}  →  {new_r}',
-               font=ImageFont.truetype(str(_font_mono()), 18), fill=_TEXT_SOFT)
+               font=_font_bold(18), fill=_TEXT_SOFT)
         bar_color = _GREEN if delta > 0 else (_RED if delta < 0 else _MUTED)
         bar_x = mx + 500
         bar_w = inner_w - 500 - 150
         _bar(im, bar_x, y + 40, bar_w, 14, max(0, delta) / max_delta, bar_color)
         sign = '+' if delta > 0 else ''
         d.text((mx + inner_w - 24, y + row_h // 2), f'{sign}{delta}',
-               font=ImageFont.truetype(str(_font_mono()), 30),
+               font=_font_mono(30),
                fill=bar_color, anchor='rm')
         d.text((mx + inner_w - 24, y + row_h - 14), 'ra',
-               font=ImageFont.truetype(str(_font_mono()), 13), fill=_MUTED, anchor='rt')
+               font=_font_mono(13), fill=_MUTED, anchor='rt')
         y += row_h + gap
 
     # 统计面板
@@ -863,11 +915,13 @@ async def render_sun_lock_ranking(
 
     im = _make_bg(width, total_h)
     d = ImageDraw.Draw(im)
+    _brand_mark(im, width)
+    _period_chip(im, width, '寸止/锁血' if mode == 'sun' else '锁血/寸止')
     avatars = await _fetch_avatars([r[0] for r in rows])
 
-    dt = DrawText(d, _font_bold())
-    dt.draw(mx, 44, 32, title, _TEXT, 'lt')
-    dt.draw(mx, 86, 18, subtitle, _TEXT_SOFT, 'lt')
+    dt = DrawText(d, str(_BOLD_PATH))
+    dt.draw(mx + 150, 44, 32, title, _TEXT, 'lt')
+    dt.draw(mx + 150, 86, 18, subtitle, _TEXT_SOFT, 'lt')
 
     main_color = _GOLD if mode == 'sun' else (120, 200, 255, 255)
     max_main = max((r[2] if mode == 'sun' else r[3] for r in rows), default=1) or 1
@@ -889,18 +943,18 @@ async def render_sun_lock_ranking(
         _draw_rank_badge(im, mx + 34, y + row_h // 2, rank, radius=24)
         av = _get_avatar(avatars, uid, name, main_color, 58)
         _paste_round(im, av, (mx + 72, y + 15), radius=12)
-        nfont = ImageFont.truetype(str(_font_bold()), 24)
+        nfont = _font_bold(24)
         d.text((mx + 146, y + 16), _truncate(d, name, nfont, 340),
                font=nfont, fill=_TEXT)
         d.text((mx + 146, y + 54), f'{other_label} {other} 条',
-               font=ImageFont.truetype(str(_font_mono()), 16), fill=_TEXT_SOFT)
+               font=_font_mono(16), fill=_TEXT_SOFT)
         bar_x = mx + 500
         bar_w = inner_w - 500 - 130
         _bar(im, bar_x, y + 38, bar_w, 14, cnt / max_main, main_color)
         d.text((mx + inner_w - 24, y + row_h // 2), f'{cnt}',
-               font=ImageFont.truetype(str(_font_mono()), 32), fill=main_color, anchor='rm')
+               font=_font_mono(32), fill=main_color, anchor='rm')
         d.text((mx + inner_w - 24, y + row_h - 14), '条',
-               font=ImageFont.truetype(str(_font_mono()), 13), fill=_MUTED, anchor='rt')
+               font=_font_mono(13), fill=_MUTED, anchor='rt')
         y += row_h + gap
 
     panel_y = y + 10
@@ -946,11 +1000,13 @@ def render_gain_recommendation(sections: Dict[str, List[dict]],
 
     im = _make_bg(width, total_h)
     d = ImageDraw.Draw(im)
-    dt = DrawText(d, _font_bold())
-    dt.draw(mx, 44, 32, '今日吃分推荐', _TEXT, 'lt')
-    dt.draw(mx, 86, 17, ' · '.join(summary_lines), _TEXT_SOFT, 'lt')
+    _brand_mark(im, width)
+    _period_chip(im, width, '吃分推荐')
+    dt = DrawText(d, str(_BOLD_PATH))
+    dt.draw(mx + 150, 44, 32, '今日吃分推荐', _TEXT, 'lt')
+    dt.draw(mx + 150, 86, 17, ' · '.join(summary_lines), _TEXT_SOFT, 'lt')
 
-    y = 130 + 10
+    y = 140
     for zone in ('稳赚', '均衡', '冲刺'):
         items = sections.get(zone) or []
         if not items:
@@ -960,10 +1016,10 @@ def render_gain_recommendation(sections: Dict[str, List[dict]],
         _card(im, (mx, y, mx + 170, y + 42), radius=21,
               fill=meta['color'][:3] + (235,), shadow=False)
         d.text((mx + 24, y + 21), f"{meta['icon']} {zone}",
-               font=ImageFont.truetype(str(_font_bold()), 20),
+               font=_font_bold(20),
                fill=(255, 255, 255, 255), anchor='lm')
         d.text((mx + 188, y + 21), meta['desc'],
-               font=ImageFont.truetype(str(_font_bold()), 16), fill=_TEXT_SOFT, anchor='lm')
+               font=_font_bold(16), fill=_TEXT_SOFT, anchor='lm')
         y += 52
         for p in items:
             box = (mx, y, mx + inner_w, y + card_h)
@@ -972,12 +1028,12 @@ def render_gain_recommendation(sections: Dict[str, List[dict]],
             strip = Image.new('RGBA', (8, card_h - 20), meta['color'])
             im.alpha_composite(strip, (mx + 14, y + 10))
             # 曲名
-            nfont = ImageFont.truetype(str(_font_bold()), 24)
+            nfont = _font_bold(24)
             d.text((mx + 36, y + 16),
                    _truncate(d, p['title'], nfont, inner_w - 300),
                    font=nfont, fill=_TEXT)
             # 难度
-            lvl_font = ImageFont.truetype(str(_font_bold()), 15)
+            lvl_font = _font_bold(15)
             lvl_text = f' {p["level"]} '
             lw = _text_len(d, lvl_text, lvl_font) + 16
             _card(im, (mx + 36, y + 54, mx + 36 + int(lw), y + 82),
@@ -986,27 +1042,27 @@ def render_gain_recommendation(sections: Dict[str, List[dict]],
                    fill=(255, 255, 255, 255), anchor='lm')
             d.text((mx + 36 + int(lw) + 14, y + 68),
                    f"拟合 {p['fit_diff']:.2f} / 定数 {p['ds']:.2f}",
-                   font=ImageFont.truetype(str(_font_mono()), 15), fill=_TEXT_SOFT, anchor='lm')
+                   font=_font_mono(15), fill=_TEXT_SOFT, anchor='lm')
             # 达成率变化
             d.text((mx + 470, y + 24), f"{p['achv_now']:.4f}%",
-                   font=ImageFont.truetype(str(_font_mono()), 20), fill=_MUTED)
+                   font=_font_mono(20), fill=_MUTED)
             d.text((mx + 470, y + 56),
                    f"→ {p['achv_target']:.1f}%  (需 +{p['need']:.4f})",
-                   font=ImageFont.truetype(str(_font_mono()), 15), fill=_TEXT)
+                   font=_font_mono(15), fill=_TEXT)
             # 成功率条
             prob_x = mx + 720
             prob_w = inner_w - 720 - 130
             prob = max(0.0, min(1.0, float(p['probability'])))
             _bar(im, prob_x, y + 32, prob_w, 14, prob, meta['color'])
             d.text((prob_x, y + 54), f"成功率 {prob * 100:.0f}%",
-                   font=ImageFont.truetype(str(_font_mono()), 14), fill=_TEXT_SOFT)
+                   font=_font_mono(14), fill=_TEXT_SOFT)
             # 净增
             d.text((mx + inner_w - 24, y + card_h // 2 - 4),
                    f"+{int(p['net_gain'])}",
-                   font=ImageFont.truetype(str(_font_mono()), 34),
+                   font=_font_mono(34),
                    fill=meta['color'], anchor='rm')
             d.text((mx + inner_w - 24, y + card_h - 16), 'ra',
-                   font=ImageFont.truetype(str(_font_mono()), 14), fill=_MUTED, anchor='rt')
+                   font=_font_mono(14), fill=_MUTED, anchor='rt')
             y += card_h + gap
         y += section_gap
 
