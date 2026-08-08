@@ -697,3 +697,147 @@ async def group_rating_ranking(
         line = f"{i + 1}. {name} {ra}"
         nodes.append(build_forward_node(str(self_id), str(name), line))
     return text, nodes
+
+
+# ---------------------------------------------------------------------------
+# 现代化图片渲染入口：返回 MessageSegment 图片，失败/空数据时返回文字提示。
+# ---------------------------------------------------------------------------
+def _image_segment(bio) -> "MessageSegment":
+    from nonebot.adapters.onebot.v11 import MessageSegment
+    from .image import image_to_base64
+    data = bio.getvalue()
+    return MessageSegment.image('base64://' + __import__('base64').b64encode(data).decode())
+
+
+async def render_group_rating_board(bot, group_id: int, top_n: int = 10,
+                                    self_qq: Optional[int] = None):
+    rows = await get_group_member_ratings(bot, group_id)
+    if not rows:
+        return '群内暂无已绑定查分器的成员。'
+    take = rows[:max(1, min(50, int(top_n or 10)))]
+    self_rank = None
+    if self_qq is not None:
+        for i, (uid, _, _) in enumerate(rows):
+            if uid == self_qq:
+                self_rank = i + 1
+                break
+    from .maimaidx_leaderboard_image import render_rating_ranking
+    bio = await render_rating_ranking(
+        take, title='群 Rating 排行',
+        subtitle=f'共 {len(rows)} 人 · 显示前 {len(take)} 名',
+        self_qq=self_qq, self_rank=self_rank,
+    )
+    return _image_segment(bio)
+
+
+async def render_group_gain_board(bot, group_id: int, days: int = 7,
+                                  top_n: int = 15, self_qq: Optional[int] = None):
+    days = max(1, min(90, int(days)))
+    top_n = max(1, min(50, int(top_n)))
+    cache_key = (group_id, days)
+    rows = _group_gain_cache_get(cache_key)
+    if rows is None:
+        try:
+            raw = await _get_group_member_list(bot, group_id)
+        except Exception as e:
+            log.warning(f"[group_gain] get_group_member_list failed: {e}")
+            return '获取群成员列表失败。'
+        if not raw:
+            return '群成员列表为空。'
+        member_by_id = {int(m.get("user_id")): m for m in raw if m.get("user_id") is not None}
+        rows = []
+        for uid in data_storage.get_enabled_users():
+            if uid not in member_by_id:
+                continue
+            delta_t = data_storage.rating_delta_in_period(uid, days)
+            if delta_t is None:
+                continue
+            old_r, new_r, delta = delta_t
+            rows.append((uid, _display_name(member_by_id[uid]), old_r, new_r, delta))
+        rows.sort(key=lambda x: x[4], reverse=True)
+        _group_gain_cache_set(cache_key, rows, _get_cache_ttl())
+    if not rows:
+        return (f'近{days}天暂无可用吃分数据。\n'
+                '（需本群成员发送「开启存储数据」且该周期内至少有 2 次存档）')
+    from .maimaidx_leaderboard_image import render_gain_ranking
+    bio = await render_gain_ranking(
+        rows[:top_n], title='群吃分榜',
+        subtitle=f'近 {days} 天 · rating 增量 · 共 {len(rows)} 人',
+        self_qq=self_qq,
+    )
+    return _image_segment(bio)
+
+
+async def render_group_sun_lock_board(bot, group_id: int, mode: str = 'sun',
+                                      top_n: int = 15, self_qq: Optional[int] = None):
+    mode = (mode or 'sun').lower()
+    if mode not in ('sun', 'lock'):
+        mode = 'sun'
+    top_n = max(1, min(50, int(top_n)))
+    rows = _group_sun_lock_raw_cache_get(group_id)
+    if rows is None:
+        try:
+            raw = await _get_group_member_list(bot, group_id)
+        except Exception as e:
+            log.warning(f"[group_sun_lock] get_group_member_list failed: {e}")
+            return '获取群成员列表失败。'
+        if not raw:
+            return '群成员列表为空。'
+        sem = asyncio.Semaphore(_GROUP_RATING_CONCURRENCY)
+
+        async def _fetch_one(m: dict):
+            uid = m.get("user_id")
+            if uid is None:
+                return None
+            async with sem:
+                try:
+                    _ui, recs = await get_user_records(qqid=int(uid))
+                    recs = list(recs or [])
+                    from .maimaidx_best_50 import filter_utage_records
+                    recs = filter_utage_records(recs)
+                except Exception:
+                    return None
+                if not recs:
+                    return None
+                sun_c, lock_c = _count_sun_lock_on_records(recs)
+                return (int(uid), _display_name(m), sun_c, lock_c)
+
+        gathered = await asyncio.gather(*[_fetch_one(m) for m in raw])
+        rows = [r for r in gathered if r is not None]
+        _group_sun_lock_raw_cache_set(group_id, rows, _get_cache_ttl())
+    if not rows:
+        return '群内暂无可用全量成绩（需绑定查分器且 Bot 有开发者 Token）。'
+    if mode == 'sun':
+        rows = sorted(rows, key=lambda x: (x[2], x[3]), reverse=True)
+        label = '寸止'
+    else:
+        rows = sorted(rows, key=lambda x: (x[3], x[2]), reverse=True)
+        label = '锁血'
+    from .maimaidx_leaderboard_image import render_sun_lock_ranking
+    bio = await render_sun_lock_ranking(
+        rows[:top_n], title=f'群{label}榜',
+        subtitle=f'全量成绩中落在{label}区间的谱面条数 · 共 {len(rows)} 人',
+        mode=mode, self_qq=self_qq,
+    )
+    return _image_segment(bio)
+
+
+async def render_group_song_board(bot, group_id: int, music_id: str,
+                                  music_title: str, level_index: int = 3,
+                                  top_n: int = 10, self_qq: Optional[int] = None,
+                                  cover_path: Optional[str] = None):
+    rows = await get_group_member_song_scores(bot, group_id, music_id, level_index)
+    if not rows:
+        diff_name = get_difficulty_name(level_index)
+        return f'群内暂无已绑定查分器的成员游玩过「{music_title}」的{diff_name}难度。'
+    from .maimaidx_leaderboard_image import render_song_leaderboard
+    bio = await render_song_leaderboard(
+        rows[:max(1, min(50, int(top_n or 10)))],
+        music_title=music_title,
+        diff_name=get_difficulty_name(level_index),
+        level_index=level_index,
+        total_players=len(rows),
+        self_qq=self_qq,
+        cover_path=cover_path,
+    )
+    return _image_segment(bio)

@@ -32,6 +32,9 @@ from ..libraries.maimaidx_group_rating import (
     get_group_member_ratings,
     group_song_my_rank,
     group_song_leaderboard,
+    render_group_rating_board,
+    render_group_gain_board,
+    render_group_sun_lock_board,
 )
 from ..libraries.maimaidx_score_formatter import (
     format_leaderboard_text,
@@ -557,13 +560,12 @@ async def _group_weak(event: MessageEvent):
         bot = get_bot(str(event.self_id))
     self_id = int(getattr(bot, 'self_id', event.self_id))
     nickname = str(getattr(bot, 'nickname', None) or 'Bot')
-    text, nodes = await group_weak_rank(
-        bot, event.group_id, self_id, nickname, resolve_score_qqid(event)
+    board_text = await render_group_rating_board(
+        bot, event.group_id, top_n=11, self_qq=resolve_score_qqid(event)
     )
-    board_text = format_forward_nodes_as_text(text, nodes) if nodes else (text or '暂无数据。')
     await plugin_finish(
         group_weak,
-        rank_text_image(board_text),
+        board_text,
         event=event,
         reply_message=True,
     )
@@ -597,27 +599,12 @@ async def _group_rating_leaderboard(event: MessageEvent, message: Message = Comm
     nickname = raw_nick if isinstance(raw_nick, str) else 'Bot'
     if not nickname:
         nickname = 'Bot'
-    text, nodes = await group_rating_ranking(
-        bot, event.group_id, self_id, nickname, top_n=top_n
+    board_text = await render_group_rating_board(
+        bot, event.group_id, top_n=top_n, self_qq=resolve_score_qqid(event)
     )
-    if not nodes:
-        await group_rating_leaderboard.finish(text or '群内暂无已绑定查分器的成员。', reply_message=False)
-    # 计算当前用户在群内排名（与排行榜同一数据源）
-    rows = await get_group_member_ratings(bot, event.group_id)
-    user_rank = None
-    current_qqid = resolve_score_qqid(event)
-    for i, (uid, _, _) in enumerate(rows):
-        if uid == current_qqid:
-            user_rank = i + 1
-            break
-    if user_rank is not None:
-        title_content = f"{text}\n您在群里排名为第{user_rank}名"
-    else:
-        title_content = f"{text}\n您尚未绑定查分器，无法显示排名"
-    board_text = format_forward_nodes_as_text(title_content, nodes)
     await plugin_finish(
         group_rating_leaderboard,
-        rank_text_image(board_text),
+        board_text,
         event=event,
         reply_message=False,
     )
@@ -669,14 +656,10 @@ async def _group_gain_board(event: MessageEvent, message: Message = CommandArg()
     except Exception:
         bot = get_bot(str(event.self_id))
     self_id = int(getattr(bot, 'self_id', event.self_id))
-    nickname = str(getattr(bot, 'nickname', None) or 'Bot')
-    text, nodes = await group_gain_ranking(
-        bot, event.group_id, self_id, nickname, days=days, top_n=top_n
+    result = await render_group_gain_board(
+        bot, event.group_id, days=days, top_n=top_n, self_qq=resolve_score_qqid(event)
     )
-    await _send_group_forward_or_finish(
-        group_gain_board, bot, event.group_id, self_id, nickname, text, nodes,
-        event=event,
-    )
+    await plugin_finish(group_gain_board, result, event=event, reply_message=False)
 
 
 @group_sun_board.handle()
@@ -698,14 +681,10 @@ async def _group_sun_board(event: MessageEvent, message: Message = CommandArg())
     except Exception:
         bot = get_bot(str(event.self_id))
     self_id = int(getattr(bot, 'self_id', event.self_id))
-    nickname = str(getattr(bot, 'nickname', None) or 'Bot')
-    text, nodes = await group_sun_lock_ranking(
-        bot, event.group_id, self_id, nickname, mode='sun', top_n=top_n
+    result = await render_group_sun_lock_board(
+        bot, event.group_id, mode='sun', top_n=top_n, self_qq=resolve_score_qqid(event)
     )
-    await _send_group_forward_or_finish(
-        group_sun_board, bot, event.group_id, self_id, nickname, text, nodes,
-        event=event,
-    )
+    await plugin_finish(group_sun_board, result, event=event, reply_message=False)
 
 
 @group_lock_board.handle()
@@ -727,14 +706,10 @@ async def _group_lock_board(event: MessageEvent, message: Message = CommandArg()
     except Exception:
         bot = get_bot(str(event.self_id))
     self_id = int(getattr(bot, 'self_id', event.self_id))
-    nickname = str(getattr(bot, 'nickname', None) or 'Bot')
-    text, nodes = await group_sun_lock_ranking(
-        bot, event.group_id, self_id, nickname, mode='lock', top_n=top_n
+    result = await render_group_sun_lock_board(
+        bot, event.group_id, mode='lock', top_n=top_n, self_qq=resolve_score_qqid(event)
     )
-    await _send_group_forward_or_finish(
-        group_lock_board, bot, event.group_id, self_id, nickname, text, nodes,
-        event=event,
-    )
+    await plugin_finish(group_lock_board, result, event=event, reply_message=False)
 
 
 @friend_battle.handle()

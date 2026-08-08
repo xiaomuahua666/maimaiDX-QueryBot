@@ -125,7 +125,7 @@ def _pick_zone(prob: float, net_gain: int) -> str:
     return "冲刺"
 
 
-async def generate_today_gain_recommendation(qqid: int, top_n: int = 12) -> str:
+async def _compute_today_gain(qqid: int, top_n: int = 12) -> str:
     yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
     yesterday_snap = data_storage.load_daily_snapshot(qqid, yesterday)
     if not yesterday_snap:
@@ -229,46 +229,69 @@ async def generate_today_gain_recommendation(qqid: int, top_n: int = 12) -> str:
             picks.append(best)
 
     if not picks:
-        return "今天没有明显吃分候选（可能是当前 B50 已很满，或可提升空间较小）。"
+        return "今天没有明显吃分候选（可能是当前 B50 已很满，或可提升空间较小）。", None
 
     picks.sort(key=lambda x: x.score, reverse=True)
     top = picks[: max(1, min(20, top_n))]
 
-    groups: Dict[str, List[_Recommend]] = {"稳赚": [], "均衡": [], "冲刺": []}
+    groups: Dict[str, List[dict]] = {"稳赚": [], "均衡": [], "冲刺": []}
     for p in top:
-        groups[p.zone].append(p)
+        if len(groups[p.zone]) >= 4:
+            continue
+        groups[p.zone].append({
+            'title': p.title,
+            'level': p.level,
+            'ds': p.ds,
+            'fit_diff': p.fit_diff,
+            'achv_now': p.achv_now,
+            'achv_target': p.achv_target,
+            'need': p.need,
+            'net_gain': p.net_gain,
+            'probability': p.probability,
+        })
 
-    lines = [
-        '今日吃分推荐（对比昨日存档 + 实时成绩，拟合难度 + B35/B15 门槛净收益）',
-        f'基准：昨日存档（{yesterday}）· 能力样本 {max(len(snaps), 1)} 天',
+    summary = [
+        f'昨日存档 {yesterday}',
+        f'能力样本 {max(len(snaps), 1)} 天',
+        f'候选 {len(picks)} 首',
     ]
+    log.debug(f"[today_gain] qq={qqid} picks={len(picks)} top={len(top)}")
+    return summary, groups
+
+
+async def generate_today_gain_recommendation(qqid: int, top_n: int = 12) -> str:
+    """文字版吃分推荐（保留兼容）。"""
+    result = await _compute_today_gain(qqid, top_n)
+    if isinstance(result, str):
+        return result
+    summary, groups = result
+    lines = ['今日吃分推荐（对比昨日存档 + 实时成绩，拟合难度 + B35/B15 门槛净收益）',
+             '基准：' + ' · '.join(summary)]
     for zone in ["稳赚", "均衡", "冲刺"]:
         arr = groups[zone]
         if not arr:
             continue
         lines.append(f"\n【{zone}】")
-        for i, p in enumerate(arr[:4], 1):
+        for i, p in enumerate(arr, 1):
             lines.append(
-                f"{i}. {p.title} [{p.level}] "
-                f"{p.achv_now:.4f}%->{p.achv_target:.1f}% "
-                f"净增{p.net_gain:+d}ra "
-                f"成功率{p.probability*100:.0f}% "
-                f"(拟合{p.fit_diff:.2f}/定数{p.ds:.2f})"
+                f"{i}. {p['title']} [{p['level']}] "
+                f"{p['achv_now']:.4f}%->{p['achv_target']:.1f}% "
+                f"净增{p['net_gain']:+d}ra "
+                f"成功率{p['probability']*100:.0f}% "
+                f"(拟合{p['fit_diff']:.2f}/定数{p['ds']:.2f})"
             )
-
-    log.debug(f"[today_gain] qq={qqid} picks={len(picks)} top={len(top)}")
     return "\n".join(lines) + f"\n\n{footer_generated()}"
 
 
 async def generate_today_gain_recommendation_image(qqid: int, top_n: int = 12):
-    """成功的推荐渲染成图片，缺少存档/成绩等错误仍返回文字提示。"""
-    text = await generate_today_gain_recommendation(qqid, top_n)
-    error_prefixes = (
-        '昨日无存档', '未读取到全量成绩', '今天没有明显吃分候选',
-    )
-    if text.startswith(error_prefixes):
-        return text
+    """成功的推荐渲染成现代卡片图片，缺少存档/成绩等错误仍返回文字提示。"""
+    result = await _compute_today_gain(qqid, top_n)
+    if isinstance(result, str):
+        return result
+    summary, groups = result
     from nonebot.adapters.onebot.v11 import MessageSegment
-    from .image import text_to_bytes_io
-
-    return MessageSegment.image(text_to_bytes_io(text))
+    from PIL import Image
+    from .maimaidx_leaderboard_image import render_gain_recommendation
+    from .image import image_to_base64
+    bio = render_gain_recommendation(groups, summary)
+    return MessageSegment.image(image_to_base64(Image.open(bio)))

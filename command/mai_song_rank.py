@@ -11,6 +11,7 @@ from ..libraries.maimaidx_group_rating import (
     build_forward_node,
     get_group_member_song_scores,
     group_song_my_rank,
+    render_group_song_board,
 )
 from ..libraries.maimaidx_music import feature_manager
 from ..libraries.maimaidx_score_formatter import (
@@ -19,6 +20,7 @@ from ..libraries.maimaidx_score_formatter import (
     get_difficulty_name,
 )
 from ..libraries.maimaidx_song_resolver import SongResolver
+from ..libraries.image import music_picture
 from ..libraries.maimaidx_platform import (
     format_forward_nodes_as_text,
     plugin_finish,
@@ -189,61 +191,30 @@ async def _song_rank(event: MessageEvent, matched = RegexMatched()):
     current_qqid = resolve_score_qqid(event)
 
     if is_my:
-        text, nodes = await group_song_my_rank(
-            bot, event.group_id, self_id, nickname, current_qqid, music_id, music_title, level_index
+        board_text = await render_group_song_board(
+            bot, event.group_id, music_id, music_title, level_index,
+            top_n=top_n or 11, self_qq=current_qqid,
+            cover_path=str(music_picture(music_id)),
         )
-        log.debug(f"[song_rank] my branch result text_len={len(text)}, nodes={len(nodes)}")
-        if not nodes:
-            log.debug("[song_rank] my branch has no nodes, finish")
-            await song_rank.finish(text, reply_message=True)
-        board_text = format_forward_nodes_as_text(text, nodes)
         await plugin_finish(
             song_rank,
-            rank_text_image(board_text),
+            board_text,
             event=event,
             reply_message=True,
         )
 
     # 群榜：只查一次群成绩，并附带当前用户排名提示
-    rows = await get_group_member_song_scores(bot, event.group_id, music_id, level_index)
-    log.debug(f"[song_rank] leaderboard rows={len(rows)}")
-    diff_name = get_difficulty_name(level_index)
-    if not rows:
-        await song_rank.finish(
-            f"群内暂无已绑定查分器的成员游玩过「{music_title}」的{diff_name}难度。",
-            reply_message=True,
-        )
-
     if top_n is None:
         top_n = 10
     top_n = max(1, min(50, top_n))
-    take = rows[:top_n]
-    log.debug(f"[song_rank] leaderboard top_n={top_n}, take={len(take)}")
-
-    user_rank = None
-    for i, (uid, _, _) in enumerate(rows):
-        if uid == current_qqid:
-            user_rank = i + 1
-            break
-
-    title_text = format_leaderboard_text(
-        music_title=music_title,
-        diff_name=diff_name,
-        top_n=len(take),
-        total=len(rows),
-        user_rank=user_rank,
+    result = await render_group_song_board(
+        bot, event.group_id, music_id, music_title, level_index,
+        top_n=top_n, self_qq=current_qqid,
+        cover_path=str(music_picture(music_id)),
     )
-    nodes = []
-    for i, (uid, name, score_info) in enumerate(take):
-        line = format_score_line_from_dict(i + 1, name, score_info, is_self=(uid == current_qqid))
-        node_name = "你" if uid == current_qqid else name
-        nodes.append(build_forward_node(str(self_id), str(node_name), line))
-
-    all_nodes = [build_forward_node(str(self_id), nickname, title_text)] + nodes
-    log.debug(f"[song_rank] leaderboard all_nodes={len(all_nodes)}")
     await plugin_finish(
         song_rank,
-        rank_text_image(format_forward_nodes_as_text(title_text, nodes)),
+        result,
         event=event,
         reply_message=False,
     )
