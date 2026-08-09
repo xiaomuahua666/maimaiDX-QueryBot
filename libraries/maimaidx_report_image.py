@@ -258,8 +258,8 @@ def render_report(
     _period_chip(im, width, period_tag)
 
     # 标题
-    d.text((mx + 150, 36), title, font=_font_bold(34), fill=_TEXT)
-    d.text((mx + 150, 82), f'{nickname}  ·  {period}', font=_font_bold(18), fill=_TEXT_SOFT)
+    d.text((mx + 200, 36), title, font=_font_bold(34), fill=_TEXT)
+    d.text((mx + 200, 82), f'{nickname}  ·  {period}', font=_font_bold(18), fill=_TEXT_SOFT)
 
     # ---------- Hero：rating 变化 ----------
     hy = 110

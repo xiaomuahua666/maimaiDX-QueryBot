@@ -258,8 +258,22 @@ async def _compute_today_gain(qqid: int, top_n: int = 12) -> str:
         f'能力样本 {max(len(snaps), 1)} 天',
         f'候选 {len(picks)} 首',
     ]
+    def _ref(rec):
+        if rec is None:
+            return None
+        return {
+            'song_id': int(rec.song_id), 'title': rec.title, 'level': rec.level,
+            'level_index': int(rec.level_index),
+            'ds': float(rec.ds), 'ra': int(rec.ra), 'achievements': float(rec.achievements),
+        }
+    ref = {
+        'b1': _ref(b35[0] if b35 else None),
+        'b36': _ref(b15[0] if b15 else None),
+        'b35_floor': int(b35[-1].ra) if b35 else 0,
+        'b15_floor': int(b15[-1].ra) if b15 else 0,
+    }
     log.debug(f"[today_gain] qq={qqid} picks={len(picks)} top={len(top)}")
-    return summary, groups
+    return summary, groups, ref
 
 
 async def generate_today_gain_recommendation(qqid: int, top_n: int = 12) -> str:
@@ -267,7 +281,7 @@ async def generate_today_gain_recommendation(qqid: int, top_n: int = 12) -> str:
     result = await _compute_today_gain(qqid, top_n)
     if isinstance(result, str):
         return result
-    summary, groups = result
+    summary, groups, _ref = result
     lines = ['今日吃分推荐（对比昨日存档 + 实时成绩，拟合难度 + B35/B15 门槛净收益）',
              '基准：' + ' · '.join(summary)]
     for zone in ["稳赚", "均衡", "冲刺"]:
@@ -291,7 +305,7 @@ async def generate_today_gain_recommendation_image(qqid: int, top_n: int = 12):
     result = await _compute_today_gain(qqid, top_n)
     if isinstance(result, str):
         return result
-    summary, groups = result
+    summary, groups, ref = result
     from nonebot.adapters.onebot.v11 import MessageSegment
     from PIL import Image
     from .maimaidx_leaderboard_image import render_gain_recommendation
@@ -304,6 +318,6 @@ async def generate_today_gain_recommendation_image(qqid: int, top_n: int = 12):
     user_name = (snaps[-1].nickname if snaps else '') or str(qqid)
     bio = render_gain_recommendation(
         groups, summary, user_name=user_name,
-        rating_trend=trend, current_rating=current_rating,
+        rating_trend=trend, current_rating=current_rating, ref=ref,
     )
     return MessageSegment.image(image_to_base64(Image.open(bio)))

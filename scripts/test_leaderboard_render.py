@@ -84,7 +84,8 @@ def _load_render_modules(static_dir: Path):
     assets = _load("maimaidx_game_assets", "libraries/maimaidx_game_assets.py")
     lb = _load("maimaidx_leaderboard_image", "libraries/maimaidx_leaderboard_image.py")
     rep = _load("maimaidx_report_image", "libraries/maimaidx_report_image.py")
-    return image_mod, theme, assets, lb, rep, cfg
+    risk = _load("maimaidx_risk_image", "libraries/maimaidx_risk_image.py")
+    return image_mod, theme, assets, lb, rep, risk, cfg
 
 
 def _make_fake_sprites(pic_dir: Path):
@@ -200,6 +201,24 @@ def _report_data():
     }
 
 
+
+def _risk_items():
+    return [
+        {"title": "Oshama Scramble!", "level": "13+", "level_index": 3, "song_id": 1000,
+         "ra": 280, "achv": 100.4999, "zone": "B35", "score": 62,
+         "reasons": ["地板位", "寸止", "较上次-3ra"]},
+        {"title": "PANTS GURG GURG GURG", "level": "14", "level_index": 3, "song_id": 1002,
+         "ra": 295, "achv": 100.9900, "zone": "B15", "score": 30,
+         "reasons": ["近地板(差2)", "锁血"]},
+        {"title": "Caliburne", "level": "14", "level_index": 4, "song_id": 1003,
+         "ra": 300, "achv": 101.1234, "zone": "B15", "score": 14,
+         "reasons": ["近地板(差7)"]},
+        {"title": "BREaK! BREaK!", "level": "13", "level_index": 2, "song_id": 1001,
+         "ra": 270, "achv": 99.8000, "zone": "B35", "score": 8,
+         "reasons": ["较早期-3ra"]},
+    ]
+
+
 # ----------------------------------------------------------------------
 # 断言工具
 # ----------------------------------------------------------------------
@@ -220,7 +239,7 @@ def _run(coro):
 # 各测试
 # ----------------------------------------------------------------------
 def test_smoke_no_assets(mods):
-    _, _, assets, lb, rep, _ = mods
+    _, _, assets, lb, rep, risk, _ = mods
     _clear_asset_caches(assets)
 
     all_rows = _rating_rows(25)
@@ -272,7 +291,7 @@ def test_smoke_no_assets(mods):
 
 def test_sprite_geometry(mods):
     """有假贴图时：评级贴图可加载、Rating 徽章宽度契约一致、不越界错位。"""
-    _, _, assets, lb, _, cfg = mods
+    _, _, assets, lb, _, _, cfg = mods
     _make_fake_sprites(cfg.maimaidir)
     _clear_asset_caches(assets)
 
@@ -313,7 +332,7 @@ def test_sprite_geometry(mods):
 
 def test_fallback_when_assets_missing(mods):
     """无贴图时：draw_* 返回 (0,0)，调用方回退，不抛异常。"""
-    _, _, assets, lb, _, cfg = mods
+    _, _, assets, lb, _, _, cfg = mods
     # 清空主题目录
     import shutil
     for sub in cfg.maimaidir.glob("prism_plus"):
@@ -334,7 +353,7 @@ def test_fallback_when_assets_missing(mods):
 
 def test_square_cover_and_no_paw(mods):
     """曲绘占位图为正方形；源码不再含爪印绘制。"""
-    _, _, _, lb, _, _ = mods
+    _, _, _, lb, _, _, _ = mods
     for size in (48, 68, 72, 88):
         im = lb._cover_placeholder(size)
         assert im.size == (size, size), f"曲绘占位不是方形: {im.size}"
@@ -372,7 +391,7 @@ def test_utage_filter_source():
 
 def test_all_rows_decouples_stats(mods):
     """all_rows 行数与显示行数解耦：显示 3 人但统计全群 25 人也能出图。"""
-    _, _, assets, lb, _, _ = mods
+    _, _, assets, lb, _, risk, _ = mods
     _clear_asset_caches(assets)
     all_rows = _rating_rows(25)
     bio = _run(lb.render_rating_ranking(all_rows[:3], all_rows=all_rows))
@@ -408,7 +427,8 @@ def test_no_chinese_in_mono_font():
 
     bad = []
     for rel in ("libraries/maimaidx_leaderboard_image.py",
-                "libraries/maimaidx_report_image.py"):
+                "libraries/maimaidx_report_image.py",
+                "libraries/maimaidx_risk_image.py"):
         tree = ast.parse((ROOT / rel).read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
@@ -431,7 +451,7 @@ def test_no_chinese_in_mono_font():
 
 def test_render_without_font_files(mods):
     """字体文件全部缺失时，加载器回退 PIL 默认字体，渲染不应抛异常。"""
-    _, _, assets, lb, rep, _cfg = mods
+    _, _, assets, lb, rep, risk, _cfg = mods
     # 只把内存中的字体路径指向不存在的文件（绝不删除磁盘上的真实字体）
     assets.SIYUAN = Path("/nonexistent/missing-bold.ttf")
     assets.TBFONT = Path("/nonexistent/missing-num.ttf")
@@ -452,7 +472,7 @@ def test_render_without_font_files(mods):
 
 def test_my_rank_context(mods):
     """我在群里有多菜：以用户为中心的前后排名上下文，覆盖中位/榜首/榜尾/未找到。"""
-    _, _, assets, lb, _, _ = mods
+    _, _, assets, lb, _, risk, _ = mods
     _clear_asset_caches(assets)
     names = [f"Player{i}" for i in range(15)]
     rows = [(1000 + i, names[i], 16017 - i * 120) for i in range(15)]
@@ -475,7 +495,7 @@ def test_my_rank_context(mods):
 
 def test_canvas_fully_painted(mods):
     """渲染图四角必须完全不透明且非纯黑，防止透明边/黑边造成的错位观感。"""
-    _, _, assets, lb, _, _ = mods
+    _, _, assets, lb, _, risk, _ = mods
     _clear_asset_caches(assets)
     bio = _run(lb.render_rating_ranking(_rating_rows(6)[:6], all_rows=_rating_rows(6)))
     im = Image.open(bio).convert("RGBA")
@@ -488,41 +508,69 @@ def test_canvas_fully_painted(mods):
     print(f"  画布背景填满无透明/黑边 OK（四角 {corners[0]}）")
 
 
+
+def test_b50_risk_report(mods):
+    """B50 风险新风格渲染：有风险/无风险均正常出图，宽度 1080，四角不透明。"""
+    _, _, assets, lb, _, risk, _ = mods
+    _clear_asset_caches(assets)
+
+    items = _risk_items()
+    bio = risk.render_risk_report("Losoy", 14, items, b50_total=50, user_name="Losoy")
+    im = _assert_png(bio, "B50风险-有数据", min_h=600)
+    print(f"  B50风险(有数据) {im.size} OK")
+
+    # 无风险曲目：应渲染空状态卡，不崩
+    bio = risk.render_risk_report("Losoy", 14, [], b50_total=50, user_name="Losoy")
+    im = _assert_png(bio, "B50风险-空状态", min_h=400)
+    print(f"  B50风险(空状态) {im.size} OK")
+
+    # 字体缺失回退
+    assets.SIYUAN = Path("/nonexistent/missing-bold.ttf")
+    assets.TBFONT = Path("/nonexistent/missing-num.ttf")
+    _clear_asset_caches(assets)
+    bio = risk.render_risk_report("Losoy", 14, items, b50_total=50, user_name="Losoy")
+    _assert_png(bio, "B50风险-无字体", min_h=400)
+    print("  B50风险 无字体回退 OK")
+
+
 def main():
     assert sys.version_info >= (3, 9), "需要 Python 3.9+"
     with TemporaryDirectory() as tmp:
         static_dir = Path(tmp)
         mods = _load_render_modules(static_dir)
 
-        print("[1/10] 无素材冒烟渲染")
+        print("[1/11] 无素材冒烟渲染")
         test_smoke_no_assets(mods)
 
-        print("[2/10] 贴图加载与几何/错位校验")
+        print("[2/11] 贴图加载与几何/错位校验")
         test_sprite_geometry(mods)
 
-        print("[3/10] 无素材回退")
+        print("[3/11] 无素材回退")
         test_fallback_when_assets_missing(mods)
 
-        print("[4/10] 方形曲绘 / 去爪印源码校验")
+        print("[4/11] 方形曲绘 / 去爪印源码校验")
         test_square_cover_and_no_paw(mods)
 
-        print("[5/10] 宴谱过滤源码校验")
+        print("[5/11] 宴谱过滤源码校验")
         test_utage_filter_source()
 
-        print("[6/10] 全群统计解耦")
+        print("[6/11] 全群统计解耦")
         test_all_rows_decouples_stats(mods)
 
-        print("[7/10] 西文字体渲染中文静态扫描")
+        print("[7/11] 西文字体渲染中文静态扫描")
         test_no_chinese_in_mono_font()
 
-        print("[8/10] 无字体文件回退")
+        print("[8/11] 无字体文件回退")
         test_render_without_font_files(mods)
 
-        print("[9/10] 画布背景完整性")
+        print("[9/11] 画布背景完整性")
         test_canvas_fully_painted(mods)
 
-        print("[10/10] 我的排名上下文")
+        print("[10/11] 我的排名上下文")
         test_my_rank_context(mods)
+
+        print("[11/11] B50 风险新风格")
+        test_b50_risk_report(mods)
 
     print("\nALL RENDER TESTS PASSED 🐾")
 

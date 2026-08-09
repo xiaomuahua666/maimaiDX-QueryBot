@@ -183,23 +183,13 @@ def _truncate(d, text, font, max_w):
 
 def _bar(im, x, y, w, h, ratio, color, bg=(225, 230, 242, 255), radius=8):
     ratio = max(0.0, min(1.0, ratio))
-    # 简洁现代风：细轨道 + 纯色填充 + 末端小圆点，不加厚重高光
+    # 极简风：纯轨道 + 纯色填充，无高光/阴影/滑块
     d = ImageDraw.Draw(im)
     d.rounded_rectangle((x, y, x + w, y + h), radius=radius, fill=bg)
     if ratio <= 0:
         return
     fw = max(h, int(w * ratio))
     d.rounded_rectangle((x, y, x + fw, y + h), radius=radius, fill=color)
-    # 顶部极细高光线，增加质感但不抢戏
-    if h >= 10:
-        d.rounded_rectangle((x + 2, y + 1, x + fw - 2, y + h // 2 - 1),
-                            radius=max(2, radius - 2), fill=(255, 255, 255, 55))
-    # 末端圆点（滑块感）
-    if fw >= h + 2 and h >= 10:
-        cx = x + fw
-        cr = h // 2 + 2
-        d.ellipse((cx - cr, y - 2, cx + cr, y + h + 2), fill=(255, 255, 255, 235))
-        d.ellipse((cx - cr + 3, y + 1, cx + cr - 3, y + h - 1), fill=color)
 
 
 def _stacked_bar(im, x, y, w, h, segments, radius=8):
@@ -272,7 +262,7 @@ def _brand_mark(im: Image.Image, w: int, label: str = 'Milk'):
     """左上角品牌标识：显示请求用户名，过长时截断以避免与标题重叠。"""
     d = ImageDraw.Draw(im)
     font = _font_bold(20)
-    label = _truncate(d, image_safe_text(label or 'Milk'), font, 180)
+    label = _truncate(d, image_safe_text(label or 'Milk'), font, 108)
     tw = _text_len(d, label, font)
     chip_w = int(tw + 36)
     box = (36, 30, 36 + chip_w, 78)
@@ -519,9 +509,9 @@ async def render_rating_ranking(
     avatars = await _fetch_avatars([r[0] for r in rows])
 
     # 大标题
-    _draw_title(d, mx + 120, 44, 34, title, _TEXT)
+    _draw_title(d, mx + 200, 44, 34, title, _TEXT)
     if subtitle:
-        _draw_title(d, mx + 120, 88, 18, subtitle, _TEXT_SOFT)
+        _draw_title(d, mx + 200, 88, 18, subtitle, _TEXT_SOFT)
 
     y = header_h + 20
     max_ra = max((r[2] for r in rows), default=1) or 1
@@ -701,8 +691,8 @@ async def render_my_rank_context(
     _period_chip(im, width, '我的排名')
     avatars = await _fetch_avatars([r[0] for _, r in window])
 
-    _draw_title(d, mx + 120, 44, 32, '我在群里的排名', _TEXT)
-    _draw_title(d, mx + 120, 86, 18, f'共 {total} 人 · 你周围的群友', _TEXT_SOFT)
+    _draw_title(d, mx + 200, 44, 32, '我在群里的排名', _TEXT)
+    _draw_title(d, mx + 200, 86, 18, f'共 {total} 人 · 你周围的群友', _TEXT_SOFT)
 
     # ---------- 顶部个人排名卡片 ----------
     hcard_y = 120
@@ -780,7 +770,7 @@ async def render_my_rank_context(
         (f'{above_count}', '在你之上'),
         (f'{below_count}', '在你之下'),
         (f'{avg:.0f}', '群均 rating'),
-        (f'+{gap_to_top}' if gap_to_top > 0 else '0', '距榜首'),
+        (f'-{gap_to_top}' if gap_to_top > 0 else '0', '距榜首'),
     ]
     box_w = (inner_w - 56 - 3 * 14) // 4
     for i, (val, lab) in enumerate(summary):
@@ -1011,8 +1001,8 @@ async def render_gain_ranking(
     _period_chip(im, width, '吃分榜')
     avatars = await _fetch_avatars([r[0] for r in rows])
 
-    _draw_title(d, mx + 150, 44, 32, title, _TEXT)
-    _draw_title(d, mx + 150, 86, 18, subtitle, _TEXT_SOFT)
+    _draw_title(d, mx + 200, 44, 32, title, _TEXT)
+    _draw_title(d, mx + 200, 86, 18, subtitle, _TEXT_SOFT)
 
     y = 140
     max_delta = max((abs(r[4]) for r in rows), default=1) or 1
@@ -1087,8 +1077,8 @@ async def render_sun_lock_ranking(
     _period_chip(im, width, '寸止/锁血' if mode == 'sun' else '锁血/寸止')
     avatars = await _fetch_avatars([r[0] for r in rows])
 
-    _draw_title(d, mx + 150, 44, 32, title, _TEXT)
-    _draw_title(d, mx + 150, 86, 18, subtitle, _TEXT_SOFT)
+    _draw_title(d, mx + 200, 44, 32, title, _TEXT)
+    _draw_title(d, mx + 200, 86, 18, subtitle, _TEXT_SOFT)
 
     main_color = _GOLD if mode == 'sun' else (120, 200, 255, 255)
     max_main = max((r[2] if mode == 'sun' else r[3] for r in rows), default=1) or 1
@@ -1150,7 +1140,8 @@ def render_gain_recommendation(sections: Dict[str, List[dict]],
                                summary_lines: List[str],
                                user_name: str = 'Milk',
                                rating_trend: Optional[Sequence[Tuple[str, int]]] = None,
-                               current_rating: Optional[int] = None) -> BytesIO:
+                               current_rating: Optional[int] = None,
+                               ref: Optional[dict] = None) -> BytesIO:
     width = 1080
     mx = 40
     inner_w = width - mx * 2
@@ -1160,7 +1151,7 @@ def render_gain_recommendation(sections: Dict[str, List[dict]],
 
     # ---------- Hero：当前 rating + 趋势图 + 统计 ----------
     hero_y = 118
-    hero_h = 164
+    hero_h = 188
     # 候选总数 / 理论可吃净增（各区净增之和）
     total_candidates = sum(len(v or []) for v in sections.values())
     total_net = sum(int(p.get('net_gain', 0))
@@ -1181,26 +1172,21 @@ def render_gain_recommendation(sections: Dict[str, List[dict]],
     d = ImageDraw.Draw(im)
     _brand_mark(im, width, user_name)
     _period_chip(im, width, '吃分推荐')
-    _draw_title(d, mx + 150, 44, 32, '今日吃分推荐', _TEXT)
-    _draw_title(d, mx + 150, 86, 17, ' · '.join(summary_lines), _TEXT_SOFT)
+    _draw_title(d, mx + 200, 44, 32, '今日吃分推荐', _TEXT)
+    _draw_title(d, mx + 200, 86, 17, ' · '.join(summary_lines), _TEXT_SOFT)
 
     # Hero 卡片
     _card(im, (mx, hero_y, mx + inner_w, hero_y + hero_h), radius=24,
           fill=(255, 255, 255, 230))
     # 左：当前 rating
     cr_x = mx + 30
-    d.text((cr_x, hero_y + 24), '当前 Rating', font=_font_bold(16), fill=_MUTED)
+    d.text((cr_x, hero_y + 22), '当前 Rating', font=_font_bold(16), fill=_MUTED)
     if current_rating is not None:
-        num_font46 = _font_mono(46)
+        num_font42 = _font_mono(42)
         num_text = f'{current_rating}'
-        d.text((cr_x, hero_y + 48), num_text, font=num_font46, fill=_TEXT)
-        # 游戏 rating 徽章紧贴数字右侧，按文字宽度定位避免重叠
-        num_w = int(_text_len(d, num_text, num_font46))
-        badge_h = 30
-        badge_right = cr_x + num_w + 18 + rating_badge_width(badge_h)
-        _draw_rating_badge(im, badge_right, hero_y + 48 + 23, current_rating, height=badge_h)
+        d.text((cr_x, hero_y + 46), num_text, font=num_font42, fill=_TEXT)
     else:
-        d.text((cr_x, hero_y + 54), '—', font=_font_mono(46), fill=_MUTED)
+        d.text((cr_x, hero_y + 50), '—', font=_font_mono(42), fill=_MUTED)
     # 左下：推荐汇总
     sum_font = _font_bold(15)
     d.text((cr_x, hero_y + hero_h - 36),
@@ -1209,9 +1195,45 @@ def render_gain_recommendation(sections: Dict[str, List[dict]],
     d.text((cr_x + sum_w, hero_y + hero_h - 36), f'+{total_net} ra',
            font=_font_bold(15), fill=_GREEN)
 
-    # 中/右：趋势迷你图
-    trend_x = mx + 320
-    trend_w = inner_w - 340 - 20
+    # 中：B1 / B36 参照（B35 首位 / B15 首位）
+    mid_x = mx + 290
+    mid_w = 300
+    ref = ref or {}
+    d.text((mid_x, hero_y + 22), 'B50 参照', font=_font_bold(16), fill=_MUTED)
+    for i, (key, label) in enumerate([
+        ('b1', 'B1 · SD 榜首'), ('b36', 'B36 · DX 榜首'),
+    ]):
+        ry = hero_y + 50 + i * 56
+        rec = ref.get(key)
+        _card(im, (mid_x, ry, mid_x + mid_w, ry + 48), radius=14,
+              fill=(245, 247, 252, 255), shadow=False)
+        if rec:
+            lvl_col = _DIFF_COLORS[min(int(rec.get('level_index', 3)), 4)]
+            try:
+                cov = Image.open(music_picture(rec.get('song_id'))).convert('RGBA').resize((36, 36))
+            except Exception:
+                cov = _cover_placeholder(36, '♪', lvl_col)
+            im.alpha_composite(cov, (mid_x + 8, ry + 6))
+            _card(im, (mid_x + 50, ry + 8, mid_x + 86, ry + 26), radius=9,
+                  fill=lvl_col, shadow=False)
+            d.text((mid_x + 68, ry + 17), str(rec.get('level', '')),
+                   font=_font_bold(12), fill=(255, 255, 255, 255), anchor='mm')
+            title_font = _font_bold(16)
+            d.text((mid_x + 94, ry + 9),
+                   _truncate(d, rec.get('title', ''), title_font, mid_w - 150),
+                   font=title_font, fill=_TEXT)
+            d.text((mid_x + 94, ry + 30),
+                   f'{rec.get("achievements", 0):.4f}%  ·  {rec.get("ra", 0)} ra',
+                   font=_font_mono(13), fill=_MUTED)
+            d.text((mid_x + mid_w - 12, ry + 24), label.split(' · ')[0],
+                   font=_font_bold(15), fill=_ACCENT, anchor='rm')
+        else:
+            d.text((mid_x + 16, ry + 24), f'{label}：暂无数据',
+                   font=_font_bold(15), fill=_MUTED)
+
+    # 右：趋势迷你图
+    trend_x = mx + 620
+    trend_w = inner_w - 620 - 10
     d.text((trend_x, hero_y + 22), 'Rating 走势', font=_font_bold(16), fill=_MUTED)
     if rating_trend and len(rating_trend) >= 2:
         vals = [int(v) for _, v in rating_trend]
@@ -1221,12 +1243,10 @@ def render_gain_recommendation(sections: Dict[str, List[dict]],
         peak = max(vals)
         trend_color = _GREEN if delta >= 0 else _RED
         _sparkline(im, trend_x, hero_y + 40, trend_w, 70, vals, trend_color)
-        # 起止标签
         d.text((trend_x, hero_y + 114), f'{first_lbl}  {first_v}',
                font=_font_mono(13), fill=_MUTED)
         d.text((trend_x + trend_w, hero_y + 114), f'{last_v}  {last_lbl}',
                font=_font_mono(13), fill=_MUTED, anchor='rt')
-        # 变化胶囊
         sign = '+' if delta >= 0 else ''
         chip_txt = f'{sign}{delta}'
         cf = _font_bold(18)
@@ -1236,14 +1256,13 @@ def render_gain_recommendation(sections: Dict[str, List[dict]],
               fill=trend_color[:3] + (235,), shadow=False)
         d.text((trend_x + trend_w - cw // 2, hero_y + 32), chip_txt,
                font=cf, fill=(255, 255, 255, 255), anchor='mm')
-        # 峰值小字
-        d.text((trend_x + 100, hero_y + 22), f'区间最高 {peak}',
-               font=_font_bold(14), fill=_TEXT_SOFT)
+        d.text((trend_x + trend_w - cw - 12, hero_y + 24), f'峰 {peak}',
+               font=_font_bold(13), fill=_TEXT_SOFT, anchor='rt')
     else:
         _card(im, (trend_x, hero_y + 44, trend_x + trend_w, hero_y + 112),
               radius=16, fill=(240, 243, 250, 255), shadow=False)
         d.text((trend_x + trend_w // 2, hero_y + 78),
-               '存档不足，暂无趋势（开启数据存储后积累历史）',
+               '存档不足，暂无趋势',
                font=_font_bold(15), fill=_MUTED, anchor='mm')
 
     # ---------- 分区推荐卡片 ----------

@@ -191,7 +191,9 @@ def draw_rating_badge(im: Image.Image, x: int, y: int, rating: int,
     bar = _load_rating_bar(num)
     if bar is None:
         return 0, 0
-    w = int(bar.width * height / bar.height)
+    # 与 B50 一致：等级条横向拉伸到 186:35 比例（而非原图 664:130），
+    # 为 5 位数字留出足够空间，避免末位溢出深色数字框。
+    w = int(round(186 * height / 35))
     bar_r = bar.resize((w, height), Image.LANCZOS)
     im.alpha_composite(bar_r, (x, y))
 
@@ -219,7 +221,8 @@ def draw_rating_badge(im: Image.Image, x: int, y: int, rating: int,
 
 
 def rating_badge_width(height: int = 30) -> int:
-    return int(664 * height / 130)
+    # 与 draw_rating_badge 的 186:35 拉伸比例保持一致
+    return int(round(186 * height / 35))
 
 
 __all__ = [

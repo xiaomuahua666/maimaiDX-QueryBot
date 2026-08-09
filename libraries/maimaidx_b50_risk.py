@@ -3,22 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Tuple, Union
 
 from nonebot.adapters.onebot.v11 import MessageSegment
-from PIL import Image, ImageDraw
+from PIL import Image
 
-from ..config import SIYUAN, achievementList, footer_generated
-from .image import DrawText, draw_centered_design_footer, generate_frosted_card, image_to_base64
+from ..config import achievementList
+from .image import image_to_base64
 from .maimaidx_best_50 import _is_latest_version
 from .maimaidx_data_storage import DailySnapshot, ScoreRecord, data_storage
-
-ACCENT = (124, 129, 255, 255)
-TEXT = (45, 50, 95, 255)
-SUBTEXT = (90, 95, 140, 255)
-MUTED = (120, 126, 145, 255)
-WARN = (220, 120, 90, 255)
-HIGH = (220, 80, 100, 255)
+from .maimaidx_risk_image import render_risk_report
 
 
 @dataclass
@@ -30,6 +24,8 @@ class _RiskItem:
     zone: str
     score: int
     reasons: List[str]
+    song_id: int = 0
+    level_index: int = 3
 
 
 def _song_key(r: ScoreRecord) -> Tuple[int, int]:
@@ -37,7 +33,9 @@ def _song_key(r: ScoreRecord) -> Tuple[int, int]:
 
 
 def _build_b50(records: List[ScoreRecord]) -> Tuple[List[ScoreRecord], List[ScoreRecord], List[ScoreRecord]]:
-    sorted_records = sorted(records, key=lambda x: int(x.ra), reverse=True)
+    # 不计宴会场谱面（song_id >= 100000）
+    valid = [r for r in records if int(getattr(r, 'song_id', 0) or 0) < 100000]
+    sorted_records = sorted(valid, key=lambda x: int(x.ra), reverse=True)
     b15 = sorted([r for r in sorted_records if _is_latest_version(r)], key=lambda x: int(x.ra), reverse=True)[:15]
     b35 = sorted([r for r in sorted_records if not _is_latest_version(r)], key=lambda x: int(x.ra), reverse=True)[:35]
     return b35, b15, b35 + b15
@@ -62,16 +60,11 @@ def _zone_label(r: ScoreRecord) -> str:
     return 'B15' if _is_latest_version(r) else 'B35'
 
 
-def _short_title(title: str, n: int = 18) -> str:
-    t = title.strip()
-    return t if len(t) <= n else t[: n - 1] + '…'
-
-
-def _analyze_risks(snaps: List[DailySnapshot]) -> Tuple[str, List[_RiskItem]]:
+def _analyze_risks(snaps: List[DailySnapshot]) -> Tuple[str, List[_RiskItem], int]:
     latest = snaps[-1]
     b35, b15, b50 = _build_b50(latest.records)
     if not b50:
-        return latest.nickname or str(latest.qqid), []
+        return latest.nickname or str(latest.qqid), [], 0
 
     b35_floor = int(b35[-1].ra) if b35 else 0
     b15_floor = int(b15[-1].ra) if b15 else 0
@@ -130,57 +123,30 @@ def _analyze_risks(snaps: List[DailySnapshot]) -> Tuple[str, List[_RiskItem]]:
                 zone=zone,
                 score=score,
                 reasons=reasons,
+                song_id=int(getattr(r, 'song_id', 0) or 0),
+                level_index=int(getattr(r, 'level_index', 3) or 3),
             )
         )
 
     items.sort(key=lambda x: (-x.score, x.ra))
-    return latest.nickname or str(latest.qqid), items[:15]
+    return latest.nickname or str(latest.qqid), items[:15], len(b50)
 
 
-def _draw_risk_report(nickname: str, items: List[_RiskItem], snap_days: int) -> Image.Image:
-    width = 920
-    row_h = 36
-    list_h = max(1, len(items)) * row_h + 72
-    footer_h = 40
-    height = 96 + list_h + footer_h
-
-    im = Image.new('RGBA', (width, height), (245, 247, 255, 255))
-    im = generate_frosted_card(im, (24, 80, width - 24, height - footer_h), alpha=0.52)
-    dr = ImageDraw.Draw(im)
-    dt = DrawText(dr, SIYUAN)
-
-    dt.draw(32, 28, 30, 'B50 风险预警', ACCENT, 'lt', 2, (255, 255, 255, 240))
-    dt.draw(
-        32, 62, 17,
-        f'{nickname}  ·  基于近 {snap_days} 天存档  ·  地板/寸止/锁血/下滑综合评分',
-        SUBTEXT, 'lt', 1, (255, 255, 255, 220),
-    )
-
-    y = 104
-    if not items:
-        dt.draw(44, y, 18, '当前 B50 暂无明显挤出风险，继续保持！', MUTED, 'lt')
-    else:
-        dt.draw(44, y, 20, '高风险曲目', HIGH if any(i.score >= 40 for i in items) else WARN, 'lt', 2, (255, 255, 255, 230))
-        y += 34
-        for i, item in enumerate(items, 1):
-            color = HIGH if item.score >= 40 else (WARN if item.score >= 25 else TEXT)
-            reason_txt = '、'.join(item.reasons)
-            line = (
-                f'{i}. {_short_title(item.title)} [{item.level}] {item.zone}  '
-                f'{item.achv:.4f}%  ra{item.ra}  风险{item.score}  {reason_txt}'
-            )
-            dt.draw(48, y, 15, line, color, 'lt', 1, (255, 255, 255, 220))
-            y += row_h
-
-    draw_centered_design_footer(
-        im, dt, footer_generated(),
-        color=SUBTEXT,
-        margin_x=48,
-        start_font_size=14,
-        min_font_size=10,
-        bottom_gap=8,
-    )
-    return im
+def _draw_risk_report(nickname: str, items: List[_RiskItem], snap_days: int,
+                      b50_total: int = 50, user_name: str = "Milk"):
+    """兼容旧入口：把 _RiskItem 转成 dict 后交给现代化渲染器。"""
+    payload = [
+        {
+            "title": it.title, "level": it.level, "level_index": it.level_index,
+            "song_id": it.song_id, "ra": it.ra, "achv": it.achv,
+            "zone": it.zone, "score": it.score, "reasons": it.reasons,
+        }
+        for it in items
+    ]
+    from io import BytesIO
+    bio = render_risk_report(nickname, snap_days, payload,
+                             b50_total=b50_total, user_name=user_name)
+    return Image.open(BytesIO(bio.read())).convert("RGBA")
 
 
 async def generate_b50_risk_warning(qqid: int) -> Union[str, MessageSegment]:
@@ -204,6 +170,15 @@ async def generate_b50_risk_warning(qqid: int) -> Union[str, MessageSegment]:
     if len(snaps) < 2:
         return '无法读取有效存档，请稍后再试。'
 
-    nickname, items = _analyze_risks(snaps)
-    im = _draw_risk_report(nickname, items, len(snaps))
-    return MessageSegment.image(image_to_base64(im))
+    nickname, items, b50_total = _analyze_risks(snaps)
+    payload = [
+        {
+            "title": it.title, "level": it.level, "level_index": it.level_index,
+            "song_id": it.song_id, "ra": it.ra, "achv": it.achv,
+            "zone": it.zone, "score": it.score, "reasons": it.reasons,
+        }
+        for it in items
+    ]
+    bio = render_risk_report(nickname, len(snaps), payload,
+                             b50_total=b50_total, user_name=nickname)
+    return MessageSegment.image(image_to_base64(bio))
