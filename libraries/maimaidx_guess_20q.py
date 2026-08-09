@@ -127,7 +127,8 @@ class Guess20QManager:
             f'🎵 答案是：{data.music.title}\n'
             f'🎤 艺术家：{bi.artist}\n'
             f'🎯 分类：{bi.genre} · BPM {bi.bpm}\n'
-            f'📈 最高定数：{max_ds:g}（{level_label}）· 版本：{bi.version}'
+            f'📈 最高定数：{max_ds:g}（{level_label}）· 版本：{bi.version}\n'
+            f'🆔 曲 id：{data.music.id}'
         )
 
     def process_message(
@@ -148,12 +149,9 @@ class Guess20QManager:
 
         questions_used_up = data.question_count >= data.max_questions
 
-        if questions_used_up:
-            # 猜曲名阶段：用「我猜」前缀抢猜曲名。
-            # 没加前缀的消息一律忽略（视为群内正常聊天）。
-            guess_text, had_prefix = _strip_guess_prefix(raw)
-            if not had_prefix:
-                return {'kind': 'idle'}
+        # 「我猜」前缀：任何时候都视为猜曲名尝试（猜对即胜，猜错不结束）。
+        guess_text, is_guess_attempt = _strip_guess_prefix(raw)
+        if is_guess_attempt:
             if is_guess(guess_text, data.answers):
                 data.winner_uid = uid
                 data.winner_name = name
@@ -163,15 +161,14 @@ class Guess20QManager:
             # 猜错：不结束游戏，让其他人继续猜，直到超时公布答案。
             return {'kind': 'wrong_guess', 'guess': guess_text}
 
+        # 问完阶段：非「我猜」前缀的消息一律忽略（视为群内正常聊天）。
+        if questions_used_up:
+            return {'kind': 'idle'}
+
         # 问问题阶段：用「我问」前缀提问是非题。
-        # 没加前缀的消息一律忽略（视为群内正常聊天）。
         question_text, had_prefix = _strip_ask_prefix(raw)
         if not had_prefix:
             return {'kind': 'idle'}
-
-        # 玩家发了曲名 -> 本阶段不准猜曲名
-        if is_guess(question_text, data.answers):
-            return {'kind': 'no_song_guess'}
 
         answer, consumed = classify_question(data.music, question_text)
         if consumed:

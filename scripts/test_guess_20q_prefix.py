@@ -107,26 +107,30 @@ assert r['kind'] == 'idle', f'只有前缀加空格应忽略: {r}'
 r = _process(_make_data(questions_used=TWENTYQ_MAX_QUESTIONS), '我猜')
 assert r['kind'] == 'idle', f'猜曲名阶段只有前缀无内容应忽略: {r}'
 
-# 3. 问问题阶段：发曲名（带「我问」前缀）-> no_song_guess
-r = _process(_make_data(), '我问 PANDORA PARADOX')
-assert r['kind'] == 'no_song_guess', f'问问题阶段猜曲名应提示: {r}'
+# 3. 问问题阶段：用「我猜」前缀也能猜曲名（中途允许猜）
+data = _make_data(questions_used=0)
+r = _process(data, '我猜 PANDORA PARADOX')
+assert r['kind'] == 'win', f'问问题阶段应允许猜曲名: {r}'
+assert data.winner_uid == 'u1', f'应记录赢家: {r}'
+assert data.end is True, f'猜对应结束游戏: {r}'
 
-r = _process(_make_data(), '我问pandora')
-assert r['kind'] == 'no_song_guess', f'别名匹配也算猜曲名: {r}'
+data = _make_data(questions_used=0)
+r = _process(data, '我猜pandora')
+assert r['kind'] == 'win', f'别名猜对应 win: {r}'
 
-# 3b. 问问题阶段用错前缀「我猜」提问 -> 忽略（「我猜」是猜曲名阶段专用）
-r = _process(_make_data(), '我猜是不是动漫曲')
-assert r['kind'] == 'idle', f'问问题阶段「我猜」前缀应忽略: {r}'
-
-r = _process(_make_data(), '我猜 谱师是谁')
-assert r['kind'] == 'idle', f'问问题阶段「我猜」前缀应忽略: {r}'
+# 3b. 问问题阶段：用「我猜」猜错 -> wrong_guess，不结束游戏
+data = _make_data(questions_used=0)
+r = _process(data, '我猜 某不存在的曲名')
+assert r['kind'] == 'wrong_guess', f'问问题阶段猜错应 wrong_guess: {r}'
+assert data.end is False, f'猜错不应结束游戏: {r}'
+assert data.question_count == 0, f'猜错不应消耗提问次数: {data.question_count}'
 
 # 4. 问问题阶段：带「我问」前缀的正常问题 -> question
 r = _process(_make_data(), '我问是不是动漫曲')
 assert r['kind'] == 'question', f'正常问题应回答: {r}'
 
 r = _process(_make_data(), '我问 谱师是谁')
-# 谱师查询是信息题，可能返回 question 或 unknown，但不应是 idle/no_song_guess
+# 谱师查询是信息题，可能返回 question 或 unknown，但不应是 idle
 assert r['kind'] in ('question', 'unknown'), f'谱师查询应被处理: {r}'
 
 # 5. 「我问」变体前缀：「我问问」「我问一下」都算
@@ -148,7 +152,7 @@ data = _make_data(questions_used=TWENTYQ_MAX_QUESTIONS)
 r = _process(data, '我猜pandora')
 assert r['kind'] == 'win', f'别名猜对应 win: {r}'
 
-# 6b. 问完阶段用错前缀「我问」-> 忽略（「我问」是问问题阶段专用）
+# 6b. 问完阶段：用「我问」前缀的消息忽略（提问机会已用完）
 data = _make_data(questions_used=TWENTYQ_MAX_QUESTIONS)
 r = _process(data, '我问 PANDORA PARADOX')
 assert r['kind'] == 'idle', f'问完阶段「我问」前缀应忽略: {r}'
@@ -172,7 +176,7 @@ assert data.end is True
 # 9. 问完阶段：发非曲名内容（带「我猜」前缀）也视为猜错
 data = _make_data(questions_used=TWENTYQ_MAX_QUESTIONS)
 r = _process(data, '我猜 是不是动漫曲')
-assert r['kind'] == 'wrong_guess', f'问完阶段不能再问问题，应视为猜错: {r}'
+assert r['kind'] == 'wrong_guess', f'问完阶段「我猜」后非曲名应视为猜错: {r}'
 assert data.end is False
 
 # 10. 问完阶段：没加前缀的消息仍忽略
@@ -186,11 +190,11 @@ before = data.question_count
 _process(data, '我问是不是动漫曲')
 assert data.question_count == before + 1, f'提问应消耗次数: {data.question_count}'
 
-# 11b. 问问题阶段用「我猜」前缀不消耗次数（被忽略）
+# 11b. 问问题阶段用「我猜」前缀不消耗提问次数（走猜曲名通道）
 data = _make_data(questions_used=0)
 before = data.question_count
-_process(data, '我猜是不是动漫曲')
-assert data.question_count == before, f'「我猜」前缀在问问题阶段不应消耗次数: {data.question_count}'
+_process(data, '我猜 某不存在的曲名')
+assert data.question_count == before, f'「我猜」前缀不应消耗提问次数: {data.question_count}'
 
 # 12. 不带前缀的消息不消耗次数
 data = _make_data(questions_used=0)
@@ -204,5 +208,13 @@ r = _process(data, '我问是不是动漫曲')
 assert r['kind'] == 'question', r
 assert r.get('last') is True, f'最后一题应标记 last: {r}'
 assert data.question_count == TWENTYQ_MAX_QUESTIONS
+
+# 14. reveal_text 末尾应包含曲 id
+from libraries.maimaidx_guess_20q import Guess20QManager as _Mgr  # noqa: E402
+_mgr = _Mgr()
+_d = _make_data()
+_text = _mgr.reveal_text(_d)
+assert '🆔 曲 id' in _text, f'reveal_text 应包含曲 id: {_text}'
+assert _d.music.id in _text, f'reveal_text 应包含具体 id 值: {_text}'
 
 print('guess 20q prefix & two-phase tests passed')
