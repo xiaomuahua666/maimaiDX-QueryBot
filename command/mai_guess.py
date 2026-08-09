@@ -284,7 +284,7 @@ guess_duel_reset = on_command(
 # ── 你想我猜（20 问猜曲）──
 guess_20q_start = on_command(
     '你想我猜',
-    aliases={'20问猜曲', '二十问猜曲', '20问', '你想我猜吗'},
+    aliases={'你想我问', '20问猜曲', '二十问猜曲', '20问', '你想我猜吗'},
     rule=GROUP_MESSAGE,
     priority=5,
     block=True,
@@ -2797,8 +2797,10 @@ def _twentyq_intro() -> str:
     return dedent(f'''\
         🐱 你想我猜开始！Milk 心里想了一首舞萌曲目～
         大家可以向 Milk 提问「是/否」问题来缩小范围，共 {TWENTYQ_MAX_QUESTIONS} 次提问机会。
-        ⏱ 限时 {TWENTYQ_DURATION} 秒，想到答案就直接发曲名抢猜！
-        可问方向：分类 / BPM / 定数 / 版本 / 是否 DX 谱面 / 艺术家 / 标题特征。
+        ⏱ 限时 {TWENTYQ_DURATION} 秒。
+        📝 提问请加「我问」前缀，例如「我问 是不是动漫曲」「我问 谱师是谁」。
+        🚫 提问阶段不准猜曲名；问完 {TWENTYQ_MAX_QUESTIONS} 题后才能用「我猜 曲名」抢猜，猜错不结束，超时公布答案。
+        可问方向：分类 / BPM / 定数 / 版本 / 是否 DX 谱面 / 谱师 / 艺术家 / 标题特征。
         问得越少，猜对得分越高（最高 {twentyq_base_points(0)} 分，可叠加连击与加倍卡）。
         输入「重置你想我猜」可结束本局。
     ''')
@@ -2932,10 +2934,30 @@ async def _(event: MessageEvent):
             )
         return
 
+    if kind == 'wrong_guess':
+        # 问完后的猜曲名阶段：猜错不结束游戏，让其他人继续猜
+        guess_text = result.get('guess', '')
+        hint = f'「{guess_text}」' if guess_text else ''
+        await _guess_notify(
+            guess_20q_solve, event,
+            f'❌ {hint}不对哦，再想想喵～继续用「我猜 曲名」抢猜，超时公布答案。',
+            mention_sender=True,
+        )
+        return
+
+    if kind == 'no_song_guess':
+        # 问问题阶段：玩家直接发曲名，提示还不准猜曲名
+        await _guess_notify(
+            guess_20q_solve, event,
+            '🚫 现在还不准猜曲名喵～先用「我问」提问缩小范围，问完 20 题后才能用「我猜 曲名」抢猜。',
+            mention_sender=True,
+        )
+        return
+
     if kind == 'question':
         suffix = f'\n（还可提问 {result["remaining"]} 次）'
         if result.get('last'):
-            suffix = '\n⚠️ 提问次数用完啦！接下来请直接发曲名作为最终猜测。'
+            suffix = '\n⚠️ 提问次数用完啦！接下来用「我猜 曲名」抢猜，猜错不结束，超时公布答案。'
         await _guess_notify(
             guess_20q_solve, event,
             f'{result["answer"]}{suffix}',
@@ -2946,7 +2968,7 @@ async def _(event: MessageEvent):
     if kind == 'no_questions':
         await _guess_notify(
             guess_20q_solve, event,
-            '提问次数已用完啦，请直接发曲名作为最终猜测喵～',
+            '提问次数已用完啦，请用「我猜 曲名」抢猜喵～',
             mention_sender=True,
         )
         return
