@@ -290,6 +290,13 @@ _KANA_RE = re.compile(r'[\u3040-\u30ff]')
 _LATIN_RE = re.compile(r'[a-zA-Z]')
 _NUM_RE = re.compile(r'\d+(?:\.\d+)?')
 
+# 定数关键词 + 难度形容词。_q_ds 据此识别定数问题，_q_bpm / _q_white_chart
+# 据此让出（避免「紫谱高吗」被 _q_version 的「紫」单字误判为版本题）。
+_DS_KEYWORDS = (
+    '定数', 'ds', '等级', '难度', '難度', '级别', '級別', '最高',
+    '高', '大', '难', '難', '低', '小', '简单', '簡單', '易',
+)
+
 
 def _norm(text: str) -> str:
     return text.strip().lower().replace(' ', '').replace('　', '')
@@ -338,13 +345,22 @@ def _q_genre(music: Music, text: str) -> Optional[str]:
 
 
 def _q_bpm(music: Music, text: str) -> Optional[str]:
+    # 含定数关键词/难度形容词/难度颜色时让给 _q_ds——否则「紫谱定数超过50吗」
+    # 会被这里用 BPM(180>50) 误答为「是」，造成数据错误。
+    has_ds_signal = any(k in text for k in _DS_KEYWORDS) or _resolve_diff_index(text) is not None
     if not any(k in text for k in ('bpm', '节奏', '速度', '快', '慢')):
+        if has_ds_signal:
+            return None
         # 单独出现 100 以上的数字 + 比较词时，视为问 BPM（等级不会超过 15）
         nums = _nums(text)
         if nums and nums[0] > 30 and any(k in text for k in ('以上', '以下', '大于', '小于', '超过', '低于', '>', '<', '≥', '≤')):
             bpm = music.basic_info.bpm
             res = _cmp_bool(bpm, text, nums)
             return _yn(res) if res is not None else None
+        return None
+    # 即使含 BPM 关键词，若同时含定数关键词+颜色+大数字，仍可能是定数问题
+    # （如「紫谱定数 BPM 超过 50 吗」罕见但需防御）——保守起见也让出。
+    if has_ds_signal and _resolve_diff_index(text) is not None and _nums(text):
         return None
     bpm = music.basic_info.bpm
     nums = _nums(text)
@@ -361,31 +377,69 @@ def _q_bpm(music: Music, text: str) -> Optional[str]:
 
 
 def _q_white_chart(music: Music, text: str) -> Optional[str]:
-    if any(k in text for k in ('白谱', '白譜', 're:master', 'remaster', '白re', '白master')):
-        return _yn(len(music.ds) >= 5)
+    if not any(k in text for k in ('白谱', '白譜', 're:master', 'remaster', '白re', '白master')):
+        return None
+    # 定数/难度相关问题（「白谱定数是13吗」「白谱是14+吗」「白谱难吗」「白谱简单吗」）
+    # 让给 _q_ds 处理，这里只回答「有没有白谱」——
+    # 否则会把定数题误判为有无白谱题，造成数据错误。
+    if any(k in text for k in _DS_KEYWORDS) or _nums(text):
+        return None
+    return _yn(len(music.ds) >= 5)
+
+
+# 难度颜色 → ds 列表索引：[BASIC, ADVANCED, EXPERT, MASTER, Re:MASTER]
+# 即 [绿, 黄, 红, 紫, 白]。俗称「橙=黄」「basic=绿」「master=紫」「remaster=白」。
+# 注意：白谱(Re:MASTER)的关键词必须比紫谱(MASTER)更先匹配，否则 remaster 会被
+# master 吞掉。这里把白谱放在紫谱前面，并去掉过短的 'mas'/'mst' 等易冲突子串。
+_DIFF_COLOR_INDEX = (
+    (4, ('白谱', '白譜', '白', 're:master', 'remaster', 're master', '白re', '白master')),
+    (0, ('绿谱', '綠譜', '绿', '綠', 'basic', 'bas', 'easy')),
+    (1, ('黄谱', '黃譜', '黄', '黃', '橙谱', '橙譜', '橙', 'advanced', 'adv', 'normal')),
+    (2, ('红谱', '紅譜', '红', '紅', 'expert', 'exp', 'hard')),
+    (3, ('紫谱', '紫譜', '紫', 'master', 'mst')),
+)
+
+
+def _resolve_diff_index(text: str) -> Optional[int]:
+    """从文本中解析难度颜色，返回 ds 列表索引（0-4）。未命中返回 None。"""
+    t = text.lower()
+    for idx, kws in _DIFF_COLOR_INDEX:
+        for kw in kws:
+            if kw in t:
+                return idx
     return None
 
 
 def _q_ds(music: Music, text: str) -> Optional[str]:
-    if not any(k in text for k in ('定数', 'ds', '等级', '难度', '難度', '级别', '級別', '最高')):
-        return None
-    if any(k in text for k in ('白谱', 're:master', 'remaster')):
-        return None
-    max_ds = max(music.ds) if music.ds else 0.0
+    has_ds_kw = any(k in text for k in _DS_KEYWORDS)
+    diff_idx = _resolve_diff_index(text)
     nums = _nums(text)
+    # 既没定数关键词/形容词、也没难度颜色 + 数字 -> 不是定数问题
+    if not has_ds_kw and not (diff_idx is not None and nums):
+        return None
+    # 必须指定谱面颜色（绿/黄/橙/红/紫/白）才回答定数——
+    # 否则不知道玩家问哪个难度，不乱答，走 unknown 提示。
+    if diff_idx is None:
+        return None
+    # 指定了颜色 -> 只看对应难度的 ds
+    if diff_idx >= len(music.ds):
+        # 该曲没有这个难度（如没有白谱）-> 前提不成立
+        return _NO
+    target_ds = music.ds[diff_idx]
     if not nums:
+        # 问「紫谱定数高吗」「紫谱难吗」之类，按 13.5 阈值
         if any(k in text for k in ('高', '大', '难', '難')):
-            return _yn(max_ds >= 13.5)
+            return _yn(target_ds >= 13.5)
         if any(k in text for k in ('低', '小', '简单', '簡單', '易')):
-            return _yn(max_ds <= 11.0)
+            return _yn(target_ds <= 11.0)
         return None
     n = nums[0]
     if '+' in text:
-        return _yn((n + 0.5) <= max_ds < (n + 1.0))
-    res = _cmp_bool(max_ds, text, nums)
+        return _yn((n + 0.5) <= target_ds < (n + 1.0))
+    res = _cmp_bool(target_ds, text, nums)
     if res is not None:
         return _yn(res)
-    return _yn(n <= max_ds < n + 0.5)
+    return _yn(n <= target_ds < n + 0.5)
 
 
 _BARE_LEVEL_RE = re.compile(
@@ -395,31 +449,20 @@ _BARE_LEVEL_RE = re.compile(
 
 
 def _q_level_bare(music: Music, text: str) -> Optional[str]:
-    """玩家直接问「是13吗」「14+吗」时按最高定数处理。"""
-    if 'bpm' in text:
-        return None
-    m = _BARE_LEVEL_RE.match(text)
-    if not m:
-        return None
-    try:
-        n = float(m.group(1))
-    except ValueError:
-        return None
-    if not (1 <= n <= 15):
-        return None
-    max_ds = max(music.ds) if music.ds else 0.0
-    if m.group(2) == '+':
-        return _yn((n + 0.5) <= max_ds < (n + 1.0))
-    return _yn(n <= max_ds < n + 0.5)
+    """玩家直接问「是13吗」「14+吗」——没指定谱面颜色，无法判断哪个难度，不回答。"""
+    # 无颜色裸数字定数问题统一不答（避免用最高定数乱猜），走 unknown 提示。
+    return None
 
 
 def _q_song_type(music: Music, text: str) -> Optional[str]:
     if not any(k in text for k in ('谱面', '譜面', '谱', '譜', 'sd', 'dx')):
         return None
     t = text
-    if ('dx' in t and '谱' in t) or any(k in t for k in ('黄谱', '黃譜')):
+    # SD/DX 谱面类型判断：仅响应「标准谱/sd谱」「dx谱/dx谱面」等明确类型词。
+    # 难度颜色（绿/黄/红/紫/白谱）交给 _q_ds 处理，不在这里误判为谱面类型。
+    if any(k in t for k in ('dx谱', 'dx谱面', 'dx谱', 'dx譜面')):
         return _yn(music.type == 'DX')
-    if any(k in t for k in ('标准谱', '標準譜', 'sd谱', '紫谱', '紫譜')):
+    if any(k in t for k in ('标准谱', '標準譜', 'sd谱', 'sd譜', '标准谱面', '標準譜面')):
         return _yn(music.type == 'SD')
     return None
 
@@ -427,7 +470,11 @@ def _q_song_type(music: Music, text: str) -> Optional[str]:
 def _q_version(music: Music, text: str) -> Optional[str]:
     version_raw = music.basic_info.version or ''
     version = version_raw.lower()
-    # 注意：'是新' 不能作为新歌判断关键词——会误匹配「是新框体吗」等版本提问
+    # 含难度颜色 + 「谱」时，是定数/谱面/谱师问题，不是版本问题，让出——
+    # 否则「紫谱是谁的谱」会被「紫」单字误判为问 murasaki 版本。
+    if _resolve_diff_index(text) is not None and any(k in text for k in ('谱', '譜')):
+        return None
+    # 注意：'为新' 不能作为新歌判断关键词——会误匹配「是新框体吗」等版本提问
     if any(k in text for k in ('新歌', '新曲', 'isnew', '新的')):
         return _yn(bool(music.basic_info.is_new))
     if any(k in text for k in ('旧曲', '舊曲', '老歌', '老曲', '旧的', '舊的')):
@@ -467,8 +514,15 @@ def _extract_artist_keyword(text: str) -> Optional[str]:
 
 
 def _q_artist(music: Music, text: str) -> Optional[str]:
+    # 信息题（艺术家是谁/曲师是谁）-> 不回答，走 unknown
+    if any(k in text for k in ('艺术家', 'artist', '作曲', '编曲', '編曲', '作者', '曲师', '曲師', '师匠', '師匠')) \
+            and any(k in text for k in ('谁', '誰', '什么人', '什麼人', '哪位', '哪个', '哪個')):
+        return None
     kw = _extract_artist_keyword(text)
     if not kw:
+        return None
+    # 单字符子串过宽（如「d」匹配「deco*27」），要求至少 2 字符才回答
+    if len(kw) < 2:
         return None
     artist = (music.basic_info.artist or '').lower()
     return _yn(kw.lower() in artist)
@@ -576,14 +630,14 @@ def _extract_charter_keyword(text: str) -> Optional[str]:
 
 
 def _q_charter(music: Music, text: str) -> Optional[str]:
-    """谱师题——查 charts[].charter 字段（默认看 MASTER 难度）。"""
-    # 信息题：「谱师是谁」
-    if any(k in text for k in ('谱师', '譜師', '写谱', '寫譜', '作谱', '作譜', '谱面作者', '譜面作者', 'charter')) \
-            and any(k in text for k in ('谁', '誰', '什么', '什麼', '哪位', '是谁', '是誰')):
-        charters = _get_master_charters(music)
-        if not charters:
-            return '暂无谱师信息喵'
-        return f'谱师是 {" / ".join(charters)} 喵 ✍️'
+    """谱师题——只回答是非题「谱师是X吗」，不直接报名字（避免开户籍）。"""
+    # 信息题（谱师是谁/哪位谱师/谁的谱/谁写的谱）-> 不回答，走 unknown
+    has_question = any(k in text for k in ('谁', '誰', '什么人', '什麼人', '哪位', '哪个', '哪個'))
+    if has_question and any(k in text for k in (
+        '谱师', '譜師', '写谱', '寫譜', '作谱', '作譜',
+        '谱面作者', '譜面作者', 'charter', '谱', '譜',
+    )):
+        return None
     # 是非题：「谱师是XXX吗」
     kw = _extract_charter_keyword(text)
     if not kw:
@@ -660,36 +714,11 @@ def _q_title_contains(music: Music, text: str) -> Optional[str]:
     return _yn(kw.lower() in music.title.lower())
 
 
-def _q_informational(music: Music, text: str) -> Optional[str]:
-    """回答特殊疑问句（多少/是谁/什么版本），直接给出客观信息但消耗一次提问。"""
-    bi = music.basic_info
-    # BPM 是多少
-    if 'bpm' in text and any(k in text for k in ('多少', '几', '幾', '是什么', '是多少')):
-        return f'BPM 是 {bi.bpm} 喵 🎵'
-    # 定数是多少 / 最高定数多少
-    if any(k in text for k in ('定数', 'ds', '等级', '難度', '难度')) and any(k in text for k in ('多少', '几', '幾', '是什么', '是多少')):
-        max_ds = max(music.ds) if music.ds else 0.0
-        levels = '/'.join(str(x) for x in music.level) if music.level else '?'
-        return f'各难度定数是 {levels}（最高 {max_ds:g}）喵 📈'
-    # 艺术家/作者是谁
-    if any(k in text for k in ('艺术家', 'artist', '作曲', '编曲', '編曲', '作者', '曲师', '曲師', '谁写的', '誰寫的', '谁做的', '誰做的')) \
-            and any(k in text for k in ('谁', '誰', '什么', '什麼', '哪位', '哪个', '哪個', '多少', '是谁', '是誰')):
-        return f'艺术家是 {bi.artist} 喵 🎤'
-    # 什么版本 / 哪一作
-    if any(k in text for k in ('版本', 'version', '哪一作', '哪代', '哪一代', '出自哪', '来自哪')) \
-            and any(k in text for k in ('什么', '什麼', '哪', '多少', '是')):
-        return f'出自 {bi.version} 喵 📦'
-    # 什么分类
-    if any(k in text for k in ('分类', '类别', '類別', '曲风', '曲風', 'genre')) and any(k in text for k in ('什么', '什麼', '哪', '多少')):
-        return f'分类是 {bi.genre} 喵 🎯'
-    # 是 SD 还是 DX（选择题）
-    if 'sd' in text and 'dx' in text:
-        return f'是 {music.type} 谱面喵'
-    return None
+# 注意：本玩法只回答「是/否」是非题，不直接给出谱师/曲师/BPM 数值/版本/分类
+# 等客观信息（那样等于开户籍）。玩家想问这些，请用猜测形式：「谱师是X吗」「BPM 大于180吗」。
 
 
 _QUESTION_HANDLERS: Tuple[QuestionHandler, ...] = (
-    _q_informational,
     _q_white_chart,
     _q_song_type,
     _q_genre,
@@ -705,15 +734,15 @@ _QUESTION_HANDLERS: Tuple[QuestionHandler, ...] = (
 )
 
 _UNKNOWN_HINT = (
-    '唔…Milk 没听懂这个问题喵。提问要加「我猜」前缀，可以问这些方向：\n'
-    '· 分类：「我猜是术曲吗」「我猜是东方曲吗」「我猜是联动曲吗」\n'
-    '· BPM：「我猜 BPM 大于 180 吗」「我猜这歌快吗」\n'
-    '· 定数：「我猜最高定数是 14 吗」「我猜是 14+ 吗」「我猜有白谱吗」「我猜定数高吗」\n'
-    '· 版本：「我猜是新歌吗」「我猜是双代吗」「我猜是舞代吗」\n'
-    '· 谱面：「我猜是 DX 谱面吗」\n'
-    '· 艺术家/谱师：「我猜艺术家是 Sakuzyo 吗」「我猜谱师是谁」\n'
-    '· 标题：「我猜标题是英文吗」「我猜标题有几个字」「我猜标题里有 Bad 吗」\n'
-    '想好了就直接发曲名猜答案喵～'
+    '唔…Milk 没听懂这个问题喵。提问请加「我问」前缀，只回答是/否：\n'
+    '· 分类：「我问是术曲吗」「我问是东方曲吗」「我问是联动曲吗」\n'
+    '· BPM：「我问 BPM 大于 180 吗」「我问这歌快吗」\n'
+    '· 定数：必须指定颜色——「我问紫谱定数是 14 吗」「我问红谱是 13+ 吗」「我问有白谱吗」\n'
+    '· 版本：「我问是双代吗」「我问是舞代吗」\n'
+    '· 谱面：「我问是 DX 谱面吗」\n'
+    '· 艺术家/谱师：「我问艺术家是 deco27 吗」「我问谱师是沙发太吗」（只回答是/否，不报名字）\n'
+    '· 标题：「我问标题是英文吗」「我问标题里有 Bad 吗」\n'
+    '注：定数问题请指明绿/黄/红/紫/白谱，否则无法回答。猜曲名用「我猜 曲名」。'
 )
 
 

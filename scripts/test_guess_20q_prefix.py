@@ -217,4 +217,229 @@ _text = _mgr.reveal_text(_d)
 assert '🆔 曲 id' in _text, f'reveal_text 应包含曲 id: {_text}'
 assert _d.music.id in _text, f'reveal_text 应包含具体 id 值: {_text}'
 
+# ───────────────────── 难度颜色定数测试 ─────────────────────
+# 测试数据 ds=[10.0, 12.0, 13.5, 14.6]（绿10/黄12/红13.5/紫14.6，无白谱）
+from libraries.maimaidx_guess_20q import _q_ds, _resolve_diff_index, _YES, _NO  # noqa: E402
+
+# 15. 难度颜色解析：绿=0, 黄/橙=1, 红=2, 紫=3, 白=4
+assert _resolve_diff_index('紫谱') == 3, '紫应映射到 MASTER(idx=3)'
+assert _resolve_diff_index('红谱') == 2, '红应映射到 EXPERT(idx=2)'
+assert _resolve_diff_index('黄谱') == 1, '黄应映射到 ADVANCED(idx=1)'
+assert _resolve_diff_index('橙谱') == 1, '橙应映射到 ADVANCED(idx=1)'
+assert _resolve_diff_index('绿谱') == 0, '绿应映射到 BASIC(idx=0)'
+assert _resolve_diff_index('白谱') == 4, '白应映射到 Re:MASTER(idx=4)'
+assert _resolve_diff_index('master') == 3, 'master 俗称应映射到紫'
+assert _resolve_diff_index('remaster') == 4, 'remaster 俗称应映射到白'
+assert _resolve_diff_index('basic') == 0, 'basic 俗称应映射到绿'
+assert _resolve_diff_index('expert') == 2, 'expert 俗称应映射到红'
+assert _resolve_diff_index('定数是13吗') is None, '无颜色应返回 None'
+
+# 16. 指定颜色的定数判断：只看对应难度的 ds
+_m = _make_music()
+# 紫=14.6
+assert _q_ds(_m, '紫谱定数是13吗') == _NO, '紫=14.6 不在[13,14) -> 不是'
+assert _q_ds(_m, '紫谱是14+吗') == _YES, '紫=14.6 在[14.5,15) -> 是'
+assert _q_ds(_m, '紫谱是14吗') == _NO, '紫=14.6 不在[14,15) -> 不是'
+# 红=13.5
+assert _q_ds(_m, '红谱定数是13吗') == _NO, '红=13.5 不在[13,14) -> 不是'
+assert _q_ds(_m, '红谱是13+吗') == _YES, '红=13.5 在[13.5,14) -> 是'
+# 黄=12
+assert _q_ds(_m, '黄谱是12吗') == _YES, '黄=12 在[12,13) -> 是'
+assert _q_ds(_m, '橙谱定数是13吗') == _NO, '橙(=黄)=12 不在[13,14) -> 不是'
+# 绿=10
+assert _q_ds(_m, '绿谱是10吗') == _YES, '绿=10 在[10,11) -> 是'
+assert _q_ds(_m, '绿谱定数是13吗') == _NO, '绿=10 不是13 -> 不是'
+
+# 17. 白谱不存在（ds 长度=4，无 Re:MASTER）-> 回「不是喵」
+assert _q_ds(_m, '白谱定数是13吗') == _NO, '无白谱 -> 不是'
+assert _q_ds(_m, '白谱是15吗') == _NO, '无白谱 -> 不是'
+
+# 18. 不指定颜色时不回答定数（避免乱猜 max_ds），返回 None 走 unknown
+assert _q_ds(_m, '定数是13吗') is None, '无颜色定数不应回答: 返回 None'
+assert _q_ds(_m, '定数是14吗') is None, '无颜色定数不应回答: 返回 None'
+assert _q_ds(_m, '定数是14+吗') is None, '无颜色定数不应回答: 返回 None'
+assert _q_ds(_m, '最高定数是15吗') is None, '无颜色（含最高）也不应回答: 返回 None'
+
+# 18b. _q_level_bare 裸数字（无颜色）也不回答
+from libraries.maimaidx_guess_20q import _q_level_bare  # noqa: E402
+assert _q_level_bare(_m, '是13吗') is None, '裸数字无颜色不回答'
+assert _q_level_bare(_m, '14+吗') is None, '裸数字无颜色不回答'
+
+# 19. classify_question 能正确路由紫谱定数问题到 _q_ds（不被 _q_song_type 拦截）
+from libraries.maimaidx_guess_20q import classify_question  # noqa: E402
+_ans, _consumed = classify_question(_m, '紫谱定数是13吗')
+assert _consumed and _ans == _NO, f'紫谱13应回答不是（不应被谱面类型拦截）: {_ans}'
+_ans2, _c2 = classify_question(_m, '紫谱是14+吗')
+assert _c2 and _ans2 == _YES, f'紫谱14+应回答是: {_ans2}'
+# 红谱=13.5，问13应回不是
+_ans3, _c3 = classify_question(_m, '红谱是13吗')
+assert _c3 and _ans3 == _NO, f'红谱13.5 不在[13,14) 应回不是: {_ans3}'
+# 无颜色定数问题走 unknown（consumed=False，不消耗次数）
+_ans4, _c4 = classify_question(_m, '定数是13吗')
+assert _c4 is False, f'无颜色定数应走 unknown 不消耗次数: consumed={_c4}'
+
+# 20. 谱面类型判断不受难度颜色干扰
+from libraries.maimaidx_guess_20q import _q_song_type  # noqa: E402
+assert _q_song_type(_m, '是dx谱吗') == _NO, 'SD 曲应回不是 DX'
+assert _q_song_type(_m, '是标准谱吗') == _YES, 'SD 曲应回是 SD'
+assert _q_song_type(_m, '紫谱定数是13吗') is None, '紫谱定数问题不应被谱面类型拦截'
+assert _q_song_type(_m, '黄谱定数') is None, '黄谱定数问题不应被谱面类型拦截'
+
+# 21. 信息题（直接问答案）不再回答——走 unknown，不消耗次数
+from libraries.maimaidx_guess_20q import _q_charter  # noqa: E402
+# 谱师是谁 -> 不报名字
+assert _q_charter(_m, '谱师是谁') is None, '谱师是谁不应报名字（开户籍）'
+assert _q_charter(_m, '谱师是沙发太吗') is not None, '谱师是非题应回答'
+# classify_question 对信息题走 unknown
+_a_info, _c_info = classify_question(_m, '谱师是谁')
+assert _c_info is False, f'信息题应走 unknown 不消耗次数: consumed={_c_info}'
+_a_info2, _c_info2 = classify_question(_m, 'bpm是多少')
+assert _c_info2 is False, f'BPM 数值信息题应走 unknown: consumed={_c_info2}'
+_a_info3, _c_info3 = classify_question(_m, '艺术家是谁')
+assert _c_info3 is False, f'艺术家是谁信息题应走 unknown: consumed={_c_info3}'
+_a_info4, _c_info4 = classify_question(_m, '什么版本')
+assert _c_info4 is False, f'版本信息题应走 unknown: consumed={_c_info4}'
+
+# ───────────────────── 白谱定数 handler 顺序回归 ─────────────────────
+# 防止 _q_white_chart 拦截「白谱定数是X吗」类问题（历史 bug：
+# 有白谱的曲问「白谱定数是13吗」会被误答为「是喵」，因为 _q_white_chart
+# 只看有无白谱不看定数）。_q_white_chart 必须让给定数相关问题给 _q_ds。
+from libraries.maimaidx_guess_20q import _q_white_chart  # noqa: E402
+
+
+def _make_music_with_white(white_ds: float = 15.0) -> Music:
+    """带白谱的曲（ds 5 个），白谱定数可调。"""
+    notes = namedtuple('Notes', ['tap', 'hold', 'slide', 'brk'])(100, 10, 10, 5)
+    bi = BasicInfo.model_validate({
+        'title': 'TestWhite',
+        'artist': 'X',
+        'genre': '舞萌',
+        'bpm': 180,
+        'release_date': '',
+        'from': 'maimai でらっくす',
+        'is_new': True,
+    })
+    return Music(
+        id='1',
+        title='TestWhite',
+        type='SD',
+        ds=[10.0, 12.0, 13.5, 14.6, white_ds],
+        level=['7', '10', '12+', '13+', '14+'],
+        cids=[1, 2, 3, 4, 5],
+        charts=[Chart(notes=notes, charter='C') for _ in range(5)],
+        basic_info=bi,
+    )
+
+
+# 22. _q_white_chart 不应拦截「白谱定数是X吗」
+_mw = _make_music_with_white(white_ds=15.0)  # 白谱=15
+assert _q_white_chart(_mw, '白谱定数是13吗') is None, '白谱定数问题应让给 _q_ds'
+assert _q_white_chart(_mw, '白谱是14+吗') is None, '白谱+数字问题应让给 _q_ds'
+assert _q_white_chart(_mw, '白谱是13吗') is None, '白谱+数字问题应让给 _q_ds'
+assert _q_white_chart(_mw, '白谱难吗') is None, '白谱难度形容词应让给 _q_ds'
+assert _q_white_chart(_mw, '白谱高吗') is None, '白谱难度形容词应让给 _q_ds'
+# 但纯「有无白谱」问题仍由 _q_white_chart 回答
+assert _q_white_chart(_mw, '有白谱吗') == _YES, '有白谱应回是'
+assert _q_white_chart(_mw, '是白谱吗') == _YES, '有白谱应回是'
+assert _q_white_chart(_m, '有白谱吗') == _NO, '无白谱(_m ds=4)应回不是'
+
+# 23. classify_question 实际路由：有白谱曲问「白谱定数是13吗」应走 _q_ds 回 _NO
+#     （白谱=15 不在 [13,14)），不能被 _q_white_chart 误答为 _YES
+_a_w, _c_w = classify_question(_mw, '白谱定数是13吗')
+assert _c_w and _a_w == _NO, f'白谱=15 问13应回不是: {_a_w}（历史 bug 会回是）'
+# 白谱=15.0 问「14+吗」-> 14+ 区间 [14.5,15.0)，15.0 不在区间 -> 不是
+_a_w2, _c_w2 = classify_question(_mw, '白谱是14+吗')
+assert _c_w2 and _a_w2 == _NO, f'白谱=15.0 不属14+应回不是: {_a_w2}'
+_a_w3, _c_w3 = classify_question(_mw, '白谱定数是15吗')
+assert _c_w3 and _a_w3 == _YES, f'白谱=15 问15应回是: {_a_w3}'
+# 白谱=15.0，问「白谱定数大于14吗」应回是
+_a_w4, _c_w4 = classify_question(_mw, '白谱定数大于14吗')
+assert _c_w4 and _a_w4 == _YES, f'白谱=15 大于14应回是: {_a_w4}'
+
+# 23b. 白谱=14.6 的曲问「14+吗」-> 14.6 在 [14.5,15.0) -> 是
+_mw2 = _make_music_with_white(white_ds=14.6)
+_a_w5, _c_w5 = classify_question(_mw2, '白谱是14+吗')
+assert _c_w5 and _a_w5 == _YES, f'白谱=14.6 属14+应回是: {_a_w5}'
+
+# 24. 无白谱曲（_m, ds=4）问「白谱定数是13吗」-> _q_ds 返回 _NO（前提不成立）
+_a_nw, _c_nw = classify_question(_m, '白谱定数是13吗')
+assert _c_nw and _a_nw == _NO, f'无白谱问白谱定数应回不是: {_a_nw}'
+
+# 25. 有无白谱问题仍正常工作（不被 _q_ds 抢答）
+_a_has, _c_has = classify_question(_mw, '有白谱吗')
+assert _c_has and _a_has == _YES, f'有白谱应回是: {_a_has}'
+_a_no, _c_no = classify_question(_m, '有白谱吗')
+assert _c_no and _a_no == _NO, f'无白谱应回不是: {_a_no}'
+
+# ───────────────────── _q_bpm 不抢答定数问题回归 ─────────────────────
+# 防止 _q_bpm 的 fallback（大数字+比较词视为 BPM）抢答含颜色的定数问题。
+# 历史 bug：BPM=180 紫谱=14.6，问「紫谱定数超过50吗」被 _q_bpm 用
+# 180>50=True 误答「是」，正确应是定数 14.6>50=False 回「不是」。
+from libraries.maimaidx_guess_20q import _q_bpm  # noqa: E402
+
+# BPM=180，紫谱=14.6
+_m_bpm = _make_music()  # _make_music 默认 ds=[10,12,13.5,14.6], bpm=180
+# 含颜色+定数关键词+大数字+比较词，_q_bpm 应让给 _q_ds
+assert _q_bpm(_m_bpm, '紫谱定数超过50吗') is None, '_q_bpm 不应抢答紫谱定数问题'
+assert _q_bpm(_m_bpm, '紫谱定数大于100吗') is None, '_q_bpm 不应抢答紫谱定数问题'
+assert _q_bpm(_m_bpm, '绿谱定数超过50吗') is None, '_q_bpm 不应抢答绿谱定数问题'
+# 但纯 BPM 问题（无颜色无定数关键词）_q_bpm 仍回答
+assert _q_bpm(_m_bpm, '超过50吗') == _YES, '纯 BPM 大数字问题应回答'
+# 含 BPM 关键词的问题 _q_bpm 仍回答
+assert _q_bpm(_m_bpm, 'bpm超过50吗') == _YES, '含 BPM 关键词应回答'
+
+# classify_question 实际路由：定数问题走 _q_ds 不被 _q_bpm 拦截
+_a_b1, _c_b1 = classify_question(_m_bpm, '紫谱定数超过50吗')
+assert _c_b1 and _a_b1 == _NO, f'紫谱14.6 超过50应回不是: {_a_b1}（历史 bug 会回是）'
+_a_b2, _c_b2 = classify_question(_m_bpm, '紫谱定数小于50吗')
+assert _c_b2 and _a_b2 == _YES, f'紫谱14.6 小于50应回是: {_a_b2}'
+_a_b3, _c_b3 = classify_question(_m_bpm, '紫谱定数大于100吗')
+assert _c_b3 and _a_b3 == _NO, f'紫谱14.6 大于100应回不是: {_a_b3}'
+
+# ───────────────────── 难度形容词 + _q_version 让出回归 ─────────────────────
+# 防止 _q_version 的单字版本俗称（紫/白/桃/橙等）误匹配含颜色的定数/谱面问题。
+# 历史 bug：「紫谱高吗」被 _q_version 的「紫」误判为问 murasaki 版本回「不是」。
+from libraries.maimaidx_guess_20q import _q_version, _q_artist  # noqa: E402
+
+# 26. 难度形容词定数问题：_q_ds 应识别「紫谱高吗」「紫谱难吗」
+assert _q_ds(_m, '紫谱高吗') == _YES, '紫谱14.6>=13.5 应回是'
+assert _q_ds(_m, '紫谱难吗') == _YES, '紫谱14.6>=13.5 应回是'
+assert _q_ds(_m, '紫谱低吗') == _NO, '紫谱14.6>11 应回不是'
+assert _q_ds(_m, '紫谱简单吗') == _NO, '紫谱14.6>11 应回不是'
+assert _q_ds(_mw, '白谱难吗') == _YES, '白谱15>=13.5 应回是'
+assert _q_ds(_mw, '白谱简单吗') == _NO, '白谱15>11 应回不是'
+
+# 27. _q_version 含颜色+「谱」时让出（不误判为版本题）
+assert _q_version(_m, '紫谱高吗') is None, '紫谱+谱 不应被版本题拦截'
+assert _q_version(_m, '紫谱定数是13吗') is None, '紫谱+谱 不应被版本题拦截'
+assert _q_version(_m, '白谱难吗') is None, '白谱+谱 不应被版本题拦截'
+# 但纯版本问题（无「谱」字）_q_version 仍回答
+assert _q_version(_m, '是紫代吗') is not None, '紫代版本问题应回答'
+assert _q_version(_m, '是新框体吗') is not None, '新框体版本问题应回答'
+
+# 28. classify_question 实际路由：「紫谱高吗」走 _q_ds 不被 _q_version 拦截
+_a_v1, _c_v1 = classify_question(_m, '紫谱高吗')
+assert _c_v1 and _a_v1 == _YES, f'紫谱高应回是（不应被版本题拦截）: {_a_v1}'
+_a_v2, _c_v2 = classify_question(_mw, '白谱难吗')
+assert _c_v2 and _a_v2 == _YES, f'白谱难应回是: {_a_v2}'
+
+# ───────────────────── _q_charter 信息题 + _q_artist 单字符 回归 ─────────────────────
+# 29. _q_charter 信息题检测扩展：含「谁」+「谱」也走 unknown（不消耗次数）
+from libraries.maimaidx_guess_20q import _q_charter  # noqa: E402
+assert _q_charter(_m, '紫谱是谁的谱') is None, '「紫谱是谁的谱」是信息题应走 unknown'
+assert _q_charter(_m, '谁写的谱') is None, '「谁写的谱」是信息题应走 unknown'
+assert _q_charter(_m, '谱师是谁') is None, '「谱师是谁」是信息题应走 unknown'
+# 但是非题「谱师是X吗」仍正常回答
+assert _q_charter(_m, '谱师是沙发太吗') is not None, '谱师是非题应回答'
+# classify_question：「紫谱是谁的谱」不消耗次数（不被 _q_version 拦截回 _NO）
+_a_ch, _c_ch = classify_question(_m, '紫谱是谁的谱')
+assert _c_ch is False, f'「紫谱是谁的谱」应走 unknown 不消耗次数: consumed={_c_ch}'
+
+# 30. _q_artist 单字符子串过宽防护
+assert _q_artist(_m, '艺术家是d吗') is None, '单字符艺术家查询不应回答（过宽）'
+assert _q_artist(_m, '艺术家是de吗') is not None, '2字符艺术家查询应回答'
+# classify_question：单字符艺术家查询走 unknown
+_a_a, _c_a = classify_question(_m, '艺术家是d吗')
+assert _c_a is False, f'单字符艺术家查询应走 unknown: consumed={_c_a}'
+
 print('guess 20q prefix & two-phase tests passed')
