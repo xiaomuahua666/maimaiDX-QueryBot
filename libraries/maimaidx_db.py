@@ -29,6 +29,7 @@ _TABLE_NAMES = (
     'break_service_daily', 'break_daily_reward', 'break_red_packet',
     'break_red_packet_claim', 'break_makeup_checkin', 'break_gamble_pool',
     'break_gamble_pool_payout',
+    'break_card_keys', 'break_card_log', 'break_user_effects',
     'account_bindings', 'account_operation_log',
     'play_count_records', 'user_credentials', 'user_prober_tokens',
     'qq_bind', 'lxns_users',
