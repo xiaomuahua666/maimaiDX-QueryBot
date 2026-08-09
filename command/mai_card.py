@@ -1,7 +1,12 @@
-"""卡密相关指令：兑换、我的卡密、管理员发卡 / 查询 / 作废 / 统计。"""
+"""卡密相关指令：兑换、我的卡密、管理员发卡 / 查询 / 作废 / 统计。
+
+所有卡密数据库操作均通过 asyncio.to_thread 在线程池执行，避免同步 DB 调用
+阻塞 asyncio 事件循环（多人同时兑换时尤为重要）。
+"""
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from datetime import datetime, timezone, timedelta
@@ -12,7 +17,6 @@ from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message, MessageEvent
 from nonebot.matcher import Matcher
 from nonebot.params import Arg, CommandArg
 
-from ..config import log
 from ..libraries.maimaidx_bot_admin import PLUGIN_ADMIN_ONLY
 from ..libraries.maimaidx_card import (
     CARD_TYPE_BREAK,
@@ -122,12 +126,13 @@ async def _(matcher: Matcher, event: MessageEvent, raw: Message = Arg('card_code
     if len(normalized.replace('-', '')) < 8:
         track_event(pending_key, event)
         await card_redeem.reject('卡密格式不正确，请重新输入（发送“取消”可退出）。')
+    qqid = _account_qqid(event)
+    group_id = str(get_event_group_id(event) or '')
+    actor = event.get_user_id()
     try:
-        result = card_manager.redeem(
-            _account_qqid(event),
-            normalized,
-            group_id=str(get_event_group_id(event) or ''),
-            actor=event.get_user_id(),
+        result = await asyncio.to_thread(
+            card_manager.redeem, qqid, normalized,
+            group_id=group_id, actor=actor,
         )
     except CardError as exc:
         hint = store_hint()
@@ -153,8 +158,12 @@ setattr(my_card, '_maimaidx_busy_surcharge_exempt', True)
 @my_card.handle()
 async def _(event: MessageEvent):
     qqid = _account_qqid(event)
-    d_active, d_remaining, d_expires = card_manager.double_break_info(qqid)
-    f_active, f_remaining, f_expires = card_manager.freedom_info(qqid)
+    d_info, f_info = await asyncio.gather(
+        asyncio.to_thread(card_manager.double_break_info, qqid),
+        asyncio.to_thread(card_manager.freedom_info, qqid),
+    )
+    d_active, d_remaining, d_expires = d_info
+    f_active, f_remaining, f_expires = f_info
     lines = ['🎫 我的卡密状态']
     if d_active:
         lines.append(
@@ -214,7 +223,8 @@ async def _(matcher: Matcher, event: MessageEvent, message: Message = CommandArg
     if parsed:
         card_type, value, quantity, note = parsed
         try:
-            result = card_manager.create_cards(
+            result = await asyncio.to_thread(
+                card_manager.create_cards,
                 card_type, value, quantity,
                 created_by=event.get_user_id(), note=note,
             )
@@ -294,7 +304,8 @@ async def _(matcher: Matcher, event: MessageEvent, raw: Message = Arg('card_quan
     value = matcher.state['card_value']
     note = f"由 {event.get_user_id()} 交互式创建"
     try:
-        result = card_manager.create_cards(
+        result = await asyncio.to_thread(
+            card_manager.create_cards,
             card_type, value, quantity,
             created_by=event.get_user_id(), note=note,
         )
@@ -339,10 +350,10 @@ async def _(event: MessageEvent, message: Message = CommandArg()):
             reply_message=True,
         )
     normalized = normalize_code(key)
-    card = card_manager.get_card(normalized)
+    card = await asyncio.to_thread(card_manager.get_card, normalized)
     if card:
         await card_query.finish(_format_card_detail(card), reply_message=True)
-    cards = card_manager.list_cards(batch_id=key, limit=50)
+    cards = await asyncio.to_thread(card_manager.list_cards, batch_id=key, limit=50)
     if cards:
         lines = [f'批次 {key} 共 {len(cards)} 张（最多展示 50 张）：']
         for c in cards:
@@ -397,7 +408,9 @@ async def _(event: MessageEvent, message: Message = CommandArg()):
     if not code:
         await card_disable.finish('用法：作废卡密 <卡密>', reply_message=True)
     try:
-        card = card_manager.disable_card(code, actor=event.get_user_id())
+        card = await asyncio.to_thread(
+            card_manager.disable_card, code, actor=event.get_user_id(),
+        )
     except CardError as exc:
         await card_disable.finish(f'❌ {exc}', reply_message=True)
     await card_disable.finish(
@@ -426,7 +439,9 @@ async def _(message: Message = CommandArg()):
             status = {
                 '未使用': 'unused', '已兑换': 'redeemed', '已作废': 'disabled',
             }.get(p, p)
-    cards = card_manager.list_cards(card_type=card_type, status=status, limit=20)
+    cards = await asyncio.to_thread(
+        card_manager.list_cards, card_type=card_type, status=status, limit=20,
+    )
     if not cards:
         await card_list.finish('没有符合条件的卡密。', reply_message=True)
     lines = [f'卡密列表（最近 {len(cards)} 张）：']
@@ -443,7 +458,10 @@ card_stats = on_command('卡密统计', permission=PLUGIN_ADMIN_ONLY)
 
 @card_stats.handle()
 async def _():
-    stats = card_manager.stats()
+    stats, recent = await asyncio.gather(
+        asyncio.to_thread(card_manager.stats),
+        asyncio.to_thread(card_manager.list_recent_redemptions, limit=5),
+    )
     lines = [f"🎫 卡密统计（共 {stats['total']} 张，生效中加成 {stats['active_effects']} 人）"]
     for card_type in CARD_TYPES:
         info = stats['by_type'].get(card_type, {'unused': 0, 'redeemed': 0, 'disabled': 0})
@@ -451,7 +469,6 @@ async def _():
             f"  · {CARD_TYPE_LABELS[card_type]}："
             f"未使用 {info['unused']} / 已兑换 {info['redeemed']} / 已作废 {info['disabled']}"
         )
-    recent = card_manager.list_recent_redemptions(limit=5)
     if recent:
         lines.append('最近兑换：')
         for c in recent:
@@ -478,32 +495,40 @@ async def _(event: GroupMessageEvent):
         return
     code = match.group(1)
 
-    card = card_manager.get_card(code)
-    if card is None or card.get('status') != 'unused':
-        return
-
     try:
         qqid = _account_qqid(event)
     except Exception:
         return
+
     now = time.time()
     last = _AUTO_REDEEM_COOLDOWN.get(qqid, 0.0)
     if now - last < _AUTO_REDEEM_COOLDOWN_SECONDS:
         return
-    _AUTO_REDEEM_COOLDOWN[qqid] = now
 
-    try:
-        result = card_manager.redeem(
-            qqid,
-            code,
+    def _check_and_redeem() -> Optional[object]:
+        card = card_manager.get_card(code)
+        if card is None or card.get('status') != 'unused':
+            return None
+        return card_manager.redeem(
+            qqid, code,
             group_id=str(get_event_group_id(event) or ''),
             actor=event.get_user_id(),
         )
+
+    if len(_AUTO_REDEEM_COOLDOWN) > 1000:
+        cutoff = now - 300
+        for k in [k for k, v in _AUTO_REDEEM_COOLDOWN.items() if v < cutoff]:
+            del _AUTO_REDEEM_COOLDOWN[k]
+    _AUTO_REDEEM_COOLDOWN[qqid] = now
+    try:
+        result = await asyncio.to_thread(_check_and_redeem)
     except CardError as exc:
         hint = store_hint()
         text = f'❌ 兑换失败：{exc}'
         if hint:
             text += f'\n{hint}'
         await auto_card_redeem.finish(text, reply_message=True)
+        return
+    if result is None:
         return
     await auto_card_redeem.finish(_format_redeem_result(result), reply_message=True)

@@ -1698,12 +1698,9 @@ def _charge_text(result, qqid: Optional[int] = None) -> str:
     if getattr(result, "free", False):
         return f"💳 {label}今日首次成功，免费 · 余额 {result.balance} BREAK"
     if getattr(result, "freedom", False):
-        from ..libraries.maimaidx_card import card_manager, format_duration
-        remaining_text = ""
-        if qqid is not None:
-            _active, remaining, _expires = card_manager.freedom_info(int(qqid))
-            if remaining > 0:
-                remaining_text = f"（FREEDOM 剩余 {format_duration(remaining)}）"
+        from ..libraries.maimaidx_card import format_duration
+        remaining = getattr(result, "freedom_remaining", 0.0) or 0.0
+        remaining_text = f"（FREEDOM 剩余 {format_duration(remaining)}）" if remaining > 0 else ""
         return f"💳 {label}已由 FREEDOM 卡免除{remaining_text} · 余额 {result.balance} BREAK"
     return f"💳 {label}消耗 {result.charged} BREAK · 余额 {result.balance} BREAK"
 

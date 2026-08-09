@@ -310,6 +310,7 @@ class ServiceChargeResult:
     free: bool
     balance: int
     freedom: bool = False
+    freedom_remaining: float = 0.0
 
 
 @dataclass
@@ -1180,13 +1181,12 @@ class BreakDatabase:
         ).fetchone()
         return not row or int(row['free_used']) == 0
 
-    def _freedom_active(self, qqid: int) -> bool:
-        from .maimaidx_card import card_manager
-        return card_manager.freedom_active(qqid)
-
     def ensure_service_affordable(self, qqid: int, service: str, cost: int) -> None:
         """外部业务请求前检查；真正扣费必须在成功后调用 settle_service_success。"""
-        if self.service_is_free(qqid, service) or self._freedom_active(qqid):
+        if self.service_is_free(qqid, service):
+            return
+        from .maimaidx_card import card_manager
+        if card_manager.freedom_active(qqid):
             return
         balance = self.get_balance(qqid)
         if balance < max(0, int(cost)):
@@ -1213,7 +1213,13 @@ class BreakDatabase:
                 service in DAILY_FREE_SERVICES
                 and (not row or int(row['free_used']) == 0)
             )
-            freedom = bool(not free and self._freedom_active(qqid))
+            freedom = False
+            freedom_remaining = 0.0
+            if not free:
+                from .maimaidx_card import card_manager
+                f_active, f_remaining, _f_exp = card_manager.freedom_info(qqid, now=now)
+                freedom = bool(f_active)
+                freedom_remaining = f_remaining
             charged = 0 if free else cost
             if freedom:
                 charged = 0
@@ -1251,7 +1257,10 @@ class BreakDatabase:
             self._append_log(qqid, -charged, f'service:{service}', meta=detail)
             self._conn.commit()
             balance -= charged
-        return ServiceChargeResult(service, charged, free, balance, freedom=freedom)
+        return ServiceChargeResult(
+            service, charged, free, balance,
+            freedom=freedom, freedom_remaining=freedom_remaining,
+        )
 
     def transfer(self, sender: int, recipient: int, amount: int) -> TransferResult:
         amount = int(amount)
