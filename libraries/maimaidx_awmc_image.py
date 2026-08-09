@@ -30,6 +30,14 @@ def _ts(val) -> str:
         return '暂无'
 
 
+
+def _g(obj, key, default=None):
+    """兼容 dict 与 pydantic/普通对象的字段读取。"""
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
 def _stat_tile(im, d, x, y, w, h, value, label, color=_TEXT):
     _card(im, (x, y, x + w, y + h), radius=16,
           fill=(245, 247, 252, 255), shadow=False)
@@ -88,10 +96,10 @@ def render_awmc_profile(profile: Dict,
     op_counts: Dict[str, int] = profile.get('account_operation_counts') or {}
     ticket = profile.get('account_ticket_stats') or {}
     recent_acc: List[dict] = profile.get('recent_account_logs') or []
-    # 不展示猜歌相关的 BREAK 流水
-    recent_break: List[dict] = [
+    # 不展示猜歌相关的 BREAK 流水（model_dump 后为 dict）
+    recent_break = [
         e for e in (profile.get('recent_logs') or [])
-        if getattr(e, 'reason', '') != 'guess_reward'
+        if _g(e, 'reason', '') != 'guess_reward'
     ]
 
     op_labels = {
@@ -273,13 +281,15 @@ def render_awmc_profile(profile: Dict,
                    font=_font_mono(13), fill=_TEXT_SOFT, anchor='rt')
             ly += 26
         for entry in recent_break[:5]:
-            ts = datetime.fromtimestamp(float(entry.created_at)).strftime('%m-%d %H:%M')
-            sign = '+' if int(entry.delta) >= 0 else ''
-            label = reason_map.get(entry.reason, entry.reason)
-            col = _GREEN if int(entry.delta) >= 0 else _RED
+            ts = datetime.fromtimestamp(float(_g(entry, 'created_at') or 0)).strftime('%m-%d %H:%M')
+            delta = int(_g(entry, 'delta') or 0)
+            sign = '+' if delta >= 0 else ''
+            reason = _g(entry, 'reason', '')
+            label = reason_map.get(reason, reason)
+            col = _GREEN if delta >= 0 else _RED
             d.text((mx + 22, ly), ts, font=_font_mono(13), fill=_MUTED)
             d.text((mx + 130, ly), label, font=_font_bold(14), fill=_TEXT)
-            d.text((mx + inner_w - 22, ly), f'{sign}{entry.delta} BREAK',
+            d.text((mx + inner_w - 22, ly), f'{sign}{delta} BREAK',
                    font=_font_mono(15), fill=col, anchor='rt')
             ly += 26
         y += card_h + 16

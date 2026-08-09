@@ -245,11 +245,6 @@ def _plate_songs():
 
 
 def _awmc_profile():
-    class Log:
-        def __init__(self, delta, reason, ts):
-            self.delta = delta
-            self.reason = reason
-            self.created_at = ts
     return {
         "qqid": 10001, "balance": 348, "streak": 12,
         "last_checkin_date": "2026-08-09", "checked_in_today": True,
@@ -270,8 +265,9 @@ def _awmc_profile():
              "status": "error", "ref_id": "ref-002"},
         ],
         "recent_logs": [
-            Log(5, "checkin", 1754726400), Log(-7, "query", 1754720000),
-            Log(2, "guess_reward", 1754710000),
+            {"delta": 5, "reason": "checkin", "created_at": 1754726400},
+            {"delta": -7, "reason": "query", "created_at": 1754720000},
+            {"delta": 2, "reason": "guess_reward", "created_at": 1754710000},
         ],
     }
 

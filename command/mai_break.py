@@ -8,6 +8,7 @@ from nonebot.adapters.onebot.v11 import (
     MessageEvent,
     MessageSegment,
 )
+from nonebot.exception import FinishedException
 from nonebot.matcher import Matcher
 from nonebot.params import Arg, CommandArg, Depends
 from ..libraries.maimaidx_break import (
@@ -577,6 +578,9 @@ async def _(bot: Bot, event: MessageEvent):
             reply_message=True,
             publish_qq_image=True,
         )
+    except FinishedException:
+        # plugin_finish 正常结束 matcher 时抛出，属于正常控制流
+        return
     except Exception as exc:
         log.warning(
             f'[BREAK] 我的AWMC概览图发送失败，回退文本：'
