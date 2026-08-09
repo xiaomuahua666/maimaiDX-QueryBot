@@ -85,7 +85,7 @@ LEGACY_ECONOMY_DEFAULTS: Dict[str, str] = {
 }
 
 # 历史上出现过的连签曲线默认值，启动时迁移到当前温和曲线。
-LEGACY_STREAK_DEFAULTS = frozenset({'1,2,3,4,5', '0,0,1,1,1,2,2'})
+LEGACY_STREAK_DEFAULTS = frozenset({'1,2,3,4,5', '0,0,1,1,1,2,2', '3,5,8,12,20'})
 
 BONUS_GROUP_IDS = {int(BOT_QQ_GROUP), 993795066}
 DOUBLE_CHECKIN_GROUP_IDS = {669800745}
@@ -551,9 +551,76 @@ class BreakDatabase:
         # 建表：仅 SQLite 模式执行；MySQL 已由迁移脚本创建
         if self._conn._backend == 'sqlite':
             self._conn.executescript(_CREATE_SQL)
+        self._ensure_config_primary_key_mysql()
         self._seed_config()
         self._prune_unbound_hash_users()
         self._prune_empty_users()
+
+    def _ensure_config_primary_key_mysql(self) -> None:
+        """修复 MySQL 旧库 break_config 缺少主键导致的重复行问题。
+
+        早期迁移脚本建表时遗漏了 ``key`` 主键，每次启动的
+        ``INSERT OR IGNORE`` 都会新增一整份配置；``get_config`` 取到的是
+        最早写入的历史默认值（含已废弃的无上限连签曲线），是签到通胀的根因。
+        检测到缺失唯一约束时，按最后写入胜出（最近一次设置/最新默认）去重，
+        重建为带主键的表。SQLite 不受影响。
+        """
+        if self._conn._backend != 'mysql':
+            return
+        prefix = getattr(self._conn, '_prefix', '') or ''
+        table = f'{prefix}break_config'
+        raw = self._conn._conn
+        try:
+            with raw.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) AS cnt FROM information_schema.statistics "
+                    "WHERE table_schema = DATABASE() AND table_name = %s "
+                    "AND column_name = 'key' AND non_unique = 0",
+                    (table,),
+                )
+                row = cur.fetchone() or {}
+                if int(row.get('cnt', 0) or 0) > 0:
+                    return
+
+                new_table = f'{table}__repair'
+                old_table = f'{table}__old'
+                cur.execute(f"DROP TABLE IF EXISTS `{new_table}`")
+                cur.execute(
+                    f"CREATE TABLE `{new_table}` ("
+                    f"`key` VARCHAR(191) NOT NULL, "
+                    f"`value` TEXT NOT NULL, "
+                    f"PRIMARY KEY (`key`)"
+                    f") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+                )
+                # 无主键 InnoDB 全表扫描按隐藏 rowid（≈插入顺序）返回；
+                # 后插入的值覆盖前面，保留最近一次管理员设置或最新默认值。
+                cur.execute(
+                    f"INSERT INTO `{new_table}` (`key`, `value`) "
+                    f"SELECT `key`, `value` FROM `{table}` "
+                    f"ON DUPLICATE KEY UPDATE `value` = VALUES(`value`)"
+                )
+                cur.execute(f"SELECT COUNT(DISTINCT `key`) AS cnt FROM `{table}`")
+                distinct = int((cur.fetchone() or {}).get('cnt', 0) or 0)
+                cur.execute(f"SELECT COUNT(*) AS cnt FROM `{new_table}`")
+                kept = int((cur.fetchone() or {}).get('cnt', 0) or 0)
+                if distinct != kept:
+                    raise RuntimeError(f'去重后行数异常 {kept} != {distinct}')
+                cur.execute(
+                    f"RENAME TABLE `{table}` TO `{old_table}`, "
+                    f"`{new_table}` TO `{table}`"
+                )
+                cur.execute(f"DROP TABLE `{old_table}`")
+            raw.commit()
+            log.info(f'[BREAK] 已修复 MySQL {table} 缺失主键：去重后保留 {kept} 条配置')
+        except Exception as exc:
+            try:
+                raw.rollback()
+            except Exception:
+                pass
+            log.warning(
+                f'[BREAK] 修复 {table} 主键失败（已忽略）：'
+                f'{type(exc).__name__}: {exc}'
+            )
 
     def _prune_unbound_hash_users(self) -> None:
         """Remove official-QQ hash keys left by the pre-qbind fallback.
@@ -804,7 +871,11 @@ class BreakDatabase:
             log.info('[BREAK] 已将旧版高通胀签到默认值迁移为温和配置')
 
     def _migrate_streak_curve_default(self) -> None:
-        """把仍在使用历史默认连签曲线的配置迁移到当前温和曲线，保留管理员自定义值。"""
+        """把仍在使用历史默认连签曲线的配置迁移到当前温和曲线，保留管理员自定义值。
+
+        历史默认曲线配套 ``streak_bonus_growth=1``（第 5 天后无限线性增长），
+        迁移曲线时一并把该默认增长值复位为 0，从源头消除连签通胀。
+        """
         row = self._conn.execute(
             'SELECT value FROM break_config WHERE key = ?', ('streak_bonus',)
         ).fetchone()
@@ -813,6 +884,15 @@ class BreakDatabase:
                 'UPDATE break_config SET value = ? WHERE key = ?',
                 (DEFAULT_CONFIG['streak_bonus'], 'streak_bonus'),
             )
+            growth_row = self._conn.execute(
+                'SELECT value FROM break_config WHERE key = ?',
+                ('streak_bonus_growth',),
+            ).fetchone()
+            if growth_row and str(growth_row['value']) == '1':
+                self._conn.execute(
+                    'UPDATE break_config SET value = ? WHERE key = ?',
+                    (DEFAULT_CONFIG['streak_bonus_growth'], 'streak_bonus_growth'),
+                )
             self._conn.commit()
             log.info('[BREAK] 已将历史连签奖励曲线迁移为封顶 3 的温和配置')
 
