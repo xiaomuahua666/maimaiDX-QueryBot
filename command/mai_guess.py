@@ -2886,6 +2886,11 @@ async def _(event: MessageEvent):
                 f'\n💳 猜对奖励 +{reward.break_added} BREAK'
                 f'（余额 {reward.balance}）{double_tag}'
             )
+        log.info(
+            f'[Guess20Q] 猜对结束 gid={gid} answer={data.music.title} '
+            f'id={data.music.id} winner={name}({uid}) '
+            f'questions={data.question_count}/{data.max_questions}'
+        )
         result = (
             f'🎉 恭喜 {name} 猜对啦！用了 {data.question_count} 次提问。\n'
             f'{twentyq_guess.reveal_text(data)}\n\n{settlement}{break_part}'
@@ -2895,6 +2900,11 @@ async def _(event: MessageEvent):
         )
     else:
         await guess_score.reset_all_streaks(gid)
+        log.info(
+            f'[Guess20Q] 超时结束 gid={gid} answer={data.music.title} '
+            f'id={data.music.id} questions={data.question_count}/{data.max_questions} '
+            f'无人猜对'
+        )
         result = (
             '⏰ 时间到（或提问机会已用完），没有人猜出来喵～\n'
             f'{twentyq_guess.reveal_text(data)}'
@@ -2921,14 +2931,8 @@ async def _(event: MessageEvent):
         return
 
     uid_key = platform_user_id(event)
-    rate_limit_msg = consume_guess_answer_slot(uid_key)
-    if rate_limit_msg:
-        await guess_20q_solve.finish(
-            adapt_guess_outbound(rate_limit_msg, event=event),
-            reply_message=resolve_reply_message(event, reply_message=True),
-        )
 
-    result = twentyq_guess.process_message(
+    result = await twentyq_guess.process_message(
         gid, uid_key, get_sender_display_name(event), text,
         billing_id=billing_user_id(event),
     )
@@ -2946,6 +2950,15 @@ async def _(event: MessageEvent):
         return
 
     if kind == 'wrong_guess':
+        # 限流只作用于真正的猜答案尝试（猜错）。
+        # 「我问 是非题」和普通聊天完全不限流；
+        # 自然聊天里「我猜今天会下雨」也会走到这里，但只占一次名额，可接受。
+        rate_limit_msg = consume_guess_answer_slot(uid_key)
+        if rate_limit_msg:
+            await guess_20q_solve.finish(
+                adapt_guess_outbound(rate_limit_msg, event=event),
+                reply_message=resolve_reply_message(event, reply_message=True),
+            )
         # 猜错不结束游戏，让其他人继续猜，直到超时公布答案。
         guess_text = result.get('guess', '')
         hint = f'「{guess_text}」' if guess_text else ''
@@ -3001,6 +3014,11 @@ async def _(event: MessageEvent):
         )
     data = twentyq_guess.get(gid)
     answer = twentyq_guess.reveal_text(data) if data else ''
+    if data:
+        log.info(
+            f'[Guess20Q] 管理员重置 gid={gid} answer={data.music.title} '
+            f'id={data.music.id} questions={data.question_count}/{data.max_questions}'
+        )
     twentyq_guess.end(gid)
     msg = '你想我猜已重置。'
     if answer:

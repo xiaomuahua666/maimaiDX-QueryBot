@@ -203,6 +203,12 @@ class Config(BaseModel):
     b50_llm_model: str = 'gemini-3-flash-preview'
     b50_assets_path: str = ''
 
+    # ---------- 你想我猜（20 问）LLM 兜底 ----------
+    # 规则未命中（unknown）时调用 LLM 判断是非题，复用 b50_llm_* 配置。
+    # 默认开启；未配 b50_llm_key 时自动跳过（走原 unknown 提示，不消耗次数）。
+    # 设为 false 可强制关闭。GUESS_20Q_LLM_ENABLE
+    guess_20q_llm_enable: bool = True
+
     # ---------- 平台适配（OneBot / 官方 QQ） ----------
     # onebot | qq_official —— MAIMAIDX_PLATFORM
     maimaidx_platform: str = 'onebot'

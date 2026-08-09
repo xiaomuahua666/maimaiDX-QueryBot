@@ -4,6 +4,7 @@
 直接构造 Guess20QData 实例驱动 process_message。
 """
 
+import asyncio
 import sys
 import types
 from pathlib import Path
@@ -85,7 +86,7 @@ def _process(data: Guess20QData, text: str) -> dict:
     mgr = Guess20QManager()
     # 直接把 data 塞进 manager 的 groups，绕过 start()
     mgr.groups[12345] = data
-    return mgr.process_message(12345, 'u1', '玩家A', text)
+    return asyncio.run(mgr.process_message(12345, 'u1', '玩家A', text))
 
 
 # ───────────────────── 测试用例 ─────────────────────
