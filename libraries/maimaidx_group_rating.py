@@ -143,6 +143,24 @@ def collect_window_b1b36(rows: List[Tuple[int, str, int]], self_qq: int,
         return {}
 
 
+def collect_rows_b1b36(display_rows) -> dict:
+    """仅从本地 B50 缓存读取给定显示行各用户的 B1/B36，不发起网络请求。"""
+    result = {}
+    try:
+        from .maimaidx_player_cache import get_cached_b50_for_friend_battle
+        for row in display_rows:
+            uid = int(row[0])
+            userinfo = get_cached_b50_for_friend_battle(uid)
+            if userinfo is None:
+                continue
+            ref = _b1b36_from_userinfo(userinfo)
+            if ref:
+                result[uid] = ref
+    except Exception as e:
+        log.debug(f'[group_rating] collect rows b1/b36 failed: {e}')
+    return result
+
+
 def _group_song_score_cache_get(group_id: int, music_id: str, level_index: int):
     """获取歌曲成绩缓存"""
     now = time.time()
@@ -817,12 +835,15 @@ async def render_group_rating_board(bot, group_id: int, top_n: int = 10,
                 self_rank = i + 1
                 break
     b1b36 = await b1b36_task if b1b36_task else None
+    row_b1b36 = collect_rows_b1b36(take)
+    if b1b36 and self_qq is not None:
+        row_b1b36[int(self_qq)] = b1b36
     from .maimaidx_leaderboard_image import render_rating_ranking
     bio = await render_rating_ranking(
         take, title='群 Rating 排行',
         subtitle=f'共 {len(rows)} 人 · 显示前 {len(take)} 名',
         self_qq=self_qq, self_rank=self_rank, all_rows=rows, user_name=user_name,
-        b1b36=b1b36,
+        b1b36=b1b36, row_b1b36=row_b1b36,
     )
     return _image_segment(bio)
 

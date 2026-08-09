@@ -592,6 +592,7 @@ async def render_rating_ranking(
     all_rows: Optional[Sequence[Tuple[int, str, int]]] = None,
     user_name: str = 'Milk',
     b1b36: Optional[dict] = None,
+    row_b1b36: Optional[dict] = None,
 ) -> BytesIO:
     """rows: 显示的前 N 行 [(uid, name, rating), ...] 已降序；
     all_rows: 全群数据，用于统计面板（默认等于 rows）。
@@ -599,7 +600,7 @@ async def render_rating_ranking(
     width = 1080
     mx = 40
     inner_w = width - mx * 2
-    row_h = 96
+    row_h = 108
     gap = 14
     n = len(rows)
     stats_h = 400
@@ -622,8 +623,9 @@ async def render_rating_ranking(
     if ref_h:
         _draw_b1b36_strip(im, d, mx, 120, inner_w, b1b36)
     y = header_h + 20
-    max_ra = max((r[2] for r in rows), default=1) or 1
-    bar_max = max(max_ra, int(math.ceil(max_ra / 1000) * 1000))
+    row_b1b36 = row_b1b36 or {}
+    badge_w = 188
+    info_right = mx + inner_w - 16 - badge_w
 
     for idx, (uid, name, ra) in enumerate(rows):
         rank = idx + 1
@@ -645,14 +647,19 @@ async def render_rating_ranking(
         if is_self:
             d.text((mx + 158 + _text_len(d, name_text, nfont) + 10, y + 28),
                    '（你）', font=_font_bold(16), fill=_ACCENT)
-        # 进度条 + 刻度
-        bar_x = mx + 158
-        bar_w = inner_w - 158 - 200
-        _bar(im, bar_x, y + 58, bar_w, 14, ra / bar_max, rating_color(ra),
-             bg=(225, 230, 242, 200))
-        sfont = _font_mono(12)
-        d.text((bar_x, y + 76), '0', font=sfont, fill=_MUTED)
-        d.text((bar_x + bar_w, y + 76), f'{bar_max}', font=sfont, fill=_MUTED, anchor='rt')
+        # B1 / B36 带曲绘的紧凑卡片，替代进度条
+        nb = row_b1b36.get(uid)
+        if nb:
+            area_x = mx + 158
+            area_w = info_right - area_x
+            col_gap = 10
+            col_w = (area_w - col_gap) // 2
+            chip_y = y + row_h - 40 - 6
+            for ci, (rec, tag) in enumerate((
+                (nb.get('b1'), 'B1'), (nb.get('b36'), 'B36'),
+            )):
+                cx = area_x + ci * (col_w + col_gap)
+                _draw_row_best_chip(im, d, cx, chip_y, col_w, rec, tag)
         # rating 徽章
         _draw_rating_badge(im, mx + inner_w - 14, y + row_h // 2, ra)
         y += row_h + gap

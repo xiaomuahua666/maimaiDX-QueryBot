@@ -601,6 +601,15 @@ def test_board_b1b36_and_overflow(mods):
     im = _assert_png(bio, "我的排名-逐行B1B36", min_h=900)
     print(f"  我的排名(逐行 B1/B36) {im.size} OK")
 
+    # 群 Rating 排行榜同样支持逐行 B1/B36（进度条已移除）
+    board_rows = [(1000 + i, f"Player{i}", 16017 - i * 120) for i in range(10)]
+    board_map = {uid: row_b1b36[uid] for uid, _, _ in board_rows if uid in row_b1b36}
+    bio = _run(lb.render_rating_ranking(
+        board_rows, all_rows=board_rows, self_qq=1002, self_rank=3,
+        user_name="MILKA...", b1b36=row_b1b36[1002], row_b1b36=board_map))
+    im = _assert_png(bio, "群榜-逐行B1B36", min_h=1000)
+    print(f"  群 Rating 榜(逐行 B1/B36) {im.size} OK")
+
     # 无 b1/b36（仅有其一或全空）不应崩
     bio = _run(lb.render_rating_ranking(
         all_rows[:10], all_rows=all_rows,
