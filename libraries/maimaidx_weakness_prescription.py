@@ -197,8 +197,11 @@ _MX = 40
 _INNER_W = _WIDTH - _MX * 2
 
 _LEVEL_INDEX = {
-    'BAS': 0, 'ADV': 1, 'EXP': 2, 'MAS': 3, 'ReM': 4,
-    'BSC': 0, 'ADV': 1, 'EXP': 2, 'MST': 3,
+    'BAS': 0, 'BSC': 0,
+    'ADV': 1,
+    'EXP': 2,
+    'MAS': 3, 'MST': 3,
+    'ReM': 4,
 }
 _LEVEL_NAMES = ['BAS', 'ADV', 'EXP', 'MAS', 'ReM']
 
