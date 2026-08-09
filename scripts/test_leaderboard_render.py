@@ -586,6 +586,21 @@ def test_board_b1b36_and_overflow(mods):
     im = _assert_png(bio, "我的排名-B1B36", min_h=900)
     print(f"  我的排名(B1/B36) {im.size} OK")
 
+    # 每个窗口用户携带各自 B1/B36：应正常出图，且行高已为两行榜首信息预留
+    row_b1b36 = {}
+    for i in range(15):
+        row_b1b36[1000 + i] = {
+            "b1": {"song_id": 1000 + i, "title": f"SD Song {i}", "level": "13+",
+                   "level_index": 3, "ra": 305 - i, "achievements": 100.5},
+            "b36": {"song_id": 2000 + i, "title": f"DX Song {i}", "level": "14",
+                    "level_index": 4, "ra": 300 - i, "achievements": 100.7},
+        }
+    bio = _run(lb.render_my_rank_context(
+        rows, self_qq=1002, half=5, user_name="MILKA...",
+        b1b36=row_b1b36[1002], row_b1b36=row_b1b36))
+    im = _assert_png(bio, "我的排名-逐行B1B36", min_h=900)
+    print(f"  我的排名(逐行 B1/B36) {im.size} OK")
+
     # 无 b1/b36（仅有其一或全空）不应崩
     bio = _run(lb.render_rating_ranking(
         all_rows[:10], all_rows=all_rows,

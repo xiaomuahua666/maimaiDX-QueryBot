@@ -87,28 +87,60 @@ async def fetch_self_b1b36(qqid: int) -> Optional[dict]:
     try:
         # get_user_b50 直接返回已排序的 B35(sd)/B15(dx)，比拉全量成绩更轻
         userinfo = await asyncio.wait_for(get_user_b50(qqid=int(qqid)), timeout=8)
-        charts = getattr(userinfo, 'charts', None)
-        b1_rec = (charts.sd[0] if charts and getattr(charts, 'sd', None) else None)
-        b36_rec = (charts.dx[0] if charts and getattr(charts, 'dx', None) else None)
-
-        def _ref(rec):
-            if rec is None:
-                return None
-            return {
-                'song_id': int(rec.song_id), 'title': rec.title,
-                'level': rec.level, 'level_index': int(rec.level_index),
-                'ds': float(getattr(rec, 'ds', 0) or 0),
-                'ra': int(rec.ra), 'achievements': float(rec.achievements),
-            }
-
-        ref = {'b1': _ref(b1_rec), 'b36': _ref(b36_rec)}
-        if not ref['b1'] and not ref['b36']:
+        ref = _b1b36_from_userinfo(userinfo)
+        if not ref:
             return None
         _self_b1b36_cache_set(qqid, ref, _get_cache_ttl())
         return ref
     except Exception as e:
         log.debug(f'[group_rating] fetch b1/b36 for {qqid} failed: {e}')
         return None
+
+
+def _b1b36_from_userinfo(userinfo) -> Optional[dict]:
+    """从 UserInfo.charts 抽取 B1(sd[0])/B36(dx[0]) 的精简 dict，无数据返回 None。"""
+    charts = getattr(userinfo, 'charts', None)
+    b1_rec = (charts.sd[0] if charts and getattr(charts, 'sd', None) else None)
+    b36_rec = (charts.dx[0] if charts and getattr(charts, 'dx', None) else None)
+
+    def _ref(rec):
+        if rec is None:
+            return None
+        return {
+            'song_id': int(rec.song_id), 'title': rec.title,
+            'level': rec.level, 'level_index': int(rec.level_index),
+            'ds': float(getattr(rec, 'ds', 0) or 0),
+            'ra': int(rec.ra), 'achievements': float(rec.achievements),
+        }
+
+    ref = {'b1': _ref(b1_rec), 'b36': _ref(b36_rec)}
+    if not ref['b1'] and not ref['b36']:
+        return None
+    return ref
+
+
+def collect_window_b1b36(rows: List[Tuple[int, str, int]], self_qq: int,
+                         half: int = 5) -> dict:
+    """仅从本地 B50 缓存读取窗口内各用户的 B1/B36，不发起网络请求。"""
+    try:
+        self_idx = next((i for i, r in enumerate(rows) if r[0] == self_qq), None)
+        if self_idx is None:
+            return {}
+        start = max(0, self_idx - half)
+        end = min(len(rows), self_idx + half + 1)
+        from .maimaidx_player_cache import get_cached_b50_for_friend_battle
+        result = {}
+        for uid, _, _ in rows[start:end]:
+            userinfo = get_cached_b50_for_friend_battle(int(uid))
+            if userinfo is None:
+                continue
+            ref = _b1b36_from_userinfo(userinfo)
+            if ref:
+                result[int(uid)] = ref
+        return result
+    except Exception as e:
+        log.debug(f'[group_rating] collect window b1/b36 failed: {e}')
+        return {}
 
 
 def _group_song_score_cache_get(group_id: int, music_id: str, level_index: int):
@@ -804,9 +836,11 @@ async def render_group_weak_board(bot, group_id: int, self_qq: int,
     if self_qq is None or not any(uid == self_qq for uid, _, _ in rows):
         return '你尚未绑定查分器或未同意协议，无法参与群内排名。'
     b1b36 = await fetch_self_b1b36(self_qq)
+    row_b1b36 = collect_window_b1b36(rows, self_qq, half=half)
     from .maimaidx_leaderboard_image import render_my_rank_context
     bio = await render_my_rank_context(rows, self_qq=self_qq, half=half,
-                                      user_name=user_name, b1b36=b1b36)
+                                      user_name=user_name, b1b36=b1b36,
+                                      row_b1b36=row_b1b36)
     if bio is None:
         return '未在群内排名中找到你，请先绑定查分器。'
     return _image_segment(bio)

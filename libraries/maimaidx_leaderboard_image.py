@@ -721,16 +721,18 @@ async def render_my_rank_context(
     half: int = 5,
     user_name: str = 'Milk',
     b1b36: Optional[dict] = None,
+    row_b1b36: Optional[dict] = None,
 ) -> Optional[BytesIO]:
     """以请求用户为中心的群 Rating 排名上下文：展示用户排名/百分位，以及前后各 half 位。
 
     rows: 全群已降序的 [(uid, name, rating), ...]。
+    row_b1b36: 可选 {qqid: {'b1': song, 'b36': song}}，在每行显示该用户 B1/B36 的 ra。
     找不到该用户时返回 None，由调用方给出文字提示。
     """
     width = 1080
     mx = 40
     inner_w = width - mx * 2
-    row_h = 90
+    row_h = 98
     gap = 12
 
     total = len(rows)
@@ -775,13 +777,9 @@ async def render_my_rank_context(
            font=rank_font, fill=_ACCENT, anchor='lm')
     d.text((mx + 150, hcard_y + 24), f'第 {self_rank} 名 / 共 {total} 人',
            font=_font_bold(22), fill=_TEXT)
-    # 百分位进度条
-    bar_x = mx + 150
-    bar_w = 380
-    d.text((bar_x, hcard_y + 58), f'超过了 {percent:.1f}% 的群友',
+    # 百分位仅保留文字，去掉进度条避免卡片空旷
+    d.text((mx + 150, hcard_y + 58), f'超过了 {percent:.1f}% 的群友',
            font=_font_bold(16), fill=_TEXT_SOFT)
-    _bar(im, bar_x, hcard_y + 82, bar_w, 12, percent / 100.0, _ACCENT,
-         bg=(225, 230, 242, 220))
     # 右侧个人 rating 徽章
     _draw_rating_badge(im, mx + inner_w - 24, hcard_y + hcard_h // 2, self_rating)
 
@@ -790,8 +788,9 @@ async def render_my_rank_context(
 
     # ---------- 前后排名列表 ----------
     y = header_h + 10
-    bar_max = max((r[2] for _, r in window), default=1)
-    bar_max = max(bar_max, int(math.ceil(bar_max / 1000) * 1000))
+    row_b1b36 = row_b1b36 or {}
+    badge_w = 132
+    info_right = mx + inner_w - 16 - badge_w
 
     for abs_idx, (uid, name, ra) in window:
         rank = abs_idx + 1
@@ -807,10 +806,10 @@ async def render_my_rank_context(
         av = _get_avatar(avatars, uid, name, rating_color(ra), 60)
         _paste_round(im, av, (mx + 76, y + 15), radius=12)
         nfont = _font_bold(24)
-        name_text = _truncate(d, name, nfont, 280)
-        d.text((mx + 150, y + 14), name_text, font=nfont, fill=_TEXT)
+        name_text = _truncate(d, name, nfont, 260)
+        d.text((mx + 150, y + 12), name_text, font=nfont, fill=_TEXT)
         if is_self:
-            d.text((mx + 150 + _text_len(d, name_text, nfont) + 10, y + 20),
+            d.text((mx + 150 + _text_len(d, name_text, nfont) + 10, y + 18),
                    '（你）', font=_font_bold(16), fill=_ACCENT)
         # 与上一名分差
         sub = None
@@ -821,12 +820,33 @@ async def render_my_rank_context(
         elif is_self and abs_idx == 0:
             sub = ('已经是群内第一啦！', _GREEN)
         if sub:
-            d.text((mx + 150, y + 46), sub[0], font=_font_bold(14), fill=sub[1])
-        # 进度条
-        bar_x2 = mx + 150
-        bar_w2 = inner_w - 150 - 200
-        _bar(im, bar_x2, y + 66, bar_w2, 12, ra / bar_max, rating_color(ra),
-             bg=(225, 230, 242, 200))
+            d.text((mx + 150, y + 42), sub[0], font=_font_bold(14), fill=sub[1])
+        # B1 / B36（该用户 SD 榜首 / DX 榜首），替代进度条填充中部留白
+        nb = row_b1b36.get(uid)
+        if nb:
+            b1 = nb.get('b1')
+            b36 = nb.get('b36')
+            col_gap = 14
+            col_w = (info_right - (mx + 150) - col_gap) // 2
+            tiny = _font_bold(13)
+            for ci, (rec, tag) in enumerate(((b1, 'B1'), (b36, 'B36'))):
+                cx = mx + 150 + ci * (col_w + col_gap)
+                if not rec:
+                    d.text((cx, y + 64), f'{tag} ——', font=tiny, fill=_MUTED)
+                    continue
+                li = min(max(int(rec.get('level_index', 3)), 0), 4)
+                diff_col = _DIFF_COLORS[li]
+                d.text((cx, y + 62), tag, font=_font_bold(13), fill=diff_col)
+                ra_x = cx + _text_len(d, tag, _font_bold(13)) + 6
+                d.text((ra_x, y + 62),
+                       f"{int(rec.get('ra', 0))}ra",
+                       font=_font_mono(13), fill=diff_col)
+                title_font = _font_bold(13)
+                title_text = _truncate(
+                    d, rec.get('title', ''), title_font,
+                    max(10, col_w - (ra_x - cx) - 8),
+                )
+                d.text((cx, y + 78), title_text, font=title_font, fill=_MUTED)
         _draw_rating_badge(im, mx + inner_w - 14, y + row_h // 2, ra)
         y += row_h + gap
 
