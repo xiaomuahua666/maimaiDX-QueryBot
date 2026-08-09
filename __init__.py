@@ -13,7 +13,7 @@ install_qq_event_compat()
 
 from .command import *
 nonebot.load_plugin("nonebot_plugin_maimaidx.command.mai_jacket")
-from .libraries.maimaidx_music_info import get_music_tags, _get_dxrating_token
+from .libraries.maimaidx_music_info import get_music_tags
 from .libraries import maimaidx_admin_web as _maimaidx_admin_web  # 注册可选管理 WebUI
 from .libraries import maimaidx_storage_runtime as _maimaidx_storage_runtime  # 统一存储同步
 from .libraries import maimaidx_pending_session as _maimaidx_pending_session  # 关机通知未完成交互
@@ -47,8 +47,8 @@ async def get_music():
     # registered so plain-text @ replies use the same path after every restart.
     install_qq_event_compat()
     cleanup_qq_public_images(force=True)
-    _tag_token = _get_dxrating_token()
-    log.opt(colors=True).info('谱面标签(combined-tags): ' + ('<g>已配置</g>' if _tag_token else '<y>未配置 token，详情图不显示标签</y>'))
+    _wmc_key = bool(getattr(maiconfig, 'wmc_api_key', None))
+    log.opt(colors=True).info('谱面标签(v.wmc.pub): ' + ('<g>已配置</g>' if _wmc_key else '<y>未配置 wmc_api_key，详情图不显示 WMC 标签</y>'))
     if maiconfig.maimaidxproberproxy:
         log.info('正在使用代理服务器访问查分器')
     if maiconfig.maimaidxaliasproxy:

@@ -1,43 +1,21 @@
 import copy
 import json
 import os
+import time
 from pathlib import Path
 from collections import defaultdict
 from typing import Any, Dict, List, Optional
 
-import httpx
-
-from ..config import TAG_DISPLAY_ORDER, TAG_PILL_COLORS, footer_designed_generated, log
-
-
-def _get_dxrating_token() -> Optional[str]:
-    """优先用插件配置，否则读环境变量 MAIMAIDX_DXRATING_TOKEN。若未读到则尝试加载 .env.prod / .env。"""
-    t = getattr(maiconfig, 'dxrating_token', None)
-    if t:
-        return t
-    t = os.environ.get('MAIMAIDX_DXRATING_TOKEN')
-    if t:
-        return t
-    try:
-        from pathlib import Path
-        from dotenv import load_dotenv
-        cwd = Path.cwd()
-        for name in ('.env.prod', '.env'):
-            p = cwd / name
-            if p.is_file():
-                load_dotenv(p, override=False)
-                t = os.environ.get('MAIMAIDX_DXRATING_TOKEN')
-                if t:
-                    return t
-    except Exception:
-        pass
-    return None
-
-
+from ..config import TAG_DISPLAY_ORDER, TAG_PILL_COLORS, footer_designed_generated, log, maiconfig
 from .image import rounded_corners, draw_centered_design_footer
 from .maimaidx_best_50 import *
 from .maimaidx_music import Music, mai
 from .maimaidx_wmc_api import diff_value_for_wmc, kind_for_wmc, song_id_for_wmc
+
+# WMC 谱面标签短 TTL 缓存（chart_key -> (timestamp, tags_dict)），
+# 避免「谱面标签」与「难度分析」两个并行任务重复请求 v.wmc.pub。
+_wmc_chart_tags_cache: Dict[str, tuple] = {}
+_WMC_CHART_TAGS_TTL = 300
 
 
 async def get_music_by_alias(alias: str) -> Optional[Music]:
@@ -276,10 +254,6 @@ def get_b50_tag_stats(userinfo, wmc_tags_cache: Optional[Dict[tuple, dict]] = No
 async def build_tags_forward_nodes(
     music_id: str, bot_user_id: int, bot_nickname: str
 ) -> List[Dict[str, Any]]:
-    await get_music_tags(music_id)
-    tags_by_diff = get_music_tags_by_difficulty(music_id)
-    if not tags_by_diff:
-        return []
     music = mai.total_list.by_id(music_id)
     title = getattr(music, 'title', None) or f'ID {music_id}'
 
@@ -293,21 +267,41 @@ async def build_tags_forward_nodes(
             },
         }
 
-    # 过滤掉标签为 ['暂无'] 的难度
-    has_tags_diffs = {}
-    for diff in DIFF_DISPLAY_ORDER:
-        if diff not in tags_by_diff:
-            continue
-        tags = tags_by_diff[diff]
-        # 如果标签只有 '暂无'，则跳过
-        if tags == ['暂无']:
-            continue
-        has_tags_diffs[diff] = tags
+    # 优先使用 WMC v.wmc.pub 谱面标签；未配置 key 或无数据时回退本地 JSON。
+    wmc_results: List[tuple] = []
+    if music is not None and getattr(maiconfig, 'wmc_api_key', None):
+        wmc_results = await fetch_wmc_chart_tags_all(music)
+
+    has_tags_diffs: Dict[str, List[str]] = {}
+    if wmc_results:
+        for diff_label, tags_data in wmc_results:
+            parts: List[str] = []
+            dc = tags_data.get('difficultyClassification') or {}
+            if dc.get('label'):
+                parts.append(str(dc['label']))
+            for t in tags_data.get('evaluationTags') or []:
+                if t.get('label'):
+                    parts.append(str(t['label']))
+            for t in tags_data.get('radarTags') or []:
+                if t.get('label') and float(t.get('score', 0) or 0) >= 10:
+                    parts.append(str(t['label']))
+            if parts:
+                has_tags_diffs[diff_label] = parts
+
+    if not has_tags_diffs:
+        tags_by_diff = get_music_tags_by_difficulty(music_id)
+        for diff in DIFF_DISPLAY_ORDER:
+            if diff not in tags_by_diff:
+                continue
+            tags = tags_by_diff[diff]
+            if tags and tags != ['暂无']:
+                has_tags_diffs[diff] = tags
 
     if not has_tags_diffs:
         return []
 
-    intro = f'这是 {title} 所有谱面相关的标签'
+    source = '（WMC 谱面标签）' if wmc_results else ''
+    intro = f'这是 {title} 所有谱面相关的标签{source}'
     nodes: List[Dict[str, Any]] = [node(bot_user_id, bot_nickname, intro)]
     for diff, tags in has_tags_diffs.items():
         nodes.append(node(bot_user_id, bot_nickname, f'{diff}：{" ".join(tags)}'))
@@ -333,76 +327,87 @@ async def get_music_tags(music_id: str) -> Optional[Dict[str, str]]:
 
 
 async def fetch_combined_tags(music_id: str) -> Optional[Dict[str, str]]:
-    token = _get_dxrating_token()
-    url = getattr(maiconfig, 'dxrating_combined_tags_url', None) or 'https://derrakuma.dxrating.net/functions/v1/combined-tags'
-    if not token:
-        log.opt(lazy=True).info(
-            lambda: '[maimai] 谱面标签未显示: 未配置 dxrating_token（请在 .env 设置 MAIMAIDX_DXRATING_TOKEN 或插件配置 dxrating_token）'
-        )
+    """从 v.wmc.pub 拉取曲目所有难度的谱面标签，合并为 {分类: 标签} 字典。
+
+    旧 dxrating combined-tags API 已退役，改用 WMC /charts/:chartKey/tags。
+    未配置 wmc_api_key 时静默返回 None，不报错。
+    """
+    wmc_key = getattr(maiconfig, 'wmc_api_key', None)
+    if not wmc_key:
         return None
     try:
-        id_num = int(music_id) if str(music_id).strip().isdigit() else music_id
-    except (ValueError, TypeError):
-        id_num = music_id
-    payload = {'ids': [id_num]}
-    headers = {
-        'Authorization': f'Bearer {token}',
-        'Origin': 'https://dxrating.net',
-        'Content-Type': 'application/json',
-    }
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(url, json=payload, headers=headers)
-    except Exception as e:
-        log.warning(f'[maimai] 谱面标签请求失败 id={music_id} err={type(e).__name__}: {e}')
+        music = mai.total_list.by_id(str(music_id))
+    except Exception:
+        music = None
+    if music is None:
         return None
-    if resp.status_code != 200:
-        log.info(f'[maimai] 谱面标签 API 非 200 id={music_id} status={resp.status_code} body={resp.text[:200]}')
+    results = await fetch_wmc_chart_tags_all(music)
+    if not results:
         return None
-    try:
-        data = resp.json()
-    except Exception as e:
-        log.warning(f'[maimai] 谱面标签响应非 JSON id={music_id} err={e}')
-        return None
+    merged: Dict[str, str] = {}
+    for _diff_label, tags_data in results:
+        if not tags_data:
+            continue
+        dc = tags_data.get('difficultyClassification') or {}
+        label = dc.get('label')
+        if label:
+            merged.setdefault('难度分类', str(label))
+        for t in tags_data.get('radarTags') or []:
+            name = t.get('label')
+            if name and float(t.get('score', 0) or 0) >= 10:
+                merged.setdefault(f"配置·{name}", str(name))
+        for t in tags_data.get('evaluationTags') or []:
+            name = t.get('label')
+            if name:
+                merged.setdefault(f"评价·{name}", str(name))
     sid = str(music_id)
-    raw = None
-    if isinstance(data, dict):
-        raw = data.get(sid) or data.get(id_num)
-        if raw is None and 'data' in data:
-            raw = data['data'].get(sid) or data['data'].get(id_num)
-        if raw is None:
-            keys_preview = list(data.keys())[:12]
-            log.info(f'[maimai] 谱面标签 响应中无本曲 id={sid} 响应顶层 keys={keys_preview}')
-    if isinstance(data, list):
-        for item in data:
-            if not isinstance(item, dict):
-                continue
-            mid = item.get('id') or item.get('song_id') or item.get('music_id') or item.get('sid')
-            if str(mid) == sid:
-                raw = item.get('tags') or item.get('combined_tags') or item
-                break
-        if raw is None:
-            log.info(f'[maimai] 谱面标签 响应为 list 但未找到 id={sid} 的项')
-    if raw is None:
+    if merged:
+        log.info(f'[maimai] WMC 谱面标签 已获取 id={sid} 标签数={len(merged)}')
+    return merged or None
+
+
+async def fetch_wmc_chart_tags(music, level_index: int) -> Optional[Dict[str, Any]]:
+    """获取单个难度的 WMC 谱面标签，带 5 分钟进程内缓存。"""
+    from .maimaidx_wmc_api import WmcAPI, make_chart_key, resolve_wmc_base_url
+
+    wmc_key = getattr(maiconfig, 'wmc_api_key', None)
+    if not wmc_key:
         return None
-    if isinstance(raw, dict) and not any(k in raw for k in ('tag_category', 'tag_name', 'category', 'tag')):
-        out = {k: str(v) for k, v in raw.items() if v}
-        if out:
-            log.info(f'[maimai] 谱面标签 已获取 id={sid} 标签={list(out.keys())}')
-        return out if out else None
-    if isinstance(raw, list):
-        out = {}
-        for item in raw:
-            if not isinstance(item, dict):
-                continue
-            cat = item.get('tag_category') or item.get('category')
-            name = item.get('tag_name') or item.get('name') or item.get('tag')
-            if cat and name:
-                out[str(cat)] = str(name)
-        if out:
-            log.info(f'[maimai] 谱面标签 已获取 id={sid} 标签={list(out.keys())}')
-        return out if out else None
-    return None
+    wmc_sid = song_id_for_wmc(music)
+    kind = kind_for_wmc(music)
+    diff_val = diff_value_for_wmc(level_index)
+    chart_key = make_chart_key(wmc_sid, kind, diff_val)
+
+    now = time.time()
+    cached = _wmc_chart_tags_cache.get(chart_key)
+    if cached and now - cached[0] < _WMC_CHART_TAGS_TTL:
+        return cached[1]
+
+    api = WmcAPI(resolve_wmc_base_url(maiconfig), wmc_key)
+    try:
+        data = await api.get_tags(chart_key, radar_threshold=40, feature_threshold=0.5)
+    except Exception as e:
+        log.warning(f'[maimai] WMC 谱面标签请求失败 key={chart_key} err={type(e).__name__}: {e}')
+        return None
+    tags_data = data.get('tags') if isinstance(data, dict) else None
+    _wmc_chart_tags_cache[chart_key] = (now, tags_data)
+    return tags_data
+
+
+async def fetch_wmc_chart_tags_all(music) -> List[tuple]:
+    """并发拉取曲目所有可用难度的 WMC 标签，返回 [(diff_label, tags_dict), ...]。"""
+    import asyncio
+
+    diff_labels = ['绿谱', '黄谱', '红谱', '紫谱', '白谱']
+    count = min(len(getattr(music, 'ds', []) or []), len(diff_labels))
+    tasks = [fetch_wmc_chart_tags(music, i) for i in range(count)]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    out: List[tuple] = []
+    for i, r in enumerate(results):
+        if isinstance(r, Exception) or not r:
+            continue
+        out.append((diff_labels[i], r))
+    return out
 
 
 def newbestscore(song_id: str, lv: int, value: int, bestlist: List[ChartInfo]) -> int:

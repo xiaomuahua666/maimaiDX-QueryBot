@@ -19,7 +19,11 @@ from ..libraries.image import image_to_base64, text_to_bytes_io
 from ..libraries.maimaidx_model import AliasStatus
 from ..libraries.maimaidx_guess_letter import letter_guess
 from ..libraries.maimaidx_music import feature_manager, guess, mai, maiApi
-from ..libraries.maimaidx_music_info import build_tags_forward_nodes, draw_music_info
+from ..libraries.maimaidx_music_info import (
+    build_tags_forward_nodes,
+    draw_music_info,
+    fetch_wmc_chart_tags,
+)
 from ..libraries.maimaidx_multiver_chart import draw_multiver_chart
 from ..libraries.maimaidx_pmyx_api import PmyxAPI
 from ..libraries.maimaidx_wmc_api import (
@@ -105,26 +109,20 @@ async def _build_chart_preview_nodes(music, self_id: int, nickname: str) -> List
 async def _build_wmc_tags_forward_nodes(music, self_id: int, nickname: str) -> List[dict]:
     """从 v.wmc.pub /charts/:chartKey/tags 拉取谱面难度分析标签，构建合并转发节点。"""
     import asyncio
-    wmc_key = maiconfig.wmc_api_key
-    if not wmc_key:
-        return []
-    api = WmcAPI(resolve_wmc_base_url(maiconfig), wmc_key)
-    wmc_sid = song_id_for_wmc(music)
-    kind = kind_for_wmc(music)
     diff_labels = ['绿谱', '黄谱', '红谱', '紫谱', '白谱']
-    # 并发拉取所有难度的 tags
-    tasks = []
-    for i in range(min(len(music.ds), len(diff_labels))):
-        key = make_chart_key(wmc_sid, kind, diff_value_for_wmc(i))
-        tasks.append(api.get_tags(key, radar_threshold=40, feature_threshold=0.5))
+    # 并发拉取所有难度的 tags（复用 maimaidx_music_info 的短 TTL 缓存）
+    tasks = [
+        fetch_wmc_chart_tags(music, i)
+        for i in range(min(len(music.ds), len(diff_labels)))
+    ]
     if not tasks:
         return []
     results = await asyncio.gather(*tasks, return_exceptions=True)
     nodes = []
     for i, result in enumerate(results):
-        if isinstance(result, Exception) or not result or not isinstance(result, dict) or not result.get("tags"):
+        if isinstance(result, Exception) or not result or not isinstance(result, dict):
             continue
-        tags = result["tags"]
+        tags = result
         lines = [f"【{diff_labels[i]}】"]
         dc = tags.get("difficultyClassification")
         if dc:
