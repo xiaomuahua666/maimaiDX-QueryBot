@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -99,6 +100,45 @@ class UnifiedCursor:
         self._cur.close()
 
 
+class _BufferedCursor:
+    """在锁内一次性拉完结果的游标，避免多线程共享 MySQL 连接时串结果。
+
+    pymysql 的同一连接上多个游标并发 execute/fetch 会互相覆盖未读结果，
+    偶发返回缺列的字典（如 KeyError: 'value'）。这里在持锁期间把所有行
+    缓冲到内存，调用方随后的 fetchone/fetchall 不再触碰底层连接。
+    """
+
+    def __init__(self, rows, lastrowid, rowcount):
+        self._rows = list(rows or [])
+        self._idx = 0
+        self.lastrowid = lastrowid
+        self.rowcount = rowcount
+
+    def fetchone(self):
+        if self._idx >= len(self._rows):
+            return None
+        row = self._rows[self._idx]
+        self._idx += 1
+        return row
+
+    def fetchall(self):
+        rows = self._rows[self._idx:]
+        self._idx = len(self._rows)
+        return rows
+
+    def close(self):
+        self._rows = []
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        row = self.fetchone()
+        if row is None:
+            raise StopIteration
+        return row
+
+
 def _is_connection_error(exc: Exception) -> bool:
     """判断是否为连接断开类错误。"""
     try:
@@ -119,6 +159,8 @@ class UnifiedConnection:
         self._kwargs = kwargs
         self._conn = None
         self._last_active = 0.0
+        # 串行化对底层连接的 execute→fetch，避免多线程共用一个 MySQL 连接时游标串结果。
+        self._lock = threading.RLock()
         self._connect()
 
     def _connect(self):
@@ -164,19 +206,33 @@ class UnifiedConnection:
 
     def execute(self, sql: str, params: tuple = ()):
         """返回兼容游标，仅连接断开时自动重连。"""
-        try:
-            cur = self.cursor()
-            cur.execute(sql, params)
-            self._last_active = time.time()
-            return cur
-        except Exception as exc:
-            if self._backend == 'mysql' and _is_connection_error(exc):
-                self._connect()
+        with self._lock:
+            try:
                 cur = self.cursor()
                 cur.execute(sql, params)
+                rows = cur.fetchall()
+                lastrowid = getattr(cur._cur, 'lastrowid', None)
+                rowcount = getattr(cur._cur, 'rowcount', -1)
                 self._last_active = time.time()
-                return cur
-            raise
+                return _BufferedCursor(rows, lastrowid, rowcount)
+            except Exception as exc:
+                if self._backend == 'mysql' and _is_connection_error(exc):
+                    self._connect()
+                    cur = self.cursor()
+                    cur.execute(sql, params)
+                    rows = cur.fetchall()
+                    lastrowid = getattr(cur._cur, 'lastrowid', None)
+                    rowcount = getattr(cur._cur, 'rowcount', -1)
+                    self._last_active = time.time()
+                    return _BufferedCursor(rows, lastrowid, rowcount)
+                raise
+
+    def executemany(self, sql: str, params_list):
+        with self._lock:
+            cur = self.cursor()
+            cur.executemany(sql, params_list)
+            self._last_active = time.time()
+            return cur
 
     def executescript(self, sql: str):
         """SQLite 建表语句；MySQL 下跳过（表已由迁移脚本创建）。"""
@@ -187,13 +243,18 @@ class UnifiedConnection:
         return UnifiedCursor(self._conn.cursor(), self._backend, self._prefix)
 
     def commit(self):
-        try:
-            self._conn.commit()
-            self._last_active = time.time()
-        except Exception as exc:
-            if self._backend == 'mysql' and _is_connection_error(exc):
-                self._connect()
-            raise
+        with self._lock:
+            try:
+                self._conn.commit()
+                self._last_active = time.time()
+            except Exception as exc:
+                if self._backend == 'mysql' and _is_connection_error(exc):
+                    self._connect()
+                raise
+
+    def rollback(self):
+        with self._lock:
+            self._conn.rollback()
 
     @property
     def row_factory(self):

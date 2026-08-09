@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Union
 
@@ -9,7 +10,6 @@ from nonebot.adapters.onebot.v11 import MessageSegment
 from PIL import Image
 
 from ..config import achievementList
-from .image import image_to_base64
 from .maimaidx_best_50 import _is_latest_version
 from .maimaidx_data_storage import DailySnapshot, ScoreRecord, data_storage
 from .maimaidx_risk_image import render_risk_report
@@ -181,4 +181,8 @@ async def generate_b50_risk_warning(qqid: int) -> Union[str, MessageSegment]:
     ]
     bio = render_risk_report(nickname, len(snaps), payload,
                              b50_total=b50_total, user_name=nickname)
-    return MessageSegment.image(image_to_base64(bio))
+    # render_risk_report 已返回编码好的 PNG BytesIO，直接转 base64，避免把 BytesIO
+    # 当成 PIL Image 调用 .save 导致 AttributeError。
+    return MessageSegment.image(
+        'base64://' + base64.b64encode(bio.getvalue()).decode()
+    )
