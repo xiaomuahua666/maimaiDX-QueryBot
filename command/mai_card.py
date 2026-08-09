@@ -17,6 +17,7 @@ from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message, MessageEvent
 from nonebot.matcher import Matcher
 from nonebot.params import Arg, CommandArg
 
+from ..config import log
 from ..libraries.maimaidx_bot_admin import PLUGIN_ADMIN_ONLY
 from ..libraries.maimaidx_card import (
     CARD_TYPE_BREAK,
@@ -41,9 +42,15 @@ from ..libraries.maimaidx_platform import (
 from ..libraries.maimaidx_pending_session import finish_pending, session_key, track_event
 
 _CST = timezone(timedelta(hours=8))
-_AUTO_CODE_RE = re.compile(r'^([A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4})$')
+_AUTO_CODE_RE = re.compile(r'([A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4})')
 _AUTO_REDEEM_COOLDOWN: dict[int, float] = {}
 _AUTO_REDEEM_COOLDOWN_SECONDS = 3.0
+# 包含这些指令词的消息不再触发自动兑换，避免与显式指令重复处理。
+_AUTO_SKIP_PREFIXES = (
+    '兑换卡密', '卡密兑换', '兑换码', '查询卡密', '卡密查询',
+    '作废卡密', '禁用卡密', '创建卡密', '卡密列表', '卡密统计',
+    '我的卡密', '卡密状态', '我的加成',
+)
 
 _CARD_TYPE_ALIASES = {
     '1': CARD_TYPE_BREAK, 'break': CARD_TYPE_BREAK, 'b': CARD_TYPE_BREAK,
@@ -489,15 +496,29 @@ setattr(auto_card_redeem, '_maimaidx_busy_surcharge_exempt', True)
 
 @auto_card_redeem.handle()
 async def _(event: GroupMessageEvent):
-    text = event.get_plaintext().strip().upper()
-    match = _AUTO_CODE_RE.match(text)
+    raw_text = event.get_plaintext()
+    # 归一化：全角连字符/破折号统一为 ASCII '-'，便于识别。
+    text = (
+        raw_text.strip().upper()
+        .replace('－', '-').replace('—', '-').replace('–', '-').replace('ー', '-')
+    )
+    if any(text.startswith(p.upper()) for p in _AUTO_SKIP_PREFIXES):
+        return
+    match = _AUTO_CODE_RE.search(text)
     if not match:
         return
     code = match.group(1)
+    log.info(f'[Card] 自动识别到卡密 code={code} raw={text[:80]!r}')
 
     try:
         qqid = _account_qqid(event)
-    except Exception:
+    except Exception as exc:
+        log.warning(f'[Card] 自动兑换无法确定账号 code={code} err={type(exc).__name__}: {exc}')
+        await auto_card_redeem.finish(
+            '检测到卡密，但无法确定兑换账号。\n'
+            '请先完成账号绑定（发送「qbind」），或使用「兑换卡密 XXXX-XXXX-XXXX」。',
+            reply_message=True,
+        )
         return
 
     now = time.time()
@@ -524,11 +545,13 @@ async def _(event: GroupMessageEvent):
         result = await asyncio.to_thread(_check_and_redeem)
     except CardError as exc:
         hint = store_hint()
-        text = f'❌ 兑换失败：{exc}'
+        msg = f'❌ 兑换失败：{exc}'
         if hint:
-            text += f'\n{hint}'
-        await auto_card_redeem.finish(text, reply_message=True)
+            msg += f'\n{hint}'
+        await auto_card_redeem.finish(msg, reply_message=True)
         return
     if result is None:
+        log.info(f'[Card] 卡密不存在或已使用 code={code} qqid={qqid}')
         return
+    log.info(f'[Card] 自动兑换成功 code={code} qqid={qqid} type={result.card_type}')
     await auto_card_redeem.finish(_format_redeem_result(result), reply_message=True)
