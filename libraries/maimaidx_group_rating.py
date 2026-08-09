@@ -17,7 +17,10 @@ import asyncio
 import math
 import random
 import time
-from typing import List, Optional, Tuple
+from typing import TYPE_CHECKING, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    from nonebot.adapters.onebot.v11 import MessageSegment
 
 from nonebot.adapters.onebot.v11 import Bot
 
