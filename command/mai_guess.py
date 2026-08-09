@@ -2849,18 +2849,23 @@ async def _(event: MessageEvent):
     while data.question_count < data.max_questions:
         await asyncio.sleep(1)
         current = twentyq_guess.get(gid)
-        if current is not data or current.end:
+        # 游戏被重置/替换：无状态可结算，直接退出。
+        if current is not data:
             return
+        # 有人猜对（data.end=True）：跳出循环走后续结算，不能 return。
+        if current.end:
+            break
         if data.idle_seconds() >= TWENTYQ_IDLE_TIMEOUT:
             idle_timeout_hit = True
             break
 
     current = twentyq_guess.get(gid)
-    if current is not data or current.end:
+    # 仅当游戏被重置/替换时才退出；猜对导致的 end 要继续走结算。
+    if current is not data:
         return
 
-    # ── 阶段2：猜测阶段（正常问完进入；空闲超时跳过直接收尾）──
-    if not idle_timeout_hit and data.question_count >= data.max_questions:
+    # ── 阶段2：猜测阶段（正常问完进入；空闲超时/猜对跳过直接收尾）──
+    if not idle_timeout_hit and not data.end and data.question_count >= data.max_questions:
         await _guess_notify(
             guess_20q_start, event,
             f'📝 提问次数用完啦！进入猜曲阶段，限时 {TWENTYQ_GUESS_WINDOW} 秒，'
@@ -2870,8 +2875,12 @@ async def _(event: MessageEvent):
         while remaining > 0:
             await asyncio.sleep(1)
             current = twentyq_guess.get(gid)
-            if current is not data or current.end:
+            # 游戏被重置/替换：无状态可结算，直接退出。
+            if current is not data:
                 return
+            # 有人猜对：跳出循环走后续结算，不能 return。
+            if current.end:
+                break
             remaining -= 1
             if remaining in TWENTYQ_COUNTDOWN:
                 await _guess_notify(
