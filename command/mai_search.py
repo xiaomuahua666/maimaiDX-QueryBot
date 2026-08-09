@@ -82,8 +82,8 @@ def _pmyx_node(self_id: int, nickname: str, text: str) -> dict:
 def _chart_preview_links(music) -> list[tuple[str, str]]:
     """Return stable, public preview URLs for every available difficulty."""
     # QQ custom-keyboard buttons have limited width.  The message heading
-    # already identifies the action (preview/impression), so keep each
-    # difficulty button to the familiar one-character colour label.
+    # already identifies the action, so keep each difficulty button to the
+    # familiar one-character colour label.
     diff_names = ['绿', '黄', '红', '紫', '白']
     kind = kind_for_wmc(music)
     song_id = song_id_for_wmc(music)
@@ -91,15 +91,6 @@ def _chart_preview_links(music) -> list[tuple[str, str]]:
         (diff_names[i], build_preview_url(song_id, kind, diff_value_for_wmc(i)))
         for i in range(min(len(music.ds), len(diff_names)))
     ]
-
-
-def _chart_write_links(music) -> list[tuple[str, str]]:
-    """Return the same chart pages for impression writing.
-
-    The surrounding Markdown heading says this is the impression-writing
-    action, so the keyboard can reuse the compact colour labels.
-    """
-    return _chart_preview_links(music)
 
 
 async def _build_chart_preview_nodes(music, self_id: int, nickname: str) -> List[dict]:
@@ -384,18 +375,6 @@ async def _send_song_info_then_pmyx_forward(
             _maimaidx_skip_sender_mention=True,
         )
     await _send_forward(bot, event, all_nodes)
-    if qq_mode and _chart_write_links(music):
-        # Keep impression actions directly below the impression summary and
-        # avoid exposing bare URLs in the Markdown/forward text.
-        await bot.send(
-            event,
-            build_markdown_link_message(
-                f'ID {music.id} 谱面印象',
-                _chart_write_links(music),
-                event=event,
-            ),
-            _maimaidx_skip_sender_mention=True,
-        )
     await matcher.finish()
 
 
