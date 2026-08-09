@@ -3136,6 +3136,7 @@ def format_account_profile_sections(
             'guess_reward': '猜歌奖励',
             'admin_set': '管理员设置',
             'admin_add': '管理员调整',
+            'feishu_admin': '人工操作',
         }
         for entry in profile.recent_logs:
             ts = datetime.fromtimestamp(entry.created_at).strftime('%m-%d %H:%M')
