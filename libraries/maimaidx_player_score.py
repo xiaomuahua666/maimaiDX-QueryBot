@@ -11,9 +11,11 @@ from pyecharts.charts import Pie
 from ..config import *
 from .maimaidx_theme import pic
 from .image import *
+from PIL import Image
 from .maimaidx_api_data import *
 from .maimaidx_best_50 import ScoreBaseImage, changeColumnWidth, coloumWidth, computeRa, _music_is_new
 from .maimaidx_model import PlanInfo, PlayInfoDefault, PlayInfoDev, RaMusic
+from .maimaidx_plate_image import render_plate_progress
 from .maimaidx_music import Music, mai
 from .tool import run_chrome_to_base64
 
@@ -636,35 +638,6 @@ async def rise_score_data(
     return msg
 
 
-def plate_message(
-    result: str, 
-    plan: str, 
-    music_list: List[PlayInfoDefault], 
-    played: List[Tuple[int, int]]
-) -> Union[MessageSegment, str]:
-    """
-    Params:
-        `result`: 结果
-        `plan`: 目标
-        `music_list`: 谱面列表
-        `played`: 已游玩谱面
-    Returns:
-        `Union[MessageSegment, str]`
-    """
-    for n, m in enumerate(music_list):
-        self_record = ''
-        if (m.song_id, m.level_index) in played:
-            if plan in ['将', '者']:
-                self_record = f'{m.achievements}%'
-            if plan in ['極', '极', '神']:
-                self_record = m.fc
-            if plan in '舞舞':
-                self_record = m.fs
-        result += f'No.{n + 1:02d} {f"「{m.song_id}」":>7} {f"「{diffs[m.level_index]}」":>11} 「{m.ds:.1f}」 {m.title}  {self_record}\n'
-    if len(music_list) > 10:
-        result = MessageSegment.image(text_to_bytes_io((result.strip())))
-    return result
-
 
 async def player_plate_data(
     qqid: int, 
@@ -756,37 +729,98 @@ async def player_plate_data(
                 unfinished_model_list[level_index].append(_info)
 
     basic, advanced, expert, master, re_master = unfinished_model_list
-    
+    groups = [basic, advanced, expert, master, re_master]
+    diff_names = ['Basic', 'Advanced', 'Expert', 'Master', 'Re:Master']
+    diff_colors = [(72, 196, 120, 255), (245, 186, 60, 255),
+                   (240, 110, 130, 255), (156, 96, 220, 255),
+                   (210, 150, 255, 255)]
+
+    # 统计各难度谱面总数（作为进度条分母）
+    totals = [0, 0, 0, 0, 0]
+    for music in mai.total_list:
+        if int(music.id) not in plate_id_list:
+            continue
+        range_ = range(5 if version in ['舞', '霸'] and int(music.id) in remaster else 4)
+        for li in range_:
+            totals[li] += 1
+
     ramain = basic + advanced + expert + master + re_master
     ramain.sort(key=lambda x: x.ds, reverse=True)
     difficult = [_m for _m in ramain if _m.ds > 13.6]
 
     appellation = username if username else '您'
-    result = dedent(f'''\
-        {appellation}的「{version}{plan}」剩余进度如下：
-        Basic剩余「{len(basic)}」首
-        Advanced剩余「{len(advanced)}」首
-        Expert剩余「{len(expert)}」首
-        Master剩余「{len(master)}」首
-    ''')
-    if version in ['舞', '霸']:
-        result += f'Re:Master剩余「{len(re_master)}」首\n'
-    
-    if len(difficult) > 0:
-        if len(difficult) < 60:
-            result += '剩余定数大于13.6的曲目：\n'
-            result = plate_message(result, plan, difficult, played)
-        else:
-            result += f'还有{len(difficult)}首大于13.6定数的曲目，加油推分捏！\n'
-    elif len(ramain) > 0:
-        if len(ramain) < 60:
-            result += '剩余曲目：\n'
-            result = plate_message(result, plan, ramain, played)
-        else:
-            result += '已经没有定数大于13.6的曲目了，加油清谱捏！\n'
-    else:
-        result = f'已经没有剩余的的曲目了，恭喜{appellation}完成「{version}{plan}」！'
-    return result
+    show_re = version in ['舞', '霸']
+    idx_range = range(5) if show_re else range(4)
+    diffs_payload = [
+        {
+            'name': diff_names[li],
+            'remaining': len(groups[li]),
+            'total': totals[li],
+            'color': diff_colors[li],
+        }
+        for li in idx_range
+    ]
+
+    goal = LEVEL_PLATE_DESC.get(plan, '')
+
+    def _record(m):
+        if (m.song_id, m.level_index) not in played:
+            return ''
+        if plan in ['将', '者']:
+            return f'{m.achievements:.4f}%' if m.achievements else ''
+        if plan in ['極', '极', '神']:
+            return (m.fc or '').upper()
+        if plan in '舞舞':
+            return (m.fs or '').upper()
+        return ''
+
+    def _image(segments):
+        return MessageSegment.image(image_to_base64(Image.open(segments)))
+
+    completed = len(ramain) == 0
+    if completed:
+        payload = render_plate_progress(
+            plate_title=f'{version}{plan}', goal=goal,
+            diffs=diffs_payload, completed=True, user_name=appellation,
+        )
+        return _image(payload)
+
+    if difficult and len(difficult) >= 60:
+        notice = f'还有 {len(difficult)} 首定数大于 13.6 的曲目，加油推分捏！'
+        payload = render_plate_progress(
+            plate_title=f'{version}{plan}', goal=goal,
+            diffs=diffs_payload, notice=notice, user_name=appellation,
+        )
+        return _image(payload)
+
+    if not difficult and len(ramain) >= 60:
+        notice = '已经没有定数大于 13.6 的曲目了，加油清谱捏！'
+        payload = render_plate_progress(
+            plate_title=f'{version}{plan}', goal=goal,
+            diffs=diffs_payload, notice=notice, user_name=appellation,
+        )
+        return _image(payload)
+
+    shown = difficult if difficult else ramain
+    list_title = '剩余定数大于 13.6 的曲目' if difficult else '剩余曲目'
+    songs_payload = [
+        {
+            'song_id': int(m.song_id),
+            'title': m.title,
+            'level': m.level,
+            'level_index': int(m.level_index),
+            'ds': float(m.ds),
+            'record': _record(m),
+            'played': (m.song_id, m.level_index) in played,
+        }
+        for m in shown
+    ]
+    payload = render_plate_progress(
+        plate_title=f'{version}{plan}', goal=goal,
+        diffs=diffs_payload, songs=songs_payload, list_title=list_title,
+        user_name=appellation,
+    )
+    return _image(payload)
 
 
 async def level_process_data(

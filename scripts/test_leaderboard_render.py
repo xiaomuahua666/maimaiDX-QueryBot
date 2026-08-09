@@ -85,7 +85,9 @@ def _load_render_modules(static_dir: Path):
     lb = _load("maimaidx_leaderboard_image", "libraries/maimaidx_leaderboard_image.py")
     rep = _load("maimaidx_report_image", "libraries/maimaidx_report_image.py")
     risk = _load("maimaidx_risk_image", "libraries/maimaidx_risk_image.py")
-    return image_mod, theme, assets, lb, rep, risk, cfg
+    plate = _load("maimaidx_plate_image", "libraries/maimaidx_plate_image.py")
+    awmc = _load("maimaidx_awmc_image", "libraries/maimaidx_awmc_image.py")
+    return image_mod, theme, assets, lb, rep, risk, plate, awmc, cfg
 
 
 def _make_fake_sprites(pic_dir: Path):
@@ -218,6 +220,62 @@ def _risk_items():
          "reasons": ["较早期-3ra"]},
     ]
 
+def _plate_diffs():
+    colors = [(72, 196, 120, 255), (245, 186, 60, 255), (240, 110, 130, 255),
+              (156, 96, 220, 255)]
+    return [
+        {"name": n, "remaining": r, "total": t, "color": c}
+        for n, r, t, c in zip(
+            ["Basic", "Advanced", "Expert", "Master"],
+            [27, 27, 26, 24], [80, 90, 95, 88], colors)
+    ]
+
+
+def _plate_songs():
+    return [
+        {"song_id": 365, "title": "ガラテアの螺旋", "level": "14.6",
+         "level_index": 3, "ds": 14.6, "record": "", "played": False},
+        {"song_id": 348, "title": "Axeria", "level": "14.5",
+         "level_index": 3, "ds": 14.5, "record": "99.5000%", "played": True},
+        {"song_id": 439, "title": "最終鬼畜妹・一部声", "level": "13.9",
+         "level_index": 3, "ds": 13.9, "record": "FC", "played": True},
+        {"song_id": 288, "title": "六兆年と一夜物語", "level": "13.8",
+         "level_index": 3, "ds": 13.8, "record": "", "played": False},
+    ]
+
+
+def _awmc_profile():
+    class Log:
+        def __init__(self, delta, reason, ts):
+            self.delta = delta
+            self.reason = reason
+            self.created_at = ts
+    return {
+        "qqid": 10001, "balance": 348, "streak": 12,
+        "last_checkin_date": "2026-08-09", "checked_in_today": True,
+        "free_used_today": False, "account_bound": True, "storage_enabled": True,
+        "data_source": "divingfish", "theme": "prism_plus",
+        "today_query_count": 7, "today_analysis_count": 2,
+        "today_break_spent": 12, "today_break_gained": 5,
+        "account_today_total": 4, "account_today_success": 4,
+        "account_today_error": 0, "total_query_count": 1287,
+        "total_analysis_count": 156, "account_total": 203,
+        "account_total_success": 200, "account_total_error": 3,
+        "last_query_at": 1754726400, "last_analysis_at": 1754720000,
+        "account_operation_counts": {"bind": 1, "upload": 180, "ticket": 20},
+        "recent_account_logs": [
+            {"created_at": 1754726400, "operation": "upload",
+             "status": "success", "ref_id": "ref-001"},
+            {"created_at": 1754720000, "operation": "ticket",
+             "status": "error", "ref_id": "ref-002"},
+        ],
+        "recent_logs": [
+            Log(5, "checkin", 1754726400), Log(-7, "query", 1754720000),
+            Log(2, "guess_reward", 1754710000),
+        ],
+    }
+
+
 
 # ----------------------------------------------------------------------
 # 断言工具
@@ -239,7 +297,7 @@ def _run(coro):
 # 各测试
 # ----------------------------------------------------------------------
 def test_smoke_no_assets(mods):
-    _, _, assets, lb, rep, risk, _ = mods
+    _, _, assets, lb, rep, risk, plate, awmc, _ = mods
     _clear_asset_caches(assets)
 
     all_rows = _rating_rows(25)
@@ -291,7 +349,7 @@ def test_smoke_no_assets(mods):
 
 def test_sprite_geometry(mods):
     """有假贴图时：评级贴图可加载、Rating 徽章宽度契约一致、不越界错位。"""
-    _, _, assets, lb, _, _, cfg = mods
+    _, _, assets, lb, _, _, _, _, cfg = mods
     _make_fake_sprites(cfg.maimaidir)
     _clear_asset_caches(assets)
 
@@ -332,7 +390,7 @@ def test_sprite_geometry(mods):
 
 def test_fallback_when_assets_missing(mods):
     """无贴图时：draw_* 返回 (0,0)，调用方回退，不抛异常。"""
-    _, _, assets, lb, _, _, cfg = mods
+    _, _, assets, lb, _, _, _, _, cfg = mods
     # 清空主题目录
     import shutil
     for sub in cfg.maimaidir.glob("prism_plus"):
@@ -353,7 +411,7 @@ def test_fallback_when_assets_missing(mods):
 
 def test_square_cover_and_no_paw(mods):
     """曲绘占位图为正方形；源码不再含爪印绘制。"""
-    _, _, _, lb, _, _, _ = mods
+    _, _, _, lb, _, _, _, _, _ = mods
     for size in (48, 68, 72, 88):
         im = lb._cover_placeholder(size)
         assert im.size == (size, size), f"曲绘占位不是方形: {im.size}"
@@ -391,7 +449,7 @@ def test_utage_filter_source():
 
 def test_all_rows_decouples_stats(mods):
     """all_rows 行数与显示行数解耦：显示 3 人但统计全群 25 人也能出图。"""
-    _, _, assets, lb, _, risk, _ = mods
+    _, _, assets, lb, _, risk, plate, awmc, _ = mods
     _clear_asset_caches(assets)
     all_rows = _rating_rows(25)
     bio = _run(lb.render_rating_ranking(all_rows[:3], all_rows=all_rows))
@@ -428,7 +486,9 @@ def test_no_chinese_in_mono_font():
     bad = []
     for rel in ("libraries/maimaidx_leaderboard_image.py",
                 "libraries/maimaidx_report_image.py",
-                "libraries/maimaidx_risk_image.py"):
+                "libraries/maimaidx_risk_image.py",
+                "libraries/maimaidx_plate_image.py",
+                "libraries/maimaidx_awmc_image.py"):
         tree = ast.parse((ROOT / rel).read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
@@ -451,7 +511,7 @@ def test_no_chinese_in_mono_font():
 
 def test_render_without_font_files(mods):
     """字体文件全部缺失时，加载器回退 PIL 默认字体，渲染不应抛异常。"""
-    _, _, assets, lb, rep, risk, _cfg = mods
+    _, _, assets, lb, rep, risk, plate, awmc, _cfg = mods
     # 只把内存中的字体路径指向不存在的文件（绝不删除磁盘上的真实字体）
     assets.SIYUAN = Path("/nonexistent/missing-bold.ttf")
     assets.TBFONT = Path("/nonexistent/missing-num.ttf")
@@ -472,7 +532,7 @@ def test_render_without_font_files(mods):
 
 def test_my_rank_context(mods):
     """我在群里有多菜：以用户为中心的前后排名上下文，覆盖中位/榜首/榜尾/未找到。"""
-    _, _, assets, lb, _, risk, _ = mods
+    _, _, assets, lb, _, risk, plate, awmc, _ = mods
     _clear_asset_caches(assets)
     names = [f"Player{i}" for i in range(15)]
     rows = [(1000 + i, names[i], 16017 - i * 120) for i in range(15)]
@@ -495,7 +555,7 @@ def test_my_rank_context(mods):
 
 def test_canvas_fully_painted(mods):
     """渲染图四角必须完全不透明且非纯黑，防止透明边/黑边造成的错位观感。"""
-    _, _, assets, lb, _, risk, _ = mods
+    _, _, assets, lb, _, risk, plate, awmc, _ = mods
     _clear_asset_caches(assets)
     bio = _run(lb.render_rating_ranking(_rating_rows(6)[:6], all_rows=_rating_rows(6)))
     im = Image.open(bio).convert("RGBA")
@@ -511,7 +571,7 @@ def test_canvas_fully_painted(mods):
 
 def test_b50_risk_report(mods):
     """B50 风险新风格渲染：有风险/无风险均正常出图，宽度 1080，四角不透明。"""
-    _, _, assets, lb, _, risk, _ = mods
+    _, _, assets, lb, _, risk, plate, awmc, _ = mods
     _clear_asset_caches(assets)
 
     items = _risk_items()
@@ -533,44 +593,105 @@ def test_b50_risk_report(mods):
     print("  B50风险 无字体回退 OK")
 
 
+
+def test_plate_progress(mods):
+    """牌子进度新风格：有列表/空列表(完成)/notice 三态正常出图，宽度 1080。"""
+    _, _, assets, lb, _, risk, plate, awmc, _ = mods
+    _clear_asset_caches(assets)
+
+    diffs = _plate_diffs()
+    bio = plate.render_plate_progress(
+        plate_title="暁将", goal="达成率 ≥100%", diffs=diffs,
+        songs=_plate_songs(), list_title="剩余定数大于 13.6 的曲目",
+        user_name="Losoy")
+    im = _assert_png(bio, "牌子进度-列表", min_h=600)
+    print(f"  牌子进度(列表) {im.size} OK")
+
+    done = [{**d, "remaining": 0} for d in diffs]
+    bio = plate.render_plate_progress(
+        plate_title="暁将", goal="达成率 ≥100%", diffs=done,
+        completed=True, user_name="Losoy")
+    im = _assert_png(bio, "牌子进度-完成", min_h=400)
+    print(f"  牌子进度(完成) {im.size} OK")
+
+    bio = plate.render_plate_progress(
+        plate_title="暁将", goal="达成率 ≥100%", diffs=diffs,
+        notice="还有 68 首定数大于 13.6 的曲目，加油推分捏！", user_name="Losoy")
+    _assert_png(bio, "牌子进度-提示", min_h=400)
+    print("  牌子进度(notice) OK")
+
+
+def test_awmc_profile(mods):
+    """我的 AWMC 新风格：含余额/统计/偏好/记录正常出图，缺记录也不崩。"""
+    _, _, assets, lb, _, risk, plate, awmc, _ = mods
+    _clear_asset_caches(assets)
+
+    bio = awmc.render_awmc_profile(_awmc_profile(), user_name="Losoy")
+    im = _assert_png(bio, "AWMC-完整", min_h=600)
+    print(f"  我的AWMC(完整) {im.size} OK")
+
+    minimal = {"qqid": 42, "balance": 0}
+    bio = awmc.render_awmc_profile(minimal, user_name="Milk")
+    im = _assert_png(bio, "AWMC-最小", min_h=400)
+    print(f"  我的AWMC(最小) {im.size} OK")
+
+    # 字体缺失回退
+    assets.SIYUAN = Path("/nonexistent/missing-bold.ttf")
+    assets.TBFONT = Path("/nonexistent/missing-num.ttf")
+    _clear_asset_caches(assets)
+    bio = plate.render_plate_progress(
+        plate_title="暁将", goal="达成率 ≥100%", diffs=_plate_diffs(),
+        songs=_plate_songs(), list_title="剩余", user_name="Losoy")
+    _assert_png(bio, "牌子-无字体", min_h=400)
+    bio = awmc.render_awmc_profile(_awmc_profile(), user_name="Losoy")
+    _assert_png(bio, "AWMC-无字体", min_h=400)
+    print("  牌子/AWMC 无字体回退 OK")
+
+
 def main():
     assert sys.version_info >= (3, 9), "需要 Python 3.9+"
     with TemporaryDirectory() as tmp:
         static_dir = Path(tmp)
         mods = _load_render_modules(static_dir)
 
-        print("[1/11] 无素材冒烟渲染")
+        print("[1/13] 无素材冒烟渲染")
         test_smoke_no_assets(mods)
 
-        print("[2/11] 贴图加载与几何/错位校验")
+        print("[2/13] 贴图加载与几何/错位校验")
         test_sprite_geometry(mods)
 
-        print("[3/11] 无素材回退")
+        print("[3/13] 无素材回退")
         test_fallback_when_assets_missing(mods)
 
-        print("[4/11] 方形曲绘 / 去爪印源码校验")
+        print("[4/13] 方形曲绘 / 去爪印源码校验")
         test_square_cover_and_no_paw(mods)
 
-        print("[5/11] 宴谱过滤源码校验")
+        print("[5/13] 宴谱过滤源码校验")
         test_utage_filter_source()
 
-        print("[6/11] 全群统计解耦")
+        print("[6/13] 全群统计解耦")
         test_all_rows_decouples_stats(mods)
 
-        print("[7/11] 西文字体渲染中文静态扫描")
+        print("[7/13] 西文字体渲染中文静态扫描")
         test_no_chinese_in_mono_font()
 
-        print("[8/11] 无字体文件回退")
+        print("[8/13] 无字体文件回退")
         test_render_without_font_files(mods)
 
-        print("[9/11] 画布背景完整性")
+        print("[9/13] 画布背景完整性")
         test_canvas_fully_painted(mods)
 
-        print("[10/11] 我的排名上下文")
+        print("[10/13] 我的排名上下文")
         test_my_rank_context(mods)
 
-        print("[11/11] B50 风险新风格")
+        print("[11/13] B50 风险新风格")
         test_b50_risk_report(mods)
+
+        print("[12/13] 牌子进度新风格")
+        test_plate_progress(mods)
+
+        print("[13/13] 我的 AWMC 新风格")
+        test_awmc_profile(mods)
 
     print("\nALL RENDER TESTS PASSED 🐾")
 

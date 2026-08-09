@@ -19,6 +19,7 @@ from ..libraries.maimaidx_break import (
     break_db,
     format_account_profile,
     format_account_profile_sections,
+    render_account_profile_image,
     format_analysis_pricing_help,
     format_checkin_result,
     format_makeup_checkin_result,
@@ -607,10 +608,14 @@ async def _(bot: Bot, event: MessageEvent):
     # overview first through the tested media adapter so an optional/slow guess
     # chart can never make the whole command appear silent.
     if use_qq_mode(event):
+        display_name = get_sender_display_name(event) or 'Milk'
+        image_seg = render_account_profile_image(
+            profile, user_name=display_name
+        ) or rank_text_image(format_account_profile(profile))
         try:
             await plugin_send(
                 my_awmc,
-                rank_text_image(format_account_profile(profile)),
+                image_seg,
                 event=event,
                 reply_message=True,
             )
@@ -648,9 +653,16 @@ async def _(bot: Bot, event: MessageEvent):
         await my_awmc.finish()
         return
 
-    sections = format_account_profile_sections(profile)
+    display_name = get_sender_display_name(event) or 'Milk'
     nickname = str(getattr(maiconfig, 'botName', None) or 'AWMC Bot')
-    nodes = [build_forward_node(str(event.self_id), nickname, section) for section in sections]
+    image_seg = render_account_profile_image(
+        profile, user_name=display_name
+    )
+    if image_seg is not None:
+        nodes = [build_forward_node(str(event.self_id), nickname, image_seg)]
+    else:
+        sections = format_account_profile_sections(profile)
+        nodes = [build_forward_node(str(event.self_id), nickname, section) for section in sections]
     guess_payload = await _try_guess_stats_for_awmc(event)
     if guess_payload:
         b64, caption = guess_payload
@@ -690,8 +702,12 @@ async def _(
         await awmc_admin_view.finish('请 @用户 或提供 QQ 号', reply_message=True)
         return
     profile = get_account_profile(target)
+    image_seg = render_account_profile_image(
+        profile, title=f'AWMC 账号 {target}', user_name=str(target)
+    )
     await awmc_admin_view.finish(
-        format_account_profile(profile, title=f'AWMC 账号 {target}'),
+        image_seg if image_seg is not None
+        else format_account_profile(profile, title=f'AWMC 账号 {target}'),
         reply_message=True,
     )
 

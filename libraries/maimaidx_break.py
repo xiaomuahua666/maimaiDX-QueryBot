@@ -2938,6 +2938,24 @@ def format_account_profile(profile: AccountProfile, *, title: str = '我的 AWMC
     return '\n\n'.join(format_account_profile_sections(profile, title=title))
 
 
+def render_account_profile_image(
+    profile: AccountProfile, *, title: str = '我的 AWMC 账号', user_name: str = 'Milk'
+):
+    """把账号资料渲染成现代化图片 MessageSegment；失败回退 None。"""
+    try:
+        from nonebot.adapters.onebot.v11 import MessageSegment
+        from PIL import Image
+        from .image import image_to_base64
+        from .maimaidx_awmc_image import render_awmc_profile
+
+        data = profile.model_dump() if hasattr(profile, 'model_dump') else dict(profile)
+        bio = render_awmc_profile(data, title=title, user_name=user_name)
+        return MessageSegment.image(image_to_base64(Image.open(bio)))
+    except Exception as exc:  # pragma: no cover - 渲染失败回退文本
+        log.warning(f'[BREAK] AWMC 账号图片渲染失败，回退文本：{type(exc).__name__}: {exc}')
+        return None
+
+
 def format_account_profile_sections(
     profile: AccountProfile, *, title: str = '我的 AWMC 账号'
 ) -> List[str]:
