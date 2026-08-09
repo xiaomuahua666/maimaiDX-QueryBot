@@ -117,9 +117,10 @@ class GuessScoreManager:
     MODE_RATING = 'rating'
     MODE_IMPOSTOR = 'impostor'
     MODE_DUEL = 'duel'
+    MODE_20Q = '20q'
     GUESS_MODES = (
         MODE_SONG, MODE_PIC, MODE_AUDIO, MODE_CHART,
-        MODE_LETTER, MODE_RATING, MODE_IMPOSTOR, MODE_DUEL,
+        MODE_LETTER, MODE_RATING, MODE_IMPOSTOR, MODE_DUEL, MODE_20Q,
     )
     MODE_LABELS = {
         MODE_SONG: '猜歌',
@@ -130,6 +131,7 @@ class GuessScoreManager:
         MODE_RATING: '猜Rating',
         MODE_IMPOSTOR: '找内鬼',
         MODE_DUEL: '二选一',
+        MODE_20Q: '你想我猜',
     }
 
     PERIODS: Dict[str, PeriodSpec] = {

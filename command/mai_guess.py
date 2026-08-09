@@ -84,6 +84,13 @@ from ..libraries.maimaidx_guess_duel import (
     duel_guess,
 )
 from ..libraries.maimaidx_guess_duel_image import duel_image_segment
+from ..libraries.maimaidx_guess_20q import (
+    TWENTYQ_COUNTDOWN,
+    TWENTYQ_DURATION,
+    TWENTYQ_MAX_QUESTIONS,
+    twentyq_base_points,
+    twentyq_guess,
+)
 from ..libraries.maimaidx_music_info import *
 from ..libraries.maimaidx_platform import (
     GroupId,
@@ -143,6 +150,11 @@ def is_now_playing_guess_impostor(event) -> bool:
 def is_now_playing_guess_duel(event) -> bool:
     gid = get_event_group_id(event)
     return gid is not None and duel_guess.is_busy(gid)
+
+
+def is_now_playing_guess_20q(event) -> bool:
+    gid = get_event_group_id(event)
+    return gid is not None and twentyq_guess.is_busy(gid)
 
 
 guess_music_start   = on_command('猜歌', rule=GROUP_MESSAGE)
@@ -269,6 +281,27 @@ guess_duel_reset = on_command(
     priority=4, block=True, rule=GROUP_MESSAGE,
 )
 
+# ── 你想我猜（20 问猜曲）──
+guess_20q_start = on_command(
+    '你想我猜',
+    aliases={'20问猜曲', '二十问猜曲', '20问', '你想我猜吗'},
+    rule=GROUP_MESSAGE,
+    priority=5,
+    block=True,
+)
+guess_20q_solve = on_message(
+    rule=GROUP_MESSAGE & Rule(is_now_playing_guess_20q),
+    priority=10,
+    block=False,
+)
+guess_20q_reset = on_command(
+    '重置你想我猜',
+    aliases={'重置20问', '重置二十问'},
+    priority=4,
+    block=True,
+    rule=GROUP_MESSAGE,
+)
+
 # 猜歌玩法不参与高峰期「额外 1 BREAK」附加费（含局内答题 on_message）。
 for _guess_matcher in (
     guess_music_start,
@@ -309,6 +342,9 @@ for _guess_matcher in (
     guess_duel_join,
     guess_duel_solve,
     guess_duel_reset,
+    guess_20q_start,
+    guess_20q_solve,
+    guess_20q_reset,
 ):
     setattr(_guess_matcher, '_maimaidx_busy_surcharge_exempt', True)
 
@@ -415,7 +451,7 @@ async def _award_guess_points(
     return settlement
 
 
-_GUESS_BUSY_HINT = '该群已有正在进行的猜歌、猜曲绘、猜曲子、猜铺面、猜Rating、B50找内鬼、舞萌极限二选一或开字母'
+_GUESS_BUSY_HINT = '该群已有正在进行的猜歌、猜曲绘、猜曲子、猜铺面、猜Rating、B50找内鬼、舞萌极限二选一、你想我猜或开字母'
 _GUESS_SEND_FAIL_MSG = '游戏数据获取失败，本游戏已结束。'
 GUESS_SEND_TIMEOUT_TEXT = 15
 GUESS_SEND_TIMEOUT_MEDIA = 60
@@ -442,12 +478,17 @@ def _duel_busy(gid: GroupId) -> bool:
     return duel_guess.is_busy(gid)
 
 
+def _twentyq_busy(gid: GroupId) -> bool:
+    return twentyq_guess.is_busy(gid)
+
+
 def _guess_or_letter_busy(gid: GroupId) -> bool:
     return (
         guess.is_busy(gid)
         or _letter_busy(gid)
         or _rating_or_impostor_busy(gid)
         or _duel_busy(gid)
+        or _twentyq_busy(gid)
     )
 
 
@@ -2747,3 +2788,197 @@ async def _(event: MessageEvent):
 
 
 from ..libraries import maimaidx_guess_scheduler  # noqa: F401
+
+
+# ───────────────────── 你想我猜（20 问猜曲） ─────────────────────
+
+
+def _twentyq_intro() -> str:
+    return dedent(f'''\
+        🐱 你想我猜开始！Milk 心里想了一首舞萌曲目～
+        大家可以向 Milk 提问「是/否」问题来缩小范围，共 {TWENTYQ_MAX_QUESTIONS} 次提问机会。
+        ⏱ 限时 {TWENTYQ_DURATION} 秒，想到答案就直接发曲名抢猜！
+        可问方向：分类 / BPM / 定数 / 版本 / 是否 DX 谱面 / 艺术家 / 标题特征。
+        问得越少，猜对得分越高（最高 {twentyq_base_points(0)} 分，可叠加连击与加倍卡）。
+        输入「重置你想我猜」可结束本局。
+    ''')
+
+
+@guess_20q_start.handle()
+async def _(event: MessageEvent):
+    await _gate_guess_group_entry(guess_20q_start, event)
+    gid = get_event_group_id(event)
+    if gid is None:
+        await guess_20q_start.finish('请在群内使用。', reply_message=True)
+    if not guess.is_enabled(gid):
+        await guess_20q_start.finish(
+            '该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True,
+        )
+    if not await _reserve_game_session(gid, '20q'):
+        await guess_20q_start.finish(_GUESS_BUSY_HINT, reply_message=True)
+
+    if not twentyq_guess.lock(gid):
+        _release_game_session(gid)
+        await guess_20q_start.finish(_GUESS_BUSY_HINT, reply_message=True)
+
+    try:
+        data = twentyq_guess.start(gid, duration=TWENTYQ_DURATION)
+    except Exception:
+        twentyq_guess.unlock(gid)
+        raise
+
+    await _guess_notify(guess_20q_start, event, _twentyq_intro(), reply=True)
+
+    remaining = data.duration
+    while remaining > 0:
+        await asyncio.sleep(1)
+        current = twentyq_guess.get(gid)
+        if current is not data or current.end:
+            break
+        remaining -= 1
+        if remaining in TWENTYQ_COUNTDOWN:
+            await _guess_notify(
+                guess_20q_start, event,
+                f'⏳ 你想我猜还剩 {remaining} 秒！已提问 {data.question_count} 次。',
+            )
+
+    current = twentyq_guess.get(gid)
+    if current is not data:
+        return
+
+    if data.winner_uid:
+        uid = data.winner_uid
+        name = data.winner_name or '群友'
+        raw_base = twentyq_base_points(data.question_count)
+        multiplier = 1
+        multiplier_tags: List[str] = []
+        if await guess_boost_card.consume_one(gid, uid):
+            multiplier *= 2
+            multiplier_tags.append('限时加倍卡×2')
+        (
+            added, _raw, combo, _streak, total, rank, period_snapshot,
+        ) = await guess_score.award_correct_guess(
+            gid, uid, name, raw_base, multiplier,
+            mode=guess_score.MODE_20Q,
+        )
+        settlement = guess_score.format_settlement_lines(
+            added, raw_base, combo, multiplier, _streak, total, rank,
+            period_snapshot, multiplier_tags,
+        )
+        from ..libraries.maimaidx_break import break_db
+
+        reward = break_db.award_guess_points(
+            data.winner_billing, added, group_id=str(gid),
+        )
+        break_part = ''
+        if reward.break_added > 0:
+            break_part = f'\n💳 猜对奖励 +{reward.break_added} BREAK（余额 {reward.balance}）'
+        result = (
+            f'🎉 恭喜 {name} 猜对啦！用了 {data.question_count} 次提问。\n'
+            f'{twentyq_guess.reveal_text(data)}\n\n{settlement}{break_part}'
+        )
+        await _safe_matcher_send(
+            guess_20q_start, event, result, gid, fatal=False,
+        )
+    else:
+        await guess_score.reset_all_streaks(gid)
+        result = (
+            '⏰ 时间到（或提问机会已用完），没有人猜出来喵～\n'
+            f'{twentyq_guess.reveal_text(data)}'
+        )
+        await _safe_matcher_send(
+            guess_20q_start, event, result, gid, fatal=False,
+        )
+
+    twentyq_guess.end(gid, expected=data)
+    await guess_20q_start.finish()
+
+
+@guess_20q_solve.handle()
+async def _(event: MessageEvent):
+    gid = get_event_group_id(event)
+    if gid is None:
+        return
+    data = twentyq_guess.get(gid)
+    if data is None or data.end:
+        return
+
+    text = event.get_plaintext().strip()
+    if not text:
+        return
+
+    uid_key = platform_user_id(event)
+    rate_limit_msg = consume_guess_answer_slot(uid_key)
+    if rate_limit_msg:
+        await guess_20q_solve.finish(
+            adapt_guess_outbound(rate_limit_msg, event=event),
+            reply_message=resolve_reply_message(event, reply_message=True),
+        )
+
+    result = twentyq_guess.process_message(
+        gid, uid_key, get_sender_display_name(event), text,
+        billing_id=billing_user_id(event),
+    )
+    kind = result.get('kind')
+
+    if kind == 'win':
+        bot = resolve_event_bot(event)
+        reacted = await react_processing(bot, event, emoji_id=REACT_EMOJI_CHECK)
+        if not reacted:
+            await _guess_notify(
+                guess_20q_solve, event,
+                f'✅ {get_sender_display_name(event)} 猜对了！正在结算…',
+                mention_sender=True,
+            )
+        return
+
+    if kind == 'question':
+        suffix = f'\n（还可提问 {result["remaining"]} 次）'
+        if result.get('last'):
+            suffix = '\n⚠️ 提问次数用完啦！接下来请直接发曲名作为最终猜测。'
+        await _guess_notify(
+            guess_20q_solve, event,
+            f'{result["answer"]}{suffix}',
+            mention_sender=True,
+        )
+        return
+
+    if kind == 'no_questions':
+        await _guess_notify(
+            guess_20q_solve, event,
+            '提问次数已用完啦，请直接发曲名作为最终猜测喵～',
+            mention_sender=True,
+        )
+        return
+
+    if kind == 'failed':
+        await _guess_notify(
+            guess_20q_solve, event,
+            '唔…这不是 Milk 心里想的那首喵，很遗憾本局结束。',
+            mention_sender=True,
+        )
+        return
+
+    if kind == 'unknown':
+        await _guess_notify(
+            guess_20q_solve, event, result['answer'],
+            mention_sender=True,
+        )
+
+
+@guess_20q_reset.handle()
+async def _(event: MessageEvent):
+    gid = get_event_group_id(event)
+    if gid is None:
+        return
+    if not twentyq_guess.is_busy(gid):
+        await guess_20q_reset.finish(
+            '当前没有进行中的你想我猜。', reply_message=True,
+        )
+    data = twentyq_guess.get(gid)
+    answer = twentyq_guess.reveal_text(data) if data else ''
+    twentyq_guess.end(gid)
+    msg = '你想我猜已重置。'
+    if answer:
+        msg += f'\n{answer}'
+    await guess_20q_reset.finish(msg, reply_message=True)
