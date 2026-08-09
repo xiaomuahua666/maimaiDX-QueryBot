@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import re
@@ -26,6 +27,10 @@ FC_ICON = {
 
 BORDER_COLOR = [(46, 125, 50), (249, 168, 37), (229, 57, 53), (156, 39, 176), (156, 100, 220)]
 _bg_image = None
+
+# 头像/曲绘封面并发下载上限；过高会被源站限流，过低则首次渲染排队明显。
+_ASSET_DOWNLOAD_CONCURRENCY = 8
+_ASSET_DOWNLOAD_TIMEOUT = 8.0
 
 
 def _f(v: Any, d: float = 0.0) -> float:
@@ -772,14 +777,27 @@ async def prepare_render_cache(context: dict, assets_path: str) -> None:
     if not urls:
         return
 
-    async with httpx.AsyncClient(timeout=8) as client:
-        for url, path in urls:
+    semaphore = asyncio.Semaphore(_ASSET_DOWNLOAD_CONCURRENCY)
+
+    async def download(client: httpx.AsyncClient, url: str, path: Path) -> None:
+        cached = path
+        if cached.exists():
+            return
+        async with semaphore:
             try:
                 resp = await client.get(url)
                 resp.raise_for_status()
-                path.write_bytes(resp.content)
+                tmp = path.with_suffix(path.suffix + ".part")
+                tmp.write_bytes(resp.content)
+                tmp.replace(path)
             except Exception:
-                continue
+                try:
+                    path.with_suffix(path.suffix + ".part").unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+    async with httpx.AsyncClient(timeout=_ASSET_DOWNLOAD_TIMEOUT) as client:
+        await asyncio.gather(*(download(client, url, path) for url, path in urls))
 
 
 def render_image(context: dict, analysis_text: str, assets_path: str) -> Any:

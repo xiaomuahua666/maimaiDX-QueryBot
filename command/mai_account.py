@@ -23,7 +23,7 @@ from ..config import log, maiconfig
 from ..libraries.maimaidx_account_db import AccountBinding, account_db
 from ..libraries.maimaidx_admin_audit import admin_audit, redact
 from ..libraries.maimaidx_break import break_db
-from ..libraries.maimaidx_error import QBindRequiredError
+from ..libraries.maimaidx_error import BreakInsufficientError, QBindRequiredError
 from ..libraries.maimaidx_group_rating import build_forward_node
 from ..libraries.maimaidx_lxns_client import (
     LxnsApiError,
@@ -1647,6 +1647,8 @@ def _service_cost(service: str, *, multiple: int = 1) -> int:
     if service == "ticket":
         unit = int(break_db.get_config("ticket_cost_per_multiplier", "10"))
         return max(0, unit) * max(1, multiple)
+    if service == "awmc_status":
+        return max(0, int(break_db.get_config("awmc_status_cost", "2")))
     if service in {"awmc_preview", "awmc_items", "awmc_gate_status"}:
         return max(0, int(break_db.get_config("awmc_read_cost", "5")))
     if service == "awmc_music_upsert":
@@ -1683,6 +1685,7 @@ def _charge_text(result) -> str:
     labels = {
         "upload": "成绩上传",
         "ticket": "发票",
+        "awmc_status": "账号状态查询",
         "awmc_preview": "账号预览查询",
         "awmc_items": "道具查询",
         "awmc_gate_status": "门状态查询",
@@ -1711,6 +1714,7 @@ async def _(event: MessageEvent):
     all_cost = break_db.get_config("upload_all_cost", "3")
     ticket_unit = break_db.get_config("ticket_cost_per_multiplier", "10")
     read_cost = break_db.get_config("awmc_read_cost", "5")
+    status_cost = break_db.get_config("awmc_status_cost", "2")
     edit_cost = break_db.get_config("awmc_music_upsert_cost", "75")
     delete_cost = break_db.get_config("awmc_music_delete_cost", "50")
     clear_cost = break_db.get_config("awmc_ticket_clear_cost", "10")
@@ -1720,7 +1724,7 @@ async def _(event: MessageEvent):
         account_help,
         "AWMC 账号功能（已合并到 QueryBot）\n"
         "mai绑定 / maibind：绑定或认领舞萌账号\n"
-        "mai状态 / mymai：查看账号详细状态，缓存失效时引导刷新二维码\n"
+        f"mai状态 / mymai：查看账号详细状态，每次成功查询 {status_cost} BREAK，失败不扣费\n"
         "舞萌状态 / mais：AWMC 全局失败率分类图（空分类省略）+ 实时状态\n"
         "mai绑定水鱼 [Token] / maibindfish：无参数时交互引导，最多重试 3 次\n"
         "lxbind：落雪 OAuth（推荐）；maibindlx <导入Token> 为兼容方式\n"
@@ -1735,6 +1739,7 @@ async def _(event: MessageEvent):
         f"当前上传价格：水鱼 {fish_cost} / 落雪 {lx_cost} / 同时 {all_cost} BREAK\n"
         f"发票价格：倍率 × {ticket_unit} BREAK（当前支持：{ticket_multipliers}）\n"
         f"AWMC 只读新功能：每次成功查询 {read_cost} BREAK，失败不扣费\n"
+        f"账号状态查询（mymai）：每次成功查询 {status_cost} BREAK，失败不扣费\n"
         f"成绩编辑 {edit_cost} BREAK / 条；成绩删除 {delete_cost} BREAK / 条，失败不扣费\n"
         f"清票 {clear_cost} BREAK / 次；道具修改 {item_cost} BREAK / 次（未经测试，风险自负）\n"
         "已有 2/3/5 倍票未使用时重复发票，将拦截并扣除 20 BREAK。\n"
@@ -1902,12 +1907,16 @@ async def _(
 
     cache_valid, cache_label = _sgid_cache_state(binding)
     if cache_valid:
+        cost = _service_cost("awmc_status")
         try:
+            break_db.ensure_service_affordable(int(key), "awmc_status", cost)
             binding, preview = await _read_verified_preview(
                 binding, binding.qrcode, save_qrcode=False
             )
             text = await _render_account_status(event, binding, preview)
-            ref = _log(key, "status", "success", "preview_source=sgid_cache")
+        except BreakInsufficientError as exc:
+            ref = _log(key, "status", "error", "insufficient_break")
+            await account_status.finish(f"{exc}\nRef_ID: {ref}", reply_message=True)
         except Exception as exc:
             if is_sw_api_quota_error(exc):
                 ref = _log(key, "status", "error", _exception_detail(exc))
@@ -1918,7 +1927,16 @@ async def _(
             matcher.state["status_cache_error"] = type(exc).__name__
             cache_label = "缓存验证失败，需刷新"
         else:
-            await account_status.finish(text + f"\nRef_ID: {ref}", reply_message=True)
+            charge = break_db.settle_service_success(
+                int(key), "awmc_status", cost, meta={"operation": "status", "source": "sgid_cache"}
+            )
+            ref = _log(
+                key, "status", "success",
+                f"preview_source=sgid_cache,charged={charge.charged}",
+            )
+            await account_status.finish(
+                text + f"\n{_charge_text(charge)}\nRef_ID: {ref}", reply_message=True
+            )
     track_event(session_key("account_status", event), event)
     await account_status.send(_status_qrcode_prompt(cache_label), reply_message=True)
 
@@ -1975,9 +1993,18 @@ async def _(
 
     if not qrcode:
         await retry("未识别到 SGWCMAID 或受支持的官方二维码链接")
+    cost = _service_cost("awmc_status")
     try:
+        break_db.ensure_service_affordable(int(key), "awmc_status", cost)
         binding, preview = await _read_verified_preview(
             binding, qrcode, save_qrcode=True
+        )
+        text = await _render_account_status(event, binding, preview)
+    except BreakInsufficientError as exc:
+        ref = _log(key, "status", "error", "insufficient_break")
+        finish_pending(pending_key)
+        await account_status.finish(
+            recall_notice + f"{exc}\nRef_ID: {ref}", reply_message=True
         )
     except Exception as exc:
         if is_sw_api_quota_error(exc):
@@ -1988,11 +2015,17 @@ async def _(
                 reply_message=True,
             )
         await retry(type(exc).__name__)
-    text = await _render_account_status(event, binding, preview)
-    ref = _log(key, "status", "success", "preview_source=user_refresh")
+    charge = break_db.settle_service_success(
+        int(key), "awmc_status", cost, meta={"operation": "status", "source": "user_refresh"}
+    )
+    ref = _log(
+        key, "status", "success",
+        f"preview_source=user_refresh,charged={charge.charged}",
+    )
     finish_pending(pending_key)
     await account_status.finish(
-        recall_notice + text + f"\nRef_ID: {ref}", reply_message=True
+        recall_notice + text + f"\n{_charge_text(charge)}\nRef_ID: {ref}",
+        reply_message=True,
     )
 
 

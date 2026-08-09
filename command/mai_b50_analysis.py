@@ -31,6 +31,7 @@ from ..libraries.maimaidx_break import (
     take_break_charge_footer,
 )
 from ..libraries.maimaidx_error import BreakInsufficientError, format_command_error, QBindRequiredError
+from ..libraries.maimaidx_image_executor import run_image_cpu
 from ..libraries.maimaidx_platform import (
     billing_user_id,
     platform_user_id,
@@ -203,7 +204,13 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
 
         failure_stage = '制图'
         await prepare_render_cache(context, maiconfig.b50_assets_path)
-        img = render_image(context, analysis_text, maiconfig.b50_assets_path)
+        def _render_and_encode():
+            image = render_image(context, analysis_text, maiconfig.b50_assets_path)
+            buffer = io.BytesIO()
+            image.save(buffer, format='PNG')
+            buffer.seek(0)
+            return buffer
+        buf = await run_image_cpu(_render_and_encode)
     except BaseException as e:
         refund_analysis_charge(
             billing_qq,
@@ -235,9 +242,6 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
         token_usage=token_usage,
     )
 
-    buf = io.BytesIO()
-    img.save(buf, format='PNG')
-    buf.seek(0)
     balance = break_db.get_balance(billing_qq)
     query_footer = take_break_charge_footer()
     footer_parts = []

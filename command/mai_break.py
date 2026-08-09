@@ -45,6 +45,7 @@ from ..libraries.maimaidx_platform import (
     use_qq_mode,
 )
 from ..libraries.maimaidx_group_rating import build_forward_node
+from ..libraries.maimaidx_image_executor import run_image_cpu
 from ..libraries.maimaidx_pending_session import finish_pending, session_key, track_event
 from ..config import log, maiconfig
 from .mai_agreement import agreement_prompt, has_user_agreed
@@ -469,6 +470,27 @@ async def _try_guess_stats_for_awmc(
     """已弃用：我的AWMC 不再附带猜歌数据图。保留桩函数兼容旧测试 monkeypatch。"""
     return None
 
+
+def _render_awmc_overview(profile, *, display_name: str):
+    """同步生成账号概览图片；任何渲染失败都回退到文本图片，绝不抛异常。"""
+    try:
+        image_seg = render_account_profile_image(
+            profile, user_name=display_name
+        )
+        if image_seg is not None:
+            return image_seg
+    except Exception as exc:
+        log.warning(
+            f'[BREAK] 我的AWMC卡片渲染失败，回退文本：{type(exc).__name__}: {exc}'
+        )
+    try:
+        return rank_text_image(format_account_profile(profile))
+    except Exception as exc:
+        log.warning(
+            f'[BREAK] 我的AWMC文本图渲染失败：{type(exc).__name__}: {exc}'
+        )
+        return None
+
 def _account_qqid(event: MessageEvent) -> int:
     """签到/账号类：官方 QQ 必须 qbind；OneBot 直接用消息 QQ。"""
     if use_qq_mode(event):
@@ -560,17 +582,26 @@ async def _(bot: Bot, event: MessageEvent):
     except QBindRequiredError as exc:
         await plugin_finish(my_awmc, str(exc), event=event, reply_message=True)
         return
-    profile = get_account_profile(qqid)
-
-    # 官方 QQ 与 OneBot 统一直接发送账号卡片图片，不再使用合并转发
-    # （build_forward_node 会把 MessageSegment 强转成字符串，无法发出图片）。
-    display_name = get_sender_display_name(event) or 'Milk'
-    image_seg = render_account_profile_image(
-        profile, user_name=display_name
-    ) or rank_text_image(format_account_profile(profile))
-    # 官方 QQ 群需 publish_qq_image 才会把图片发布并以 Markdown 图显示，
-    # 与 B50 / 排行榜成绩图走同一发送路径。
+    profile = None
     try:
+        # 官方 QQ 与 OneBot 统一直接发送账号卡片图片，不再使用合并转发
+        # （build_forward_node 会把 MessageSegment 强转成字符串，无法发出图片）。
+        display_name = get_sender_display_name(event) or 'Milk'
+        # 资料读取与 Pillow 绘图都放到图片线程池，避免阻塞事件循环导致“无响应”。
+        profile = await run_image_cpu(get_account_profile, qqid)
+        image_seg = await run_image_cpu(
+            _render_awmc_overview, profile, display_name=display_name
+        )
+        # 官方 QQ 群需 publish_qq_image 才会把图片发布并以 Markdown 图显示，
+        # 与 B50 / 排行榜成绩图走同一发送路径。
+        if image_seg is None:
+            await plugin_finish(
+                my_awmc,
+                format_account_profile(profile),
+                event=event,
+                reply_message=True,
+            )
+            return
         await plugin_finish(
             my_awmc,
             image_seg,
@@ -579,19 +610,25 @@ async def _(bot: Bot, event: MessageEvent):
             publish_qq_image=True,
         )
     except FinishedException:
-        # plugin_finish 正常结束 matcher 时抛出，属于正常控制流
         return
     except Exception as exc:
         log.warning(
-            f'[BREAK] 我的AWMC概览图发送失败，回退文本：'
+            f'[BREAK] 我的AWMC概览生成/发送失败，回退文本：'
             f'{type(exc).__name__}: {exc}'
         )
-        await plugin_finish(
-            my_awmc,
-            format_account_profile(profile),
-            event=event,
-            reply_message=True,
-        )
+        try:
+            fallback = format_account_profile(profile)
+        except Exception:
+            fallback = '账号概览暂时无法生成，请稍后再试。'
+        try:
+            await plugin_finish(
+                my_awmc,
+                fallback,
+                event=event,
+                reply_message=True,
+            )
+        except FinishedException:
+            return
 
 
 @awmc_admin_view.handle()
