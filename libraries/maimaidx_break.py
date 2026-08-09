@@ -40,7 +40,8 @@ DEFAULT_CONFIG: Dict[str, str] = {
     'analysis_price_multiplier': '1',
     'analysis_precharge_cost': '10',
     # 第 1～5 天按曲线递增；streak_bonus_growth 控制超过曲线后每天的增长量，0 = 封顶。
-    'streak_bonus': '1,2,3,4,5',
+    # 曲线收敛至 3，避免连签奖励成为长期通胀来源。
+    'streak_bonus': '1,1,2,2,3',
     'streak_bonus_growth': '0',
     'makeup_checkin_costs': '30,60,90',
     'bonus_group_1072033605': '0.25',
@@ -83,7 +84,8 @@ LEGACY_ECONOMY_DEFAULTS: Dict[str, str] = {
     'bonus_group_first': '1.0',
 }
 
-CAPPED_STREAK_DEFAULT = '0,0,1,1,1,2,2'
+# 历史上出现过的连签曲线默认值，启动时迁移到当前温和曲线。
+LEGACY_STREAK_DEFAULTS = frozenset({'1,2,3,4,5', '0,0,1,1,1,2,2'})
 
 BONUS_GROUP_IDS = {int(BOT_QQ_GROUP), 993795066}
 DOUBLE_CHECKIN_GROUP_IDS = {669800745}
@@ -476,13 +478,14 @@ def calculate_checkin_reward(
     streak_bonus: int,
     reward_multiplier: int = 1,
 ) -> int:
-    """签到最终奖励：加算百分比与连签奖励计算完成后，再应用群倍数。"""
-    return int(
-        round(
-            (int(base) * (1 + float(multiplier_sum)) + int(streak_bonus))
-            * max(1, int(reward_multiplier))
-        )
-    )
+    """签到最终奖励。
+
+    群倍数（如 ×2 群）只放大基础与百分比加算部分，连签奖励不被群倍数放大，
+    避免指定群用户的连签奖励长期翻倍造成经济膨胀。
+    """
+    multiplier = max(1, int(reward_multiplier))
+    base_part = int(round(int(base) * (1 + float(multiplier_sum)) * multiplier))
+    return base_part + max(0, int(streak_bonus))
 
 
 def parse_makeup_checkin_costs(raw: str) -> tuple[int, ...]:
@@ -702,7 +705,7 @@ class BreakDatabase:
         self._migrate_analysis_max_cost_default()
         self._migrate_analysis_token_rates_default()
         self._migrate_analysis_pricing_default()
-        self._restore_uncapped_streak_default()
+        self._migrate_streak_curve_default()
 
     def _migrate_ticket_cost_default(self) -> None:
         """将旧版发票默认价（倍率 ×2/×3）迁移为倍率 ×10。"""
@@ -800,18 +803,18 @@ class BreakDatabase:
             self._conn.commit()
             log.info('[BREAK] 已将旧版高通胀签到默认值迁移为温和配置')
 
-    def _restore_uncapped_streak_default(self) -> None:
-        """仅恢复上一版的封顶默认值，保留管理员自定义签到曲线。"""
+    def _migrate_streak_curve_default(self) -> None:
+        """把仍在使用历史默认连签曲线的配置迁移到当前温和曲线，保留管理员自定义值。"""
         row = self._conn.execute(
             'SELECT value FROM break_config WHERE key = ?', ('streak_bonus',)
         ).fetchone()
-        if row and str(row['value']) == CAPPED_STREAK_DEFAULT:
+        if row and str(row['value']) in LEGACY_STREAK_DEFAULTS:
             self._conn.execute(
                 'UPDATE break_config SET value = ? WHERE key = ?',
                 (DEFAULT_CONFIG['streak_bonus'], 'streak_bonus'),
             )
             self._conn.commit()
-        log.info('[BREAK] 已恢复连续签到奖励曲线，并启用无上限增长')
+            log.info('[BREAK] 已将历史连签奖励曲线迁移为封顶 3 的温和配置')
 
     def get_config(self, key: str, default: str = '') -> str:
         row = self._conn.execute(

@@ -162,7 +162,7 @@ async def _require_break_agreement(matcher, event: MessageEvent) -> None:
 async def _():
     text = (
         '【AWMC BREAK 系统】\n'
-        '· AWMC签到 — 每日签到获取 BREAK（基础 1~2，连续签到奖励不封顶）\n'
+        '· AWMC签到 — 每日签到获取 BREAK（基础 1~2，连签额外奖励第 5 天起封顶 3）\n'
         '· AWMC补签 — 补昨天，每月最多 3 次，依次消耗 30/60/90 BREAK\n'
         '· 今日舞萌 — 人品值四舍五入后 ÷10，每日领取一次 BREAK\n'
         '· 猜歌 — 每次猜对奖励 1 BREAK，无每日上限\n'
@@ -187,7 +187,7 @@ async def _():
         '· 周四 +50%\n'
         '· 群内当日首签 +50%\n'
         '· 开启数据存储 +50%（发送「开启存储数据」；需保持开启跨天，频繁开关不重复发）\n'
-        '· 连续签到额外奖励（第 6 天起封顶）'
+        '· 连续签到额外奖励（第 5 天起封顶 3，群倍数不放大连签奖励）'
     )
     await awmc_help.finish(text, reply_message=True)
 

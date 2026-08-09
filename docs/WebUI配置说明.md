@@ -142,7 +142,7 @@ https://bot.example.com/ops/maimai/api/...
 |---|---:|---|
 | `checkin_base_min` | 1 | 签到随机下限 |
 | `checkin_base_max` | 2 | 签到随机上限 |
-| `streak_bonus` | `1,2,3,4,5` | 连续签到前几天的额外值 |
+| `streak_bonus` | `1,1,2,2,3` | 连续签到前几天的额外值（第 5 天起封顶 3） |
 | `streak_bonus_growth` | `0` | 超过上述天数后每天继续增加的值；0 = 封顶在曲线末尾 |
 | `bonus_group_1072033605` | 0.25 | 群 1072033605、993795066 的共同签到加成 |
 | `bonus_thursday` | 0.5 | 周四加成 |
