@@ -264,11 +264,16 @@ class Guess20QManager:
         if consumed:
             # 否定反转：玩家说「不是动漫曲吧」「无白谱吗」时，把是/否回答反转
             answer, reason = _apply_negation(question_text, answer, reason)
+            log.info(
+                f'[Guess20Q] 规则判定 question={question_text!r} answer={answer} '
+                f'reason={reason!r}（不走 LLM）'
+            )
             return _respond(answer, reason)
 
         # 规则未命中 → LLM 兜底判断（开关开启且配置了 key 时）
         # 注意：LLM 看到完整问题（含「不是/无」等否定词），已按语义直接判断，
         # 这里不再做 _apply_negation 反转，否则会双重反转。
+        log.info(f'[Guess20Q] 规则未命中，尝试 LLM 兜底 question={question_text!r}')
         llm_result = await _llm_classify(data.music, question_text, _get_config())
         # await 期间游戏可能被超时/重置/猜对结束，或被其他玩家用完提问次数，
         # 必须重新校验，否则会操作已失效的 data 或超额提问。
@@ -313,7 +318,7 @@ def _reason_cmp(dim: str, text: str, nums: List[float], *, plus: bool = False) -
     n = nums[0]
     num = f'{n:g}'
     if plus:
-        return f'{dim} 是否为 {n:g}+（{n:g}~{n + 0.5:g}）'
+        return f'{dim} 是否为 {n:g}+（{n + 0.5:g}~{n + 1.0:g}）'
     t = text
     if any(k in t for k in ('以上', '≥', '>=', '不低于', '不小于', '大于等于', '大於等於')):
         return f'{dim} 是否 ≥ {num}'
@@ -624,12 +629,21 @@ def _q_ds(music: Music, text: str) -> Optional[str]:
             (n + 0.5) <= target_ds < (n + 1.0),
             _reason_cmp(f'判定维度：{color}定数', text, nums, plus=True),
         )
-    res = _cmp_bool(target_ds, text, nums)
-    if res is not None:
-        return _r(res, _reason_cmp(f'判定维度：{color}定数', text, nums))
+    # 定数题里「是14吗」指的是 14 档（14.0~14.5），不能像 BPM 那样把「是」
+    # 当成精确相等——否则 14.4 会被误判为「不是14」。只有出现明确比较词
+    # （大于/小于/以上/以下/等于 等）时才走数值比较。
+    explicit_cmp = (
+        '以上', '以下', '大于', '小于', '超过', '低于', '不到', '不满',
+        '多于', '少于', '不低于', '不高于', '不超过', '等于',
+        '≥', '≤', '>=', '<=', '>', '<', '=',
+    )
+    if any(k in text for k in explicit_cmp):
+        res = _cmp_bool(target_ds, text, nums)
+        if res is not None:
+            return _r(res, _reason_cmp(f'判定维度：{color}定数', text, nums))
     return _r(
         n <= target_ds < n + 0.5,
-        f'判定维度：{color}定数是否为 {n:g}（{n:g}~{n + 0.5:g}）',
+        f'判定维度：{color}定数是否为 {n:g} 档（{n:g}~{n + 0.5:g}）',
     )
 
 
@@ -1379,18 +1393,28 @@ def _parse_llm_response(content: str) -> Tuple[Optional[str], str]:
 async def _llm_classify(music: Music, text: str, config) -> Optional[Tuple[str, str]]:
     """LLM 兜底判断。返回 (是/否, 判定依据) 或 None（无法回答或调用失败）。
 
-    调用失败（网络/超时/解析失败/无法回答）时返回 None，由调用方走 unknown 提示。
+    完全沿用锐评（B50 分析）的 b50_llm_url / b50_llm_key / b50_llm_model 配置。
+    每个决策点（开关/key/缓存/请求/结果/失败）都写日志，便于排查为什么没走 AI。
     """
+    if config is None:
+        log.info('[Guess20Q] LLM 跳过：未获取到配置（maiconfig 未就绪）')
+        return None
     if not getattr(config, 'guess_20q_llm_enable', False):
+        log.info('[Guess20Q] LLM 跳过：guess_20q_llm_enable=False')
         return None
 
     cache_key = _llm_cache_key(music, text)
     cached = _llm_cache_get(cache_key)
     if cached is not None:
-        log.debug(f'[Guess20Q] LLM 缓存命中 question={text!r}')
+        ans = cached[0] if cached else None
+        log.info(f'[Guess20Q] LLM 缓存命中 question={text!r} answer={ans!r}（不重复请求）')
         return cached
 
     if not getattr(config, 'b50_llm_key', ''):
+        log.warning(
+            '[Guess20Q] LLM 跳过：未配置 b50_llm_key（与锐评/B50分析共用），'
+            '请在 .env 填写 B50_LLM_KEY/B50_LLM_URL/B50_LLM_MODEL'
+        )
         return None
 
     try:
@@ -1398,6 +1422,11 @@ async def _llm_classify(music: Music, text: str, config) -> Optional[Tuple[str, 
     except ImportError:
         log.warning('[Guess20Q] LLM 兜底需要 openai 库，未安装')
         return None
+
+    log.info(
+        f'[Guess20Q] LLM 发起请求 model={getattr(config, "b50_llm_model", "?")} '
+        f'url={getattr(config, "b50_llm_url", "?")} question={text!r}'
+    )
 
     profile = _build_music_profile(music)
     system = _GUESS_20Q_LLM_SYSTEM.format(music_profile=profile)
@@ -1436,6 +1465,10 @@ async def _llm_classify(music: Music, text: str, config) -> Optional[Tuple[str, 
             result = (answer, reason) if answer is not None else None
             _llm_cache_set(cache_key, result)
             if answer is None:
+                log.info(
+                    f'[Guess20Q] LLM 判定为无法回答 question={text!r} '
+                    f'understand={understand!r}'
+                )
                 return None
             return answer, reason
         except Exception as e:

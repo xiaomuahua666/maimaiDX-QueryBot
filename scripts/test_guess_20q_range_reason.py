@@ -140,3 +140,37 @@ finally:
     twentyq_guess._proc_locks.pop(999, None)
 
 print('range/reason/lock tests passed')
+
+# ── 定数档位语义：「是14吗」指 14.0~14.5 档，不是精确等于 14.0 ──
+def _make_ds_music(purple_ds):
+    bi = BasicInfo.model_validate({
+        'title': 'D', 'artist': 'A', 'genre': '舞萌', 'bpm': 180,
+        'release_date': '', 'from': 'maimai でらっくす', 'is_new': False,
+        'version': 'maimai でらっくす',
+    })
+    return Music(
+        id='9', title='D', type='SD', ds=[10.0, 12.0, 13.5, purple_ds],
+        level=['7', '10', '12+', '13+'], cids=[1, 2, 3, 4],
+        charts=[Chart(notes=namedtuple('N', ['tap', 'hold', 'slide', 'brk'])(1, 1, 1, 1), charter='C') for _ in range(4)],
+        basic_info=bi,
+    )
+
+# 14.4 问「是14吗」→ 应是（14 档 = 14.0~14.5），不是精确等于
+ans, _, reason = classify_question(_make_ds_music(14.4), '紫谱是14吗')
+assert ans == _YES, f'14.4 应属于 14 档: {ans}'
+assert '14~14.5' in reason, reason
+# 14.6 问「是14吗」→ 不是
+ans, _, _ = classify_question(_make_ds_music(14.6), '紫谱是14吗')
+assert ans == _NO, f'14.6 不属 14 档: {ans}'
+# 14.4 问「14+」→ 不是（14+ = 14.5~15.0）
+ans, _, reason = classify_question(_make_ds_music(14.4), '紫谱是14+吗')
+assert ans == _NO, f'14.4 不属 14+: {ans}'
+assert '14.5~15' in reason, reason
+# 14.5 问「14+」→ 是
+ans, _, _ = classify_question(_make_ds_music(14.5), '紫谱是14+吗')
+assert ans == _YES, f'14.5 属 14+: {ans}'
+# 明确比较词「等于14」→ 精确相等，14.4 不等于 14.0 → 不是
+ans, _, _ = classify_question(_make_ds_music(14.4), '紫谱定数等于14吗')
+assert ans == _NO, f'等于应精确比较，14.4≠14: {ans}'
+
+print('ds tier semantics tests passed')
