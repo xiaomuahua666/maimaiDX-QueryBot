@@ -383,6 +383,46 @@ def _cover_placeholder(size: int, char: str = '♪', color=_ACCENT) -> Image.Ima
     return img
 
 
+def _best_chip_cover(rec, size: int, color) -> Image.Image:
+    """读取 B1/B36 曲绘，失败时回退为难度色方块占位。"""
+    try:
+        return Image.open(music_picture(rec.get('song_id'))).convert('RGBA').resize((size, size))
+    except Exception:
+        return _cover_placeholder(size, '♪', color)
+
+
+def _draw_row_best_chip(im, d, x, y, w, rec, tag):
+    """在排名行内绘制一个带曲绘的紧凑 B1/B36 小卡片，返回高度。"""
+    h = 40
+    radius = 10
+    if not rec:
+        _card(im, (x, y, x + w, y + h), radius=radius,
+              fill=(245, 247, 252, 200), shadow=False)
+        d.text((x + 12, y + h // 2), f'{tag} · 暂无',
+               font=_font_bold(13), fill=_MUTED, anchor='lm')
+        return h
+    li = min(max(int(rec.get('level_index', 3)), 0), 4)
+    diff_col = _DIFF_COLORS[li]
+    _card(im, (x, y, x + w, y + h), radius=radius,
+          fill=(255, 255, 255, 235), shadow=False)
+    # 左侧难度色竖条
+    d.rounded_rectangle((x, y + 6, x + 4, y + h - 6), radius=2, fill=diff_col)
+    cov = _best_chip_cover(rec, 36, diff_col)
+    _paste_round(im, cov, (x + 10, y + (h - 36) // 2), radius=8)
+    tx = x + 54
+    tw_avail = w - 54 - 8
+    title_font = _font_bold(13)
+    d.text((tx, y + 6), tag, font=_font_bold(12), fill=diff_col)
+    tag_w = _text_len(d, tag, _font_bold(12))
+    ra_txt = f"{int(rec.get('ra', 0))}ra"
+    d.text((x + w - 10, y + 6), ra_txt,
+           font=_font_mono(13), fill=diff_col, anchor='rt')
+    title_text = _truncate(d, rec.get('title', ''), title_font,
+                           max(10, tw_avail - tag_w - 6))
+    d.text((tx, y + 22), title_text, font=title_font, fill=_TEXT)
+    return h
+
+
 def _get_avatar(avatars: Dict[int, Image.Image], qq: int, name: str, color,
                 size: int = 72) -> Image.Image:
     img = avatars.get(qq)
@@ -732,7 +772,7 @@ async def render_my_rank_context(
     width = 1080
     mx = 40
     inner_w = width - mx * 2
-    row_h = 98
+    row_h = 108
     gap = 12
 
     total = len(rows)
@@ -789,7 +829,7 @@ async def render_my_rank_context(
     # ---------- 前后排名列表 ----------
     y = header_h + 10
     row_b1b36 = row_b1b36 or {}
-    badge_w = 132
+    badge_w = 188
     info_right = mx + inner_w - 16 - badge_w
 
     for abs_idx, (uid, name, ra) in window:
@@ -826,27 +866,14 @@ async def render_my_rank_context(
         if nb:
             b1 = nb.get('b1')
             b36 = nb.get('b36')
-            col_gap = 14
-            col_w = (info_right - (mx + 150) - col_gap) // 2
-            tiny = _font_bold(13)
+            area_x = mx + 150
+            area_w = info_right - area_x
+            col_gap = 10
+            col_w = (area_w - col_gap) // 2
+            chip_y = y + row_h - 40 - 6
             for ci, (rec, tag) in enumerate(((b1, 'B1'), (b36, 'B36'))):
-                cx = mx + 150 + ci * (col_w + col_gap)
-                if not rec:
-                    d.text((cx, y + 64), f'{tag} ——', font=tiny, fill=_MUTED)
-                    continue
-                li = min(max(int(rec.get('level_index', 3)), 0), 4)
-                diff_col = _DIFF_COLORS[li]
-                d.text((cx, y + 62), tag, font=_font_bold(13), fill=diff_col)
-                ra_x = cx + _text_len(d, tag, _font_bold(13)) + 6
-                d.text((ra_x, y + 62),
-                       f"{int(rec.get('ra', 0))}ra",
-                       font=_font_mono(13), fill=diff_col)
-                title_font = _font_bold(13)
-                title_text = _truncate(
-                    d, rec.get('title', ''), title_font,
-                    max(10, col_w - (ra_x - cx) - 8),
-                )
-                d.text((cx, y + 78), title_text, font=title_font, fill=_MUTED)
+                cx = area_x + ci * (col_w + col_gap)
+                _draw_row_best_chip(im, d, cx, chip_y, col_w, rec, tag)
         _draw_rating_badge(im, mx + inner_w - 14, y + row_h // 2, ra)
         y += row_h + gap
 

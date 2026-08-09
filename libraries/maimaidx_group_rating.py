@@ -837,6 +837,8 @@ async def render_group_weak_board(bot, group_id: int, self_qq: int,
         return '你尚未绑定查分器或未同意协议，无法参与群内排名。'
     b1b36 = await fetch_self_b1b36(self_qq)
     row_b1b36 = collect_window_b1b36(rows, self_qq, half=half)
+    if b1b36:
+        row_b1b36[int(self_qq)] = b1b36
     from .maimaidx_leaderboard_image import render_my_rank_context
     bio = await render_my_rank_context(rows, self_qq=self_qq, half=half,
                                       user_name=user_name, b1b36=b1b36,
