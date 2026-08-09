@@ -45,24 +45,24 @@ _DURATION_UNIT = {
 
 _TABLE_STATEMENTS = (
     """CREATE TABLE IF NOT EXISTS break_card_keys (
-        code            TEXT PRIMARY KEY,
-        card_type       TEXT NOT NULL,
+        code            VARCHAR(20) PRIMARY KEY,
+        card_type       VARCHAR(20) NOT NULL,
         value           INTEGER NOT NULL,
-        status          TEXT NOT NULL,
-        batch_id        TEXT NOT NULL,
-        note            TEXT NOT NULL,
-        created_by      TEXT NOT NULL,
+        status          VARCHAR(16) NOT NULL DEFAULT 'unused',
+        batch_id        VARCHAR(40) NOT NULL,
+        note            VARCHAR(255) NOT NULL DEFAULT '',
+        created_by      VARCHAR(64) NOT NULL DEFAULT '',
         created_at      REAL NOT NULL,
         redeemed_by     INTEGER,
         redeemed_at     REAL,
-        redeemed_group  TEXT
+        redeemed_group  VARCHAR(64)
     )""",
     """CREATE TABLE IF NOT EXISTS break_card_log (
-        id          TEXT PRIMARY KEY,
-        code        TEXT NOT NULL,
-        action      TEXT NOT NULL,
-        actor       TEXT NOT NULL,
-        detail      TEXT NOT NULL,
+        id          VARCHAR(40) PRIMARY KEY,
+        code        VARCHAR(20) NOT NULL,
+        action      VARCHAR(20) NOT NULL,
+        actor       VARCHAR(64) NOT NULL DEFAULT '',
+        detail      VARCHAR(1000) NOT NULL DEFAULT '',
         created_at  REAL NOT NULL
     )""",
     """CREATE TABLE IF NOT EXISTS break_user_effects (
