@@ -29,13 +29,11 @@ from ..libraries.maimaidx_bot_admin import PLUGIN_ADMIN_ONLY
 from ..libraries.maimaidx_error import QBindRequiredError
 from ..libraries.maimaidx_platform import (
     billing_user_id,
-    deliver_forward_messages,
     get_event_group_id,
     get_sender_display_name,
     parse_at_target_id,
     platform_user_id,
     plugin_finish,
-    plugin_send,
     rank_text_image,
     require_account_qqid,
     resolve_group_bot,
@@ -569,12 +567,15 @@ async def _(bot: Bot, event: MessageEvent):
     image_seg = render_account_profile_image(
         profile, user_name=display_name
     ) or rank_text_image(format_account_profile(profile))
+    # 官方 QQ 群需 publish_qq_image 才会把图片发布并以 Markdown 图显示，
+    # 与 B50 / 排行榜成绩图走同一发送路径。
     try:
-        await plugin_send(
+        await plugin_finish(
             my_awmc,
             image_seg,
             event=event,
             reply_message=True,
+            publish_qq_image=True,
         )
     except Exception as exc:
         log.warning(
@@ -587,8 +588,6 @@ async def _(bot: Bot, event: MessageEvent):
             event=event,
             reply_message=True,
         )
-    await my_awmc.finish()
-    return
 
 
 @awmc_admin_view.handle()
