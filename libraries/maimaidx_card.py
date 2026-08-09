@@ -53,7 +53,7 @@ _TABLE_STATEMENTS = (
         note            VARCHAR(255) NOT NULL DEFAULT '',
         created_by      VARCHAR(64) NOT NULL DEFAULT '',
         created_at      REAL NOT NULL,
-        redeemed_by     INTEGER,
+        redeemed_by     BIGINT,
         redeemed_at     REAL,
         redeemed_group  VARCHAR(64)
     )""",
@@ -66,7 +66,7 @@ _TABLE_STATEMENTS = (
         created_at  REAL NOT NULL
     )""",
     """CREATE TABLE IF NOT EXISTS break_user_effects (
-        qqid                INTEGER PRIMARY KEY,
+        qqid                BIGINT PRIMARY KEY,
         double_break_until  REAL NOT NULL DEFAULT 0,
         freedom_until       REAL NOT NULL DEFAULT 0,
         updated_at          REAL NOT NULL
@@ -179,6 +179,15 @@ class CardKeyManager:
                     self._conn.execute(stmt)
                 except Exception:
                     pass
+            if self._conn._backend == 'mysql':
+                for stmt in (
+                    'ALTER TABLE break_card_keys MODIFY redeemed_by BIGINT',
+                    'ALTER TABLE break_user_effects MODIFY qqid BIGINT NOT NULL',
+                ):
+                    try:
+                        self._conn.execute(stmt)
+                    except Exception:
+                        pass
             self._conn.commit()
 
     def _log(self, code: str, action: str, *, actor: str = '', detail: str = '') -> None:
@@ -336,54 +345,61 @@ class CardKeyManager:
             raise CardError('卡密不能为空')
         now = time.time()
         with break_db._lock:
-            row = self._conn.execute(
-                'SELECT * FROM break_card_keys WHERE code = ?', (normalized,)
-            ).fetchone()
-            if not row:
-                raise CardError('卡密不存在或已失效')
-            card = dict(row)
-            if card['status'] == 'redeemed':
-                raise CardError('该卡密已被兑换')
-            if card['status'] != 'unused':
-                raise CardError('该卡密已被作废，无法兑换')
+            try:
+                row = self._conn.execute(
+                    'SELECT * FROM break_card_keys WHERE code = ?', (normalized,)
+                ).fetchone()
+                if not row:
+                    raise CardError('卡密不存在或已失效')
+                card = dict(row)
+                if card['status'] == 'redeemed':
+                    raise CardError('该卡密已被兑换')
+                if card['status'] != 'unused':
+                    raise CardError('该卡密已被作废，无法兑换')
 
-            card_type = card['card_type']
-            value = int(card['value'])
-            label = CARD_TYPE_LABELS[card_type]
-            expires_at = 0.0
-            balance = 0
-            granted = 0
+                card_type = card['card_type']
+                value = int(card['value'])
+                label = CARD_TYPE_LABELS[card_type]
+                expires_at = 0.0
+                balance = 0
+                granted = 0
 
-            self._conn.execute(
-                """UPDATE break_card_keys
-                   SET status='redeemed', redeemed_by=?, redeemed_at=?, redeemed_group=?
-                   WHERE code=? AND status='unused'""",
-                (qqid, now, str(group_id or ''), normalized),
-            )
-            verify = self._conn.execute(
-                'SELECT status, redeemed_by FROM break_card_keys WHERE code=?', (normalized,)
-            ).fetchone()
-            if not verify or dict(verify)['redeemed_by'] != qqid or dict(verify)['status'] != 'redeemed':
-                raise CardError('兑换失败，该卡密可能已被他人抢先兑换')
-
-            if card_type == CARD_TYPE_BREAK:
-                balance = break_db.add_balance(
-                    qqid, value, 'card_redeem',
-                    meta={'code': normalized, 'card_type': card_type},
+                self._conn.execute(
+                    """UPDATE break_card_keys
+                       SET status='redeemed', redeemed_by=?, redeemed_at=?, redeemed_group=?
+                       WHERE code=? AND status='unused'""",
+                    (qqid, now, str(group_id or ''), normalized),
                 )
-                granted = value
-            elif card_type == CARD_TYPE_DOUBLE:
-                expires_at = self._extend_effect(qqid, 'double_break_until', value, now=now)
-                granted = value
-            elif card_type == CARD_TYPE_FREEDOM:
-                expires_at = self._extend_effect(qqid, 'freedom_until', value, now=now)
-                granted = value
+                verify = self._conn.execute(
+                    'SELECT status, redeemed_by FROM break_card_keys WHERE code=?', (normalized,)
+                ).fetchone()
+                if not verify or dict(verify)['redeemed_by'] != qqid or dict(verify)['status'] != 'redeemed':
+                    raise CardError('兑换失败，该卡密可能已被他人抢先兑换')
 
-            self._log(
-                normalized, 'redeem', actor=str(actor or qqid),
-                detail=f'type={card_type},value={value},qqid={qqid},group={group_id or ""}',
-            )
-            self._conn.commit()
+                if card_type == CARD_TYPE_BREAK:
+                    balance = break_db.add_balance(
+                        qqid, value, 'card_redeem',
+                        meta={'code': normalized, 'card_type': card_type},
+                    )
+                    granted = value
+                elif card_type == CARD_TYPE_DOUBLE:
+                    expires_at = self._extend_effect(qqid, 'double_break_until', value, now=now)
+                    granted = value
+                elif card_type == CARD_TYPE_FREEDOM:
+                    expires_at = self._extend_effect(qqid, 'freedom_until', value, now=now)
+                    granted = value
+
+                self._log(
+                    normalized, 'redeem', actor=str(actor or qqid),
+                    detail=f'type={card_type},value={value},qqid={qqid},group={group_id or ""}',
+                )
+                self._conn.commit()
+            except Exception:
+                try:
+                    self._conn.rollback()
+                except Exception:
+                    pass
+                raise
         return RedeemResult(
             card_type=card_type, label=label,
             balance=balance, expires_at=expires_at, granted=granted,
