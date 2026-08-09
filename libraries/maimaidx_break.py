@@ -7,6 +7,7 @@ AWMC BREAK 积分：签到、查分扣费、账号统计。
 
 from __future__ import annotations
 
+import base64
 import contextvars
 import json
 import math
@@ -2986,19 +2987,30 @@ def get_account_profile(qqid: int) -> AccountProfile:
     account = account_db.get(str(qqid))
     account_usage = account_db.get_usage_stats(str(qqid))
     today = break_db._today()
+
+    def _i(row, key, default=0):
+        """MySQL 后端的 NULL 列会返回 None，int(None) 会抛 TypeError，统一兜底。"""
+        value = row.get(key, default)
+        if value is None:
+            return default
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
     return AccountProfile(
         qqid=qqid,
-        balance=int(user.get('balance', 0)),
-        streak=int(user.get('streak', 0)),
+        balance=_i(user, 'balance'),
+        streak=_i(user, 'streak'),
         last_checkin_date=user.get('last_checkin_date'),
         checked_in_today=user.get('last_checkin_date') == today,
-        today_query_count=int(daily.get('query_count', 0)),
-        today_analysis_count=int(daily.get('analysis_count', 0)),
-        today_break_spent=int(daily.get('break_spent', 0)),
-        today_break_gained=int(daily.get('break_gained', 0)),
-        free_used_today=bool(int(daily.get('free_used', 0))),
-        total_query_count=int(user.get('total_query_count', 0)),
-        total_analysis_count=int(user.get('total_analysis_count', 0)),
+        today_query_count=_i(daily, 'query_count'),
+        today_analysis_count=_i(daily, 'analysis_count'),
+        today_break_spent=_i(daily, 'break_spent'),
+        today_break_gained=_i(daily, 'break_gained'),
+        free_used_today=bool(_i(daily, 'free_used')),
+        total_query_count=_i(user, 'total_query_count'),
+        total_analysis_count=_i(user, 'total_analysis_count'),
         last_query_at=user.get('last_query_at'),
         last_analysis_at=user.get('last_analysis_at'),
         data_source=lxns_db.get_source(qqid),
@@ -3028,13 +3040,14 @@ def render_account_profile_image(
     """把账号资料渲染成现代化图片 MessageSegment；失败回退 None。"""
     try:
         from nonebot.adapters.onebot.v11 import MessageSegment
-        from PIL import Image
-        from .image import image_to_base64
         from .maimaidx_awmc_image import render_awmc_profile
 
         data = profile.model_dump() if hasattr(profile, 'model_dump') else dict(profile)
         bio = render_awmc_profile(data, title=title, user_name=user_name)
-        return MessageSegment.image(image_to_base64(Image.open(bio)))
+        # render_awmc_profile 已返回编码好的 PNG，直接取字节，避免二次 Image.open/save
+        # （懒加载 + 重复编码既慢，又可能在并发下触发 "read of closed file"）。
+        encoded = base64.b64encode(bio.getvalue()).decode()
+        return MessageSegment.image('base64://' + encoded)
     except Exception as exc:  # pragma: no cover - 渲染失败回退文本
         log.warning(f'[BREAK] AWMC 账号图片渲染失败，回退文本：{type(exc).__name__}: {exc}')
         return None
