@@ -117,6 +117,20 @@ def _announcement_gate_exempt(matcher: Matcher) -> bool:
     )
 
 
+def _matcher_is_instruction(matcher: Matcher) -> bool:
+    """公告只拦截显式指令，不能影响普通聊天/被动消息监听。"""
+    if getattr(matcher, "_maimaidx_announcement_exempt", False) or getattr(
+        type(matcher), "_maimaidx_announcement_exempt", False
+    ):
+        return False
+    rule = getattr(matcher, "rule", None)
+    for checker in getattr(rule, "checkers", ()) or ():
+        call = getattr(checker, "call", None)
+        if type(call).__name__ in {"CommandRule", "RegexRule"}:
+            return True
+    return False
+
+
 def _event_key(bot: Bot, event: Event) -> str:
     event_id = getattr(event, "message_id", None) or getattr(event, "id", None)
     if event_id is None:
@@ -149,7 +163,11 @@ async def _announcement_preprocessor(
     matcher: Matcher, bot: Bot, event: Event, state: T_State
 ):
     del state
-    if not _plugin_matcher(matcher) or _announcement_gate_exempt(matcher):
+    if (
+        not _plugin_matcher(matcher)
+        or _announcement_gate_exempt(matcher)
+        or not _matcher_is_instruction(matcher)
+    ):
         return
 
     # 敏感二维码必须先由业务处理器撤回；撤回后会显式调用同一公告门禁。

@@ -13,7 +13,7 @@ from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
 from nonebot import on_command, on_message
-from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message, MessageEvent
+from nonebot.adapters.onebot.v11 import Message, MessageEvent
 from nonebot.matcher import Matcher
 from nonebot.params import Arg, CommandArg
 
@@ -108,7 +108,6 @@ card_redeem = on_command(
 # 兑换/查询卡密不应被负债拦截或收取高负载附加费，否则用户无法自救。
 setattr(card_redeem, '_maimaidx_debt_exempt', True)
 setattr(card_redeem, '_maimaidx_busy_surcharge_exempt', True)
-setattr(card_redeem, '_maimaidx_announcement_exempt', True)
 
 
 @card_redeem.handle()
@@ -161,7 +160,6 @@ async def _(matcher: Matcher, event: MessageEvent, raw: Message = Arg('card_code
 my_card = on_command('我的卡密', aliases={'卡密状态', '我的加成', '卡密'})
 setattr(my_card, '_maimaidx_debt_exempt', True)
 setattr(my_card, '_maimaidx_busy_surcharge_exempt', True)
-setattr(my_card, '_maimaidx_announcement_exempt', True)
 
 
 @my_card.handle()
@@ -498,7 +496,7 @@ setattr(auto_card_redeem, '_maimaidx_announcement_exempt', True)
 
 
 @auto_card_redeem.handle()
-async def _(event: GroupMessageEvent):
+async def _(event: MessageEvent):
     raw_text = event.get_plaintext()
     # 归一化：全角连字符/破折号统一为 ASCII '-'，便于识别。
     text = (
