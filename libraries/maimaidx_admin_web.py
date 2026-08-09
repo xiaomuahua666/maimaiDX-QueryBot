@@ -443,6 +443,78 @@ def register_admin_web() -> bool:
         )
         return {"ok": True, "url": url, "version": version, "ref_id": ref}
 
+    async def cards_stats(request: Request):
+        authorize(request)
+        from .maimaidx_card import card_manager
+        return card_manager.stats()
+
+    async def cards_list(request: Request):
+        authorize(request)
+        from .maimaidx_card import card_manager
+        card_type = request.query_params.get("type") or None
+        status = request.query_params.get("status") or None
+        batch_id = request.query_params.get("batch") or None
+        limit = int(request.query_params.get("limit", 50))
+        return {"cards": card_manager.list_cards(
+            card_type=card_type, status=status, batch_id=batch_id, limit=limit,
+        )}
+
+    async def card_detail(code: str, request: Request):
+        authorize(request)
+        from .maimaidx_card import card_manager
+        card = card_manager.get_card(code)
+        if not card:
+            cards = card_manager.list_cards(batch_id=code, limit=200)
+            if cards:
+                return {"batch": code, "cards": cards}
+            raise HTTPException(status_code=404, detail="卡密不存在")
+        return card
+
+    async def card_create(request: Request):
+        authorize(request)
+        from .maimaidx_card import (
+            CARD_TYPE_BREAK, card_manager, parse_duration,
+        )
+        body = await request.json()
+        source = str(body.get("source") or "webui").strip()
+        actor = str(body.get("actor") or source).strip()
+        if source not in {"webui", "feishu_ops"} or not actor or len(actor) > 128:
+            raise HTTPException(status_code=400, detail="来源或操作者无效")
+        card_type = str(body.get("type") or "").strip()
+        if card_type not in {"break", "double_break", "freedom"}:
+            raise HTTPException(status_code=400, detail="卡密类型无效")
+        try:
+            quantity = int(body.get("quantity", 1))
+            if card_type == CARD_TYPE_BREAK:
+                value = int(body.get("value", 0))
+            else:
+                value = parse_duration(str(body.get("value", "")))
+            note = str(body.get("note") or "")[:200]
+            result = card_manager.create_cards(
+                card_type, value, quantity, created_by=actor, note=note,
+            )
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        ref = audit_action(
+            "web.card_create", result["batch_id"],
+            {"type": card_type, "value": value, "quantity": quantity,
+             "source": source, "actor": actor},
+        )
+        result["ref_id"] = ref
+        return result
+
+    async def card_disable(code: str, request: Request):
+        authorize(request)
+        from .maimaidx_card import CardError, card_manager
+        body = await request.json()
+        actor = str(body.get("actor") or body.get("source") or "webui").strip()
+        try:
+            card = card_manager.disable_card(code, actor=actor)
+        except CardError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        ref = audit_action("web.card_disable", code, {"actor": actor})
+        return {"ok": True, "code": card["code"], "ref_id": ref}
+
     routes = [
         (root, page, ["GET"]),
         (api_root + "/summary", summary, ["GET"]),
@@ -466,6 +538,11 @@ def register_admin_web() -> bool:
         (api_root + "/config/break/{key}", set_break_config, ["POST"]),
         (api_root + "/config/agreement", agreement_config, ["GET"]),
         (api_root + "/config/agreement", set_agreement_config, ["POST"]),
+        (api_root + "/cards/stats", cards_stats, ["GET"]),
+        (api_root + "/cards", cards_list, ["GET"]),
+        (api_root + "/cards/create", card_create, ["POST"]),
+        (api_root + "/cards/{code}", card_detail, ["GET"]),
+        (api_root + "/cards/{code}/disable", card_disable, ["POST"]),
     ]
     for index, (path, endpoint, methods) in enumerate(routes):
         app.add_api_route(

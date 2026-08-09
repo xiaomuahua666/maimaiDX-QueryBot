@@ -158,6 +158,11 @@ def parse_command(text: str) -> tuple[str, list[str]]:
         "查询break": "break_get",
         "发放break": "break_add",
         "设置break": "break_set",
+        "卡密统计": "card_stats",
+        "创建卡密": "card_create",
+        "查询卡密": "card_get",
+        "卡密查询": "card_get",
+        "作废卡密": "card_disable",
         "封禁": "ban",
         "解封": "unban",
         "封禁列表": "ban_list",
@@ -179,6 +184,47 @@ def redact_log_line(line: str) -> str:
     value = QQ_ID_RE.sub("QQ [REDACTED]", value)
     value = GROUP_ID_RE.sub("[Group:REDACTED]", value)
     return value[:700]
+
+
+CARD_TYPE_ALIASES = {
+    "1": "break", "b": "break", "break": "break", "break卡": "break",
+    "2": "double_break", "double": "double_break", "双倍": "double_break",
+    "双倍break": "double_break", "双倍break卡": "double_break",
+    "3": "freedom", "f": "freedom", "freedom": "freedom", "freedom卡": "freedom",
+}
+CARD_TYPE_LABELS = {
+    "break": "BREAK 卡",
+    "double_break": "双倍 BREAK 卡",
+    "freedom": "FREEDOM 卡",
+}
+
+
+def resolve_card_type(text: str) -> str | None:
+    return CARD_TYPE_ALIASES.get(str(text or "").strip().lower().replace(" ", ""))
+
+
+def parse_card_duration(text: str) -> int:
+    raw = str(text or "").strip().lower()
+    if raw.isdigit():
+        seconds = int(raw)
+        if seconds <= 0:
+            raise ValueError("时长必须大于 0")
+        return seconds
+    unit_map = {"": 1, "s": 1, "秒": 1, "m": 60, "分": 60,
+                "h": 3600, "时": 3600, "小时": 3600, "d": 86400, "天": 86400}
+    total = 0
+    matched = False
+    for number, unit in re.findall(r"(\d+)\s*(天|小时|时|分|秒|[dhms])?", raw):
+        matched = True
+        factor = unit_map.get(unit.lower() if unit else "", 0)
+        if not factor:
+            raise ValueError(f"无法识别的时间单位：{unit}")
+        total += int(number) * factor
+    if not matched or total <= 0:
+        raise ValueError("时长格式不正确，例如 7d、24h、30m")
+    return total
+
+
 
 
 def sanitize_logs(lines: list[str], *, errors_only: bool = False) -> list[str]:
@@ -291,6 +337,8 @@ def menu_card(*, is_admin: bool, is_super_admin: bool = False) -> dict:
             "重启Bot · 启动Bot · 停止Bot\n"
             "查询BREAK <QQ> · 发放BREAK <QQ> <数量> · "
             "设置BREAK <QQ> <余额>\n"
+            "卡密统计 · 查询卡密 <卡密/批次> · "
+            "创建卡密 <1/2/3> <面值/时长> [数量] [备注] · 作废卡密 <卡密>\n"
             "封禁 <用户ID> <小时> <原因> · 解封 <用户ID>\n"
             "封禁列表 [全部]"
         )
@@ -864,6 +912,35 @@ class AdminClient:
         query = urlencode({"active_only": "true" if active_only else "false"})
         return self._request(f"/bans?{query}")
 
+    def cards_stats(self) -> dict[str, Any]:
+        return self._request("/cards/stats")
+
+    def get_card(self, code: str) -> dict[str, Any]:
+        return self._request(f"/cards/{quote(code.strip(), safe='')}")
+
+    def create_card(
+        self, card_type: str, value: Any, quantity: int, note: str, actor: str
+    ) -> dict[str, Any]:
+        return self._request(
+            "/cards/create",
+            method="POST",
+            payload={
+                "type": card_type,
+                "value": value,
+                "quantity": quantity,
+                "note": note,
+                "source": "feishu_ops",
+                "actor": actor,
+            },
+        )
+
+    def disable_card(self, code: str, actor: str) -> dict[str, Any]:
+        return self._request(
+            f"/cards/{quote(code.strip(), safe='')}/disable",
+            method="POST",
+            payload={"source": "feishu_ops", "actor": actor},
+        )
+
 
 class FeishuOpsBot:
     def __init__(self, config: OpsConfig, lark_module: Any):
@@ -1147,6 +1224,96 @@ class FeishuOpsBot:
                 amount=amount,
                 mode=mode,
             )
+        if command == "card_stats":
+            data = self.admin.cards_stats()
+            lines = [f"共 **{data.get('total', 0)}** 张，生效中加成 **{data.get('active_effects', 0)}** 人"]
+            for ctype in ("break", "double_break", "freedom"):
+                info = data.get("by_type", {}).get(ctype, {})
+                lines.append(
+                    f"{CARD_TYPE_LABELS[ctype]}：未使用 {info.get('unused', 0)} / "
+                    f"已兑换 {info.get('redeemed', 0)} / 已作废 {info.get('disabled', 0)}"
+                )
+            return _card("卡密统计", "\n".join(lines))
+        if command == "card_get":
+            if len(args) != 1:
+                raise ValueError("用法：查询卡密 <卡密或批次号>")
+            try:
+                data = self.admin.get_card(args[0])
+            except RuntimeError as exc:
+                if "HTTP 404" in str(exc):
+                    return _card("卡密查询", "未找到该卡密或批次。", template="orange")
+                raise
+            if "cards" in data and "code" not in data:
+                cards = data["cards"][:50]
+                lines = [f"批次 {data['batch']} 共 {len(cards)} 张（最多 50）"]
+                for c in cards:
+                    status = {"unused": "未使用", "redeemed": "已兑换",
+                              "disabled": "已作废"}.get(c.get("status"), c.get("status"))
+                    lines.append(f"{c.get('code')} · {CARD_TYPE_LABELS.get(c.get('card_type'), c.get('card_type'))} · {status}")
+                return _card("批次查询", "\n".join(lines))
+            ctype = data.get("card_type")
+            if ctype == "break":
+                value_text = f"{data.get('value')} BREAK"
+            else:
+                value_text = format_duration(int(data.get("value") or 0))
+            status = {"unused": "未使用", "redeemed": "已兑换",
+                      "disabled": "已作废"}.get(data.get("status"), data.get("status"))
+            lines = [
+                f"卡密：{data.get('code')}",
+                f"类型：{CARD_TYPE_LABELS.get(ctype, ctype)}",
+                f"面值：{value_text}",
+                f"状态：{status}",
+                f"批次：{data.get('batch_id')}",
+                f"创建者：{data.get('created_by') or '-'}",
+            ]
+            if data.get("status") == "redeemed":
+                lines.append(f"兑换者：{data.get('redeemed_by')}")
+                lines.append(f"兑换时间：{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(data.get('redeemed_at') or 0))}")
+            return _card("卡密查询", "\n".join(lines))
+        if command == "card_create":
+            if len(args) < 2:
+                raise ValueError(
+                    "用法：创建卡密 <类型> <面值/时长> [数量] [备注]\n"
+                    "类型：1=BREAK卡 2=双倍BREAK卡 3=FREEDOM卡\n"
+                    "示例：创建卡密 2 24h 5 猜歌活动"
+                )
+            ctype = resolve_card_type(args[0])
+            if not ctype:
+                raise ValueError("卡密类型无效：1/2/3 或 break/double/freedom")
+            if ctype == "break":
+                if not args[1].isdigit() or int(args[1]) <= 0:
+                    raise ValueError("BREAK 卡面值必须是正整数")
+                value = int(args[1])
+                value_text = f"{value} BREAK"
+            else:
+                value = parse_card_duration(args[1])
+                value_text = format_duration(value)
+            quantity = 1
+            note = ""
+            rest = args[2:]
+            if rest and rest[0].isdigit():
+                quantity = int(rest[0])
+                rest = rest[1:]
+            if not 1 <= quantity <= 500:
+                raise ValueError("数量需在 1～500 之间")
+            if rest:
+                note = " ".join(rest)[:200]
+            return confirmation_card(
+                "确认创建卡密",
+                f"类型：**{CARD_TYPE_LABELS[ctype]}**\n面值：{value_text}\n"
+                f"数量：**{quantity}** 张\n备注：{note or '-'}",
+                "card_create_confirm",
+                card_type=ctype, value=value, quantity=quantity, note=note,
+            )
+        if command == "card_disable":
+            if len(args) != 1:
+                raise ValueError("用法：作废卡密 <卡密>")
+            return confirmation_card(
+                "确认作废卡密",
+                f"即将作废卡密：{args[0]}\n已兑换的卡密无法作废。",
+                "card_disable_confirm",
+                code=args[0],
+            )
         if command == "ban":
             if len(args) < 2:
                 raise ValueError(
@@ -1250,6 +1417,10 @@ class FeishuOpsBot:
             )
         if action == "break_confirm":
             return self._handle_break(value, open_id)
+        if action == "card_create_confirm":
+            return self._handle_card_create(value, open_id)
+        if action == "card_disable_confirm":
+            return self._handle_card_disable(value, open_id)
         if action == "ban_confirm":
             return self._handle_ban(value, open_id, unban=False)
         if action == "unban_confirm":
@@ -1332,6 +1503,58 @@ class FeishuOpsBot:
                 template="green",
             ),
             "BREAK 已更新",
+        )
+
+    def _handle_card_create(self, value: dict, actor: str) -> dict:
+        if not self._claim(value, "card.create", actor):
+            return self._response(toast="该请求已经执行或已失效")
+        ctype = str(value.get("card_type") or "")
+        if ctype not in CARD_TYPE_LABELS:
+            return self._response(toast="卡密类型无效")
+        try:
+            raw_value = value.get("value")
+            card_value = int(raw_value) if ctype == "break" else parse_card_duration(str(raw_value))
+            quantity = int(value.get("quantity") or 1)
+            note = str(value.get("note") or "")[:200]
+            result = self.admin.create_card(ctype, card_value, quantity, note, actor)
+        except (TypeError, ValueError) as exc:
+            return self._response(toast=f"参数无效：{exc}")
+        except RuntimeError as exc:
+            return self._response(
+                _card("创建卡密失败", str(exc)[:300], template="red"), "创建失败"
+            )
+        value_text = f"{card_value} BREAK" if ctype == "break" else format_duration(card_value)
+        codes = result.get("codes") or []
+        body = (
+            f"类型：{CARD_TYPE_LABELS[ctype]}\n面值：{value_text}\n"
+            f"数量：{result.get('quantity', quantity)} 张\n"
+            f"批次：{result.get('batch_id')}\nREF_ID：{result.get('ref_id', '-')}\n\n"
+            + "\n".join(codes[:50])
+            + ("\n..." if len(codes) > 50 else "")
+        )
+        return self._response(
+            _card("卡密创建完成", body, template="green"), "卡密已创建"
+        )
+
+    def _handle_card_disable(self, value: dict, actor: str) -> dict:
+        if not self._claim(value, "card.disable", actor):
+            return self._response(toast="该请求已经执行或已失效")
+        code = str(value.get("code") or "").strip()
+        if not code:
+            return self._response(toast="卡密不能为空")
+        try:
+            result = self.admin.disable_card(code, actor)
+        except RuntimeError as exc:
+            return self._response(
+                _card("作废卡密失败", str(exc)[:300], template="red"), "作废失败"
+            )
+        return self._response(
+            _card(
+                "卡密已作废",
+                f"卡密：{result.get('code')}\nREF_ID：{result.get('ref_id', '-')}",
+                template="green",
+            ),
+            "已作废",
         )
 
     def _handle_ban(self, value: dict, actor: str, *, unban: bool) -> dict:

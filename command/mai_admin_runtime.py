@@ -333,6 +333,8 @@ async def _audit_and_ban_preprocessor(
                         "free_requests": free_requests,
                         "request_count": request_count,
                     }
+                    from ..libraries.maimaidx_card import card_manager
+                    freedom = card_manager.freedom_active(payer)
                     if not break_db.try_consume(
                         payer, surcharge, "busy_request_surcharge", meta=meta
                     ):
@@ -345,8 +347,12 @@ async def _audit_and_ban_preprocessor(
                         )
                         _release_user_operation(state)
                         raise IgnoredException("maimaidx busy surcharge insufficient")
+                    if freedom:
+                        meta = {**meta, "charged": 0, "freedom": True}
                     state["__maimaidx_busy_charge"] = {
-                        **meta, "charged": surcharge, "balance": break_db.get_balance(payer)
+                        **meta,
+                        "charged": 0 if freedom else surcharge,
+                        "balance": break_db.get_balance(payer),
                     }
     except IgnoredException:
         raise

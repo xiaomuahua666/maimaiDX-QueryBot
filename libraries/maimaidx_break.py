@@ -299,6 +299,8 @@ class GuessBreakReward:
     daily_cap: int
     points_per_break: int
     balance: int
+    doubled: bool = False
+    double_remaining: float = 0.0
 
 
 @dataclass
@@ -307,6 +309,7 @@ class ServiceChargeResult:
     charged: int
     free: bool
     balance: int
+    freedom: bool = False
 
 
 @dataclass
@@ -1027,10 +1030,19 @@ class BreakDatabase:
         reason: str,
         *,
         meta: Optional[dict] = None,
+        allow_freedom: bool = True,
     ) -> bool:
         if amount <= 0:
             return True
+        from .maimaidx_card import card_manager
         with self._lock:
+            if allow_freedom and card_manager.freedom_active(qqid):
+                self._append_log(
+                    qqid, 0, f'freedom_exempt:{reason}',
+                    meta={**(meta or {}), 'freedom': True, 'listed_cost': amount},
+                )
+                self._conn.commit()
+                return True
             row = self._conn.execute(
                 'SELECT balance FROM break_users WHERE qqid = ?', (qqid,)
             ).fetchone()
@@ -1168,9 +1180,13 @@ class BreakDatabase:
         ).fetchone()
         return not row or int(row['free_used']) == 0
 
+    def _freedom_active(self, qqid: int) -> bool:
+        from .maimaidx_card import card_manager
+        return card_manager.freedom_active(qqid)
+
     def ensure_service_affordable(self, qqid: int, service: str, cost: int) -> None:
         """外部业务请求前检查；真正扣费必须在成功后调用 settle_service_success。"""
-        if self.service_is_free(qqid, service):
+        if self.service_is_free(qqid, service) or self._freedom_active(qqid):
             return
         balance = self.get_balance(qqid)
         if balance < max(0, int(cost)):
@@ -1197,7 +1213,10 @@ class BreakDatabase:
                 service in DAILY_FREE_SERVICES
                 and (not row or int(row['free_used']) == 0)
             )
+            freedom = bool(not free and self._freedom_active(qqid))
             charged = 0 if free else cost
+            if freedom:
+                charged = 0
             balance = self.get_balance(qqid)
             if charged and balance < charged:
                 raise BreakInsufficientError(charged, balance, qqid=qqid)
@@ -1211,9 +1230,9 @@ class BreakDatabase:
             )
             self._conn.execute(
                 """UPDATE break_service_daily SET success_count=success_count+1,
-                   free_used=1, break_spent=break_spent+?, last_at=?
+                   free_used=?, break_spent=break_spent+?, last_at=?
                    WHERE qqid=? AND date=? AND service=?""",
-                (charged, now, qqid, today, service),
+                (1 if free else 0, charged, now, qqid, today, service),
             )
             if charged:
                 self._conn.execute(
@@ -1227,10 +1246,12 @@ class BreakDatabase:
                 )
             detail = dict(meta or {})
             detail.update({'service': service, 'free': free, 'listed_cost': cost})
+            if freedom:
+                detail['freedom'] = True
             self._append_log(qqid, -charged, f'service:{service}', meta=detail)
             self._conn.commit()
             balance -= charged
-        return ServiceChargeResult(service, charged, free, balance)
+        return ServiceChargeResult(service, charged, free, balance, freedom=freedom)
 
     def transfer(self, sender: int, recipient: int, amount: int) -> TransferResult:
         amount = int(amount)
@@ -1880,6 +1901,15 @@ class BreakDatabase:
             ).fetchone()
             daily_points = int(row['guess_points'])
             already = int(row['break_awarded'])
+            doubled = False
+            double_remaining = 0.0
+            if reward:
+                from .maimaidx_card import card_manager
+                active, remaining, _expires = card_manager.double_break_info(qqid)
+                if active:
+                    doubled = True
+                    double_remaining = remaining
+                    reward *= 2
             if reward:
                 self._conn.execute(
                     """UPDATE break_guess_daily SET break_awarded = break_awarded + ?
@@ -1904,6 +1934,7 @@ class BreakDatabase:
                         'daily_break': already + reward,
                         'daily_cap': 0,
                         'group_id': group_id,
+                        'double_break_card': doubled,
                     },
                 )
             self._conn.commit()
@@ -1918,6 +1949,8 @@ class BreakDatabase:
             daily_cap=0,
             points_per_break=0,
             balance=int(balance_row['balance']) if balance_row else 0,
+            doubled=doubled,
+            double_remaining=double_remaining,
         )
 
     def admin_set_balance(self, qqid: int, balance: int) -> int:
@@ -2702,6 +2735,9 @@ def format_break_insufficient_message(
         lines.append('今日已签到，请明天再试。')
     else:
         lines.append('发送「AWMC签到」获取 BREAK；每日首次查分免费哦~')
+    store_url = (getattr(maiconfig, 'maimaidx_store_url', '') or '').strip()
+    if store_url:
+        lines.append(f'🛒 也可前往卡密商店购买：{store_url}')
     return '\n'.join(lines)
 
 

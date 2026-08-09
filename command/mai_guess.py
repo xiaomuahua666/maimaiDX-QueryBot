@@ -444,9 +444,15 @@ async def _award_guess_points(
         billing_user_id(event), added, group_id=str(gid),
     )
     if reward.break_added > 0:
+        double_tag = ''
+        if reward.doubled:
+            from ..libraries.maimaidx_card import format_duration
+            double_tag = (
+                f'（双倍BREAK卡生效中，剩余 {format_duration(reward.double_remaining)}）'
+            )
         settlement += (
             f'\n💳 猜对奖励 +{reward.break_added} BREAK'
-            f'（余额 {reward.balance}）'
+            f'（余额 {reward.balance}）{double_tag}'
         )
     return settlement
 
@@ -2870,7 +2876,16 @@ async def _(event: MessageEvent):
         )
         break_part = ''
         if reward.break_added > 0:
-            break_part = f'\n💳 猜对奖励 +{reward.break_added} BREAK（余额 {reward.balance}）'
+            double_tag = ''
+            if reward.doubled:
+                from ..libraries.maimaidx_card import format_duration
+                double_tag = (
+                    f'（双倍BREAK卡生效中，剩余 {format_duration(reward.double_remaining)}）'
+                )
+            break_part = (
+                f'\n💳 猜对奖励 +{reward.break_added} BREAK'
+                f'（余额 {reward.balance}）{double_tag}'
+            )
         result = (
             f'🎉 恭喜 {name} 猜对啦！用了 {data.question_count} 次提问。\n'
             f'{twentyq_guess.reveal_text(data)}\n\n{settlement}{break_part}'

@@ -1681,7 +1681,7 @@ def _allowed_ticket_multipliers() -> tuple[int, ...]:
     return tuple(sorted(values)) or (2, 3, 5)
 
 
-def _charge_text(result) -> str:
+def _charge_text(result, qqid: Optional[int] = None) -> str:
     labels = {
         "upload": "成绩上传",
         "ticket": "发票",
@@ -1697,6 +1697,14 @@ def _charge_text(result) -> str:
     label = labels.get(result.service, result.service)
     if result.free:
         return f"💳 {label}今日首次成功，免费 · 余额 {result.balance} BREAK"
+    if result.freedom:
+        from ..libraries.maimaidx_card import card_manager, format_duration
+        remaining_text = ""
+        if qqid is not None:
+            _active, remaining, _expires = card_manager.freedom_info(int(qqid))
+            if remaining > 0:
+                remaining_text = f"（FREEDOM 剩余 {format_duration(remaining)}）"
+        return f"💳 {label}已由 FREEDOM 卡免除{remaining_text} · 余额 {result.balance} BREAK"
     return f"💳 {label}消耗 {result.charged} BREAK · 余额 {result.balance} BREAK"
 
 
@@ -1935,7 +1943,7 @@ async def _(
                 f"preview_source=sgid_cache,charged={charge.charged}",
             )
             await account_status.finish(
-                text + f"\n{_charge_text(charge)}\nRef_ID: {ref}", reply_message=True
+                text + f"\n{_charge_text(charge, int(key))}\nRef_ID: {ref}", reply_message=True
             )
     track_event(session_key("account_status", event), event)
     await account_status.send(_status_qrcode_prompt(cache_label), reply_message=True)
@@ -2024,7 +2032,7 @@ async def _(
     )
     finish_pending(pending_key)
     await account_status.finish(
-        recall_notice + text + f"\n{_charge_text(charge)}\nRef_ID: {ref}",
+        recall_notice + text + f"\n{_charge_text(charge, int(key))}\nRef_ID: {ref}",
         reply_message=True,
     )
 
@@ -2255,7 +2263,7 @@ async def _upload(
                     "上传完成\n"
                     f"{_AWMCNET_SYNCED_LINE}\n"
                     f"落雪（OAuth/PC缓存）：{_result_text(result)}\n"
-                    f"{_charge_text(charge)}\nRef_ID: {ref}"
+                    f"{_charge_text(charge, int(key))}\nRef_ID: {ref}"
                 )
             except Exception as exc:
                 if awmc_result is not None:
@@ -2491,7 +2499,7 @@ async def _upload(
             archive_qqids=_archive_qqids_for_event(event, key),
         )
         ref = _log(key, operation, "success", f"charged={charge.charged},free={charge.free}")
-        return "上传完成\n" + "\n".join(results) + f"\n{_charge_text(charge)}\nRef_ID: {ref}"
+        return "上传完成\n" + "\n".join(results) + f"\n{_charge_text(charge, int(key))}\nRef_ID: {ref}"
     except Exception as exc:
         if awmc_result is not None:
             # 水鱼/落雪失败不回滚已经成功的 AWMC NET 同步。
@@ -3043,7 +3051,7 @@ async def _execute_ticket_now(
     return (
         f"{multiple} 倍票已发放并确认到账（当前库存 {verified_stock} 张）。\n"
         + (f"自动重试 {attempts - 1} 次后成功。\n" if attempts > 1 else "")
-        + f"{_charge_text(charge)}\nRef_ID: {ref}"
+        + f"{_charge_text(charge, int(key))}\nRef_ID: {ref}"
     )
 
 
@@ -3297,7 +3305,7 @@ async def _run_paid_awmc_read(
         int(key), service, cost, meta={"operation": service}
     )
     ref = _log(key, service, "success", f"charged={charge.charged}")
-    return f"{text}\n\n{_charge_text(charge)}\nRef_ID: {ref}"
+    return f"{text}\n\n{_charge_text(charge, int(key))}\nRef_ID: {ref}"
 
 
 async def continue_pending_account_retry(
@@ -3452,7 +3460,7 @@ async def _run_music_write(
             f"{mode} · {score['achievement']}% · {dx_label} {score['dxScore']} · "
             f"{str(score['comboStatus']).upper()} / {str(score['syncStatus']).upper()}"
         )
-    lines.extend([_charge_text(charge), f"Ref_ID: {ref}"])
+    lines.extend([_charge_text(charge, int(key)), f"Ref_ID: {ref}"])
     return "\n".join(lines)
 
 
@@ -3538,7 +3546,7 @@ async def _run_account_dangerous_write(
         ",".join(f"{name}={value}" for name, value in meta.items())
         + f",charged={charge.charged}",
     )
-    return f"{result_text}\n{_charge_text(charge)}\nRef_ID: {ref}"
+    return f"{result_text}\n{_charge_text(charge, int(key))}\nRef_ID: {ref}"
 
 
 @account_preview.handle()
