@@ -13,6 +13,7 @@ from ..libraries.maimaidx_timing import attach_timing, finish_timed, run_timed, 
 from ..libraries.maimaidx_update_plate import *
 from ..libraries.maimaidx_platform import (
     billing_user_id,
+    get_sender_display_name,
     parse_at_target_id,
     resolve_score_qqid,
 )
@@ -145,8 +146,9 @@ async def _(event: MessageEvent, match = RegexMatched(), user_id: Optional[int] 
     if f'{ver}{plan}' == '真将':
         await plate_process.finish('真系没有真将哦', reply_message=True)
 
+    display_name = get_sender_display_name(event) or 'Milk'
     await finish_timed(
-        plate_process, player_plate_data(qqid, '', ver, plan),
+        plate_process, player_plate_data(qqid, '', ver, plan, user_name=display_name),
         billing_qqid=billing_user_id(event), event=event,
     )
 

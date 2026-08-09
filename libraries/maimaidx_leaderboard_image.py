@@ -312,24 +312,44 @@ def _finalize(im: Image.Image) -> BytesIO:
 # ----------------------------------------------------------------------
 # 头像
 # ----------------------------------------------------------------------
+_AVATAR_CACHE: Dict[Tuple[int, int], Tuple[Image.Image, float]] = {}
+_AVATAR_TTL = 1800  # 30 分钟，群榜高频调用时避免重复拉取头像
+_avatar_inflight: Dict[Tuple[int, int], "asyncio.Future"] = {}
+
+
 async def _fetch_avatars(qqs: Sequence[int], size: int = 96) -> Dict[int, Image.Image]:
-    """并发拉取 QQ 头像；失败回退到首字头像。"""
+    """并发拉取 QQ 头像（带 TTL 缓存与并发去重）；失败回退到首字头像。"""
+    import time as _time
     result: Dict[int, Image.Image] = {}
     if not qqs:
         return result
+    now = _time.time()
 
     async def _one(qq: int):
         if not qq or not str(qq).isdigit() or int(qq) <= 0:
             return qq, None
+        key = (int(qq), int(size))
+        cached = _AVATAR_CACHE.get(key)
+        if cached and now < cached[1]:
+            return qq, cached[0]
+        fut = _avatar_inflight.get(key)
+        if fut is not None:
+            return qq, await fut
+        fut = asyncio.get_event_loop().create_future()
+        _avatar_inflight[key] = fut
         try:
-            async with httpx.AsyncClient(timeout=8) as cli:
+            async with httpx.AsyncClient(timeout=6) as cli:
                 r = await cli.get('http://q1.qlogo.cn/g',
                                   params={'b': 'qq', 'nk': qq, 's': 100})
                 r.raise_for_status()
-            img = Image.open(BytesIO(r.content)).convert('RGBA')
-            return qq, img.resize((size, size))
+            img = Image.open(BytesIO(r.content)).convert('RGBA').resize((size, size))
+            _AVATAR_CACHE[key] = (img, now + _AVATAR_TTL)
+            fut.set_result(img)
         except Exception:
-            return qq, None
+            fut.set_result(None)
+        finally:
+            _avatar_inflight.pop(key, None)
+        return qq, await fut
 
     tasks = [_one(q) for q in set(qqs) if q]
     for qq, img in await asyncio.gather(*tasks):
@@ -477,6 +497,49 @@ def _legend(im, x, y, data, total, line_h=30):
     return y
 
 
+def _draw_b1b36_strip(im, d, x, y, w, ref):
+    """绘制紧凑的 B1/B36（B35首位 / B15首位）参照条，返回高度。"""
+    if not ref:
+        return 0
+    b1 = ref.get('b1')
+    b36 = ref.get('b36')
+    if not b1 and not b36:
+        return 0
+    h = 76
+    gap = 12
+    col_w = (w - gap) // 2
+    for i, (rec, tag, sub) in enumerate([
+        (b1, 'B1', 'SD 榜首'), (b36, 'B36', 'DX 榜首'),
+    ]):
+        cx = x + i * (col_w + gap)
+        _card(im, (cx, y, cx + col_w, y + h), radius=16,
+              fill=(255, 255, 255, 235), shadow=False)
+        if not rec:
+            d.text((cx + 16, y + h // 2), f'{tag} · {sub}：暂无',
+                   font=_font_bold(15), fill=_MUTED, anchor='lm')
+            continue
+        li = min(max(int(rec.get('level_index', 3)), 0), 4)
+        col = _DIFF_COLORS[li]
+        try:
+            cov = Image.open(music_picture(rec.get('song_id'))).convert('RGBA').resize((48, 48))
+        except Exception:
+            cov = _cover_placeholder(48, '♪', col)
+        im.alpha_composite(cov, (cx + 12, y + 14))
+        d.text((cx + 70, y + 12), f'{tag} · {sub}',
+               font=_font_bold(13), fill=_ACCENT)
+        tf = _font_bold(17)
+        d.text((cx + 70, y + 30),
+               _truncate(d, rec.get('title', ''), tf, col_w - 150),
+               font=tf, fill=_TEXT)
+        d.text((cx + col_w - 12, y + 18), f'{int(rec.get("ra", 0))} ra',
+               font=_font_mono(18), fill=col, anchor='rt')
+        d.text((cx + col_w - 12, y + 44),
+               f'{float(rec.get("achievements", 0)):.4f}%',
+               font=_font_mono(13), fill=_MUTED, anchor='rt')
+    return h
+
+
+
 # ----------------------------------------------------------------------
 # 群 rating 排行榜
 # ----------------------------------------------------------------------
@@ -488,17 +551,20 @@ async def render_rating_ranking(
     self_rank: Optional[int] = None,
     all_rows: Optional[Sequence[Tuple[int, str, int]]] = None,
     user_name: str = 'Milk',
+    b1b36: Optional[dict] = None,
 ) -> BytesIO:
     """rows: 显示的前 N 行 [(uid, name, rating), ...] 已降序；
-    all_rows: 全群数据，用于统计面板（默认等于 rows）。"""
+    all_rows: 全群数据，用于统计面板（默认等于 rows）。
+    b1b36: 请求者的 B1/B36 参照 {'b1': song, 'b36': song}。"""
     width = 1080
     mx = 40
     inner_w = width - mx * 2
     row_h = 96
     gap = 14
     n = len(rows)
-    stats_h = 360
-    header_h = 110
+    stats_h = 400
+    ref_h = 88 if b1b36 and (b1b36.get('b1') or b1b36.get('b36')) else 0
+    header_h = 110 + ref_h
     content_h = header_h + n * (row_h + gap) + stats_h + 40
     total_h = content_h + 90
 
@@ -513,6 +579,8 @@ async def render_rating_ranking(
     if subtitle:
         _draw_title(d, mx + 200, 88, 18, subtitle, _TEXT_SOFT)
 
+    if ref_h:
+        _draw_b1b36_strip(im, d, mx, 120, inner_w, b1b36)
     y = header_h + 20
     max_ra = max((r[2] for r in rows), default=1) or 1
     bar_max = max(max_ra, int(math.ceil(max_ra / 1000) * 1000))
@@ -652,6 +720,7 @@ async def render_my_rank_context(
     self_qq: int,
     half: int = 5,
     user_name: str = 'Milk',
+    b1b36: Optional[dict] = None,
 ) -> Optional[BytesIO]:
     """以请求用户为中心的群 Rating 排名上下文：展示用户排名/百分位，以及前后各 half 位。
 
@@ -679,7 +748,8 @@ async def render_my_rank_context(
     exceeded = total - self_rank
     percent = (exceeded / (total - 1) * 100.0) if total > 1 else 100.0
 
-    header_h = 230
+    ref_h = 88 if b1b36 and (b1b36.get('b1') or b1b36.get('b36')) else 0
+    header_h = 230 + ref_h
     n = len(window)
     stats_h = 150
     content_h = header_h + n * (row_h + gap) + stats_h + 30
@@ -714,6 +784,9 @@ async def render_my_rank_context(
          bg=(225, 230, 242, 220))
     # 右侧个人 rating 徽章
     _draw_rating_badge(im, mx + inner_w - 24, hcard_y + hcard_h // 2, self_rating)
+
+    if ref_h:
+        _draw_b1b36_strip(im, d, mx, hcard_y + hcard_h + 12, inner_w, b1b36)
 
     # ---------- 前后排名列表 ----------
     y = header_h + 10

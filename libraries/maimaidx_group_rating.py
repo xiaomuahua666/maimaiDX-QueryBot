@@ -31,6 +31,7 @@ from .maimaidx_data_storage import data_storage
 from .maimaidx_api_data import maiApi
 from .maimaidx_datasource import get_user_b50, get_user_records, get_user_source
 from .maimaidx_player_cache import get_cached_rating_for_friend_battle
+from .maimaidx_best_50 import filter_utage_records
 from .maimaidx_error import UserDisabledQueryError, UserNotFoundError, UserNotExistsError, MusicNotPlayError
 from .maimaidx_score_formatter import (
     format_leaderboard_text,
@@ -56,6 +57,58 @@ _group_sun_lock_raw_cache: dict = {}
 def _get_cache_ttl() -> int:
     """获取缓存时长（秒），默认 900（15 分钟）"""
     return getattr(maiconfig, 'maimaidx_rating_cache_seconds', 900) or 900
+
+
+# 请求者 B1/B36 参照：key = qqid，value = (ref_dict, expiry)
+_self_b1b36_cache: dict = {}
+
+
+def _self_b1b36_cache_get(qqid: int):
+    now = time.time()
+    item = _self_b1b36_cache.get(qqid)
+    if item and now < item[1]:
+        return item[0]
+    _self_b1b36_cache.pop(qqid, None)
+    return None
+
+
+def _self_b1b36_cache_set(qqid: int, ref, ttl_seconds: int):
+    if ttl_seconds > 0 and ref:
+        _self_b1b36_cache[qqid] = (ref, time.time() + ttl_seconds)
+
+
+async def fetch_self_b1b36(qqid: int) -> Optional[dict]:
+    """Best-effort 获取请求者 B50 的 B1（B35首位）/ B36（B15首位），带缓存，失败返回 None。"""
+    if not qqid:
+        return None
+    cached = _self_b1b36_cache_get(qqid)
+    if cached is not None:
+        return cached
+    try:
+        # get_user_b50 直接返回已排序的 B35(sd)/B15(dx)，比拉全量成绩更轻
+        userinfo = await asyncio.wait_for(get_user_b50(qqid=int(qqid)), timeout=8)
+        charts = getattr(userinfo, 'charts', None)
+        b1_rec = (charts.sd[0] if charts and getattr(charts, 'sd', None) else None)
+        b36_rec = (charts.dx[0] if charts and getattr(charts, 'dx', None) else None)
+
+        def _ref(rec):
+            if rec is None:
+                return None
+            return {
+                'song_id': int(rec.song_id), 'title': rec.title,
+                'level': rec.level, 'level_index': int(rec.level_index),
+                'ds': float(getattr(rec, 'ds', 0) or 0),
+                'ra': int(rec.ra), 'achievements': float(rec.achievements),
+            }
+
+        ref = {'b1': _ref(b1_rec), 'b36': _ref(b36_rec)}
+        if not ref['b1'] and not ref['b36']:
+            return None
+        _self_b1b36_cache_set(qqid, ref, _get_cache_ttl())
+        return ref
+    except Exception as e:
+        log.debug(f'[group_rating] fetch b1/b36 for {qqid} failed: {e}')
+        return None
 
 
 def _group_song_score_cache_get(group_id: int, music_id: str, level_index: int):
@@ -715,8 +768,14 @@ def _image_segment(bio) -> "MessageSegment":
 async def render_group_rating_board(bot, group_id: int, top_n: int = 10,
                                     self_qq: Optional[int] = None,
                                     user_name: str = 'Milk'):
+    b1b36_task = (
+        asyncio.create_task(fetch_self_b1b36(self_qq))
+        if self_qq is not None else None
+    )
     rows = await get_group_member_ratings(bot, group_id)
     if not rows:
+        if b1b36_task:
+            b1b36_task.cancel()
         return '群内暂无已绑定查分器的成员。'
     take = rows[:max(1, min(50, int(top_n or 10)))]
     self_rank = None
@@ -725,11 +784,13 @@ async def render_group_rating_board(bot, group_id: int, top_n: int = 10,
             if uid == self_qq:
                 self_rank = i + 1
                 break
+    b1b36 = await b1b36_task if b1b36_task else None
     from .maimaidx_leaderboard_image import render_rating_ranking
     bio = await render_rating_ranking(
         take, title='群 Rating 排行',
         subtitle=f'共 {len(rows)} 人 · 显示前 {len(take)} 名',
         self_qq=self_qq, self_rank=self_rank, all_rows=rows, user_name=user_name,
+        b1b36=b1b36,
     )
     return _image_segment(bio)
 
@@ -742,8 +803,10 @@ async def render_group_weak_board(bot, group_id: int, self_qq: int,
         return '群内暂无已绑定查分器的成员，无法排名。'
     if self_qq is None or not any(uid == self_qq for uid, _, _ in rows):
         return '你尚未绑定查分器或未同意协议，无法参与群内排名。'
+    b1b36 = await fetch_self_b1b36(self_qq)
     from .maimaidx_leaderboard_image import render_my_rank_context
-    bio = await render_my_rank_context(rows, self_qq=self_qq, half=half, user_name=user_name)
+    bio = await render_my_rank_context(rows, self_qq=self_qq, half=half,
+                                      user_name=user_name, b1b36=b1b36)
     if bio is None:
         return '未在群内排名中找到你，请先绑定查分器。'
     return _image_segment(bio)

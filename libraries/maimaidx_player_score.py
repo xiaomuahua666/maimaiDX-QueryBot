@@ -640,10 +640,11 @@ async def rise_score_data(
 
 
 async def player_plate_data(
-    qqid: int, 
-    username: str, 
-    version: str, 
-    plan: str
+    qqid: int,
+    username: str,
+    version: str,
+    plan: str,
+    user_name: Optional[str] = None,
 ) -> Union[MessageSegment, str]:
     """
     查看牌子进度
@@ -748,7 +749,7 @@ async def player_plate_data(
     ramain.sort(key=lambda x: x.ds, reverse=True)
     difficult = [_m for _m in ramain if _m.ds > 13.6]
 
-    appellation = username if username else '您'
+    appellation = user_name or username or 'Milk'
     show_re = version in ['舞', '霸']
     idx_range = range(5) if show_re else range(4)
     diffs_payload = [

@@ -549,6 +549,52 @@ def test_my_rank_context(mods):
     print("  榜首/榜尾/未找到边界 OK")
 
 
+def _b1b36_ref():
+    return {
+        "b1": {"song_id": 1000, "title": "Oshama Scramble!", "level": "14",
+               "level_index": 3, "ds": 14.0, "ra": 305, "achievements": 100.85},
+        "b36": {"song_id": 1003, "title": "Caliburne", "level": "14",
+                "level_index": 4, "ds": 14.2, "ra": 300, "achievements": 101.1234},
+    }
+
+
+def test_board_b1b36_and_overflow(mods):
+    """群榜/我的排名带 B1/B36 参照；底部统计面板不溢出（最后一行在画布内）。"""
+    _, _, assets, lb, _, risk, plate, awmc, _ = mods
+    _clear_asset_caches(assets)
+    ref = _b1b36_ref()
+
+    all_rows = _rating_rows(145)
+    bio = _run(lb.render_rating_ranking(
+        all_rows[:10], all_rows=all_rows, self_qq=1001, self_rank=2,
+        user_name="MILKA...", b1b36=ref))
+    im = _assert_png(bio, "群榜-B1B36", min_h=1000)
+    w, h = im.size
+    # 底部统计面板最后一行（<12000 图例）必须在白卡内、且未越过 footer
+    px = im.convert("RGBA").load()
+    bottom_band_ok = False
+    for yy in range(h - 110, h - 70):
+        if px[w // 2, yy][:3] != (0, 0, 0):
+            bottom_band_ok = True
+    assert bottom_band_ok, "群榜底部统计区域疑似溢出/黑边"
+    print(f"  群榜(B1/B36, 145人) {im.size} OK，底部无溢出")
+
+    names = [f"Player{i}" for i in range(15)]
+    rows = [(1000 + i, names[i], 16017 - i * 120) for i in range(15)]
+    bio = _run(lb.render_my_rank_context(
+        rows, self_qq=1002, half=5, user_name="MILKA...", b1b36=ref))
+    im = _assert_png(bio, "我的排名-B1B36", min_h=900)
+    print(f"  我的排名(B1/B36) {im.size} OK")
+
+    # 无 b1/b36（仅有其一或全空）不应崩
+    bio = _run(lb.render_rating_ranking(
+        all_rows[:10], all_rows=all_rows,
+        b1b36={"b1": None, "b36": ref["b36"]}))
+    _assert_png(bio, "群榜-部分B36", min_h=900)
+    print("  部分/空 B1/B36 回退 OK")
+
+
+
 def test_canvas_fully_painted(mods):
     """渲染图四角必须完全不透明且非纯黑，防止透明边/黑边造成的错位观感。"""
     _, _, assets, lb, _, risk, plate, awmc, _ = mods
@@ -650,44 +696,47 @@ def main():
         static_dir = Path(tmp)
         mods = _load_render_modules(static_dir)
 
-        print("[1/13] 无素材冒烟渲染")
+        print("[1/14] 无素材冒烟渲染")
         test_smoke_no_assets(mods)
 
-        print("[2/13] 贴图加载与几何/错位校验")
+        print("[2/14] 贴图加载与几何/错位校验")
         test_sprite_geometry(mods)
 
-        print("[3/13] 无素材回退")
+        print("[3/14] 无素材回退")
         test_fallback_when_assets_missing(mods)
 
-        print("[4/13] 方形曲绘 / 去爪印源码校验")
+        print("[4/14] 方形曲绘 / 去爪印源码校验")
         test_square_cover_and_no_paw(mods)
 
-        print("[5/13] 宴谱过滤源码校验")
+        print("[5/14] 宴谱过滤源码校验")
         test_utage_filter_source()
 
-        print("[6/13] 全群统计解耦")
+        print("[6/14] 全群统计解耦")
         test_all_rows_decouples_stats(mods)
 
-        print("[7/13] 西文字体渲染中文静态扫描")
+        print("[7/14] 西文字体渲染中文静态扫描")
         test_no_chinese_in_mono_font()
 
-        print("[8/13] 无字体文件回退")
+        print("[8/14] 无字体文件回退")
         test_render_without_font_files(mods)
 
-        print("[9/13] 画布背景完整性")
+        print("[9/14] 画布背景完整性")
         test_canvas_fully_painted(mods)
 
-        print("[10/13] 我的排名上下文")
+        print("[10/14] 我的排名上下文")
         test_my_rank_context(mods)
 
-        print("[11/13] B50 风险新风格")
+        print("[11/14] B50 风险新风格")
         test_b50_risk_report(mods)
 
-        print("[12/13] 牌子进度新风格")
+        print("[12/14] 牌子进度新风格")
         test_plate_progress(mods)
 
-        print("[13/13] 我的 AWMC 新风格")
+        print("[13/14] 我的 AWMC 新风格")
         test_awmc_profile(mods)
+
+        print("[14/14] 群榜 B1/B36 与底部溢出")
+        test_board_b1b36_and_overflow(mods)
 
     print("\nALL RENDER TESTS PASSED 🐾")
 
