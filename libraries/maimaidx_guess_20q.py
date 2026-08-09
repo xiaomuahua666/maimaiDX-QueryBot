@@ -165,6 +165,8 @@ class Guess20QManager:
         if consumed:
             if data.question_count >= data.max_questions:
                 return {'kind': 'no_questions'}
+            # 否定反转：玩家说「不是动漫曲吧」「无白谱吗」时，把是/否回答反转
+            answer = _apply_negation(raw, answer)
             data.question_count += 1
             data.qa.append(QAEntry(
                 uid=uid,
@@ -173,6 +175,11 @@ class Guess20QManager:
                 answer=answer,
                 at=time.time(),
             ))
+            # 每 6 次提问后，追加已确认信息摘要
+            if data.question_count % 6 == 0 and data.question_count < data.max_questions:
+                summary = _summarize_qa(data.qa)
+                if summary:
+                    answer = f'{answer}\n\n{summary}'
             return {
                 'kind': 'question',
                 'answer': answer,
@@ -201,34 +208,76 @@ def _yn(flag: bool) -> str:
 
 
 _GENRE_KEYWORDS = {
-    'POPSアニメ': ('动漫', '动画', '流行', 'pops', 'アニメ', 'anime'),
-    'niconicoボーカロイド': (
+    '流行&动漫': (
+        '动漫', '动画', '動畫', '番曲', '番剧', '流行', 'pops', 'アニメ',
+        'anime', 'jpop', 'acg',
+    ),
+    'niconico & VOCALOID': (
         'niconico', 'ニコニコ', 'vocaloid', 'ボーカロイド', 'ボカロ',
-        '术力口', 'v家', 'vc', 'nico', 'n站',
+        '术曲', '术力口', '術曲', 'v家', 'v+', 'vc', 'nico', 'n站',
+        'ボカロ曲', 'vocalo',
     ),
-    '東方Project': ('东方', '東方', 'touhou'),
-    'ゲームバラエティ': ('游戏', 'バラエティ', 'variety', '其他游戏'),
-    'オンゲキCHUNITHM': (
-        '音击', 'オンゲキ', 'ongeki', '中二', 'チュウニズム', 'chunithm',
+    '东方Project': ('东方', '東方', 'touhou', '车万'),
+    '其他游戏': (
+        '游戏', 'バラエティ', 'variety', '其他游戏',
+        '音游', '音游曲', 'bof', 'game',
     ),
-    'maimai': ('舞萌', 'maimai', '原创'),
-    '宴会場': ('宴会', '宴会场', 'utage'),
+    '音击&中二节奏': (
+        '音击', 'オンゲキ', 'ongeki', '中二', '中二节奏', '中二節奏',
+        'チュウニズム', 'chunithm', '音击曲', '中二曲',
+    ),
+    '舞萌': ('舞萌', 'maimai', '原创', '原曲', '原创曲'),
+    '宴会場': ('宴会', '宴会场', '宴會場', 'utage', '宴谱', '宴譜', '宴曲'),
 }
 
+# 版本匹配表：canonical 为完整版本字符串（小写），kws 为玩家可能的俗称。
+# 用完整版本字符串做精确匹配，避免「でらっくす」误匹配「maimai でらっくす splash」
+# 这类子串问题。PLUS 与基版必须分条录入（顺序：PLUS 在前，基版在后）。
 _VERSION_KEYWORDS = (
-    ('prism', 'prism'),
-    ('buddies', 'buddies'),
-    ('festival', 'festival'),
-    ('universe', 'universe'),
-    ('splash', 'splash'),
-    ('finale', 'finale'),
-    ('milk', 'milk'),
-    ('murasaki', 'murasaki', '紫'),
-    ('pink', 'pink'),
-    ('orange', 'orange'),
-    ('green', 'green'),
-    ('でらっくす', 'でらっくす', 'deluxe', '新框体'),
-    ('plus', 'plus'),
+    ('maimai でらっくす prism plus', ('prism plus', 'prism+', '镜+', '镜代+')),
+    ('maimai でらっくす prism', ('prism', '镜代', '镜')),
+    ('maimai でらっくす buddies plus', ('buddies plus', 'buddies+', '宴代', '宴+')),
+    ('maimai でらっくす buddies', ('buddies', '双代', '双')),
+    ('maimai でらっくす festival plus', ('festival plus', 'festival+', '祝代', '祝+')),
+    ('maimai でらっくす festival', ('festival', '祭代', '祭')),
+    ('maimai でらっくす universe plus', ('universe plus', 'universe+', '星代', '星+')),
+    ('maimai でらっくす universe', ('universe', '宙代', '宙')),
+    ('maimai でらっくす splash plus', ('splash plus', 'splash+', '煌代', '煌')),
+    ('maimai でらっくす splash', ('splash', '爽代', '爽')),
+    ('maimai finale', ('finale', '辉代', '辉')),
+    ('maimai milk plus', ('milk plus', 'milk+', '雪代', '雪')),
+    ('maimai milk', ('milk', '白代', '白')),
+    ('maimai murasaki plus', ('murasaki plus', 'murasaki+', '堇代', '菫代', '堇', '菫')),
+    ('maimai murasaki', ('murasaki', '紫代', '紫')),
+    ('maimai pink plus', ('pink plus', 'pink+', '樱代', '櫻代', '樱', '櫻')),
+    ('maimai pink', ('pink', '桃代', '粉代', '桃', '粉')),
+    ('maimai orange plus', ('orange plus', 'orange+', '晓代', '曉代', '晓', '曉')),
+    ('maimai orange', ('orange', '橙代', '橙')),
+    ('maimai green plus', ('green plus', 'green+', '檄代', '檄')),
+    ('maimai green', ('green', '超代', '绿代', '超', '绿')),
+    ('maimai でらっくす plus', ('でらっくす plus', 'deluxe plus', 'dx+', '华代', '華代', '华')),
+    ('maimai でらっくす', ('でらっくす', 'deluxe', 'dx', '熊代', '熊')),
+    ('maimai plus', ('maimai plus', 'maimai+', '真代+', '无印+')),
+    ('maimai', ('maimai', '初代', '真代', '无印', '最早', '第一作')),
+)
+
+# 旧框统称「舞代」——任意旧框版本都算（小写匹配）
+_OLD_FRAME_VERSIONS = frozenset({
+    'maimai', 'maimai plus', 'maimai green', 'maimai green plus',
+    'maimai orange', 'maimai orange plus', 'maimai pink',
+    'maimai pink plus', 'maimai murasaki', 'maimai murasaki plus',
+    'maimai milk', 'maimai milk plus', 'maimai finale',
+})
+
+# 国服合并叫法——任一子版本都算（小写匹配）
+_VERSION_GROUP_ALIASES = (
+    ('舞代', _OLD_FRAME_VERSIONS),
+    ('真代', frozenset({'maimai', 'maimai plus'})),
+    ('熊华代', frozenset({'maimai でらっくす', 'maimai でらっくす plus'})),
+    ('爽煌代', frozenset({'maimai でらっくす splash', 'maimai でらっくす splash plus'})),
+    ('宙星代', frozenset({'maimai でらっくす universe', 'maimai でらっくす universe plus'})),
+    ('祭祝代', frozenset({'maimai でらっくす festival', 'maimai でらっくす festival plus'})),
+    ('双宴代', frozenset({'maimai でらっくす buddies', 'maimai でらっくす buddies plus'})),
 )
 
 _CJK_RE = re.compile(r'[\u4e00-\u9fff]')
@@ -270,6 +319,9 @@ def _cmp_bool(value: float, text: str, nums: List[float]) -> Optional[bool]:
 
 def _q_genre(music: Music, text: str) -> Optional[str]:
     genre = music.basic_info.genre
+    # 联动曲——跨分类：「其他游戏」与「音击&中二节奏」都算联动
+    if any(k in text for k in ('联动', '联动曲', '联動', 'collab', '合作曲')):
+        return _yn(genre in ('其他游戏', '音击&中二节奏'))
     target: Optional[str] = None
     for canonical, kws in _GENRE_KEYWORDS.items():
         if any(k in text for k in kws):
@@ -368,25 +420,28 @@ def _q_song_type(music: Music, text: str) -> Optional[str]:
 
 
 def _q_version(music: Music, text: str) -> Optional[str]:
-    version = (music.basic_info.version or '').lower()
-    if any(k in text for k in ('新歌', '新曲', 'isnew', '是新', '新的')):
+    version_raw = music.basic_info.version or ''
+    version = version_raw.lower()
+    # 注意：'是新' 不能作为新歌判断关键词——会误匹配「是新框体吗」等版本提问
+    if any(k in text for k in ('新歌', '新曲', 'isnew', '新的')):
         return _yn(bool(music.basic_info.is_new))
     if any(k in text for k in ('旧曲', '舊曲', '老歌', '老曲', '旧的', '舊的')):
         return _yn(not music.basic_info.is_new)
-    if not any(k in text for k in ('版本', '版', 'version', '哪代', '哪一作', '哪作', '出自', '来自哪')):
-        matched = None
-        for kws in _VERSION_KEYWORDS:
-            if any(k in text for k in kws[1:]):
-                matched = kws[0]
-                break
-        if matched is None:
-            return None
-        return _yn(matched in version)
-    for kws in _VERSION_KEYWORDS:
-        if any(k in text for k in kws[1:]):
-            return _yn(kws[0] in version)
-    if '初代' in text or '最早' in text or '第一作' in text:
-        return _yn(version == 'maimai')
+    # 框体代际——新框体=DX 全系列（でらっくす 及其派生），旧框体=初代~finale
+    if any(k in text for k in ('新框体', '新框', '老框体', '老框', '旧框体', '旧框')):
+        is_dx = 'でらっくす' in version
+        if any(k in text for k in ('新框体', '新框')):
+            return _yn(is_dx)
+        return _yn(not is_dx)
+    # 国服合并叫法（双宴代/祭祝代等）——任一子版本都算
+    for alias, versions in _VERSION_GROUP_ALIASES:
+        if alias in text:
+            return _yn(version in versions)
+    # 单版本俗称——canonical 为完整版本字符串，做精确匹配
+    # （PLUS 在前、基版在后，保证「华代」优先命中 PLUS 条目）
+    for canonical, kws in _VERSION_KEYWORDS:
+        if any(k in text for k in kws):
+            return _yn(version == canonical)
     return None
 
 
@@ -412,6 +467,143 @@ def _q_artist(music: Music, text: str) -> Optional[str]:
         return None
     artist = (music.basic_info.artist or '').lower()
     return _yn(kw.lower() in artist)
+
+
+# 中国玩家对谱师的俗称 -> 谱师字段里能唯一匹配的子串（小写比较）
+# 来源：虎扑评分 / 音游论坛约定俗成的叫法
+# 注意：key 用小写（中文无影响，英文部分需小写）；value 为谱师原名的子串
+# 简繁归一化表（简体 -> 繁体，谱师原名多为繁体）
+_SIMP_TO_TRAD = str.maketrans({
+    '谱': '譜', '师': '師', '号': '號', '职': '職', '门': '門',
+    '东': '東', '灯': '燈', '发': '發', '变': '變', '乐': '樂',
+    '习': '習', '华': '華', '梦': '夢', '艺': '藝', '术': '術',
+    '樱': '櫻', '晓': '曉', '堇': '菫', '绿': '綠',
+})
+
+
+def _norm_charter(s: str) -> str:
+    """谱师名归一化：小写 + 简转繁 + 各种减号/长音符统一为半角 '-'。"""
+    s = s.lower().translate(_SIMP_TO_TRAD)
+    # 片假名长音符 ー、全角减号 −、en-dash –、em-dash — 都统一成半角 -
+    return s.replace('ー', '-').replace('−', '-').replace('–', '-').replace('—', '-')
+
+
+# 中国玩家对谱师的俗称 -> 谱师原名子串（归一化后比较，无需列简繁/符号变体）
+# 来源：虎扑评分 / 音游论坛约定俗成的叫法
+_CHARTER_ALIASES = {
+    '川哥': ('隅田川星人',),
+    '7.3': ('シチミヘルツ',),
+    '7.3ghz': ('シチミヘルツ',),
+    '抽象大师': ('譜面ー100号',),
+    '麦斯达': ('mai-star',),
+    '哈皮': ('はっぴー',),
+    '甜口姜': ('あまくちジンジャー',),
+    '红箭': ('redarrow',),
+    '企鹅': ('ロシェ',),                # ロシェ＠ペンギン
+    '鱼板君': ('カマボコ',),             # カマボコ君
+    '鸽子': ('鳩',),                    # 鳩ホルダー
+    '群青': ('群青',),                  # 群青リコリス
+    '小鸟游': ('小鳥遊',),              # 小鳥遊さん
+    '沙发太': ('サファ太',),
+    '翠楼': ('翠楼屋',),
+    '翠': ('サファ太', '翠楼屋'),       # 传闻同人，两者都算
+    '太': ('翠楼屋', 'サファ太'),
+    'withu': ('luxizhel',),             # 以代表作著称（_norm 去空格）
+    '玉子豆腐': ('玉子豆腐',),
+    '科技厨房': ('techno kitchen',),
+    '帕奇猫': ('ぴちネコ',),
+    '物黑': ('ものくろっく',),
+    '寿喜烧奉行': ('すきやき奉行',),
+    '烟花职人': ('華火職人',),
+    '兔子洗衣店': ('うさぎランドリー',),
+    '孤挺花': ('アマリリス',),
+    '王道谱谱师': ('jack',),
+}
+
+# 预计算归一化后的别名表，加速查表
+_CHARTER_ALIASES_NORM = {
+    _norm_charter(k): tuple(_norm_charter(a) for a in v)
+    for k, v in _CHARTER_ALIASES.items()
+}
+
+
+def _match_charter(kw: str, charters: List[str]) -> bool:
+    """判断关键词是否匹配谱师。先查中国玩家俗称映射（归一化），再回退到子串匹配。"""
+    kw_n = _norm_charter(kw)
+    aliases = _CHARTER_ALIASES_NORM.get(kw_n)
+    if aliases is not None:
+        return any(any(a in _norm_charter(c) for a in aliases) for c in charters)
+    return any(kw_n in _norm_charter(c) for c in charters)
+
+
+def _extract_charter_keyword(text: str) -> Optional[str]:
+    """从玩家提问提取谱师关键词。支持多种句式：
+    - 谱师是X吗 / X写的谱吗 / X作的谱吗
+    - 是X写的谱吗
+    - 是不是X的谱 / X的谱吗（玩家直接把谱师名嵌进句子里）
+    """
+    # 句式1：谱师/写谱/... + X + 写的/作的/吗
+    m = re.search(
+        r'(?:谱师|譜師|写谱|寫譜|作谱|作譜|谱面作者|譜面作者|charter)'
+        r'(?:是|为|為)?\s*(.+?)(?:写的|寫的|作的|谱的|譜的|吗|嗎|？|\?|$)',
+        text,
+    )
+    if m:
+        kw = m.group(1).strip(' 的是为為')
+        return kw or None
+    # 句式2：是X写的谱吗
+    m = re.search(r'是\s*(.+?)\s*(?:写|寫|作)的(?:谱|譜)(?:吗|嗎)?$', text)
+    if m:
+        kw = m.group(1).strip()
+        return kw or None
+    # 句式3：是不是X的谱 / X的谱吗 —— 玩家直接把谱师名嵌入
+    # 仅当文本以「的谱/的譜」结尾（可带 吗/？）时触发，提取中间的 X
+    m = re.search(
+        r'(?:是不是|是|为|為)?\s*(.+?)的(?:谱|譜)(?:吗|嗎|？|\?)?$',
+        text,
+    )
+    if m:
+        kw = m.group(1).strip(' 是不是为為')
+        # 至少 2 字才认，避免「是 的谱」这类空提取
+        if kw and len(kw) >= 2:
+            return kw
+    return None
+
+
+def _q_charter(music: Music, text: str) -> Optional[str]:
+    """谱师题——查 charts[].charter 字段（默认看 MASTER 难度）。"""
+    # 信息题：「谱师是谁」
+    if any(k in text for k in ('谱师', '譜師', '写谱', '寫譜', '作谱', '作譜', '谱面作者', '譜面作者', 'charter')) \
+            and any(k in text for k in ('谁', '誰', '什么', '什麼', '哪位', '是谁', '是誰')):
+        charters = _get_master_charters(music)
+        if not charters:
+            return '暂无谱师信息喵'
+        return f'谱师是 {" / ".join(charters)} 喵 ✍️'
+    # 是非题：「谱师是XXX吗」
+    kw = _extract_charter_keyword(text)
+    if not kw:
+        return None
+    charters = _get_master_charters(music)
+    if not charters:
+        return _NO
+    return _yn(_match_charter(kw, charters))
+
+
+def _get_master_charters(music: Music) -> List[str]:
+    """取 MASTER（及 Re:MASTER）难度的谱师，去重去空。"""
+    result: List[str] = []
+    seen: set = set()
+    charts = getattr(music, 'charts', None) or []
+    # charts 顺序：BASIC, ADVANCED, EXPERT, MASTER, Re:MASTER
+    # 玩家最关心 MASTER（index 3），有 Re:MASTER（index 4）也一并取
+    for idx in (3, 4):
+        if idx < len(charts):
+            charter = getattr(charts[idx], 'charter', None) or ''
+            charter = charter.strip()
+            if charter and charter != '-' and charter not in seen:
+                seen.add(charter)
+                result.append(charter)
+    return result
 
 
 def _q_title_script(music: Music, text: str) -> Optional[str]:
@@ -501,6 +693,7 @@ _QUESTION_HANDLERS: Tuple[QuestionHandler, ...] = (
     _q_level_bare,
     _q_version,
     _q_artist,
+    _q_charter,
     _q_title_script,
     _q_title_length,
     _q_title_contains,
@@ -508,12 +701,12 @@ _QUESTION_HANDLERS: Tuple[QuestionHandler, ...] = (
 
 _UNKNOWN_HINT = (
     '唔…Milk 没听懂这个问题喵。可以问这些方向：\n'
-    '· 分类：「是动画曲吗」「是东方曲吗」\n'
+    '· 分类：「是术曲吗」「是东方曲吗」「是联动曲吗」\n'
     '· BPM：「BPM 大于 180 吗」「这歌快吗」\n'
     '· 定数：「最高定数是 14 吗」「是 14+ 吗」「有白谱吗」「定数高吗」\n'
-    '· 版本：「是新歌吗」「是 Festival 的吗」\n'
+    '· 版本：「是新歌吗」「是双代吗」「是舞代吗」\n'
     '· 谱面：「是 DX 谱面吗」\n'
-    '· 艺术家：「艺术家是 Sakuzyo 吗」\n'
+    '· 艺术家/谱师：「艺术家是 Sakuzyo 吗」「谱师是谁」\n'
     '· 标题：「标题是英文吗」「标题有几个字」「标题里有 Bad 吗」\n'
     '想好了就直接发曲名猜答案喵～'
 )
@@ -531,6 +724,37 @@ def classify_question(music: Music, text: str) -> Tuple[str, bool]:
         if result is not None:
             return result, True
     return _UNKNOWN_HINT, False
+
+
+# 否定前缀——玩家说「不是X吗」「无X吗」时，把是/否回答反转。
+# 注意：只处理明确的否定词开头，不处理「没/没有」（歧义太大，可能是疑问语气）。
+_NEGATION_PREFIXES = ('不是', '无', '非', '没白', '没紫', '没黄')
+
+
+def _apply_negation(raw_text: str, answer: str) -> str:
+    """若玩家提问以否定词开头且回答是「是/否」，则反转回答。"""
+    if answer not in (_YES, _NO):
+        return answer
+    stripped = raw_text.strip().lower().replace(' ', '')
+    for prefix in _NEGATION_PREFIXES:
+        if stripped.startswith(prefix):
+            return _NO if answer == _YES else _YES
+    return answer
+
+
+def _summarize_qa(qa_list: List['QAEntry']) -> str:
+    """每 6 次提问后，把已确认的信息拼成摘要。"""
+    if not qa_list:
+        return ''
+    lines: List[str] = []
+    used = len(qa_list)
+    for entry in qa_list:
+        # 原始问题精简（去掉「吗」「？」等）
+        q = entry.question.strip().rstrip('吗嘛？?')
+        a = entry.answer
+        lines.append(f'· {q} → {a}')
+    header = f'📋 已确认信息（{used} 次）：'
+    return header + '\n' + '\n'.join(lines)
 
 
 
