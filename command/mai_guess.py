@@ -2934,7 +2934,7 @@ async def _(event: MessageEvent):
             f'questions={data.question_count}/{data.max_questions}'
         )
         result = (
-            f'🎉 恭喜 {name} 猜对啦！用了 {data.question_count} 次提问。\n'
+            f'🎉 恭喜 {name} 猜对啦！全场共提问 {data.question_count} 次。\n'
             f'{twentyq_guess.reveal_text(data)}\n\n{settlement}{break_part}'
         )
         await _safe_matcher_send(
