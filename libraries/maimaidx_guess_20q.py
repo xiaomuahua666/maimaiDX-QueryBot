@@ -297,6 +297,14 @@ _DS_KEYWORDS = (
     '高', '大', '难', '難', '低', '小', '简单', '簡單', '易',
 )
 
+# 问数值的疑问词（「多高/多少/几」等）。含这些词时是信息题，走 unknown
+# 不报数值——否则「BPM 多高」「紫谱多难」会被当作「BPM 高吗」「紫谱难吗」
+# 这种是非题误答。
+_VALUE_QUERY_WORDS = (
+    '多少', '多大', '多高', '多低', '多快', '多慢', '多难', '多難',
+    '多长', '多長', '多短', '是几', '是幾', '几多', '幾多',
+)
+
 
 def _norm(text: str) -> str:
     return text.strip().lower().replace(' ', '').replace('　', '')
@@ -315,6 +323,11 @@ def _cmp_bool(value: float, text: str, nums: List[float]) -> Optional[bool]:
     if '以上' in t or '≥' in t or '>=' in t or '不低于' in t or '不小于' in t:
         return value >= n
     if '以下' in t or '≤' in t or '<=' in t or '不高于' in t or '不超过' in t:
+        return value <= n
+    # 「大于等于/大於等於」必须放在「大于」前判断，否则被「大于」先命中走严格 >
+    if '大于等于' in t or '大於等於' in t:
+        return value >= n
+    if '小于等于' in t or '小於等於' in t:
         return value <= n
     if '大于' in t or '超过' in t or '高于' in t or '>' in t or '多过' in t:
         return value > n
@@ -348,6 +361,8 @@ def _q_bpm(music: Music, text: str) -> Optional[str]:
     # 含定数关键词/难度形容词/难度颜色时让给 _q_ds——否则「紫谱定数超过50吗」
     # 会被这里用 BPM(180>50) 误答为「是」，造成数据错误。
     has_ds_signal = any(k in text for k in _DS_KEYWORDS) or _resolve_diff_index(text) is not None
+    # 问 BPM 具体数值（「BPM 多少/多高/多快」）是信息题，走 unknown 不报数值
+    is_bpm_value_query = any(k in text for k in _VALUE_QUERY_WORDS)
     if not any(k in text for k in ('bpm', '节奏', '速度', '快', '慢')):
         if has_ds_signal:
             return None
@@ -361,6 +376,9 @@ def _q_bpm(music: Music, text: str) -> Optional[str]:
     # 即使含 BPM 关键词，若同时含定数关键词+颜色+大数字，仍可能是定数问题
     # （如「紫谱定数 BPM 超过 50 吗」罕见但需防御）——保守起见也让出。
     if has_ds_signal and _resolve_diff_index(text) is not None and _nums(text):
+        return None
+    # 问 BPM 数值的信息题走 unknown
+    if is_bpm_value_query:
         return None
     bpm = music.basic_info.bpm
     nums = _nums(text)
@@ -383,6 +401,9 @@ def _q_white_chart(music: Music, text: str) -> Optional[str]:
     # 让给 _q_ds 处理，这里只回答「有没有白谱」——
     # 否则会把定数题误判为有无白谱题，造成数据错误。
     if any(k in text for k in _DS_KEYWORDS) or _nums(text):
+        return None
+    # 仅当含问句标志时才回答——否则「只发白谱」无问句意图会误答为有无白谱。
+    if not any(k in text for k in ('吗', '嗎', '呢', '有无', '有没有', '是有', '是白', '?', '？')):
         return None
     return _yn(len(music.ds) >= 5)
 
@@ -420,6 +441,9 @@ def _q_ds(music: Music, text: str) -> Optional[str]:
     # 必须指定谱面颜色（绿/黄/橙/红/紫/白）才回答定数——
     # 否则不知道玩家问哪个难度，不乱答，走 unknown 提示。
     if diff_idx is None:
+        return None
+    # 问数值的信息题（「紫谱多高/多难/定数多少」）走 unknown 不报数值
+    if any(k in text for k in _VALUE_QUERY_WORDS) and not nums:
         return None
     # 指定了颜色 -> 只看对应难度的 ds
     if diff_idx >= len(music.ds):
@@ -474,6 +498,12 @@ def _q_version(music: Music, text: str) -> Optional[str]:
     # 否则「紫谱是谁的谱」会被「紫」单字误判为问 murasaki 版本。
     if _resolve_diff_index(text) is not None and any(k in text for k in ('谱', '譜')):
         return None
+    # 含「定数」关键词或「谱+数字」时，是定数问题（即使颜色无效如「粉谱」），
+    # 让出给 _q_ds 处理（无效颜色时 _q_ds 会走 unknown）。否则「粉谱定数是10吗」
+    # 会被「粉」单字误判为问 pink 版本。
+    if any(k in text for k in ('定数', 'ds')) or \
+            (any(k in text for k in ('谱', '譜')) and _nums(text)):
+        return None
     # 注意：'为新' 不能作为新歌判断关键词——会误匹配「是新框体吗」等版本提问
     if any(k in text for k in ('新歌', '新曲', 'isnew', '新的')):
         return _yn(bool(music.basic_info.is_new))
@@ -524,8 +554,13 @@ def _q_artist(music: Music, text: str) -> Optional[str]:
     # 单字符子串过宽（如「d」匹配「deco*27」），要求至少 2 字符才回答
     if len(kw) < 2:
         return None
-    artist = (music.basic_info.artist or '').lower()
-    return _yn(kw.lower() in artist)
+    # 艺术家名常含符号（DECO*27、cosMo＠Bousou-P 等），子串匹配会因
+    # 符号隔断失效（「deco27」不在「deco*27」里）。归一化去符号再比较。
+    def _strip_symbols(s: str) -> str:
+        return re.sub(r'[^a-z0-9\u4e00-\u9fff\u3040-\u30ff]', '', s.lower())
+    artist_norm = _strip_symbols(music.basic_info.artist or '')
+    kw_norm = _strip_symbols(kw)
+    return _yn(kw_norm in artist_norm)
 
 
 # 中国玩家对谱师的俗称 -> 谱师字段里能唯一匹配的子串（小写比较）
@@ -680,12 +715,17 @@ def _q_title_script(music: Music, text: str) -> Optional[str]:
 
 
 def _q_title_length(music: Music, text: str) -> Optional[str]:
-    if not any(k in text for k in ('几个字', '幾個字', '多少个字', '多少字', '字长', '字長', '长度', '長度', '多长', '多長', '名字长', '名字短', '标题长', '标题短')):
+    if not any(k in text for k in (
+        '几个字', '幾個字', '多少个字', '多少字', '字长', '字長',
+        '长度', '長度', '多长', '多長', '名字长', '名字短',
+        '标题长', '标题短', '个字',
+    )):
         return None
     length = len(music.title)
-    # 「多长/几个字/多少字」直接回答字数
+    # 「几个字/多少字/多长」要求直接报字数——违反只回答是/否原则，
+    # 走 unknown 提示玩家用「标题是 X 个字吗」形式提问。
     if any(k in text for k in ('多长', '多長', '几个字', '幾個字', '多少个字', '多少字')):
-        return f'标题有 {length} 个字喵 📏'
+        return None
     nums = _nums(text)
     if nums:
         res = _cmp_bool(length, text, nums)
@@ -741,7 +781,7 @@ _UNKNOWN_HINT = (
     '· 版本：「我问是双代吗」「我问是舞代吗」\n'
     '· 谱面：「我问是 DX 谱面吗」\n'
     '· 艺术家/谱师：「我问艺术家是 deco27 吗」「我问谱师是沙发太吗」（只回答是/否，不报名字）\n'
-    '· 标题：「我问标题是英文吗」「我问标题里有 Bad 吗」\n'
+    '· 标题：「我问标题是英文吗」「我问标题里有 Bad 吗」「我问标题是 10 个字吗」\n'
     '注：定数问题请指明绿/黄/红/紫/白谱，否则无法回答。猜曲名用「我猜 曲名」。'
 )
 
