@@ -20,8 +20,33 @@ music_stub = types.ModuleType('libraries.maimaidx_music')
 music_stub.Music = model_mod.Music
 
 
+class _AliasList(list):
+    """模拟 maimaidx_music.AliasList.by_alias：按别名精确匹配返回曲目列表。"""
+    def by_alias(self, music_alias: str):
+        out = []
+        for entry in self:
+            if music_alias in entry._aliases:
+                out.append(entry)
+        return out
+
+
+class _AliasRecord:
+    """一条曲目的别名记录（含 SongID + 别名集合），供 by_alias 检索。"""
+    def __init__(self, song_id: int, name: str, aliases):
+        self.SongID = song_id
+        self.Name = name
+        self._aliases = {a.lower() for a in aliases}
+
+
+# 测试用别名库：目标曲 id=10044 (PANDORA PARADOX) 的别名集合
+_alias_list = _AliasList([
+    _AliasRecord(10044, 'PANDORA PARADOX',
+                 ['PANDORA PARADOX', 'pandora', '10044']),
+])
+
+
 class _MaiStub:
-    pass
+    total_alias_list = _alias_list
 
 
 class _GuessStub:
@@ -238,22 +263,22 @@ assert _resolve_diff_index('定数是13吗') is None, '无颜色应返回 None'
 # 16. 指定颜色的定数判断：只看对应难度的 ds
 _m = _make_music()
 # 紫=14.6
-assert _q_ds(_m, '紫谱定数是13吗') == _NO, '紫=14.6 不在[13,14) -> 不是'
-assert _q_ds(_m, '紫谱是14+吗') == _YES, '紫=14.6 在[14.5,15) -> 是'
-assert _q_ds(_m, '紫谱是14吗') == _NO, '紫=14.6 不在[14,15) -> 不是'
+assert _q_ds(_m, '紫谱定数是13吗')[0] == _NO, '紫=14.6 不在[13,14) -> 不是'
+assert _q_ds(_m, '紫谱是14+吗')[0] == _YES, '紫=14.6 在[14.5,15) -> 是'
+assert _q_ds(_m, '紫谱是14吗')[0] == _NO, '紫=14.6 不在[14,15) -> 不是'
 # 红=13.5
-assert _q_ds(_m, '红谱定数是13吗') == _NO, '红=13.5 不在[13,14) -> 不是'
-assert _q_ds(_m, '红谱是13+吗') == _YES, '红=13.5 在[13.5,14) -> 是'
+assert _q_ds(_m, '红谱定数是13吗')[0] == _NO, '红=13.5 不在[13,14) -> 不是'
+assert _q_ds(_m, '红谱是13+吗')[0] == _YES, '红=13.5 在[13.5,14) -> 是'
 # 黄=12
-assert _q_ds(_m, '黄谱是12吗') == _YES, '黄=12 在[12,13) -> 是'
-assert _q_ds(_m, '橙谱定数是13吗') == _NO, '橙(=黄)=12 不在[13,14) -> 不是'
+assert _q_ds(_m, '黄谱是12吗')[0] == _YES, '黄=12 在[12,13) -> 是'
+assert _q_ds(_m, '橙谱定数是13吗')[0] == _NO, '橙(=黄)=12 不在[13,14) -> 不是'
 # 绿=10
-assert _q_ds(_m, '绿谱是10吗') == _YES, '绿=10 在[10,11) -> 是'
-assert _q_ds(_m, '绿谱定数是13吗') == _NO, '绿=10 不是13 -> 不是'
+assert _q_ds(_m, '绿谱是10吗')[0] == _YES, '绿=10 在[10,11) -> 是'
+assert _q_ds(_m, '绿谱定数是13吗')[0] == _NO, '绿=10 不是13 -> 不是'
 
 # 17. 白谱不存在（ds 长度=4，无 Re:MASTER）-> 回「不是喵」
-assert _q_ds(_m, '白谱定数是13吗') == _NO, '无白谱 -> 不是'
-assert _q_ds(_m, '白谱是15吗') == _NO, '无白谱 -> 不是'
+assert _q_ds(_m, '白谱定数是13吗')[0] == _NO, '无白谱 -> 不是'
+assert _q_ds(_m, '白谱是15吗')[0] == _NO, '无白谱 -> 不是'
 
 # 18. 不指定颜色时不回答定数（避免乱猜 max_ds），返回 None 走 unknown
 assert _q_ds(_m, '定数是13吗') is None, '无颜色定数不应回答: 返回 None'
@@ -268,21 +293,21 @@ assert _q_level_bare(_m, '14+吗') is None, '裸数字无颜色不回答'
 
 # 19. classify_question 能正确路由紫谱定数问题到 _q_ds（不被 _q_song_type 拦截）
 from libraries.maimaidx_guess_20q import classify_question  # noqa: E402
-_ans, _consumed = classify_question(_m, '紫谱定数是13吗')
+_ans, _consumed, _ = classify_question(_m, '紫谱定数是13吗')
 assert _consumed and _ans == _NO, f'紫谱13应回答不是（不应被谱面类型拦截）: {_ans}'
-_ans2, _c2 = classify_question(_m, '紫谱是14+吗')
+_ans2, _c2, _ = classify_question(_m, '紫谱是14+吗')
 assert _c2 and _ans2 == _YES, f'紫谱14+应回答是: {_ans2}'
 # 红谱=13.5，问13应回不是
-_ans3, _c3 = classify_question(_m, '红谱是13吗')
+_ans3, _c3, _ = classify_question(_m, '红谱是13吗')
 assert _c3 and _ans3 == _NO, f'红谱13.5 不在[13,14) 应回不是: {_ans3}'
 # 无颜色定数问题走 unknown（consumed=False，不消耗次数）
-_ans4, _c4 = classify_question(_m, '定数是13吗')
+_ans4, _c4, _ = classify_question(_m, '定数是13吗')
 assert _c4 is False, f'无颜色定数应走 unknown 不消耗次数: consumed={_c4}'
 
 # 20. 谱面类型判断不受难度颜色干扰
 from libraries.maimaidx_guess_20q import _q_song_type  # noqa: E402
-assert _q_song_type(_m, '是dx谱吗') == _NO, 'SD 曲应回不是 DX'
-assert _q_song_type(_m, '是标准谱吗') == _YES, 'SD 曲应回是 SD'
+assert _q_song_type(_m, '是dx谱吗')[0] == _NO, 'SD 曲应回不是 DX'
+assert _q_song_type(_m, '是标准谱吗')[0] == _YES, 'SD 曲应回是 SD'
 assert _q_song_type(_m, '紫谱定数是13吗') is None, '紫谱定数问题不应被谱面类型拦截'
 assert _q_song_type(_m, '黄谱定数') is None, '黄谱定数问题不应被谱面类型拦截'
 
@@ -292,13 +317,13 @@ from libraries.maimaidx_guess_20q import _q_charter  # noqa: E402
 assert _q_charter(_m, '谱师是谁') is None, '谱师是谁不应报名字（开户籍）'
 assert _q_charter(_m, '谱师是沙发太吗') is not None, '谱师是非题应回答'
 # classify_question 对信息题走 unknown
-_a_info, _c_info = classify_question(_m, '谱师是谁')
+_a_info, _c_info, _ = classify_question(_m, '谱师是谁')
 assert _c_info is False, f'信息题应走 unknown 不消耗次数: consumed={_c_info}'
-_a_info2, _c_info2 = classify_question(_m, 'bpm是多少')
+_a_info2, _c_info2, _ = classify_question(_m, 'bpm是多少')
 assert _c_info2 is False, f'BPM 数值信息题应走 unknown: consumed={_c_info2}'
-_a_info3, _c_info3 = classify_question(_m, '艺术家是谁')
+_a_info3, _c_info3, _ = classify_question(_m, '艺术家是谁')
 assert _c_info3 is False, f'艺术家是谁信息题应走 unknown: consumed={_c_info3}'
-_a_info4, _c_info4 = classify_question(_m, '什么版本')
+_a_info4, _c_info4, _ = classify_question(_m, '什么版本')
 assert _c_info4 is False, f'版本信息题应走 unknown: consumed={_c_info4}'
 
 # ───────────────────── 白谱定数 handler 顺序回归 ─────────────────────
@@ -340,36 +365,36 @@ assert _q_white_chart(_mw, '白谱是13吗') is None, '白谱+数字问题应让
 assert _q_white_chart(_mw, '白谱难吗') is None, '白谱难度形容词应让给 _q_ds'
 assert _q_white_chart(_mw, '白谱高吗') is None, '白谱难度形容词应让给 _q_ds'
 # 但纯「有无白谱」问题仍由 _q_white_chart 回答
-assert _q_white_chart(_mw, '有白谱吗') == _YES, '有白谱应回是'
-assert _q_white_chart(_mw, '是白谱吗') == _YES, '有白谱应回是'
-assert _q_white_chart(_m, '有白谱吗') == _NO, '无白谱(_m ds=4)应回不是'
+assert _q_white_chart(_mw, '有白谱吗')[0] == _YES, '有白谱应回是'
+assert _q_white_chart(_mw, '是白谱吗')[0] == _YES, '有白谱应回是'
+assert _q_white_chart(_m, '有白谱吗')[0] == _NO, '无白谱(_m ds=4)应回不是'
 
 # 23. classify_question 实际路由：有白谱曲问「白谱定数是13吗」应走 _q_ds 回 _NO
 #     （白谱=15 不在 [13,14)），不能被 _q_white_chart 误答为 _YES
-_a_w, _c_w = classify_question(_mw, '白谱定数是13吗')
+_a_w, _c_w, _ = classify_question(_mw, '白谱定数是13吗')
 assert _c_w and _a_w == _NO, f'白谱=15 问13应回不是: {_a_w}（历史 bug 会回是）'
 # 白谱=15.0 问「14+吗」-> 14+ 区间 [14.5,15.0)，15.0 不在区间 -> 不是
-_a_w2, _c_w2 = classify_question(_mw, '白谱是14+吗')
+_a_w2, _c_w2, _ = classify_question(_mw, '白谱是14+吗')
 assert _c_w2 and _a_w2 == _NO, f'白谱=15.0 不属14+应回不是: {_a_w2}'
-_a_w3, _c_w3 = classify_question(_mw, '白谱定数是15吗')
+_a_w3, _c_w3, _ = classify_question(_mw, '白谱定数是15吗')
 assert _c_w3 and _a_w3 == _YES, f'白谱=15 问15应回是: {_a_w3}'
 # 白谱=15.0，问「白谱定数大于14吗」应回是
-_a_w4, _c_w4 = classify_question(_mw, '白谱定数大于14吗')
+_a_w4, _c_w4, _ = classify_question(_mw, '白谱定数大于14吗')
 assert _c_w4 and _a_w4 == _YES, f'白谱=15 大于14应回是: {_a_w4}'
 
 # 23b. 白谱=14.6 的曲问「14+吗」-> 14.6 在 [14.5,15.0) -> 是
 _mw2 = _make_music_with_white(white_ds=14.6)
-_a_w5, _c_w5 = classify_question(_mw2, '白谱是14+吗')
+_a_w5, _c_w5, _ = classify_question(_mw2, '白谱是14+吗')
 assert _c_w5 and _a_w5 == _YES, f'白谱=14.6 属14+应回是: {_a_w5}'
 
 # 24. 无白谱曲（_m, ds=4）问「白谱定数是13吗」-> _q_ds 返回 _NO（前提不成立）
-_a_nw, _c_nw = classify_question(_m, '白谱定数是13吗')
+_a_nw, _c_nw, _ = classify_question(_m, '白谱定数是13吗')
 assert _c_nw and _a_nw == _NO, f'无白谱问白谱定数应回不是: {_a_nw}'
 
 # 25. 有无白谱问题仍正常工作（不被 _q_ds 抢答）
-_a_has, _c_has = classify_question(_mw, '有白谱吗')
+_a_has, _c_has, _ = classify_question(_mw, '有白谱吗')
 assert _c_has and _a_has == _YES, f'有白谱应回是: {_a_has}'
-_a_no, _c_no = classify_question(_m, '有白谱吗')
+_a_no, _c_no, _ = classify_question(_m, '有白谱吗')
 assert _c_no and _a_no == _NO, f'无白谱应回不是: {_a_no}'
 
 # ───────────────────── _q_bpm 不抢答定数问题回归 ─────────────────────
@@ -385,16 +410,16 @@ assert _q_bpm(_m_bpm, '紫谱定数超过50吗') is None, '_q_bpm 不应抢答�
 assert _q_bpm(_m_bpm, '紫谱定数大于100吗') is None, '_q_bpm 不应抢答紫谱定数问题'
 assert _q_bpm(_m_bpm, '绿谱定数超过50吗') is None, '_q_bpm 不应抢答绿谱定数问题'
 # 但纯 BPM 问题（无颜色无定数关键词）_q_bpm 仍回答
-assert _q_bpm(_m_bpm, '超过50吗') == _YES, '纯 BPM 大数字问题应回答'
+assert _q_bpm(_m_bpm, '超过50吗')[0] == _YES, '纯 BPM 大数字问题应回答'
 # 含 BPM 关键词的问题 _q_bpm 仍回答
-assert _q_bpm(_m_bpm, 'bpm超过50吗') == _YES, '含 BPM 关键词应回答'
+assert _q_bpm(_m_bpm, 'bpm超过50吗')[0] == _YES, '含 BPM 关键词应回答'
 
 # classify_question 实际路由：定数问题走 _q_ds 不被 _q_bpm 拦截
-_a_b1, _c_b1 = classify_question(_m_bpm, '紫谱定数超过50吗')
+_a_b1, _c_b1, _ = classify_question(_m_bpm, '紫谱定数超过50吗')
 assert _c_b1 and _a_b1 == _NO, f'紫谱14.6 超过50应回不是: {_a_b1}（历史 bug 会回是）'
-_a_b2, _c_b2 = classify_question(_m_bpm, '紫谱定数小于50吗')
+_a_b2, _c_b2, _ = classify_question(_m_bpm, '紫谱定数小于50吗')
 assert _c_b2 and _a_b2 == _YES, f'紫谱14.6 小于50应回是: {_a_b2}'
-_a_b3, _c_b3 = classify_question(_m_bpm, '紫谱定数大于100吗')
+_a_b3, _c_b3, _ = classify_question(_m_bpm, '紫谱定数大于100吗')
 assert _c_b3 and _a_b3 == _NO, f'紫谱14.6 大于100应回不是: {_a_b3}'
 
 # ───────────────────── 难度形容词 + _q_version 让出回归 ─────────────────────
@@ -403,12 +428,12 @@ assert _c_b3 and _a_b3 == _NO, f'紫谱14.6 大于100应回不是: {_a_b3}'
 from libraries.maimaidx_guess_20q import _q_version, _q_artist  # noqa: E402
 
 # 26. 难度形容词定数问题：_q_ds 应识别「紫谱高吗」「紫谱难吗」
-assert _q_ds(_m, '紫谱高吗') == _YES, '紫谱14.6>=13.5 应回是'
-assert _q_ds(_m, '紫谱难吗') == _YES, '紫谱14.6>=13.5 应回是'
-assert _q_ds(_m, '紫谱低吗') == _NO, '紫谱14.6>11 应回不是'
-assert _q_ds(_m, '紫谱简单吗') == _NO, '紫谱14.6>11 应回不是'
-assert _q_ds(_mw, '白谱难吗') == _YES, '白谱15>=13.5 应回是'
-assert _q_ds(_mw, '白谱简单吗') == _NO, '白谱15>11 应回不是'
+assert _q_ds(_m, '紫谱高吗')[0] == _YES, '紫谱14.6>=13.5 应回是'
+assert _q_ds(_m, '紫谱难吗')[0] == _YES, '紫谱14.6>=13.5 应回是'
+assert _q_ds(_m, '紫谱低吗')[0] == _NO, '紫谱14.6>11 应回不是'
+assert _q_ds(_m, '紫谱简单吗')[0] == _NO, '紫谱14.6>11 应回不是'
+assert _q_ds(_mw, '白谱难吗')[0] == _YES, '白谱15>=13.5 应回是'
+assert _q_ds(_mw, '白谱简单吗')[0] == _NO, '白谱15>11 应回不是'
 
 # 27. _q_version 含颜色+「谱」时让出（不误判为版本题）
 assert _q_version(_m, '紫谱高吗') is None, '紫谱+谱 不应被版本题拦截'
@@ -419,9 +444,9 @@ assert _q_version(_m, '是紫代吗') is not None, '紫代版本问题应回答'
 assert _q_version(_m, '是新框体吗') is not None, '新框体版本问题应回答'
 
 # 28. classify_question 实际路由：「紫谱高吗」走 _q_ds 不被 _q_version 拦截
-_a_v1, _c_v1 = classify_question(_m, '紫谱高吗')
+_a_v1, _c_v1, _ = classify_question(_m, '紫谱高吗')
 assert _c_v1 and _a_v1 == _YES, f'紫谱高应回是（不应被版本题拦截）: {_a_v1}'
-_a_v2, _c_v2 = classify_question(_mw, '白谱难吗')
+_a_v2, _c_v2, _ = classify_question(_mw, '白谱难吗')
 assert _c_v2 and _a_v2 == _YES, f'白谱难应回是: {_a_v2}'
 
 # ───────────────────── _q_charter 信息题 + _q_artist 单字符 回归 ─────────────────────
@@ -433,14 +458,14 @@ assert _q_charter(_m, '谱师是谁') is None, '「谱师是谁」是信息题�
 # 但是非题「谱师是X吗」仍正常回答
 assert _q_charter(_m, '谱师是沙发太吗') is not None, '谱师是非题应回答'
 # classify_question：「紫谱是谁的谱」不消耗次数（不被 _q_version 拦截回 _NO）
-_a_ch, _c_ch = classify_question(_m, '紫谱是谁的谱')
+_a_ch, _c_ch, _ = classify_question(_m, '紫谱是谁的谱')
 assert _c_ch is False, f'「紫谱是谁的谱」应走 unknown 不消耗次数: consumed={_c_ch}'
 
 # 30. _q_artist 单字符子串过宽防护
 assert _q_artist(_m, '艺术家是d吗') is None, '单字符艺术家查询不应回答（过宽）'
 assert _q_artist(_m, '艺术家是de吗') is not None, '2字符艺术家查询应回答'
 # classify_question：单字符艺术家查询走 unknown
-_a_a, _c_a = classify_question(_m, '艺术家是d吗')
+_a_a, _c_a, _ = classify_question(_m, '艺术家是d吗')
 assert _c_a is False, f'单字符艺术家查询应走 unknown: consumed={_c_a}'
 
 # ───────────────────── _q_title_length 不开户籍回归 ─────────────────────
@@ -453,20 +478,20 @@ from libraries.maimaidx_guess_20q import _q_title_length  # noqa: E402
 assert _q_title_length(_m, '标题几个字') is None, '问字数应走 unknown 不报字数'
 assert _q_title_length(_m, '标题多少字') is None, '问字数应走 unknown 不报字数'
 assert _q_title_length(_m, '标题多长') is None, '问字数应走 unknown 不报字数'
-_a_tl, _c_tl = classify_question(_m, '标题几个字')
+_a_tl, _c_tl, _ = classify_question(_m, '标题几个字')
 assert _c_tl is False, f'问字数应走 unknown 不消耗次数: consumed={_c_tl}'
 assert '15' not in _a_tl, f'不应在回答里报字数 15: {_a_tl[:40]}'
 
 # 32. 是/否形式问字数应正常回答（_m.title=15 字符）
-assert _q_title_length(_m, '标题是15个字吗') == _YES, '15字应回是'
-assert _q_title_length(_m, '标题是16个字吗') == _NO, '15字问16应回不是'
-assert _q_title_length(_m, '标题是10个字吗') == _NO, '15字问10应回不是'
-_a_tl2, _c_tl2 = classify_question(_m, '标题是15个字吗')
+assert _q_title_length(_m, '标题是15个字吗')[0] == _YES, '15字应回是'
+assert _q_title_length(_m, '标题是16个字吗')[0] == _NO, '15字问16应回不是'
+assert _q_title_length(_m, '标题是10个字吗')[0] == _NO, '15字问10应回不是'
+_a_tl2, _c_tl2, _ = classify_question(_m, '标题是15个字吗')
 assert _c_tl2 and _a_tl2 == _YES, f'15字应回是: {_a_tl2}'
 
 # 33. 形容词问法仍回答是/否
-assert _q_title_length(_m, '标题长吗') == _YES, '15字>=12 应回是'
-assert _q_title_length(_m, '标题短吗') == _NO, '15字>5 应回不是'
+assert _q_title_length(_m, '标题长吗')[0] == _YES, '15字>=12 应回是'
+assert _q_title_length(_m, '标题短吗')[0] == _NO, '15字>5 应回不是'
 
 # ───────────────────── 信息题不开户籍回归 ─────────────────────
 # 所有「只能回答答案」的信息题应走 unknown，不消耗次数、不报答案值。
@@ -500,7 +525,7 @@ _info_cases = [
     ('紫谱定数是多少', '14.6'),
 ]
 for _q, _forbidden in _info_cases:
-    _ans_i, _c_i = classify_question(_m, _q)
+    _ans_i, _c_i, _ = classify_question(_m, _q)
     assert _c_i is False, f'信息题「{_q}」应走 unknown 不消耗次数: consumed={_c_i}, ans={_ans_i[:30]}'
     if _forbidden:
         assert _forbidden.lower() not in _ans_i.lower() or _ans_i == _UNKNOWN_HINT, \
@@ -522,53 +547,53 @@ assert _q_bpm(_m, 'bpm多高') is None, '「bpm多高」问数值应走 unknown'
 assert _q_bpm(_m, 'bpm多低') is None, '「bpm多低」问数值应走 unknown'
 assert _q_bpm(_m, 'bpm多快') is None, '「bpm多快」问数值应走 unknown'
 assert _q_bpm(_m, 'bpm多慢') is None, '「bpm多慢」问数值应走 unknown'
-assert _q_bpm(_m, 'bpm高吗') == _YES, '「bpm高吗」是非题应回答'
-assert _q_bpm(_m, 'bpm快吗') == _YES, '「bpm快吗」是非题应回答'
-assert _q_bpm(_m, 'bpm低吗') == _NO, '「bpm低吗」是非题应回答'
-assert _q_bpm(_m, 'bpm慢吗') == _NO, '「bpm慢吗」是非题应回答'
+assert _q_bpm(_m, 'bpm高吗')[0] == _YES, '「bpm高吗」是非题应回答'
+assert _q_bpm(_m, 'bpm快吗')[0] == _YES, '「bpm快吗」是非题应回答'
+assert _q_bpm(_m, 'bpm低吗')[0] == _NO, '「bpm低吗」是非题应回答'
+assert _q_bpm(_m, 'bpm慢吗')[0] == _NO, '「bpm慢吗」是非题应回答'
 
 # 36. 定数「多X」问数值走 unknown，「X吗」是非题正常回答
 assert _q_ds(_m, '紫谱多高') is None, '「紫谱多高」问数值应走 unknown'
 assert _q_ds(_m, '紫谱多难') is None, '「紫谱多难」问数值应走 unknown'
 assert _q_ds(_m, '紫谱多低') is None, '「紫谱多低」问数值应走 unknown'
-assert _q_ds(_m, '紫谱高吗') == _YES, '「紫谱高吗」是非题应回答'
-assert _q_ds(_m, '紫谱难吗') == _YES, '「紫谱难吗」是非题应回答'
-assert _q_ds(_m, '紫谱低吗') == _NO, '「紫谱低吗」是非题应回答'
+assert _q_ds(_m, '紫谱高吗')[0] == _YES, '「紫谱高吗」是非题应回答'
+assert _q_ds(_m, '紫谱难吗')[0] == _YES, '「紫谱难吗」是非题应回答'
+assert _q_ds(_m, '紫谱低吗')[0] == _NO, '「紫谱低吗」是非题应回答'
 
 # 37. classify_question 实际路由：「多X」走 unknown 不消耗次数
-_a_bmh, _c_bmh = classify_question(_m, 'bpm多高')
+_a_bmh, _c_bmh, _ = classify_question(_m, 'bpm多高')
 assert _c_bmh is False, f'「bpm多高」应走 unknown: consumed={_c_bmh}'
-_a_dsh, _c_dsh = classify_question(_m, '紫谱多难')
+_a_dsh, _c_dsh, _ = classify_question(_m, '紫谱多难')
 assert _c_dsh is False, f'「紫谱多难」应走 unknown: consumed={_c_dsh}'
 
 # ───────────────────── 艺术家符号归一化 + 只发实体名 回归 ─────────────────────
 # 38. 艺术家名含符号（DECO*27）时，「deco27」应能匹配
 # 历史 bug：子串匹配「deco27」不在「deco*27」里，错回「不是」
-_a_art, _c_art = classify_question(_m, '艺术家是deco27吗')
+_a_art, _c_art, _ = classify_question(_m, '艺术家是deco27吗')
 assert _c_art and _a_art == _YES, f'艺术家是deco27应回是（符号归一化）: {_a_art}'
 
 # 39. 只发实体名（无问句意图）走 unknown，不误答
 # 历史 bug：「白谱」无问句被 _q_white_chart 误答为有无白谱
 assert _q_white_chart(_m, '白谱') is None, '「白谱」无问句应走 unknown'
-assert _q_white_chart(_m, '有白谱吗') == _NO, '「有白谱吗」应回答'
-assert _q_white_chart(_m, '白谱吗') == _NO, '「白谱吗」应回答'
-_a_wb, _c_wb = classify_question(_m, '白谱')
+assert _q_white_chart(_m, '有白谱吗')[0] == _NO, '「有白谱吗」应回答'
+assert _q_white_chart(_m, '白谱吗')[0] == _NO, '「白谱吗」应回答'
+_a_wb, _c_wb, _ = classify_question(_m, '白谱')
 assert _c_wb is False, f'「白谱」无问句应走 unknown: consumed={_c_wb}'
 
 # ───────────────────── 「大于等于」比较词 + 无效颜色定数 回归 ─────────────────────
 # 40. 「大于等于」必须走 >= 而非 >（历史 bug：被「大于」先命中走严格 >）
 # BPM=180：大于等于180 -> 是；大于180 -> 不是
 from libraries.maimaidx_guess_20q import _q_bpm  # noqa: E402
-assert _q_bpm(_m, 'bpm大于等于180吗') == _YES, 'BPM>=180 应回是'
-assert _q_bpm(_m, 'bpm大于180吗') == _NO, 'BPM>180(严格) 应回不是'
-assert _q_bpm(_m, 'bpm小于等于180吗') == _YES, 'BPM<=180 应回是'
+assert _q_bpm(_m, 'bpm大于等于180吗')[0] == _YES, 'BPM>=180 应回是'
+assert _q_bpm(_m, 'bpm大于180吗')[0] == _NO, 'BPM>180(严格) 应回不是'
+assert _q_bpm(_m, 'bpm小于等于180吗')[0] == _YES, 'BPM<=180 应回是'
 # 紫谱=14.6：大于等于14.6 -> 是；大于14.6 -> 不是
-assert _q_ds(_m, '紫谱定数大于等于14.6吗') == _YES, '紫谱>=14.6 应回是'
-assert _q_ds(_m, '紫谱定数大于14.6吗') == _NO, '紫谱>14.6(严格) 应回不是'
+assert _q_ds(_m, '紫谱定数大于等于14.6吗')[0] == _YES, '紫谱>=14.6 应回是'
+assert _q_ds(_m, '紫谱定数大于14.6吗')[0] == _NO, '紫谱>14.6(严格) 应回不是'
 
 # 41. 无效难度颜色（粉谱）的定数问题走 unknown，不被 _q_version 抢答
 # 历史 bug：「粉谱定数是10吗」被 _q_version 的「粉」(pink版本) 误判为版本题
-_a_pink, _c_pink = classify_question(_m, '粉谱定数是10吗')
+_a_pink, _c_pink, _ = classify_question(_m, '粉谱定数是10吗')
 assert _c_pink is False, f'「粉谱定数」无效颜色应走 unknown: consumed={_c_pink}'
 # 对照：有效颜色定数仍正常回答
 assert classify_question(_m, '紫谱定数是14吗')[1] is True
@@ -576,13 +601,13 @@ assert classify_question(_m, '紫谱定数是14吗')[1] is True
 # 42. 否定反转正常工作（在 process_message 经 _apply_negation 调用）
 from libraries.maimaidx_guess_20q import _apply_negation  # noqa: E402
 # 不是动漫曲：是舞萌不是动漫 -> 原回「不是」，反转后「是」
-_a_neg1, _ = classify_question(_m, '不是动漫曲吗')
-assert _apply_negation('不是动漫曲吗', _a_neg1) == _YES, f'否定反转应回是: {_a_neg1}'
+_a_neg1, _, _ = classify_question(_m, '不是动漫曲吗')
+assert _apply_negation('不是动漫曲吗', _a_neg1)[0] == _YES, f'否定反转应回是: {_a_neg1}'
 # 不是舞萌：是舞萌 -> 原回「是」，反转后「不是」
-_a_neg2, _ = classify_question(_m, '不是舞萌吗')
-assert _apply_negation('不是舞萌吗', _a_neg2) == _NO, f'否定反转应回不是: {_a_neg2}'
+_a_neg2, _, _ = classify_question(_m, '不是舞萌吗')
+assert _apply_negation('不是舞萌吗', _a_neg2)[0] == _NO, f'否定反转应回不是: {_a_neg2}'
 # 无白谱：无白谱 -> 原回「不是」，反转后「是」
-_a_neg3, _ = classify_question(_m, '无白谱吗')
-assert _apply_negation('无白谱吗', _a_neg3) == _YES, f'否定反转应回是: {_a_neg3}'
+_a_neg3, _, _ = classify_question(_m, '无白谱吗')
+assert _apply_negation('无白谱吗', _a_neg3)[0] == _YES, f'否定反转应回是: {_a_neg3}'
 
 print('guess 20q prefix & two-phase tests passed')

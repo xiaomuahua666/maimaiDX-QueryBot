@@ -87,6 +87,8 @@ from ..libraries.maimaidx_guess_duel_image import duel_image_segment
 from ..libraries.maimaidx_guess_20q import (
     TWENTYQ_COUNTDOWN,
     TWENTYQ_DURATION,
+    TWENTYQ_GUESS_WINDOW,
+    TWENTYQ_IDLE_TIMEOUT,
     TWENTYQ_MAX_QUESTIONS,
     twentyq_base_points,
     twentyq_guess,
@@ -301,6 +303,13 @@ guess_20q_reset = on_command(
     block=True,
     rule=GROUP_MESSAGE,
 )
+guess_20q_list = on_command(
+    '查看提问列表',
+    aliases={'查看已有信息', '提问列表', '20问进度', '我问已有信息'},
+    priority=4,
+    block=True,
+    rule=GROUP_MESSAGE,
+)
 
 # 猜歌玩法不参与高峰期「额外 1 BREAK」附加费（含局内答题 on_message）。
 for _guess_matcher in (
@@ -345,6 +354,7 @@ for _guess_matcher in (
     guess_20q_start,
     guess_20q_solve,
     guess_20q_reset,
+    guess_20q_list,
 ):
     setattr(_guess_matcher, '_maimaidx_busy_surcharge_exempt', True)
 
@@ -2802,9 +2812,10 @@ from ..libraries import maimaidx_guess_scheduler  # noqa: F401
 def _twentyq_intro() -> str:
     return dedent(f'''\
         🐱 你想我猜开始！Milk 心里想了一首舞萌曲目～
-        提问用「我问」前缀，猜曲名用「我猜」前缀，共 {TWENTYQ_MAX_QUESTIONS} 次提问，限时 {TWENTYQ_DURATION} 秒。
+        提问用「我问」前缀，猜曲名用「我猜」前缀，共 {TWENTYQ_MAX_QUESTIONS} 次提问。
+        问问题阶段不限时；问完后进入猜曲阶段，限时 {TWENTYQ_GUESS_WINDOW} 秒。
         可问：分类 / BPM / 定数 / 版本 / 是否 DX 谱面 / 谱师 / 艺术家 / 标题特征。
-        猜错不结束，超时公布答案。输入「重置你想我猜」可结束本局。
+        猜错不结束，超时公布答案。输入「查看已有信息」可看本局问答记录，输入「重置你想我猜」可结束本局。
     ''')
 
 
@@ -2833,18 +2844,40 @@ async def _(event: MessageEvent):
 
     await _guess_notify(guess_20q_start, event, _twentyq_intro(), reply=True)
 
-    remaining = data.duration
-    while remaining > 0:
+    # ── 阶段1：问问题阶段，不限总时长；空闲超过 TWENTYQ_IDLE_TIMEOUT 才兜底结束 ──
+    idle_timeout_hit = False
+    while data.question_count < data.max_questions:
         await asyncio.sleep(1)
         current = twentyq_guess.get(gid)
         if current is not data or current.end:
+            return
+        if data.idle_seconds() >= TWENTYQ_IDLE_TIMEOUT:
+            idle_timeout_hit = True
             break
-        remaining -= 1
-        if remaining in TWENTYQ_COUNTDOWN:
-            await _guess_notify(
-                guess_20q_start, event,
-                f'⏳ 你想我猜还剩 {remaining} 秒！已提问 {data.question_count} 次。',
-            )
+
+    current = twentyq_guess.get(gid)
+    if current is not data or current.end:
+        return
+
+    # ── 阶段2：猜测阶段（正常问完进入；空闲超时跳过直接收尾）──
+    if not idle_timeout_hit and data.question_count >= data.max_questions:
+        await _guess_notify(
+            guess_20q_start, event,
+            f'📝 提问次数用完啦！进入猜曲阶段，限时 {TWENTYQ_GUESS_WINDOW} 秒，'
+            f'用「我猜 曲名」抢猜～',
+        )
+        remaining = TWENTYQ_GUESS_WINDOW
+        while remaining > 0:
+            await asyncio.sleep(1)
+            current = twentyq_guess.get(gid)
+            if current is not data or current.end:
+                return
+            remaining -= 1
+            if remaining in TWENTYQ_COUNTDOWN:
+                await _guess_notify(
+                    guess_20q_start, event,
+                    f'⏳ 猜曲阶段还剩 {remaining} 秒！',
+                )
 
     current = twentyq_guess.get(gid)
     if current is not data:
@@ -2969,6 +3002,14 @@ async def _(event: MessageEvent):
         )
         return
 
+    if kind == 'busy':
+        await _guess_notify(
+            guess_20q_solve, event,
+            '喵～上一个问题还在确认中（可能正在问 AI），请稍等一下再提问哦～',
+            mention_sender=True,
+        )
+        return
+
     if kind == 'question':
         suffix = f'\n（还可提问 {result["remaining"]} 次）'
         if result.get('last'):
@@ -3024,3 +3065,28 @@ async def _(event: MessageEvent):
     if answer:
         msg += f'\n{answer}'
     await guess_20q_reset.finish(msg, reply_message=True)
+
+
+@guess_20q_list.handle()
+async def _(event: MessageEvent):
+    gid = get_event_group_id(event)
+    if gid is None:
+        return
+    data = twentyq_guess.get(gid)
+    if data is None or data.end:
+        await guess_20q_list.finish(
+            '当前没有进行中的你想我猜。', reply_message=True,
+        )
+    lines = [f'📋 本局已确认信息（{data.question_count}/{data.max_questions} 次提问）：']
+    if not data.qa:
+        lines.append('（还没有提问记录，用「我问 是非题」开始提问吧～）')
+    else:
+        for i, qa in enumerate(data.qa, 1):
+            name = qa.name or '群友'
+            lines.append(f'{i}. [{name}] {qa.question}\n   → {qa.answer}')
+    remaining_q = data.remaining()
+    if remaining_q > 0:
+        lines.append(f'\n还剩 {remaining_q} 次提问机会，猜曲名用「我猜 曲名」。')
+    else:
+        lines.append('\n提问次数已用完，只能用「我猜 曲名」抢猜。')
+    await guess_20q_list.finish('\n'.join(lines), reply_message=True)

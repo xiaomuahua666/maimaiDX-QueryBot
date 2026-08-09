@@ -51,7 +51,7 @@ exec(
 )
 charge_text = namespace["_charge_text"]
 result = SimpleNamespace(
-    service="awmc_status", free=False, charged=2, balance=98
+    service="awmc_status", free=False, charged=2, balance=98, freedom=False
 )
 text = charge_text(result)
 assert "账号状态查询" in text

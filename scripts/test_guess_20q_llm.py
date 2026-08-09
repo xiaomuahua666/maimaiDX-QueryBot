@@ -98,9 +98,9 @@ def _make_mock_llm(response_map: dict, default: str = '无法回答'):
         key = text.strip().lower().replace(' ', '')
         resp = response_map.get(key, default)
         if resp == '是':
-            return _YES
+            return _YES, 'mock 判定'
         if resp == '否':
-            return _NO
+            return _NO, 'mock 判定'
         return None  # 无法回答
     return _mock
 
@@ -132,7 +132,7 @@ def _run(data, text, mock_llm):
 # 先确认哪些问题规则不命中（走 LLM）
 from libraries.maimaidx_guess_20q import classify_question
 def _is_rule_hit(music, text):
-    _, consumed = classify_question(music, text)
+    _, consumed, _ = classify_question(music, text)
     return consumed
 
 # ── 测试 1：双重否定反转 bug ──
@@ -142,9 +142,9 @@ def _is_rule_hit(music, text):
 # 但 _apply_negation 会检测到「不是」再反转成「否」→ 错误！
 print('测试 1: 双重否定反转（LLM 看完整问题不应再反转）')
 data = _make_data()
-q = '不是中文歌吗'
+q = '不是治愈系吧'
 assert not _is_rule_hit(data.music, q), f'测试 1 需要规则不命中: {q}'
-# LLM 对「不是中文歌吗」的正确回答：标题是英文，所以「不是中文歌」= 真 → 「是」
+# LLM 对「不是抒情慢歌吧」按完整语义判断，mock 回「是」
 mock = _make_mock_llm({q: '是'})
 r = _run(data, q, mock)
 print(f'  结果: kind={r["kind"]}, answer={r.get("answer", "")[:30]}')
@@ -156,7 +156,7 @@ print('  ✓ 通过（无双重反转）')
 # ── 测试 2：肯定句不被反转 ──
 print('测试 2: 肯定句不被反转')
 data = _make_data()
-q = '是英文歌吗'
+q = '是燃曲吗'
 assert not _is_rule_hit(data.music, q), f'测试 2 需要规则不命中: {q}'
 mock = _make_mock_llm({q: '是'})
 r = _run(data, q, mock)
@@ -189,8 +189,8 @@ print('  ✓ 通过')
 print('测试 5: LLM 命中消耗次数')
 data = _make_data()
 before = data.question_count
-mock = _make_mock_llm({'bpm大于100吗': '是'})
-r = _run(data, 'bpm大于100吗', mock)
+mock = _make_mock_llm({'适合新手吗': '是'})
+r = _run(data, '适合新手吗', mock)
 assert r['kind'] == 'question'
 assert data.question_count == before + 1, f'LLM 命中应消耗次数: {data.question_count}'
 print('  ✓ 通过')
@@ -200,7 +200,8 @@ print('测试 6: 提示词完整性')
 assert '是' in _GUESS_20Q_LLM_SYSTEM, '提示词应说明输出「是」'
 assert '否' in _GUESS_20Q_LLM_SYSTEM, '提示词应说明输出「否」'
 assert '无法回答' in _GUESS_20Q_LLM_SYSTEM, '提示词应说明输出「无法回答」'
-assert '禁止任何其他字符' in _GUESS_20Q_LLM_SYSTEM, '提示词应限制输出格式'
+assert 'JSON' in _GUESS_20Q_LLM_SYSTEM, '提示词应要求 JSON 输出'
+assert 'understand' in _GUESS_20Q_LLM_SYSTEM, '提示词应要求返回判定理解'
 assert 'music_profile' in _GUESS_20Q_LLM_SYSTEM, '提示词应包含曲目特征占位符'
 assert '禁止透露或猜测曲名' in _GUESS_20Q_LLM_SYSTEM, '提示词应禁止透露曲名'
 assert '直接问答案' in _GUESS_20Q_LLM_SYSTEM, '提示词应说明直接问答案走无法回答'
@@ -240,7 +241,7 @@ before = data.question_count
 async def _slow_llm(music, text, config):
     # 模拟 LLM 调用耗时，期间游戏被重置
     await asyncio.sleep(0.05)
-    return _YES
+    return _YES, 'mock'
 
 import libraries.maimaidx_guess_20q as mod
 orig = mod._llm_classify
@@ -256,7 +257,7 @@ async def _mock_with_reset(music, text, config):
     # LLM 还没返回，游戏被超时任务结束了
     data.end = True
     await asyncio.sleep(0.01)
-    return _YES
+    return _YES, 'mock'
 
 mod._llm_classify = _mock_with_reset
 mod._get_config = lambda: _Cfg()
@@ -341,7 +342,7 @@ async def _counting_llm(music, text, config):
     max_concurrent = max(max_concurrent, concurrent)
     await asyncio.sleep(0.05)
     concurrent -= 1
-    return _YES
+    return _YES, 'mock'
 
 class _Cfg2:
     guess_20q_llm_enable = True
@@ -354,7 +355,8 @@ orig_cfg2 = mod2._get_config
 # 直接 patch 内部：让 _llm_classify 走信号量 + 计数
 async def _patched_llm(music, text, config):
     async with mod2._get_llm_semaphore():
-        return await _counting_llm(music, text, config)
+        ans, _r = await _counting_llm(music, text, config)
+        return ans, _r
 
 mod2._llm_classify = _patched_llm
 mod2._get_config = lambda: _Cfg2()
