@@ -117,7 +117,7 @@ def render_plate_progress(*,
     y = 118 + hero_h + 18
 
     # 难度统计区
-    diff_box_h = 86
+    diff_box_h = 96
     y += diff_box_h + 20
 
     if completed:
@@ -186,12 +186,12 @@ def render_plate_progress(*,
         d.ellipse((bx + 16, y + 16, bx + 28, y + 28), fill=col)
         d.text((bx + 34, y + 22), str(diff.get('name', _DIFF_NAMES[i])),
                font=_font_bold(16), fill=_TEXT_SOFT, anchor='lm')
-        d.text((bx + 16, y + 40), f'{remaining}',
+        d.text((bx + 16, y + 38), f'{remaining}',
                font=_font_mono(28), fill=_TEXT)
         d.text((bx + 16 + int(_text_len(d, f'{remaining}', _font_mono(28))) + 6,
                 y + 50), f'/ {total}',
                font=_font_bold(14), fill=_MUTED, anchor='lm')
-        _bar(im, bx + 16, y + diff_box_h - 18, box_w - 32, 10, ratio, col)
+        _bar(im, bx + 16, y + diff_box_h - 20, box_w - 32, 10, ratio, col)
     y += diff_box_h + 20
 
     # ---- 列表 / 提示 ----

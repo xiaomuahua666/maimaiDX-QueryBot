@@ -563,52 +563,32 @@ async def _(bot: Bot, event: MessageEvent):
         return
     profile = get_account_profile(qqid)
 
-    # Official QQ does not support OneBot forward messages.  Send the account
-    # overview first through the tested media adapter so an optional/slow guess
-    # chart can never make the whole command appear silent.
-    if use_qq_mode(event):
-        display_name = get_sender_display_name(event) or 'Milk'
-        image_seg = render_account_profile_image(
-            profile, user_name=display_name
-        ) or rank_text_image(format_account_profile(profile))
-        try:
-            await plugin_send(
-                my_awmc,
-                image_seg,
-                event=event,
-                reply_message=True,
-            )
-        except Exception as exc:
-            log.warning(
-                f'[BREAK] 我的AWMC概览图发送失败，回退文本：'
-                f'{type(exc).__name__}: {exc}'
-            )
-            await plugin_finish(
-                my_awmc,
-                format_account_profile(profile),
-                event=event,
-                reply_message=True,
-            )
-        await my_awmc.finish()
-        return
-
+    # 官方 QQ 与 OneBot 统一直接发送账号卡片图片，不再使用合并转发
+    # （build_forward_node 会把 MessageSegment 强转成字符串，无法发出图片）。
     display_name = get_sender_display_name(event) or 'Milk'
-    nickname = str(getattr(maiconfig, 'botName', None) or 'AWMC Bot')
     image_seg = render_account_profile_image(
         profile, user_name=display_name
-    )
-    if image_seg is not None:
-        nodes = [build_forward_node(str(event.self_id), nickname, image_seg)]
-    else:
-        sections = format_account_profile_sections(profile)
-        nodes = [build_forward_node(str(event.self_id), nickname, section) for section in sections]
+    ) or rank_text_image(format_account_profile(profile))
     try:
-        await deliver_forward_messages(bot, event, nodes, title='我的 AWMC', reply_message=True)
+        await plugin_send(
+            my_awmc,
+            image_seg,
+            event=event,
+            reply_message=True,
+        )
     except Exception as exc:
-        log.warning(f'[BREAK] 我的AWMC合并转发失败，回退文本：{type(exc).__name__}: {exc}')
-        await my_awmc.send(format_account_profile(profile), reply_message=True)
-        await my_awmc.finish()
+        log.warning(
+            f'[BREAK] 我的AWMC概览图发送失败，回退文本：'
+            f'{type(exc).__name__}: {exc}'
+        )
+        await plugin_finish(
+            my_awmc,
+            format_account_profile(profile),
+            event=event,
+            reply_message=True,
+        )
     await my_awmc.finish()
+    return
 
 
 @awmc_admin_view.handle()
