@@ -1695,9 +1695,9 @@ def _charge_text(result, qqid: Optional[int] = None) -> str:
         "awmc_item_upsert": "道具修改",
     }
     label = labels.get(result.service, result.service)
-    if result.free:
+    if getattr(result, "free", False):
         return f"💳 {label}今日首次成功，免费 · 余额 {result.balance} BREAK"
-    if result.freedom:
+    if getattr(result, "freedom", False):
         from ..libraries.maimaidx_card import card_manager, format_duration
         remaining_text = ""
         if qqid is not None:
