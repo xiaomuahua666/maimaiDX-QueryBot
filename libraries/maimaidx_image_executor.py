@@ -19,10 +19,10 @@ def _env_int(name: str, default: int) -> int:
 
 
 _CPU_COUNT = max(1, int(os.cpu_count() or 4))
-# Pillow/封面合成独立于事件循环；默认按半数 CPU 并发并设置上限，
-# 让多局小游戏绘图有余量，同时避免无限制线程把机器打满。
+# Pillow/封面合成独立于事件循环；默认给足 CPU，
+# 仍可用 MAIMAIDX_IMAGE_WORKERS 按机器负载调整。
 IMAGE_WORKERS = _env_int(
-    'MAIMAIDX_IMAGE_WORKERS', min(12, max(4, _CPU_COUNT // 2)),
+    'MAIMAIDX_IMAGE_WORKERS', min(32, max(8, _CPU_COUNT)),
 )
 _EXECUTOR: concurrent.futures.ThreadPoolExecutor | None = None
 

@@ -249,7 +249,8 @@ def get_b50_tag_stats(userinfo, wmc_tags_cache: Optional[Dict[tuple, dict]] = No
                     elif dc_label in ("诈称谱", "虚高谱"):
                         counts['难度']['诈称谱'] += 1
                     for t in tags_data.get("radarTags", []):
-                        counts['配置'][t['label']] += 1
+                        if float(t.get('score', 0) or 0) >= 10:
+                            counts['配置'][t['label']] += 1
                     for t in tags_data.get("evaluationTags", []):
                         counts['评价'][t['label']] += 1
             if not wmc_used:

@@ -1752,6 +1752,7 @@ async def _(event: MessageEvent, user_id: Optional[int] = Depends(get_at_qq)):
     async def _gen():
         from ..libraries.maimaidx_datasource import get_user_b50
         import asyncio
+        from ..libraries.maimaidx_image_executor import run_image_cpu
         try:
             userinfo = await get_user_b50(qqid=qqid)
         except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
@@ -1761,8 +1762,7 @@ async def _(event: MessageEvent, user_id: Optional[int] = Depends(get_at_qq)):
         wmc_key = maiconfig.wmc_api_key
         if wmc_key:
             api = WmcAPI(resolve_wmc_base_url(maiconfig), wmc_key)
-            tasks = []
-            task_keys = []
+            wmc_items = []
             for chart_list in (getattr(userinfo.charts, 'sd', None) or [], getattr(userinfo.charts, 'dx', None) or []):
                 if not chart_list:
                     continue
@@ -1777,17 +1777,27 @@ async def _(event: MessageEvent, user_id: Optional[int] = Depends(get_at_qq)):
                     wmc_sid = song_id_for_wmc(music)
                     kind = kind_for_wmc(music)
                     diff_val = diff_value_for_wmc(li)
-                    key = make_chart_key(wmc_sid, kind, diff_val)
-                    tasks.append(api.get_tags(key, radar_threshold=30, feature_threshold=0.3))
-                    task_keys.append((wmc_sid, kind, diff_val))
-            if tasks:
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                for k, r in zip(task_keys, results):
-                    if isinstance(r, dict) and r.get("tags"):
+                    wmc_items.append(((wmc_sid, kind, diff_val), make_chart_key(wmc_sid, kind, diff_val)))
+            if wmc_items:
+                sem = asyncio.Semaphore(12)
+
+                async def _fetch(cache_key, chart_key):
+                    async with sem:
+                        try:
+                            return cache_key, await asyncio.wait_for(
+                                api.get_tags(chart_key, radar_threshold=0, feature_threshold=0.3),
+                                timeout=10.0,
+                            )
+                        except Exception:
+                            return cache_key, None
+
+                results = await asyncio.gather(*(_fetch(k, ck) for k, ck in wmc_items))
+                for k, r in results:
+                    if isinstance(r, dict) and isinstance(r.get("tags"), dict):
                         wmc_cache[k] = r["tags"]
         stats = get_b50_tag_stats(userinfo, wmc_tags_cache=wmc_cache or None)
-        im = draw_analysis(stats)
-        return MessageSegment.image(image_to_message_segment(im))
+        im = await run_image_cpu(draw_analysis, stats)
+        return await run_image_cpu(lambda: MessageSegment.image(image_to_message_segment(im)))
 
     from ..libraries.maimaidx_timing import finish_timed
     await finish_timed(tag_analysis, _gen(), billing_qqid=event.user_id)
