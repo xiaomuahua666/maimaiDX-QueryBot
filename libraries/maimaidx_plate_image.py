@@ -18,7 +18,7 @@ from .maimaidx_leaderboard_image import (
     _ACCENT, _CARD_BORDER, _DIFF_COLORS, _GREEN, _MUTED, _RED, _TEXT,
     _TEXT_SOFT, _bar, _brand_mark, _card, _cover_placeholder, _finalize,
     _font_bold, _font_mono, _footer, _make_bg, _period_chip, _text_len,
-    _truncate,
+    _truncate, image_safe_text,
 )
 
 _WIDTH = 1080
@@ -50,11 +50,11 @@ def _draw_song_card(im, d, x, y, w, song):
     tx = x + 88
     nf = _font_bold(21)
     d.text((tx, y + 12),
-           _truncate(d, song.get('title', ''), nf, w - 230),
+           _truncate(d, image_safe_text(song.get('title', '')), nf, w - 230),
            font=nf, fill=_TEXT)
 
     lvl_text = f" {song.get('level', '')} "
-    lvl_f = _font_bold(14)
+    lvl_f = _font_mono(14)
     lw = int(_text_len(d, lvl_text, lvl_f)) + 14
     _card(im, (tx, y + 44, tx + lw, y + 68), radius=12,
           fill=(90, 100, 140, 255), shadow=False)

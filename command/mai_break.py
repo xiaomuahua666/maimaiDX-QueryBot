@@ -1,4 +1,3 @@
-import asyncio
 from typing import Optional, Tuple
 
 from nonebot import get_bots, on_command, require
@@ -27,8 +26,6 @@ from ..libraries.maimaidx_break import (
     normalize_billing_qqid,
 )
 from ..libraries.maimaidx_bot_admin import PLUGIN_ADMIN_ONLY
-from ..libraries.maimaidx_guess_score import guess_score
-from ..libraries.maimaidx_guess_stats_draw import personal_guess_stats_image_b64
 from ..libraries.maimaidx_error import QBindRequiredError
 from ..libraries.maimaidx_platform import (
     billing_user_id,
@@ -467,49 +464,11 @@ async def _expire_break_red_packets() -> None:
             )
 
 
-def _forward_image_node(user_id: str, nickname: str, image_b64: str, caption: str = '') -> dict:
-    """合并转发节点：图片 + 可选说明。"""
-    content: list = [{'type': 'image', 'data': {'file': image_b64}}]
-    if caption.strip():
-        content.append({'type': 'text', 'data': {'text': '\n' + caption.strip()}})
-    return {
-        'type': 'node',
-        'data': {
-            'name': str(nickname),
-            'uin': str(user_id),
-            'content': content,
-        },
-    }
-
-
 async def _try_guess_stats_for_awmc(
     event: MessageEvent,
 ) -> Optional[Tuple[str, str]]:
-    """群内解析到用户时尝试出猜歌数据图；失败返回 None，不抛错。"""
-    gid = get_event_group_id(event)
-    if gid is None:
-        return None
-    try:
-        uid = platform_user_id(event)
-        display_name = get_sender_display_name(event) or uid
-        stats = guess_score.build_user_guess_stats(gid, uid)
-        stats['name'] = display_name or stats.get('name') or str(uid)
-        has_data = int(stats.get('total_score') or 0) > 0 or any(
-            int((stats.get('modes') or {}).get(m, {}).get('count') or 0)
-            for m in guess_score.GUESS_MODES
-        )
-        if not has_data:
-            return None
-        b64 = await asyncio.to_thread(personal_guess_stats_image_b64, stats)
-        caption = (
-            f'🎵 本群猜歌数据（{display_name}）\n'
-            f'也可单独发送「我的猜歌」查看；@ 某人可查对方。'
-        )
-        return b64, caption
-    except Exception as exc:
-        log.warning(f'[BREAK] 我的AWMC 附带猜歌图失败（已忽略）：{type(exc).__name__}: {exc}')
-        return None
-
+    """已弃用：我的AWMC 不再附带猜歌数据图。保留桩函数兼容旧测试 monkeypatch。"""
+    return None
 
 def _account_qqid(event: MessageEvent) -> int:
     """签到/账号类：官方 QQ 必须 qbind；OneBot 直接用消息 QQ。"""
@@ -630,26 +589,6 @@ async def _(bot: Bot, event: MessageEvent):
                 event=event,
                 reply_message=True,
             )
-
-        guess_payload = await _try_guess_stats_for_awmc(event)
-        if guess_payload:
-            b64, caption = guess_payload
-            try:
-                message = MessageSegment.image(b64)
-                if caption:
-                    message += MessageSegment.text(f'\n{caption}')
-                await plugin_send(
-                    my_awmc,
-                    message,
-                    event=event,
-                    reply_message=False,
-                    mention_sender=False,
-                )
-            except Exception as exc:
-                log.warning(
-                    f'[BREAK] 我的AWMC附加猜歌图发送失败（已忽略）：'
-                    f'{type(exc).__name__}: {exc}'
-                )
         await my_awmc.finish()
         return
 
@@ -663,26 +602,11 @@ async def _(bot: Bot, event: MessageEvent):
     else:
         sections = format_account_profile_sections(profile)
         nodes = [build_forward_node(str(event.self_id), nickname, section) for section in sections]
-    guess_payload = await _try_guess_stats_for_awmc(event)
-    if guess_payload:
-        b64, caption = guess_payload
-        nodes.append(_forward_image_node(str(event.self_id), nickname, b64, caption))
     try:
         await deliver_forward_messages(bot, event, nodes, title='我的 AWMC', reply_message=True)
     except Exception as exc:
         log.warning(f'[BREAK] 我的AWMC合并转发失败，回退文本：{type(exc).__name__}: {exc}')
         await my_awmc.send(format_account_profile(profile), reply_message=True)
-        if guess_payload:
-            try:
-                b64, caption = guess_payload
-                await my_awmc.send(
-                    MessageSegment.image(b64) + f'\n{caption}',
-                    reply_message=False,
-                )
-            except Exception as img_exc:
-                log.warning(
-                    f'[BREAK] 我的AWMC 回退发送猜歌图失败：{type(img_exc).__name__}: {img_exc}'
-                )
         await my_awmc.finish()
     await my_awmc.finish()
 

@@ -88,7 +88,11 @@ def render_awmc_profile(profile: Dict,
     op_counts: Dict[str, int] = profile.get('account_operation_counts') or {}
     ticket = profile.get('account_ticket_stats') or {}
     recent_acc: List[dict] = profile.get('recent_account_logs') or []
-    recent_break: List[dict] = profile.get('recent_logs') or []
+    # 不展示猜歌相关的 BREAK 流水
+    recent_break: List[dict] = [
+        e for e in (profile.get('recent_logs') or [])
+        if getattr(e, 'reason', '') != 'guess_reward'
+    ]
 
     op_labels = {
         'bind': '账号绑定', 'unbind': '账号解绑', 'status': '账号状态',
