@@ -2895,6 +2895,11 @@ async def _(event: MessageEvent):
     if data.winner_uid:
         uid = data.winner_uid
         name = data.winner_name or '群友'
+        # 先提示「正在结算」再做积分计算，确保该提示在结算结果消息之前发出。
+        await _guess_notify(
+            guess_20q_start, event,
+            f'⏳ 正在结算 {name} 的本局贡献…',
+        )
         raw_base = twentyq_base_points(data.question_count)
         multiplier = 1
         multiplier_tags: List[str] = []
@@ -2981,12 +2986,16 @@ async def _(event: MessageEvent):
     kind = result.get('kind')
 
     if kind == 'win':
+        # 即时反馈：给原消息加 ✅；react 不可用时回退到简短文本。
+        # 「正在结算…」提示统一改由 guess_20q_start 结算流程开头发出，
+        # 确保它在结算结果之前——此前由这里发送，但与结算循环并发，
+        # react_processing 耗时会让「正在结算」反而排在结算结果之后。
         bot = resolve_event_bot(event)
         reacted = await react_processing(bot, event, emoji_id=REACT_EMOJI_CHECK)
         if not reacted:
             await _guess_notify(
                 guess_20q_solve, event,
-                f'✅ {get_sender_display_name(event)} 猜对了！正在结算…',
+                f'✅ {get_sender_display_name(event)} 猜对了！',
                 mention_sender=True,
             )
         return
