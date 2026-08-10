@@ -197,86 +197,43 @@ assert str(MODULE.LOG_FETCH_LINES_ALL) in run_calls[0][0]
 assert "--since" in run_calls[0][0]
 assert run_calls[0][1] == MODULE.LOG_FETCH_TIMEOUT_SECONDS
 
-# ── 异步日志刷新：后台拉取 + patch 原卡片就地更新 ──
-# 场景1：有 message_id → worker 调用 _patch_card 更新原卡片（不新发）
-async_bot = object.__new__(MODULE.FeishuOpsBot)
-async_bot._log_lock = threading.Lock()
-async_bot._log_refreshing = set()
-async_bot._log_snapshots = {}
-patch_done = threading.Event()
-patched = {}
+# ── 后台日志刷新：worker 完成后另发新卡片，立即返回占位卡 ──
+queued_bot = object.__new__(MODULE.FeishuOpsBot)
+queued_bot._log_lock = threading.Lock()
+queued_bot._log_refreshing = set()
+queued_bot._log_snapshots = {}
+refresh_started = threading.Event()
+allow_finish = threading.Event()
+delivered = threading.Event()
+deliveries = []
 
 def fake_refresh(receive_id, errors_only, window_secs, is_admin):
-    return MODULE._card("日志", "刷新内容")
-
-def fake_patch(message_id, card):
-    patched["message_id"] = message_id
-    patched["card"] = card
-    patch_done.set()
-
-async_bot._refresh_logs = fake_refresh
-async_bot._patch_card = fake_patch
-async_bot._send_card = lambda *a, **kw: None  # 不应调用
-
-submitted = async_bot._async_log_refresh(
-    chat_id="oc_test", errors_only=False, window_secs=600,
-    is_admin=True, message_id="om_123",
-)
-assert submitted is True, "首次提交应返回 True"
-assert patch_done.wait(2), "worker 应调用 _patch_card"
-assert patched["message_id"] == "om_123"
-assert patched["card"]["header"]["title"]["content"] == "日志"
-assert not async_bot._log_refreshing, "完成后应清空 refreshing set"
-
-# 场景2：无 message_id → worker 调用 _send_card 发送新卡片
-send_done = threading.Event()
-sent = {}
+    refresh_started.set()
+    assert allow_finish.wait(2)
+    return MODULE._card("刷新完成", "ok")
 
 def fake_send(receive_id_type, receive_id, card):
-    sent["type"] = receive_id_type
-    sent["id"] = receive_id
-    sent["card"] = card
-    send_done.set()
+    deliveries.append((receive_id_type, receive_id, card))
+    delivered.set()
 
-async_bot2 = object.__new__(MODULE.FeishuOpsBot)
-async_bot2._log_lock = threading.Lock()
-async_bot2._log_refreshing = set()
-async_bot2._log_snapshots = {}
-async_bot2._refresh_logs = fake_refresh
-async_bot2._send_card = fake_send
-async_bot2._patch_card = lambda *a, **kw: None
+queued_bot._refresh_logs = fake_refresh
+queued_bot._send_card = fake_send
+pending = queued_bot._queue_log_refresh("chat_id", "oc_test", False, 300, True)
+assert pending["header"]["title"]["content"] == "日志刷新已提交"
+assert "近 5m" in pending["elements"][0]["text"]["content"]
+assert refresh_started.wait(1)
+assert not delivered.is_set()
+allow_finish.set()
+assert delivered.wait(2)
+assert deliveries[0][0:2] == ("chat_id", "oc_test")
+assert deliveries[0][2]["header"]["title"]["content"] == "刷新完成"
+assert not queued_bot._log_refreshing
 
-submitted2 = async_bot2._async_log_refresh(
-    chat_id="oc_chat", errors_only=False, window_secs=3600,
-    is_admin=False,
-)
-assert submitted2 is True
-assert send_done.wait(2), "worker 应调用 _send_card"
-assert sent["type"] == "chat_id"
-assert sent["id"] == "oc_chat"
-
-# 场景3：receive_id_type="open_id" → 发送到私聊
-async_bot2._log_refreshing.clear()
-sent.clear()
-send_done.clear()
-submitted3 = async_bot2._async_log_refresh(
-    chat_id="ou_admin", errors_only=True, window_secs=600,
-    is_admin=True, receive_id_type="open_id",
-)
-assert submitted3 is True
-assert send_done.wait(2)
-assert sent["type"] == "open_id"
-assert sent["id"] == "ou_admin"
-
-# 场景4：重复提交 → 返回 False，不启动新 worker
-async_bot3 = object.__new__(MODULE.FeishuOpsBot)
-async_bot3._log_lock = threading.Lock()
-async_bot3._log_refreshing = {("oc_dup", False)}
-async_bot3._log_snapshots = {}
-dup = async_bot3._async_log_refresh(
-    chat_id="oc_dup", errors_only=False, window_secs=600, is_admin=True,
-)
-assert dup is False, "重复任务应返回 False"
+# 已有同类刷新任务在跑时，重复提交返回「刷新中」占位卡，不启动新 worker。
+queued_bot._log_refreshing.add(("oc_dup", False))
+dup = queued_bot._queue_log_refresh("chat_id", "oc_dup", False, 300, True)
+assert dup["header"]["title"]["content"] == "日志刷新中"
+assert len(deliveries) == 1, "重复提交不应再投递新卡片"
 
 # --- ban_list command ----------------------------------------------------
 assert MODULE.parse_command("封禁列表") == ("ban_list", [])

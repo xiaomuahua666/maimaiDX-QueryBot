@@ -29,8 +29,8 @@ MAX_LOG_LINES = 50
 # 5000 行 / 50 每页 = 100 页，翻页足够。
 LOG_FETCH_LINES_ALL = 5000
 LOG_FETCH_TIMEOUT_SECONDS = 30
-# 默认日志窗口：当前往前 10 分钟。窗口小 + -n 上限，journalctl 同步秒级返回。
-LOG_WINDOW_DEFAULT_SECS = 600
+# 默认日志窗口：当前往前 5 分钟。窗口小 + -n 上限，journalctl 同步秒级返回。
+LOG_WINDOW_DEFAULT_SECS = 300
 # 快照过期阈值：超过此时间未刷新则下次走全量，避免漏数据。
 LOG_SNAPSHOT_STALE_SECS = 600
 MAX_BREAK_GRANT = 100_000
@@ -1174,23 +1174,6 @@ class FeishuOpsBot:
         if not response.success():
             raise RuntimeError(f"Feishu send failed: {response.code} {response.msg}")
 
-    def _patch_card(self, message_id: str, card: dict) -> None:
-        """就地更新已有卡片消息的内容（不新发消息）。"""
-        im = self.lark.im.v1
-        request = (
-            im.PatchMessageRequest.builder()
-            .message_id(message_id)
-            .request_body(
-                im.PatchMessageRequestBody.builder()
-                .content(json.dumps(card, ensure_ascii=False))
-                .build()
-            )
-            .build()
-        )
-        response = self.client.im.v1.message.patch(request)
-        if not response.success():
-            raise RuntimeError(f"Feishu patch failed: {response.code} {response.msg}")
-
     @staticmethod
     def _response(card: dict | None = None, toast: str = "") -> dict:
         payload: dict[str, Any] = {}
@@ -1297,50 +1280,81 @@ class FeishuOpsBot:
             self._log_snapshots[key] = new_snapshot
         return logs_card(new_snapshot, is_admin=is_admin)
 
-    def _async_log_refresh(
+    def _safe_logs_card(
         self,
+        errors_only: bool,
+        is_admin: bool,
         *,
-        chat_id: str,
+        chat_id: str = "",
+        window_secs: int = LOG_WINDOW_DEFAULT_SECS,
+        receive_id_type: str = "chat_id",
+    ) -> dict:
+        """提交后台日志拉取，立即返回占位卡，由 worker 完成后投递日志卡片。"""
+        return self._queue_log_refresh(
+            receive_id_type,
+            chat_id,
+            errors_only,
+            window_secs,
+            is_admin,
+        )
+
+    def _queue_log_refresh(
+        self,
+        receive_id_type: str,
+        receive_id: str,
         errors_only: bool,
         window_secs: int,
         is_admin: bool,
-        message_id: str = "",
-        receive_id_type: str = "chat_id",
-    ) -> bool:
-        """后台拉取日志并更新卡片。
+    ) -> dict:
+        """后台拉取 journalctl，完成后把日志卡片另发到原会话。
 
-        飞书卡片回调有 3s 超时限制，journalctl 可能超过此阈值。
-        此方法立即返回，在后台线程完成拉取：
-        - 有 message_id 时：patch 原卡片就地更新（刷新场景）
-        - 无 message_id 时：发送新卡片（从菜单/命令首次打开日志场景）
-
-        返回 True 表示已提交后台任务，False 表示已有同类任务在跑。
+        飞书卡片回调和长连接心跳共用事件线程。journalctl 曾在生产环境连续
+        跑满 20 秒，既让卡片报“目标服务调用超时”，也会拖断 WebSocket。
+        这里只在事件线程登记任务；慢 I/O 全部在线程中完成。
         """
-        key = self._log_key(chat_id, errors_only)
+        if not receive_id:
+            # 测试或缺少投递目标时保留可诊断的同步回退。
+            return self._refresh_logs(
+                receive_id, errors_only, window_secs, is_admin
+            )
+        key = self._log_key(receive_id, errors_only)
         with self._log_lock:
             if key in self._log_refreshing:
-                return False
+                return _card(
+                    "日志刷新中",
+                    "已有同类日志刷新任务正在执行，请稍候。",
+                    template="orange",
+                )
             self._log_refreshing.add(key)
 
         def worker() -> None:
             try:
                 card = self._refresh_logs(
-                    chat_id, errors_only, window_secs, is_admin
+                    receive_id, errors_only, window_secs, is_admin
                 )
-                if message_id:
-                    self._patch_card(message_id, card)
-                else:
-                    self._send_card(receive_id_type, chat_id, card)
+                self._send_card(receive_id_type, receive_id, card)
             except Exception:
-                LOG.exception("async log refresh failed")
+                LOG.exception("failed to deliver refreshed logs")
             finally:
                 with self._log_lock:
                     self._log_refreshing.discard(key)
 
         threading.Thread(
-            target=worker, name="logs-refresh", daemon=True
+            target=worker,
+            name=f"logs-refresh-{'errors' if errors_only else 'all'}",
+            daemon=True,
         ).start()
-        return True
+        if window_secs >= 3600 and window_secs % 3600 == 0:
+            scope = f"近 {window_secs // 3600}h"
+        elif window_secs >= 60 and window_secs % 60 == 0:
+            scope = f"近 {window_secs // 60}m"
+        else:
+            scope = f"近 {window_secs}s"
+        return _card(
+            "日志刷新已提交",
+            f"正在后台读取{scope}日志，完成后会发送新卡片。",
+            template="orange",
+        )
 
     def _paginate_logs(
         self,
@@ -1365,8 +1379,12 @@ class FeishuOpsBot:
                 current = snapshot
         if snapshot is None:
             return (
-                self._refresh_logs(
-                    chat_id, errors_only, LOG_WINDOW_DEFAULT_SECS, is_admin
+                self._queue_log_refresh(
+                    "chat_id",
+                    chat_id,
+                    errors_only,
+                    LOG_WINDOW_DEFAULT_SECS,
+                    is_admin,
                 ),
                 True,
             )
@@ -1470,20 +1488,17 @@ class FeishuOpsBot:
             return self._safe_status_card(is_admin)
         if command in {"logs", "errors"}:
             # 解析时间窗口参数：「日志 2h」「错误 10m」「日志 1h」等
-            # 无参数则默认 LOG_WINDOW_DEFAULT_SECS（近 10 分钟）
+            # 无参数则默认 LOG_WINDOW_DEFAULT_SECS（近 5 分钟）
             window_secs = LOG_WINDOW_DEFAULT_SECS
             if args:
                 parsed = parse_window_secs(args[0])
                 if parsed is not None:
                     window_secs = parsed
-            # 后台拉取后发送新卡片（不回占位卡，不阻塞 WebSocket 心跳）
-            self._async_log_refresh(
-                chat_id=chat_id,
-                errors_only=command == "errors",
+            # 后台拉取后发送新卡片，立即返回占位卡，不阻塞 WebSocket 心跳
+            return self._safe_logs_card(
+                command == "errors", is_admin, chat_id=chat_id,
                 window_secs=window_secs,
-                is_admin=is_admin,
             )
-            return None
         is_super_admin = self.is_super_admin(open_id)
         if command == "permissions":
             if not is_super_admin:
@@ -1719,26 +1734,22 @@ class FeishuOpsBot:
         if action in {"logs", "errors", "logs_refresh", "logs_prev", "logs_next"}:
             errors_only = action == "errors" or bool(value.get("errors_only"))
             if action in {"logs", "errors", "logs_refresh"}:
-                # 窗口参数：从按钮 value 取，缺省用默认（近 10 分钟）
+                # 窗口参数：从按钮 value 取，缺省用默认（近 5 分钟）
                 raw_window = value.get("window_secs")
                 try:
                     window_secs = int(raw_window) if raw_window is not None else LOG_WINDOW_DEFAULT_SECS
                 except (TypeError, ValueError):
                     window_secs = LOG_WINDOW_DEFAULT_SECS
                 # 飞书卡片回调有 3s 超时限制，journalctl 可能超时。
-                # 后台拉取：有 message_id 时 patch 原卡片就地更新（刷新），
-                # 无 message_id 时发送新卡片（从菜单首次打开）。
-                submitted = self._async_log_refresh(
-                    chat_id=chat_id,
-                    errors_only=errors_only,
-                    window_secs=window_secs,
-                    is_admin=is_admin,
-                    message_id=message_id if action == "logs_refresh" else "",
+                # 后台拉取，立即返回占位卡，完成后另发新日志卡片。
+                card = self._queue_log_refresh(
+                    "chat_id",
+                    chat_id,
+                    errors_only,
+                    window_secs,
+                    is_admin,
                 )
-                toast = "正在刷新日志" if (submitted and action == "logs_refresh") else (
-                    "正在拉取日志" if submitted else "已有刷新任务在执行"
-                )
-                return self._response(toast=toast)
+                return self._response(card, "日志已在后台刷新")
             # 翻页：不重新拉 journalctl，只移动快照 cursor
             direction = "prev" if action == "logs_prev" else "next"
             card, moved = self._paginate_logs(
@@ -1968,11 +1979,11 @@ class FeishuOpsBot:
         key = str(event.event_key or "")
         # 菜单事件是私聊推送，按 open_id 维度隔离日志快照
         if key in {"ops_logs", "ops_errors"}:
-            self._async_log_refresh(
+            self._safe_logs_card(
+                key == "ops_errors",
+                True,
                 chat_id=open_id,
-                errors_only=key == "ops_errors",
                 window_secs=LOG_WINDOW_DEFAULT_SECS,
-                is_admin=True,
                 receive_id_type="open_id",
             )
             return
