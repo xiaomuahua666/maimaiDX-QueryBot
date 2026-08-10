@@ -265,9 +265,12 @@ def _awmc_profile():
              "status": "error", "ref_id": "ref-002"},
         ],
         "recent_logs": [
-            {"delta": 5, "reason": "checkin", "created_at": 1754726400},
-            {"delta": -7, "reason": "query", "created_at": 1754720000},
-            {"delta": 2, "reason": "guess_reward", "created_at": 1754710000},
+            {
+                "delta": 5 if index % 3 == 0 else -1,
+                "reason": "checkin" if index % 3 == 0 else "query",
+                "created_at": 1754726400 - index * 600,
+            }
+            for index in range(20)
         ],
     }
 

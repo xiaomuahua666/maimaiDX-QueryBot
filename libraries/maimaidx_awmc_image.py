@@ -96,11 +96,7 @@ def render_awmc_profile(profile: Dict,
     op_counts: Dict[str, int] = profile.get('account_operation_counts') or {}
     ticket = profile.get('account_ticket_stats') or {}
     recent_acc: List[dict] = profile.get('recent_account_logs') or []
-    # 不展示猜歌相关的 BREAK 流水（model_dump 后为 dict）
-    recent_break = [
-        e for e in (profile.get('recent_logs') or [])
-        if _g(e, 'reason', '') != 'guess_reward'
-    ]
+    recent_break = list(profile.get('recent_logs') or [])
 
     op_labels = {
         'bind': '账号绑定', 'unbind': '账号解绑', 'status': '账号状态',
@@ -141,7 +137,7 @@ def render_awmc_profile(profile: Dict,
         y += 34 + extra_lines * 26 + 16
 
     # 最近记录
-    log_lines = min(10, len(recent_acc)) + min(5, len(recent_break))
+    log_lines = min(5, len(recent_acc)) + min(20, len(recent_break))
     if log_lines:
         y += 40 + log_lines * 26 + 16
     y += 20
@@ -268,7 +264,7 @@ def render_awmc_profile(profile: Dict,
               fill=(255, 255, 255, 225))
         _section_title(d, mx + 22, y + 14, '最近记录', _ACCENT)
         ly = y + 48
-        for entry in recent_acc[:10]:
+        for entry in recent_acc[:5]:
             ts = datetime.fromtimestamp(float(entry['created_at'])).strftime('%m-%d %H:%M')
             status = '成功' if entry.get('status') == 'success' else '失败'
             label = op_labels.get(str(entry.get('operation')),
@@ -280,7 +276,7 @@ def render_awmc_profile(profile: Dict,
             d.text((mx + inner_w - 22, ly), str(entry.get('ref_id', '')),
                    font=_font_mono(13), fill=_TEXT_SOFT, anchor='rt')
             ly += 26
-        for entry in recent_break[:5]:
+        for entry in recent_break[:20]:
             ts = datetime.fromtimestamp(float(_g(entry, 'created_at') or 0)).strftime('%m-%d %H:%M')
             delta = int(_g(entry, 'delta') or 0)
             sign = '+' if delta >= 0 else ''

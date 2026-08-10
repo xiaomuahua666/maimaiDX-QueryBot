@@ -317,6 +317,13 @@ class ServiceChargeResult:
     freedom_remaining: float = 0.0
 
 
+@dataclass(frozen=True)
+class AnalysisChargeReservation:
+    amount: int
+    freedom: bool = False
+    freedom_remaining: float = 0.0
+
+
 @dataclass
 class TransferResult:
     sender_balance: int
@@ -1993,7 +2000,7 @@ class BreakDatabase:
         ).fetchone()
         return dict(row) if row else {}
 
-    def get_recent_logs(self, qqid: int, limit: int = 5) -> List[BreakLogEntry]:
+    def get_recent_logs(self, qqid: int, limit: int = 20) -> List[BreakLogEntry]:
         rows = self._conn.execute(
             'SELECT delta, reason, meta, created_at FROM break_log WHERE qqid = ? '
             'ORDER BY created_at DESC LIMIT ?',
@@ -3010,15 +3017,21 @@ def format_analysis_pricing_help() -> str:
         f'· 分析b50 / 锐评一下 — 按实际 Token 计费：每 {input_rate:,} 输入 Token '
         f'+ 每 {output_rate:,} 输出 Token 各计 1 BREAK，合计向上取整；'
         f'基础价 ×{multiplier}，最低 {minimum * multiplier}、最高 {maximum * multiplier} BREAK；'
-        f'usage 缺失时 {fallback_base * multiplier} BREAK。调用前预扣 {precharge} BREAK，'
+        f'usage 缺失时 {fallback_base * multiplier} BREAK。调用前预扣 {precharge} BREAK'
+        '（FREEDOM 生效时不预扣），'
         '成功后按实际用量多退少补，失败全额退回\n'
     )
 
 
-def reserve_analysis_charge(qqid: int) -> int:
-    """调用模型前预扣固定额度；余额不足时不发起锐评。"""
+def reserve_analysis_charge(qqid: int) -> AnalysisChargeReservation:
+    """调用模型前预扣固定额度；FREEDOM 生效时仅保存免单快照。"""
     if is_superuser_exempt(qqid):
-        return 0
+        return AnalysisChargeReservation(0)
+    from .maimaidx_card import card_manager
+
+    freedom, remaining, _expires_at = card_manager.freedom_info(qqid)
+    if freedom:
+        return AnalysisChargeReservation(0, freedom=True, freedom_remaining=remaining)
     reserved = analysis_precharge_cost()
     if not break_db.try_reserve_analysis(
         qqid,
@@ -3026,16 +3039,17 @@ def reserve_analysis_charge(qqid: int) -> int:
         meta={'kind': 'llm', 'stage': 'precharge'},
     ):
         raise BreakInsufficientError(reserved, break_db.get_balance(qqid), qqid=qqid)
-    return reserved
+    return AnalysisChargeReservation(reserved)
 
 
-def refund_analysis_charge(qqid: int, reserved: int, *, reason: str) -> int:
+def refund_analysis_charge(qqid: int, reserved: Any, *, reason: str) -> int:
     """模型或制图失败时退回尚未结算的预扣额度。"""
-    if is_superuser_exempt(qqid) or reserved <= 0:
+    amount = max(0, int(getattr(reserved, 'amount', reserved)))
+    if is_superuser_exempt(qqid) or amount <= 0:
         return break_db.get_balance(qqid)
     return break_db.refund_analysis_reservation(
         qqid,
-        reserved,
+        amount,
         meta={'kind': 'llm', 'stage': 'refund', 'reason': str(reason)[:120]},
     )
 
@@ -3125,10 +3139,12 @@ def settle_analysis_charge(
     qqid: int,
     cost: int,
     *,
-    reserved: int = 0,
+    reserved: Any = 0,
     token_usage: Optional[dict] = None,
 ) -> int:
     cost = max(0, int(cost))
+    reserved_amount = max(0, int(getattr(reserved, 'amount', reserved)))
+    freedom = bool(getattr(reserved, 'freedom', False))
     usage = dict(token_usage or {})
     if is_superuser_exempt(qqid):
         break_db.record_usage(qqid, 'analysis', break_delta=0)
@@ -3139,11 +3155,20 @@ def settle_analysis_charge(
         'price_multiplier': analysis_price_multiplier(),
         **usage,
     }
-    if reserved > 0:
+    if freedom:
+        break_db.record_usage(qqid, 'analysis', break_delta=0)
+        break_db.record_freedom_exemption(
+            qqid,
+            'b50_analysis',
+            cost,
+            meta=meta,
+        )
+        return 0
+    if reserved_amount > 0:
         balance = break_db.settle_analysis_reservation(
             qqid,
             cost,
-            reserved,
+            reserved_amount,
             meta=meta,
         )
     else:
@@ -3152,7 +3177,8 @@ def settle_analysis_charge(
         break_db.record_usage(qqid, 'analysis', break_delta=-cost)
     if balance < 0:
         log.info(
-            f'[BREAK] qq={qqid} 锐评多退少补 cost={cost} reserved={reserved} balance={balance}'
+            f'[BREAK] qq={qqid} 锐评多退少补 cost={cost} '
+            f'reserved={reserved_amount} balance={balance}'
         )
     return cost
 
@@ -3206,7 +3232,7 @@ def get_account_profile(qqid: int) -> AccountProfile:
         account_operation_counts=account_usage['operations'],
         account_ticket_stats=account_usage.get('ticket') or {},
         recent_account_logs=account_usage['recent'],
-        recent_logs=break_db.get_recent_logs(qqid, 5),
+        recent_logs=break_db.get_recent_logs(qqid, 20),
     )
 
 
@@ -3307,15 +3333,15 @@ def format_account_profile_sections(
     ]
     recent_lines: List[str] = []
     if profile.recent_account_logs:
-        recent_lines.append('🧾 最近账号功能记录（最多 10 条）')
-        for entry in profile.recent_account_logs:
+        recent_lines.append('🧾 最近账号功能记录（最多 5 条）')
+        for entry in profile.recent_account_logs[:5]:
             ts = datetime.fromtimestamp(float(entry['created_at'])).strftime('%m-%d %H:%M')
             status = '成功' if entry['status'] == 'success' else '失败'
             label = operation_labels.get(str(entry['operation']), str(entry['operation']))
             recent_lines.append(f'  · {ts}  {label} · {status} · {entry["ref_id"]}')
     if profile.recent_logs:
         recent_lines.append('')
-        recent_lines.append('📝 最近 BREAK 记录（最多 5 条）')
+        recent_lines.append('📝 最近 BREAK 记录（最多 20 条）')
         reason_map = {
             'query': '查分',
             'checkin': '签到',
