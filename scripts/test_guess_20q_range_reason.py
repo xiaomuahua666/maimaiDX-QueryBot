@@ -138,21 +138,41 @@ def _make_ds_music(purple_ds):
 # 14.4 问「是14吗」→ 应是（14 档 = 14.0~14.5），不是精确等于
 ans, _, reason = classify_question(_make_ds_music(14.4), '紫谱是14吗')
 assert ans == _YES, f'14.4 应属于 14 档: {ans}'
-assert '[14.0, 14.5] 闭区间' in reason, reason
+assert '定级' in reason, f'整数应显示定级: {reason}'
+assert '14 [14.0, 14.5] 闭区间' in reason, reason
 # 14.6 问「是14吗」→ 不是
 ans, _, _ = classify_question(_make_ds_music(14.6), '紫谱是14吗')
 assert ans == _NO, f'14.6 不属 14 档: {ans}'
 # 14.4 问「14+」→ 不是（14+ = 14.6~15.0）
 ans, _, reason = classify_question(_make_ds_music(14.4), '紫谱是14+吗')
 assert ans == _NO, f'14.4 不属 14+: {ans}'
-assert '[14.6, 14.9] 闭区间' in reason, reason
+assert '定级' in reason, f'+档应显示定级: {reason}'
+assert '14+ [14.6, 14.9] 闭区间' in reason, reason
 # 14.5 问「14+」→ 不是（14.5 < 14.6，属非+档上界）
 ans, _, _ = classify_question(_make_ds_music(14.5), '紫谱是14+吗')
 assert ans == _NO, f'14.5 不属 14+: {ans}'
 # 14.6 问「14+」→ 是（14+ = 14.6~15.0）
 ans, _, _ = classify_question(_make_ds_music(14.6), '紫谱是14+吗')
 assert ans == _YES, f'14.6 属 14+: {ans}'
-# 明确比较词「等于14」→ 精确相等，14.4 不等于 14.0 → 不是
+
+# ── 定数（小数）vs 定级（整数）区分 ──
+# 玩家问「14.0」→ 定数，精确等于 14.0
+ans, _, reason = classify_question(_make_ds_music(14.0), '紫谱定数14.0吗')
+assert ans == _YES, f'14.0 精确等于应回是: {ans}'
+assert '定数' in reason and '14.0' in reason, f'小数应显示定数和14.0: {reason}'
+# 14.4 问「14.0」→ 不是（14.4 ≠ 14.0，定数精确比较）
+ans, _, _ = classify_question(_make_ds_music(14.4), '紫谱定数14.0吗')
+assert ans == _NO, f'14.4≠14.0 定数精确比较应回不是: {ans}'
+# 玩家问「14.0以下」→ 定数比较，显示 14.0 不是 14
+ans, _, reason = classify_question(_make_ds_music(13.5), '紫谱定数14.0以下吗')
+assert ans == _YES, f'13.5 < 14.0 应回是: {ans}'
+assert '定数' in reason and '14.0' in reason, f'小数比较应显示定数和14.0: {reason}'
+assert '< 14.0' in reason, f'应显示 < 14.0: {reason}'
+# 玩家问「14以下」→ 定级比较，显示整数 14
+ans, _, reason = classify_question(_make_ds_music(13.5), '紫谱定数14以下吗')
+assert ans == _YES, f'13.5 < 14 应回是: {ans}'
+assert '定级' in reason and '< 14' in reason, f'整数比较应显示定级和<14: {reason}'
+# 明确比较词「等于14」→ 定级精确相等，14.4 不等于 14 → 不是
 ans, _, _ = classify_question(_make_ds_music(14.4), '紫谱定数等于14吗')
 assert ans == _NO, f'等于应精确比较，14.4≠14: {ans}'
 
@@ -231,7 +251,8 @@ assert classify_question(_g_nico, '是什么分类')[1] is False, '分类信息�
 assert classify_question(_g_nico, '什么genre')[1] is False, '分类信息题应走 unknown'
 # 含定数关键词不抢答分类
 assert classify_question(_g_nico, '紫谱定数是14吗')[1] is True, '定数题应由_q_ds回答'
-assert '定数' in classify_question(_g_nico, '紫谱定数是14吗')[2]
+# 「14」是定级（整数），reason 应含「定级」
+assert '定级' in classify_question(_g_nico, '紫谱定数是14吗')[2]
 
 print('genre rule tests passed')
 

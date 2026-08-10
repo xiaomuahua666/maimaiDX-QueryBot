@@ -63,6 +63,25 @@
 '新合并代': ('maimai でらっくす 新版本', 'maimai でらっくす 新版本 plus'),
 ```
 
+**当前已收录的合并叫法**：
+| 合并叫法 | 包含版本 | 说明 |
+|---|---|---|
+| 舞代 | 旧框全系列（finale 及以前） | 旧框统称 |
+| 真代 | maimai + maimai plus | |
+| 熊华代 | でらっくす + でらっくす plus | 国服舞萌DX |
+| 爽煌代 | splash + splash plus | 国服舞萌DX2021 |
+| 宙星代 | universe + universe plus | 国服舞萌DX2022 |
+| 祭祝代 | festival + festival plus | 国服舞萌DX2023 |
+| 双宴代 | buddies + buddies plus | 国服舞萌DX2024 |
+| 彩镜代 / 镜彩代 | prism + prism plus | 国服舞萌DX2025 |
+
+**关于 PRiSM PLUS 的「彩代」俗称**：
+PRiSM=镜代（prism 棱镜），PRiSM PLUS=彩代（因 KALEIDXSCOPE 万花筒彩色元素，社群俗称）。
+合并叫「彩镜代」（国服舞萌DX2025 = PRiSM + PRiSM PLUS）。
+此俗称未见于公开 wiki（B站入坑指南、萌娘百科、THBWiki 均只标 PRiSM=镜代），
+但社群实际使用，已收录。后续若 CiRCLE/CiRCLE PLUS 出现合并叫法（如「圈彩代」），
+按同规律补到 `_VERSION_GROUP_ALIASES`。
+
 ### 4. LLM 提示词同步
 位置：`libraries/maimaidx_guess_20q.py` 的 `_GUESS_20Q_LLM_SYSTEM`（第 1546 行）
 

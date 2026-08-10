@@ -330,10 +330,14 @@ def _r(flag: bool, reason: str) -> Result:
     return (_yn(flag), reason)
 
 
-def _reason_cmp(dim: str, text: str, nums: List[float], *, plus: bool = False) -> str:
+def _reason_cmp(dim: str, text: str, nums: List[float], *, plus: bool = False,
+                is_level: bool = True) -> str:
     """把数值比较题描述成玩家可读的判定条件（只回显玩家给的数字，不含曲目真值）。
 
-    定数区间用闭区间表示（左右同符号 [ ]，美观），因舞萌定数小数位只有
+    定级（is_level=True）：整数/整数+（如 14、14+），数字显示整数。
+    定数（is_level=False）：精确到小数（如 14.0、14.6），数字显示 .1f。
+
+    定级区间用闭区间表示（左右同符号 [ ]，美观），因舞萌定数小数位只有
     .0/.5/.6/.7/.8/.9，离散值下闭区间与左闭右开等价：
       n档  = {n.0, n.5}    → [n.0, n.5] 闭区间
       n+档 = {n.6~n.9}     → [n.6, n.9] 闭区间
@@ -342,10 +346,11 @@ def _reason_cmp(dim: str, text: str, nums: List[float], *, plus: bool = False) -
     if not nums:
         return dim
     n = nums[0]
-    num = f'{n:g}'
+    # 数字格式：定级用整数，定数用 .1f（14 vs 14.0）
+    num = f'{int(n)}' if is_level else f'{n:.1f}'
     if plus:
-        # +档：闭区间 [n.6, n.9]（定数小数位 .6/.7/.8/.9）
-        return f'{dim} 是否为 {n:.1f}+ [{n + 0.6:.1f}, {n + 0.9:.1f}] 闭区间'
+        # 定级 +档：14+ [14.6, 14.9] 闭区间
+        return f'{dim} 是否为 {int(n)}+ [{n + 0.6:.1f}, {n + 0.9:.1f}] 闭区间'
     t = text
     if any(k in t for k in _CMP_GE):
         return f'{dim} 是否 ≥ {num}'
@@ -359,9 +364,10 @@ def _reason_cmp(dim: str, text: str, nums: List[float], *, plus: bool = False) -
         return f'{dim} 是否 = {num}'
     if len(nums) >= 2:
         return f'{dim} 是否在 [{nums[0]:g}, {nums[1]:g}] 闭区间'
-    # 整数定数档位：闭区间 [n.0, n.5]（定数小数位 .0/.5）
-    if n == int(n):
-        return f'{dim} 是否为 {n:.1f} 档 [{n:.1f}, {n + 0.5:.1f}] 闭区间'
+    if is_level:
+        # 整数定级档位：14 [14.0, 14.5] 闭区间
+        return f'{dim} 是否为 {int(n)} [{n:.1f}, {n + 0.5:.1f}] 闭区间'
+    # 定数精确等于：14.0
     return f'{dim} 是否 = {num}'
 
 
@@ -374,8 +380,10 @@ _VERSION_KEYWORDS = (
     # CiRCLE PLUS（2026-03-19）/ CiRCLE（2025-09-18）：圈代（俗称取「circle」谐音/字形）
     ('maimai でらっくす circle plus', ('circle plus', 'circle+', '圈代+', '圈+')),
     ('maimai でらっくす circle', ('circle', '圈代', '圈')),
-    # PRiSM PLUS（2025-03-13）/ PRiSM（2024-09-12）：镜代
-    ('maimai でらっくす prism plus', ('prism plus', 'prism+', '镜+', '镜代+')),
+    # PRiSM PLUS（2025-03-13）/ PRiSM（2024-09-12）：彩代/镜代
+    # PRiSM=镜代（prism 棱镜），PRiSM PLUS=彩代（KALEIDXSCOPE 万花筒彩色元素）
+    # 社群合并叫「彩镜代」（国服舞萌DX2025 = PRiSM + PRiSM PLUS）
+    ('maimai でらっくす prism plus', ('prism plus', 'prism+', '彩代', '彩', '镜+', '镜代+')),
     ('maimai でらっくす prism', ('prism', '镜代', '镜')),
     # BUDDiES PLUS（2024-03-21）/ BUDDiES（2023-09-14）：宴代/双代
     ('maimai でらっくす buddies plus', ('buddies plus', 'buddies+', '宴代', '宴+')),
@@ -423,7 +431,9 @@ _OLD_FRAME_VERSIONS = frozenset({
 })
 
 # 国服合并叫法——任一子版本都算（小写匹配）
-# PRiSM+/CiRCLE/CiRCLE+ 国服合并叫法尚未稳定流传，暂不收录，玩家单独用「镜+」「圈代」等单版本俗称。
+# 国服落后日服约一年半：舞萌DX2025 = PRiSM + PRiSM PLUS（彩镜代）；
+# 舞萌DX2026 = CiRCLE + PRiSM PLUS（圈彩代，推测）。
+# 「彩镜代」是社群流传的合并俗称（PRiSM=镜代 + PRiSM PLUS=彩代）。
 _VERSION_GROUP_ALIASES = (
     ('舞代', _OLD_FRAME_VERSIONS),
     ('真代', frozenset({'maimai', 'maimai plus'})),
@@ -432,6 +442,9 @@ _VERSION_GROUP_ALIASES = (
     ('宙星代', frozenset({'maimai でらっくす universe', 'maimai でらっくす universe plus'})),
     ('祭祝代', frozenset({'maimai でらっくす festival', 'maimai でらっくす festival plus'})),
     ('双宴代', frozenset({'maimai でらっくす buddies', 'maimai でらっくす buddies plus'})),
+    # 舞萌DX2025（国服）= PRiSM + PRiSM PLUS
+    ('彩镜代', frozenset({'maimai でらっくす prism', 'maimai でらっくす prism plus'})),
+    ('镜彩代', frozenset({'maimai でらっくす prism', 'maimai でらっくす prism plus'})),
 )
 
 # 版本发售顺序表（从旧到新，按官方发售日正序）。
@@ -478,6 +491,8 @@ _CJK_RE = re.compile(r'[\u4e00-\u9fff]')
 _KANA_RE = re.compile(r'[\u3040-\u30ff]')
 _LATIN_RE = re.compile(r'[a-zA-Z]')
 _NUM_RE = re.compile(r'\d+(?:\.\d+)?')
+# 小数数字（含小数点）——用于区分玩家问的是定数（14.0）还是定级（14）
+_DECIMAL_NUM_RE = re.compile(r'\d+\.\d')
 
 # 定数关键词 + 难度形容词。_q_ds 据此识别定数问题，_q_bpm / _q_white_chart
 # 据此让出（版本题已移交 LLM，但这些关键词仍用于让定数题优先于 BPM/白谱题）。
@@ -557,6 +572,16 @@ def _norm(text: str) -> str:
 
 def _nums(text: str) -> List[float]:
     return [float(x) for x in _NUM_RE.findall(text)]
+
+
+def _is_ds_query(text: str) -> bool:
+    """玩家输入的数字是否含小数点。
+
+    含小数（如 14.0、13.6）= 问定数（ds），精确到小数位；
+    不含小数（如 14、13）= 问定级（level），整数档位。
+    14.0 和 14 数值相等但语义不同，必须看原始文本。
+    """
+    return bool(_DECIMAL_NUM_RE.search(text))
 
 
 def _cmp_bool(value: float, text: str, nums: List[float]) -> Optional[bool]:
@@ -717,35 +742,40 @@ def _q_ds(music: Music, text: str) -> Optional[str]:
             return _r(target_ds <= 11.0, f'判定维度：{color}定数是否偏低（≤11.0）')
         return None
     n = nums[0]
+    # 区分定级（整数 14/14+）与定数（小数 14.0/14.6）：
+    # 看玩家输入的数字是否含小数点，而非数值比较（14.0 == 14 但语义不同）。
+    is_level = not _is_ds_query(text)
+    dim_label = '定级' if is_level else '定数'
+    dim = f'判定维度：{color}{dim_label}'
     # 区间判断：两个数字（如「13.6-14.0」「14.5到14.7」）→ 13.6 ≤ v ≤ 14.0
     if len(nums) >= 2:
         res = _cmp_bool(target_ds, text, nums)
         if res is not None:
-            return _r(res, _reason_cmp(f'判定维度：{color}定数', text, nums))
+            return _r(res, _reason_cmp(dim, text, nums, is_level=is_level))
     if '+' in text:
+        # 「14+」是定级 +档，不是定数
         return _r(
             (n + 0.6) <= target_ds < (n + 1.0),
-            _reason_cmp(f'判定维度：{color}定数', text, nums, plus=True),
+            _reason_cmp(dim, text, nums, plus=True, is_level=True),
         )
     # 明确比较词（大于/小于/以上/以下/等于 等）→ 走数值比较
     if any(k in text for k in _CMP_WORDS):
         res = _cmp_bool(target_ds, text, nums)
         if res is not None:
-            return _r(res, _reason_cmp(f'判定维度：{color}定数', text, nums))
-    # 小数定数（如 12.6/13.7）→ 精确等于比较。
+            return _r(res, _reason_cmp(dim, text, nums, is_level=is_level))
+    # 定数（玩家输入含小数，如 12.6/13.7/14.0）→ 精确等于比较。
     # 玩家精确到小数位就是问定数（ds），不是问定级（level）。
-    # 舞萌定数小数档位为 .0/.5/.6/.7/.8/.9，带小数即精确指定。
-    if n != int(n):
+    if not is_level:
         return _r(
             abs(target_ds - n) < 0.01,
-            f'判定维度：{color}定数是否 = {n:g}',
+            f'判定维度：{color}定数是否 = {n:.1f}',
         )
-    # 整数定数（如 13/14）→ 档位判断（定级 level）。
+    # 整数定级（如 13/14）→ 档位判断（定级 level）。
     # 「14」指 14 档（14.0~14.5），「14+」指 14.6~14.9（+档，上面已处理）。
     # 不能像 BPM 那样把「是」当精确相等——否则 14.4 会被误判为「不是14」。
     return _r(
         n <= target_ds < n + 0.6,
-        _reason_cmp(f'判定维度：{color}定数', text, nums),
+        _reason_cmp(dim, text, nums, is_level=True),
     )
 
 
@@ -762,25 +792,29 @@ def _q_level_bare(music: Music, text: str) -> Optional[str]:
         return None
     n = float(m.group(1))
     has_plus = bool(m.group(2))
+    # 玩家输入的数字是否含小数点 → 定数 vs 定级
+    has_decimal = '.' in m.group(1)
     # 默认紫谱（MASTER, idx=3）
     if len(music.ds) <= 3:
         return _r(False, '判定维度：该曲无紫谱，请指定颜色')
     target_ds = music.ds[3]
     color = '紫谱（默认）'
     if has_plus:
+        # 「14+」是定级 +档：14+ [14.6, 14.9] 闭区间
         return _r(
             (n + 0.6) <= target_ds < (n + 1.0),
-            f'判定维度：{color}定数是否为 {n:.1f}+ [{n + 0.6:.1f}, {n + 0.9:.1f}] 闭区间',
+            f'判定维度：{color}定级是否为 {int(n)}+ [{n + 0.6:.1f}, {n + 0.9:.1f}] 闭区间',
         )
-    # 小数定数（如 13.5/13.6）→ 精确等于；整数（如 13/14）→ 档位判断
-    if n != int(n):
+    # 定数（玩家输入含小数，如 13.5/13.6/14.0）→ 精确等于
+    if has_decimal:
         return _r(
             abs(target_ds - n) < 0.01,
-            f'判定维度：{color}定数是否 = {n:g}',
+            f'判定维度：{color}定数是否 = {n:.1f}',
         )
+    # 整数定级（如 13/14）→ 档位判断：14 [14.0, 14.5] 闭区间
     return _r(
         n <= target_ds < n + 0.6,
-        f'判定维度：{color}定数是否为 {n:.1f} 档 [{n:.1f}, {n + 0.5:.1f}] 闭区间',
+        f'判定维度：{color}定级是否为 {int(n)} [{n:.1f}, {n + 0.5:.1f}] 闭区间',
     )
 
 
