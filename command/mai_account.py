@@ -2275,20 +2275,30 @@ async def _upload(
             except Exception as exc:
                 if awmc_result is not None:
                     # AWMC NET 已先写入成功时，落雪超时只能算外部平台部分失败，
-                    # 不能把整次同步错误地回复成“上传失败”。
+                    # 不能把整次同步错误地回复成"上传失败"。
                     account_db.mark_uploaded(key)
+                    charge = break_db.settle_service_success(
+                        int(key), billing_service, cost,
+                        meta={"operation": operation, "fish": False, "lxns": True, "source": "pc", "partial": True},
+                    )
+                    _schedule_post_upload_maintenance(
+                        key,
+                        fish=False,
+                        lxns=True,
+                        archive_qqids=_archive_qqids_for_event(event, key),
+                    )
                     detail = _lxns_upload_failure_text(
                         exc, stage='向落雪写入成绩'
                     )
                     ref = _log(
                         key, "upload_awmcnet", "success",
-                        f"awmcnet=success,lxns=error:{type(exc).__name__}",
+                        f"awmcnet=success,lxns=error:{type(exc).__name__},charged={charge.charged},free={charge.free}",
                     )
                     return (
                         f"{_AWMCNET_SYNCED_LINE}\n"
                         f"⚠️ 落雪同步失败：{detail}\n"
                         "您可以稍后重新 lxbind 后再同步落雪。\n"
-                        f"Ref_ID: {ref}"
+                        f"{_charge_text(charge, int(key))}\nRef_ID: {ref}"
                     )
                 failure_message = f"上传失败：{_lxns_upload_failure_text(exc, stage='向落雪写入成绩')}"
                 ref = _log(key, "upload", "error", _exception_detail(exc))
@@ -2511,17 +2521,27 @@ async def _upload(
         if awmc_result is not None:
             # 水鱼/落雪失败不回滚已经成功的 AWMC NET 同步。
             account_db.mark_uploaded(key)
+            charge = break_db.settle_service_success(
+                int(key), billing_service, cost,
+                meta={"operation": operation, "fish": fish, "lxns": lxns, "partial": True},
+            )
+            _schedule_post_upload_maintenance(
+                key,
+                fish=fish,
+                lxns=lxns,
+                archive_qqids=_archive_qqids_for_event(event, key),
+            )
             detail = _exception_detail(exc)
             shown = list(dict.fromkeys(results))
             if _AWMCNET_SYNCED_LINE not in shown:
                 shown.insert(0, _AWMCNET_SYNCED_LINE)
             ref = _log(
                 key, "upload_awmcnet", "success",
-                f"awmcnet=success,external=error:{type(exc).__name__}",
+                f"awmcnet=success,external=error:{type(exc).__name__},charged={charge.charged},free={charge.free}",
             )
             return (
                 "\n".join(shown)
-                + f"\n⚠️ 其他查分平台同步失败 {detail}\nRef_ID: {ref}"
+                + f"\n⚠️ 其他查分平台同步失败 {detail}\n{_charge_text(charge, int(key))}\nRef_ID: {ref}"
             )
         failure_message = _upload_failure_message(exc)
         if _upload_retryable(failure_message):
