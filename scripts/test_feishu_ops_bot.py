@@ -244,32 +244,36 @@ assert "/bans" in admin_api_source
 LogSnapshot = MODULE.LogSnapshot
 import time as _time  # noqa: E402
 
-# 250 行 → 3 页（100+100+50），page 0 = 最新一页 = 末尾 100 行
+# 250 行 / 50 每页 → 5 页，page 0 = 最新一页 = 末尾 50 行 (line200..249)
 snap = LogSnapshot(
     lines=[f"line{i}" for i in range(250)],
     errors_only=False,
     since_today_6=True,
     fetched_at=_time.time(),
 )
-assert snap.total_pages() == 3, f"250行应3页: {snap.total_pages()}"
-assert snap.current_lines()[0] == "line150", f"page0应从line150开始: {snap.current_lines()[0]}"
+assert snap.total_pages() == 5, f"250行应5页: {snap.total_pages()}"
+assert snap.current_lines()[0] == "line200", f"page0应从line200开始: {snap.current_lines()[0]}"
 assert snap.current_lines()[-1] == "line249"
-# 上一页（更早）→ page1 = line50..149
+# 上一页（更早）→ page1 = line150..199
 assert snap.go_prev() is True
-assert snap.current_lines()[0] == "line50"
-assert snap.current_lines()[-1] == "line149"
-# 再上一页 → page2 = line0..49（最早一页）
-assert snap.go_prev() is True
+assert snap.current_lines()[0] == "line150"
+assert snap.current_lines()[-1] == "line199"
+# 连续翻到最早一页 page4 = line0..49
+assert snap.go_prev() is True  # page2
+assert snap.go_prev() is True  # page3
+assert snap.go_prev() is True  # page4
 assert snap.current_lines()[0] == "line0"
 assert snap.current_lines()[-1] == "line49"
 # 已到最早，再翻无效
 assert snap.go_prev() is False
-assert snap.current_page == 2
-# 下一页（更新）回到 page1
+assert snap.current_page == 4
+# 下一页（更新）回到 page3
 assert snap.go_next() is True
 assert snap.current_lines()[0] == "line50"
-# 再下一页回到 page0（最新）
-assert snap.go_next() is True
+# 连续翻回最新 page0
+assert snap.go_next() is True  # page2
+assert snap.go_next() is True  # page1
+assert snap.go_next() is True  # page0
 assert snap.current_lines()[-1] == "line249"
 # 已在最新，再翻无效
 assert snap.go_next() is False
@@ -281,9 +285,9 @@ empty_snap = LogSnapshot(
 assert empty_snap.total_pages() == 1
 assert empty_snap.current_lines() == []
 
-# 恰好 100 行 = 1 页
+# 恰好 50 行 = 1 页
 snap100 = LogSnapshot(
-    lines=[f"x{i}" for i in range(100)],
+    lines=[f"x{i}" for i in range(50)],
     errors_only=False,
     since_today_6=False,
     fetched_at=_time.time(),
@@ -293,10 +297,10 @@ assert snap100.go_prev() is False
 assert snap100.go_next() is False
 
 # logs_card 渲染：含页码、模式、刷新/翻页/切换按钮
-# page0=最新一页=最后一页 → 显示「第 3/3 页」
+# page0=最新一页=最后一页 → 显示「第 5/5 页」
 card = MODULE.logs_card(snap, is_admin=True)
 body = card["elements"][0]["text"]["content"]
-assert "第 3/3 页" in body, f"应显示页码(最新=最后一页): {body.splitlines()[0]}"
+assert "第 5/5 页" in body, f"应显示页码(最新=最后一页): {body.splitlines()[0]}"
 assert "今日 06:00 起" in body, f"应显示模式: {body.splitlines()[0]}"
 assert "共 250 行" in body
 # 收集所有按钮的 action

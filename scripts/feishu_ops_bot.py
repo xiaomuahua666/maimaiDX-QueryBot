@@ -24,10 +24,10 @@ from uuid import uuid4
 LOG = logging.getLogger("maimaidx.feishu_ops")
 SERVICE_NAME = "maimaidx-bot.service"
 STATUS_SCRIPT = "/usr/local/bin/maimaidx-report-status"
-MAX_LOG_LINES = 100
-# 刷新时一次性拉取的原始行数（够翻 ~20 页）；错误日志大部分行会被过滤，多拉一些
-LOG_FETCH_LINES = 2000
-LOG_FETCH_LINES_ERRORS = 5000
+MAX_LOG_LINES = 50
+# 「全部」模式下为防历史日志暴涨卡住卡片渲染，加一个合理上限；
+# 「今日6点起」模式不加 -n，当日日志量有限不会卡 bot。
+LOG_FETCH_LINES_ALL = 10000
 # 日志留存窗口起点：每天 06:00 旋转一次（查询时按 since 过滤，不写文件、不会卡顿）
 LOG_DAY_BOUNDARY_HOUR = 6
 MAX_BREAK_GRANT = 100_000
@@ -655,10 +655,8 @@ def logs_card(snapshot: LogSnapshot, *, is_admin: bool) -> dict:
     # 显示页码：最新一页 = 最后一页，越早页码越小
     page_num = total_pages - snapshot.current_page
     mode_label = "今日 06:00 起" if snapshot.since_today_6 else "全部"
-    fetched_ago = format_duration(int(time.time() - snapshot.fetched_at))
     header_line = (
         f"已脱敏 · {mode_label} · 共 {total} 行 · 第 {page_num}/{total_pages} 页"
-        f" · 上次刷新 {fetched_ago}前"
     )
     actions = [
         _button(
@@ -903,18 +901,17 @@ class SystemController:
     def logs(
         self, *, errors_only: bool = False, since_today_6: bool = True
     ) -> list[str]:
-        """拉取脱敏日志。刷新时一次拉够翻多页的量，翻页不再调 journalctl。
+        """拉取脱敏日志。刷新时拉取窗口内的全部日志（不截断），翻页走缓存。
 
-        since_today_6=True 时按「当前 06:00 起」过滤（06:00 旋转窗口），
-        满足飞书 bot 留存从 6 点起 24h 轮转的要求，且不写文件、不会卡顿。
+        - since_today_6=True：拉「当前 06:00 起」的全部日志（06:00 旋转窗口，
+          24h 轮转），不加 -n 截断，当日日志量有限不会卡 bot。
+        - since_today_6=False（全部）：不限时间，但加 -n 上限防历史日志
+          暴涨卡住卡片渲染。
         """
-        fetch = LOG_FETCH_LINES_ERRORS if errors_only else LOG_FETCH_LINES
         args = [
             "journalctl",
             "-u",
             SERVICE_NAME,
-            "-n",
-            str(fetch),
             "--no-pager",
             "-o",
             "short-iso",
@@ -924,7 +921,10 @@ class SystemController:
                 "%Y-%m-%d %H:%M:%S", time.localtime(_today_boundary_ts())
             )
             args.extend(["--since", since_str])
-        raw = self._run(args, timeout=15)
+        else:
+            # 全部模式：历史日志可能很大，加合理上限防卡片渲染卡死
+            args.extend(["-n", str(LOG_FETCH_LINES_ALL)])
+        raw = self._run(args, timeout=20)
         return sanitize_logs(raw.splitlines(), errors_only=errors_only)
 
     def control(self, operation: str) -> None:
