@@ -187,16 +187,17 @@ assert '"im.message.reaction.created_v1"' in bot_source
 assert "register_p2_customized_event" in bot_source
 assert 'LOG_FETCH_LINES_ALL = 5000' in bot_source
 
-# journalctl 的今日窗口也必须有行数与执行时间硬上限。
+# journalctl 必须有行数与执行时间硬上限，并按时间窗口过滤。
 controller = MODULE.SystemController()
 run_calls = []
 controller._run = lambda args, timeout=15: run_calls.append((args, timeout)) or ""
-assert controller.logs(since_today_6=True) == []
+assert controller.logs(window_secs=7200) == []
 assert "-n" in run_calls[0][0]
 assert str(MODULE.LOG_FETCH_LINES_ALL) in run_calls[0][0]
+assert "--since" in run_calls[0][0]
 assert run_calls[0][1] == MODULE.LOG_FETCH_TIMEOUT_SECONDS
 
-# 慢日志刷新必须离开飞书事件线程，并在完成后另发结果卡片。
+# 慢日志刷新必须离开飞书事件线程，完成后另发日志卡片，且不返回占位卡。
 queued_bot = object.__new__(MODULE.FeishuOpsBot)
 queued_bot._log_lock = threading.Lock()
 queued_bot._log_refreshing = set()
@@ -206,7 +207,7 @@ allow_finish = threading.Event()
 delivered = threading.Event()
 deliveries = []
 
-def fake_refresh(receive_id, errors_only, since_today_6, is_admin):
+def fake_refresh(receive_id, errors_only, window_secs, is_admin):
     refresh_started.set()
     assert allow_finish.wait(2)
     return MODULE._card("刷新完成", "ok")
@@ -217,14 +218,19 @@ def fake_send(receive_id_type, receive_id, card):
 
 queued_bot._refresh_logs = fake_refresh
 queued_bot._send_card = fake_send
-pending = queued_bot._queue_log_refresh("chat_id", "oc_test", False, True, True)
-assert pending["header"]["title"]["content"] == "日志刷新已提交"
+pending = queued_bot._queue_log_refresh("chat_id", "oc_test", False, 7200, True)
+assert pending is None, "不应返回占位卡"
 assert refresh_started.wait(1)
 assert not delivered.is_set()
 allow_finish.set()
 assert delivered.wait(2)
 assert deliveries[0][0:2] == ("chat_id", "oc_test")
 assert not queued_bot._log_refreshing
+
+# 已有同类刷新任务在跑时，重复提交直接返回 None，不启动新 worker。
+queued_bot._log_refreshing.add(("_private", False))
+dup = queued_bot._queue_log_refresh("chat_id", "oc_dup", False, 7200, True)
+assert dup is None, "重复任务应返回 None"
 
 # --- ban_list command ----------------------------------------------------
 assert MODULE.parse_command("封禁列表") == ("ban_list", [])
@@ -289,8 +295,8 @@ import time as _time  # noqa: E402
 snap = LogSnapshot(
     lines=[f"line{i}" for i in range(250)],
     errors_only=False,
-    since_today_6=True,
     fetched_at=_time.time(),
+    window_secs=7200,
 )
 assert snap.total_pages() == 5, f"250行应5页: {snap.total_pages()}"
 assert snap.current_lines()[0] == "line200", f"page0应从line200开始: {snap.current_lines()[0]}"
@@ -321,7 +327,7 @@ assert snap.go_next() is False
 
 # 空快照：1 页，无内容
 empty_snap = LogSnapshot(
-    lines=[], errors_only=True, since_today_6=True, fetched_at=_time.time()
+    lines=[], errors_only=True, fetched_at=_time.time(), window_secs=3600
 )
 assert empty_snap.total_pages() == 1
 assert empty_snap.current_lines() == []
@@ -330,48 +336,218 @@ assert empty_snap.current_lines() == []
 snap100 = LogSnapshot(
     lines=[f"x{i}" for i in range(50)],
     errors_only=False,
-    since_today_6=False,
     fetched_at=_time.time(),
+    window_secs=600,
 )
 assert snap100.total_pages() == 1
 assert snap100.go_prev() is False
 assert snap100.go_next() is False
 
-# logs_card 渲染：含页码、模式、刷新/翻页/切换按钮
+# logs_card 渲染：含页码、窗口标签、刷新/翻页/窗口切换按钮
 # page0=最新一页=最后一页 → 显示「第 5/5 页」
 card = MODULE.logs_card(snap, is_admin=True)
 body = card["elements"][0]["text"]["content"]
 assert "第 5/5 页" in body, f"应显示页码(最新=最后一页): {body.splitlines()[0]}"
-assert "今日 06:00 起" in body, f"应显示模式: {body.splitlines()[0]}"
+assert "近 2h" in body, f"应显示窗口标签: {body.splitlines()[0]}"
 assert "共 250 行" in body
-# 收集所有按钮的 action
+# 收集所有按钮的 action 与文案
 btn_actions = []
+btn_texts = []
 for el in card["elements"]:
     if isinstance(el, dict) and el.get("tag") == "action":
         for b in el.get("actions", []):
             btn_actions.append(b["value"]["action"])
+            btn_texts.append(b["text"]["content"])
 assert "logs_refresh" in btn_actions, f"应有刷新按钮: {btn_actions}"
 assert "logs_prev" in btn_actions, f"应有上一页: {btn_actions}"
 assert "logs_next" in btn_actions, f"应有下一页: {btn_actions}"
-assert "logs_refresh" in btn_actions  # 切换模式也用 logs_refresh
+# 当前窗口 7200(2h) 时，应提供切到 1h/10m 的快捷按钮（不含 2h 自身）
+assert "近1h" in btn_texts, f"应有近1h切换: {btn_texts}"
+assert "近10m" in btn_texts, f"应有近10m切换: {btn_texts}"
+assert "近2h" not in btn_texts, f"不应出现当前窗口自身: {btn_texts}"
 
-# since_today_6=False 时按钮文案切换为「今日6点起」
+# window_secs=600 时标签为「近 10m」，并提供切到 1h/2h 的按钮
 card_all = MODULE.logs_card(snap100, is_admin=False)
+body_all = card_all["elements"][0]["text"]["content"]
+assert "近 10m" in body_all, f"10m窗口应显示近10m: {body_all.splitlines()[0]}"
 btn_texts_all = []
 for el in card_all["elements"]:
     if isinstance(el, dict) and el.get("tag") == "action":
         for b in el.get("actions", []):
             btn_texts_all.append(b["text"]["content"])
-assert "今日6点起" in btn_texts_all, f"全部模式应有切回今日按钮: {btn_texts_all}"
+assert "近1h" in btn_texts_all, f"10m窗口应有近1h切换: {btn_texts_all}"
+assert "近2h" in btn_texts_all, f"10m窗口应有近2h切换: {btn_texts_all}"
+assert "近10m" not in btn_texts_all, f"不应出现当前窗口自身: {btn_texts_all}"
 
-# _today_boundary_ts：应返回今天 06:00（若当前早于 06:00 则昨天 06:00）
-boundary = MODULE._today_boundary_ts()
-now = _time.time()
-diff = now - boundary
-# 应在 [0, 86400) 内，且对应时刻的 hour=6
-assert 0 <= diff < 86400, f"boundary 应在24h内: diff={diff}"
-bt = _time.localtime(boundary)
-assert bt.tm_hour == 6, f"boundary 应为6点: hour={bt.tm_hour}"
-assert boundary <= now, "boundary 不应晚于当前"
+# parse_window_secs：仅允许 m/h，非法返回 None
+assert MODULE.parse_window_secs("2h") == 7200
+assert MODULE.parse_window_secs("1h") == 3600
+assert MODULE.parse_window_secs("10m") == 600
+assert MODULE.parse_window_secs("30m") == 1800
+assert MODULE.parse_window_secs("  3H ") == 10800  # 大小写/空白容错
+assert MODULE.parse_window_secs("") is None
+assert MODULE.parse_window_secs("5s") is None  # 不支持秒
+assert MODULE.parse_window_secs("abc") is None
+assert MODULE.parse_window_secs("0h") is None  # 0 不合法
+assert MODULE.parse_window_secs("-1h") is None
+
+# ── 去头填尾增量刷新 ──
+# 场景1：有快照且未过期 → 增量拉取，新行追加到尾部，超限丢头部旧行
+incr_bot = object.__new__(MODULE.FeishuOpsBot)
+incr_bot._log_lock = threading.Lock()
+incr_bot._log_refreshing = set()
+incr_bot._log_snapshots = {}
+# 预置快照：已存满 LOG_FETCH_LINES_ALL 行，最后一行时间戳为 2026-01-01 00:00:00
+full_lines = [
+    f"2026-01-01 00:00:{i:02d} INFO old line {i}"
+    for i in range(MODULE.LOG_FETCH_LINES_ALL)
+]
+last_ts_old = "2026-01-01 00:00:00"
+incr_bot._log_snapshots[("oc_inc", False)] = MODULE.LogSnapshot(
+    lines=list(full_lines),
+    errors_only=False,
+    fetched_at=_time.time(),  # 刚刚拉取，未过期
+    window_secs=7200,
+    last_ts=last_ts_old,
+)
+incr_calls = []
+
+class FakeSystem:
+    def logs_incremental(self, *, errors_only=False, since_ts=""):
+        incr_calls.append(since_ts)
+        # 模拟新增 3 行（时间戳都晚于 since_ts）
+        return [
+            "2026-01-01 00:00:01 INFO new line A",
+            "2026-01-01 00:00:02 INFO new line B",
+            "2026-01-01 00:00:03 INFO new line C",
+        ]
+    def logs(self, *, errors_only=False, window_secs=7200):
+        raise AssertionError("增量可用时不应走全量 fallback")
+
+incr_bot.system = FakeSystem()
+card = incr_bot._refresh_logs("oc_inc", False, 7200, True)
+assert incr_calls == [last_ts_old], f"应基于 last_ts 增量拉取: {incr_calls}"
+snap_after = incr_bot._log_snapshots[("oc_inc", False)]
+# 去头填尾：总行数不超 LOG_FETCH_LINES_ALL，尾部为新行
+assert len(snap_after.lines) == MODULE.LOG_FETCH_LINES_ALL
+assert snap_after.lines[-3:] == [
+    "2026-01-01 00:00:01 INFO new line A",
+    "2026-01-01 00:00:02 INFO new line B",
+    "2026-01-01 00:00:03 INFO new line C",
+], "尾部应为新增行"
+# 头部 3 行被丢弃（原 line0/1/2 不再存在）
+assert "old line 0" not in snap_after.lines[0]
+assert snap_after.last_ts == "2026-01-01 00:00:03"
+assert snap_after.current_page == 0  # 回到最新页
+body = card["elements"][0]["text"]["content"]
+assert "new line C" in body
+
+# 场景2：无快照 → 全量拉取，创建新快照
+fresh_bot = object.__new__(MODULE.FeishuOpsBot)
+fresh_bot._log_lock = threading.Lock()
+fresh_bot._log_refreshing = set()
+fresh_bot._log_snapshots = {}
+full_calls = []
+
+class FakeSystemFull:
+    def logs_incremental(self, *, errors_only=False, since_ts=""):
+        raise AssertionError("无快照不应走增量")
+    def logs(self, *, errors_only=False, window_secs=7200):
+        full_calls.append(window_secs)
+        return ["2026-01-02 00:00:00 INFO full line 1"]
+
+fresh_bot.system = FakeSystemFull()
+card2 = fresh_bot._refresh_logs("oc_fresh", False, 3600, True)
+assert full_calls == [3600], f"应按 window_secs 全量拉取: {full_calls}"
+snap2 = fresh_bot._log_snapshots[("oc_fresh", False)]
+assert snap2.lines == ["2026-01-02 00:00:00 INFO full line 1"]
+assert snap2.window_secs == 3600
+assert snap2.last_ts == "2026-01-02 00:00:00"
+
+# 场景3：增量失败 → fallback 全量
+fb_bot = object.__new__(MODULE.FeishuOpsBot)
+fb_bot._log_lock = threading.Lock()
+fb_bot._log_refreshing = set()
+fb_bot._log_snapshots = {}
+fb_bot._log_snapshots[("oc_fb", False)] = MODULE.LogSnapshot(
+    lines=["2026-01-01 00:00:00 INFO old"],
+    errors_only=False,
+    fetched_at=_time.time(),
+    window_secs=7200,
+    last_ts="2026-01-01 00:00:00",
+)
+fb_calls = {"incr": 0, "full": 0}
+
+class FakeSystemFail:
+    def logs_incremental(self, *, errors_only=False, since_ts=""):
+        fb_calls["incr"] += 1
+        raise RuntimeError("journalctl timeout")
+    def logs(self, *, errors_only=False, window_secs=7200):
+        fb_calls["full"] += 1
+        return ["2026-01-01 00:00:05 INFO fallback line"]
+
+fb_bot.system = FakeSystemFail()
+card3 = fb_bot._refresh_logs("oc_fb", False, 7200, True)
+assert fb_calls["incr"] == 1 and fb_calls["full"] == 1, "增量失败应 fallback 全量"
+snap3 = fb_bot._log_snapshots[("oc_fb", False)]
+assert snap3.lines == ["2026-01-01 00:00:05 INFO fallback line"], "fallback 后应覆盖旧快照"
+
+# 场景4：快照过期（超过 LOG_SNAPSHOT_STALE_SECS）→ 走全量
+stale_bot = object.__new__(MODULE.FeishuOpsBot)
+stale_bot._log_lock = threading.Lock()
+stale_bot._log_refreshing = set()
+stale_bot._log_snapshots = {}
+stale_bot._log_snapshots[("oc_stale", False)] = MODULE.LogSnapshot(
+    lines=["2026-01-01 00:00:00 INFO stale"],
+    errors_only=False,
+    fetched_at=_time.time() - MODULE.LOG_SNAPSHOT_STALE_SECS - 1,  # 已过期
+    window_secs=7200,
+    last_ts="2026-01-01 00:00:00",
+)
+stale_calls = {"incr": 0, "full": 0}
+
+class FakeSystemStale:
+    def logs_incremental(self, *, errors_only=False, since_ts=""):
+        stale_calls["incr"] += 1
+        return []
+    def logs(self, *, errors_only=False, window_secs=7200):
+        stale_calls["full"] += 1
+        return ["2026-01-01 00:00:10 INFO fresh full"]
+
+stale_bot.system = FakeSystemStale()
+stale_bot._refresh_logs("oc_stale", False, 7200, True)
+assert stale_calls["incr"] == 0, "过期快照不应走增量"
+assert stale_calls["full"] == 1, "过期应走全量"
+
+# 场景5：窗口变更 → 走全量（不能复用旧窗口的增量）
+wchg_bot = object.__new__(MODULE.FeishuOpsBot)
+wchg_bot._log_lock = threading.Lock()
+wchg_bot._log_refreshing = set()
+wchg_bot._log_snapshots = {}
+wchg_bot._log_snapshots[("oc_wchg", False)] = MODULE.LogSnapshot(
+    lines=["2026-01-01 00:00:00 INFO old"],
+    errors_only=False,
+    fetched_at=_time.time(),
+    window_secs=7200,  # 旧窗口 2h
+    last_ts="2026-01-01 00:00:00",
+)
+wchg_calls = {"incr": 0, "full": 0}
+
+class FakeSystemWchg:
+    def logs_incremental(self, *, errors_only=False, since_ts=""):
+        wchg_calls["incr"] += 1
+        return []
+    def logs(self, *, errors_only=False, window_secs=7200):
+        wchg_calls["full"] += 1
+        return ["2026-01-01 00:00:20 INFO 1h window"]
+
+wchg_bot.system = FakeSystemWchg()
+# 请求 1h（3600）≠ 快照 2h（7200）→ 不能增量
+assert wchg_bot._can_incremental(
+    wchg_bot._log_snapshots[("oc_wchg", False)], 3600
+) is False
+wchg_bot._refresh_logs("oc_wchg", False, 3600, True)
+assert wchg_calls["incr"] == 0, "窗口变更不应走增量"
+assert wchg_calls["full"] == 1
 
 print("Feishu operations bot checks: OK")
