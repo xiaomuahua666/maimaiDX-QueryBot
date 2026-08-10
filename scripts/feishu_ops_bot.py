@@ -25,9 +25,9 @@ LOG = logging.getLogger("maimaidx.feishu_ops")
 SERVICE_NAME = "maimaidx-bot.service"
 STATUS_SCRIPT = "/usr/local/bin/maimaidx-report-status"
 MAX_LOG_LINES = 50
-# 「全部」模式下为防历史日志暴涨卡住卡片渲染，加一个合理上限；
-# 「今日6点起」模式不加 -n，当日日志量有限不会卡 bot。
-LOG_FETCH_LINES_ALL = 10000
+# 刷新时一次性拉取的原始行数上限（两种模式都用，防 journalctl 超时）。
+# 5000 行 / 50 每页 = 100 页，翻页足够；日志多时无 -n 会卡 20s+ 超时。
+LOG_FETCH_LINES_ALL = 5000
 # 日志留存窗口起点：每天 06:00 旋转一次（查询时按 since 过滤，不写文件、不会卡顿）
 LOG_DAY_BOUNDARY_HOUR = 6
 MAX_BREAK_GRANT = 100_000
@@ -901,17 +901,19 @@ class SystemController:
     def logs(
         self, *, errors_only: bool = False, since_today_6: bool = True
     ) -> list[str]:
-        """拉取脱敏日志。刷新时拉取窗口内的全部日志（不截断），翻页走缓存。
+        """拉取脱敏日志。刷新时拉取窗口内的日志进快照，翻页走缓存。
 
-        - since_today_6=True：拉「当前 06:00 起」的全部日志（06:00 旋转窗口，
-          24h 轮转），不加 -n 截断，当日日志量有限不会卡 bot。
-        - since_today_6=False（全部）：不限时间，但加 -n 上限防历史日志
-          暴涨卡住卡片渲染。
+        两种模式都带 -n 上限 + --since 过滤，避免日志量大时 journalctl
+        超时（实测日志多时无 -n 会卡 20s+ 超时）。
+        - since_today_6=True：拉「当前 06:00 起」日志，-n 上限兜底防超时。
+        - since_today_6=False（全部）：不限 since，但 -n 上限防历史暴涨。
         """
         args = [
             "journalctl",
             "-u",
             SERVICE_NAME,
+            "-n",
+            str(LOG_FETCH_LINES_ALL),
             "--no-pager",
             "-o",
             "short-iso",
@@ -921,10 +923,7 @@ class SystemController:
                 "%Y-%m-%d %H:%M:%S", time.localtime(_today_boundary_ts())
             )
             args.extend(["--since", since_str])
-        else:
-            # 全部模式：历史日志可能很大，加合理上限防卡片渲染卡死
-            args.extend(["-n", str(LOG_FETCH_LINES_ALL)])
-        raw = self._run(args, timeout=20)
+        raw = self._run(args, timeout=30)
         return sanitize_logs(raw.splitlines(), errors_only=errors_only)
 
     def control(self, operation: str) -> None:
