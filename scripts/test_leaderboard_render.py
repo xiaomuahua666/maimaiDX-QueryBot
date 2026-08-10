@@ -681,6 +681,12 @@ def test_plate_progress(mods):
         plate_title="暁将", goal="达成率 ≥100%", diffs=done,
         completed=True, user_name="Losoy")
     im = _assert_png(bio, "牌子进度-完成", min_h=400)
+    plate_source = (ROOT / "libraries" / "maimaidx_plate_image.py").read_text(
+        encoding="utf-8"
+    )
+    assert "font=_font_bold(46)" in plate_source
+    assert "'🎉 所有曲目均已达成目标'" not in plate_source
+    assert "_draw_complete_mark" in plate_source
     print(f"  牌子进度(完成) {im.size} OK")
 
     bio = plate.render_plate_progress(

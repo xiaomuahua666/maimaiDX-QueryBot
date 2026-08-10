@@ -88,6 +88,21 @@ def _is_good(record: str, song: dict) -> bool:
                                   'FSDX', 'FSDX+')
 
 
+def _draw_complete_mark(d: ImageDraw.ImageDraw, cx: int, cy: int) -> None:
+    """绘制不依赖 Emoji 字体的完成勾图标。"""
+    radius = 13
+    d.ellipse(
+        (cx - radius, cy - radius, cx + radius, cy + radius),
+        fill=_GREEN,
+    )
+    d.line(
+        ((cx - 6, cy), (cx - 1, cy + 5), (cx + 7, cy - 6)),
+        fill=(255, 255, 255, 255),
+        width=4,
+        joint='curve',
+    )
+
+
 def render_plate_progress(*,
                           plate_title: str,
                           goal: str,
@@ -146,7 +161,8 @@ def render_plate_progress(*,
         d.text((mx + 30, 118 + 26), '恭喜完成！',
                font=_font_bold(20), fill=_GREEN)
         d.text((mx + 30, 118 + 54), plate_title,
-               font=_font_mono(46), fill=_GREEN)
+               # 牌子名包含汉字，数字专用字体会显示为 tofu 方框。
+               font=_font_bold(46), fill=_GREEN)
         d.text((mx + 30, 118 + 110), '该牌子目标已全部达成喵～',
                font=_font_bold(16), fill=_TEXT_SOFT)
     else:
@@ -198,8 +214,16 @@ def render_plate_progress(*,
     if completed:
         _card(im, (mx, y, mx + inner_w, y + 110), radius=20,
               fill=(255, 255, 255, 220))
-        d.text((width // 2, y + 40), '🎉 所有曲目均已达成目标',
-               font=_font_bold(22), fill=_GREEN, anchor='mm')
+        complete_text = '所有曲目均已达成目标'
+        complete_font = _font_bold(22)
+        text_w = int(_text_len(d, complete_text, complete_font))
+        mark_gap = 12
+        mark_diameter = 26
+        group_w = mark_diameter + mark_gap + text_w
+        group_x = (width - group_w) // 2
+        _draw_complete_mark(d, group_x + mark_diameter // 2, y + 40)
+        d.text((group_x + mark_diameter + mark_gap, y + 40), complete_text,
+               font=complete_font, fill=_GREEN, anchor='lm')
         d.text((width // 2, y + 74), '继续挑战下一个牌子吧～',
                font=_font_bold(16), fill=_TEXT_SOFT, anchor='mm')
     elif notice:
