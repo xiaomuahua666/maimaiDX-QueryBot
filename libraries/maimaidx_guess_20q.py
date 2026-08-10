@@ -182,7 +182,19 @@ class Guess20QManager:
         text: str,
         billing_id: int = 0,
     ) -> dict:
-        # 群维度串行化：正在判定上一条时，直接拒绝新的提问/猜曲，不排队。
+        # 群维度串行化：正在判定上一条时，拒绝新的提问/猜曲（不排队）。
+        # 但闲聊（非「我问/我猜」前缀）不拦，直接放行返回 idle，避免误拒。
+        raw = (text or '').strip()
+        if raw:
+            is_guess = _strip_guess_prefix(raw)[1]
+            is_ask = _strip_ask_prefix(raw)[1]
+            if not is_guess and not is_ask:
+                # 闲聊消息：不占用锁，不影响 AI 判定。但仍算玩家活动，刷新空闲超时。
+                data = self.groups.get(gid)
+                if data and not data.end:
+                    data.touch()
+                return {'kind': 'idle'}
+
         lock = self._proc_lock(gid)
         if lock.locked():
             return {'kind': 'busy'}
@@ -318,16 +330,18 @@ def _reason_cmp(dim: str, text: str, nums: List[float], *, plus: bool = False) -
     n = nums[0]
     num = f'{n:g}'
     if plus:
-        return f'{dim} 是否为 {n:g}+（{n + 0.5:g}~{n + 1.0:g}）'
+        return f'{dim} 是否为 {n:g}+（{n + 0.6:g}~{n + 1.0:g}）'
     t = text
-    if any(k in t for k in ('以上', '≥', '>=', '不低于', '不小于', '大于等于', '大於等於')):
+    if any(k in t for k in _CMP_GE):
         return f'{dim} 是否 ≥ {num}'
-    if any(k in t for k in ('以下', '≤', '<=', '不高于', '不超过', '小于等于', '小於等於')):
+    if any(k in t for k in _CMP_LE):
         return f'{dim} 是否 ≤ {num}'
-    if any(k in t for k in ('大于', '超过', '高于', '>', '多过')):
+    if any(k in t for k in _CMP_GT):
         return f'{dim} 是否 > {num}'
-    if any(k in t for k in ('小于', '低于', '不到', '不满', '<', '少于')):
+    if any(k in t for k in _CMP_LT):
         return f'{dim} 是否 < {num}'
+    if any(k in t for k in _CMP_EQ):
+        return f'{dim} 是否 = {num}'
     if len(nums) >= 2:
         return f'{dim} 是否在 {nums[0]:g}~{nums[1]:g} 之间'
     return f'{dim} 是否为 {num}'
@@ -400,6 +414,7 @@ _NUM_RE = re.compile(r'\d+(?:\.\d+)?')
 _DS_KEYWORDS = (
     '定数', 'ds', '等级', '难度', '難度', '级别', '級別', '最高',
     '高', '大', '难', '難', '低', '小', '简单', '簡單', '易',
+    '档', '檔', '级', '級', '星',
 )
 
 # 问数值的疑问词（「多高/多少/几」等）。含这些词时是信息题，走 unknown
@@ -410,9 +425,60 @@ _VALUE_QUERY_WORDS = (
     '多长', '多長', '多短', '是几', '是幾', '几多', '幾多',
 )
 
+# 比较词分类常量：按「≥ / ≤ / > / < / =」五类归组，覆盖简繁体、口语、书面、符号。
+# _cmp_bool 判断时必须按「≥ 在 > 前、≤ 在 < 前」的顺序，否则「大于等于」会被「大于」抢先。
+_CMP_GE = (  # ≥（含等号）
+    '以上', '不低于', '不小于', '不低於', '不小於', '最少', '至少', '起码', '起碼',
+    '最少有', '最少是', '大于等于', '大於等於', '大于等於', '大於等于',
+    '≥', '>=', '≧', '=>',
+)
+_CMP_LE = (  # ≤（含等号）
+    '以下', '不高于', '不超过', '不大於', '不超過', '最多', '至多', '至多到',
+    '最多有', '最多是', '小于等于', '小於等於', '小于等於', '小於等于',
+    '≤', '<=', '≦', '=<',
+)
+_CMP_GT = (  # > 严格大于
+    '大于', '大於', '超过', '超過', '高于', '高於', '多过', '多過', '多于', '多於',
+    '超出', '>', '＞',
+)
+_CMP_LT = (  # < 严格小于
+    '小于', '小於', '低于', '低於', '不到', '不满', '不滿', '少于', '少於',
+    '不足', '没到', '沒到', '未到', '未满', '未滿', '<', '＜',
+)
+_CMP_EQ = (  # = 等于
+    '等于', '等於', '就是', '正是', '=', '＝', '==',
+)
+
+# 明确比较词——出现这些词时走数值比较（而非档位区间判断）。为五类词的并集。
+_CMP_WORDS = _CMP_GE + _CMP_LE + _CMP_GT + _CMP_LT + _CMP_EQ
+
+
+# 「比 X 大/小/高/低/多/少」句式 → 归一化为「大于/小于 X」
+# 匹配「比<数字><形容词>」或「比<形容词><数字>」两种语序。
+_BI_CMP_RE = re.compile(
+    r'比(\d+(?:\.\d+)?)(大|多|高|小|少|低)'
+    r'|'
+    r'比(大|多|高|小|少|低)(\d+(?:\.\d+)?)'
+)
+_BI_GT_ADJ = {'大', '多', '高'}  # 比 X 大/多/高 → 大于
+_BI_LT_ADJ = {'小', '少', '低'}  # 比 X 小/少/低 → 小于
+
+
+def _norm_bi_cmp(text: str) -> str:
+    """把「比13小」「比大13」等句式归一化为「小于13」「大于13」。"""
+    def _sub(m: re.Match) -> str:
+        n1, a1, a2, n2 = m.groups()
+        n = n1 or n2
+        adj = a1 or a2
+        if adj in _BI_GT_ADJ:
+            return f'大于{n}'
+        return f'小于{n}'
+    return _BI_CMP_RE.sub(_sub, text)
+
 
 def _norm(text: str) -> str:
-    return text.strip().lower().replace(' ', '').replace('　', '')
+    t = text.strip().lower().replace(' ', '').replace('　', '')
+    return _norm_bi_cmp(t)
 
 
 def _nums(text: str) -> List[float]:
@@ -420,25 +486,24 @@ def _nums(text: str) -> List[float]:
 
 
 def _cmp_bool(value: float, text: str, nums: List[float]) -> Optional[bool]:
-    """根据文本中的比较词判断 value 与数字的关系。"""
+    """根据文本中的比较词判断 value 与数字的关系。
+
+    比较词按 ≥/≤/>/</= 五类分组，判断顺序为 GE→LE→GT→LT→EQ，
+    确保「大于等于」不会被「大于」抢先命中走严格 >。
+    """
     if not nums:
         return None
     n = nums[0]
     t = text
-    if '以上' in t or '≥' in t or '>=' in t or '不低于' in t or '不小于' in t:
+    if any(k in t for k in _CMP_GE):
         return value >= n
-    if '以下' in t or '≤' in t or '<=' in t or '不高于' in t or '不超过' in t:
+    if any(k in t for k in _CMP_LE):
         return value <= n
-    # 「大于等于/大於等於」必须放在「大于」前判断，否则被「大于」先命中走严格 >
-    if '大于等于' in t or '大於等於' in t:
-        return value >= n
-    if '小于等于' in t or '小於等於' in t:
-        return value <= n
-    if '大于' in t or '超过' in t or '高于' in t or '>' in t or '多过' in t:
+    if any(k in t for k in _CMP_GT):
         return value > n
-    if '小于' in t or '低于' in t or '不到' in t or '不满' in t or '<' in t or '少于' in t:
+    if any(k in t for k in _CMP_LT):
         return value < n
-    if '等于' in t or '=' in t or '为' in t or '是' in t:
+    if any(k in t for k in _CMP_EQ):
         if len(nums) >= 2:
             return nums[0] <= value <= nums[1]
         return abs(value - n) < 0.01
@@ -533,22 +598,43 @@ def _q_ds(music: Music, text: str) -> Optional[str]:
     has_ds_kw = any(k in text for k in _DS_KEYWORDS)
     diff_idx = _resolve_diff_index(text)
     nums = _nums(text)
-    # 既没定数关键词/形容词、也没难度颜色 + 数字 -> 不是定数问题
-    if not has_ds_kw and not (diff_idx is not None and nums):
-        return None
-    # 必须指定谱面颜色（绿/黄/橙/红/紫/白）才回答定数——
-    # 否则不知道玩家问哪个难度，不乱答，走 unknown 提示。
-    if diff_idx is None:
+    # 裸数字 + 比较词 + 数字 ≤15 也算定数题（如「13以上吗」「14.5以上吗」）
+    has_bare_cmp = bool(nums and nums[0] <= 15 and any(k in text for k in _CMP_WORDS))
+    # 两个数字（均≤15）+ 区间连接词（-/~/到/至/~）也算定数题（如「13.6-14.0吗」）
+    has_bare_range = bool(
+        len(nums) >= 2 and nums[0] <= 15 and nums[1] <= 15 and
+        any(k in text for k in ('-', '~', '—', '到', '至', '之间', '之間', '范围内'))
+    )
+    # 既没定数关键词/形容词、也没难度颜色 + 数字、也没裸数字比较/区间 -> 不是定数问题
+    if not has_ds_kw and not (diff_idx is not None and nums) and not has_bare_cmp and not has_bare_range:
         return None
     # 问数值的信息题（「紫谱多高/多难/定数多少」）走 unknown 不报数值
     if any(k in text for k in _VALUE_QUERY_WORDS) and not nums:
         return None
-    # 指定了颜色 -> 只看对应难度的 ds
-    color = _DIFF_CN[diff_idx] if 0 <= diff_idx < len(_DIFF_CN) else '该难度'
-    if diff_idx >= len(music.ds):
-        # 该曲没有这个难度（如没有白谱）-> 前提不成立
-        return _r(False, f'判定维度：该曲没有{color}，前提不成立')
-    target_ds = music.ds[diff_idx]
+    # 未指定谱面颜色时：问「最高定数」用最高定数，否则默认紫谱（MASTER, idx=3）
+    # 注意：若玩家提到了「谱/譜」但不是有效颜色（如「粉谱」），说明颜色无效，
+    # 不默认紫谱，走 unknown 让玩家重新指定。
+    use_max = '最高' in text
+    if diff_idx is None:
+        if ('谱' in text or '譜' in text) and not use_max:
+            return None
+        if use_max:
+            if not music.ds:
+                return _r(False, '判定维度：该曲无定数数据')
+            target_ds = max(music.ds)
+            color = '最高定数'
+        else:
+            diff_idx = 3
+            color = '紫谱（默认）'
+            if diff_idx >= len(music.ds):
+                return _r(False, '判定维度：该曲无紫谱，请指定颜色')
+            target_ds = music.ds[diff_idx]
+    else:
+        color = _DIFF_CN[diff_idx] if 0 <= diff_idx < len(_DIFF_CN) else '该难度'
+        if diff_idx >= len(music.ds):
+            # 该曲没有这个难度（如没有白谱）-> 前提不成立
+            return _r(False, f'判定维度：该曲没有{color}，前提不成立')
+        target_ds = music.ds[diff_idx]
     if not nums:
         # 问「紫谱定数高吗」「紫谱难吗」之类，按 13.5 阈值
         if any(k in text for k in ('高', '大', '难', '難')):
@@ -557,39 +643,58 @@ def _q_ds(music: Music, text: str) -> Optional[str]:
             return _r(target_ds <= 11.0, f'判定维度：{color}定数是否偏低（≤11.0）')
         return None
     n = nums[0]
+    # 区间判断：两个数字（如「13.6-14.0」「14.5到14.7」）→ 13.6 ≤ v ≤ 14.0
+    if len(nums) >= 2:
+        res = _cmp_bool(target_ds, text, nums)
+        if res is not None:
+            return _r(res, _reason_cmp(f'判定维度：{color}定数', text, nums))
     if '+' in text:
         return _r(
-            (n + 0.5) <= target_ds < (n + 1.0),
+            (n + 0.6) <= target_ds < (n + 1.0),
             _reason_cmp(f'判定维度：{color}定数', text, nums, plus=True),
         )
     # 定数题里「是14吗」指的是 14 档（14.0~14.5），不能像 BPM 那样把「是」
     # 当成精确相等——否则 14.4 会被误判为「不是14」。只有出现明确比较词
     # （大于/小于/以上/以下/等于 等）时才走数值比较。
-    explicit_cmp = (
-        '以上', '以下', '大于', '小于', '超过', '低于', '不到', '不满',
-        '多于', '少于', '不低于', '不高于', '不超过', '等于',
-        '≥', '≤', '>=', '<=', '>', '<', '=',
-    )
-    if any(k in text for k in explicit_cmp):
+    # 注意：舞萌定数的小数档位为 .0/.5/.6/.7/.8/.9。
+    # 「14+」指 14.6~14.9（+档）；「14」（非+档）指 14.0~14.5（含 .5）。
+    if any(k in text for k in _CMP_WORDS):
         res = _cmp_bool(target_ds, text, nums)
         if res is not None:
             return _r(res, _reason_cmp(f'判定维度：{color}定数', text, nums))
     return _r(
-        n <= target_ds < n + 0.5,
+        n <= target_ds < n + 0.6,
         f'判定维度：{color}定数是否为 {n:g} 档（{n:g}~{n + 0.5:g}）',
     )
 
 
 _BARE_LEVEL_RE = re.compile(
-    r'^(?:是|为|為)?\s*(\d{1,2})(\+)?\s*(?:级|級|等级|等級|定数|星)?\s*'
-    r'(?:吗|嘛|？|\?)?$'
+    r'^(?:是|为|為)?\s*(\d{1,2}(?:\.\d)?)(\+)?\s*'
+    r'(?:级|級|等级|等級|定数|星|档|檔)?\s*(?:吗|嘛|？|\?)?$'
 )
 
 
 def _q_level_bare(music: Music, text: str) -> Optional[str]:
-    """玩家直接问「是13吗」「14+吗」——没指定谱面颜色，无法判断哪个难度，不回答。"""
-    # 无颜色裸数字定数问题统一不答（避免用最高定数乱猜），走 unknown 提示。
-    return None
+    """玩家直接问「是13吗」「14+吗」「13.5吗」——没指定颜色，默认紫谱判断。"""
+    m = _BARE_LEVEL_RE.match(text)
+    if not m:
+        return None
+    n = float(m.group(1))
+    has_plus = bool(m.group(2))
+    # 默认紫谱（MASTER, idx=3）
+    if len(music.ds) <= 3:
+        return _r(False, '判定维度：该曲无紫谱，请指定颜色')
+    target_ds = music.ds[3]
+    color = '紫谱（默认）'
+    if has_plus:
+        return _r(
+            (n + 0.6) <= target_ds < (n + 1.0),
+            f'判定维度：{color}定数 是否为 {n:g}+（{n + 0.6:g}~{n + 1.0:g}）',
+        )
+    return _r(
+        n <= target_ds < n + 0.6,
+        f'判定维度：{color}定数是否为 {n:g} 档（{n:g}~{n + 0.5:g}）',
+    )
 
 
 def _q_song_type(music: Music, text: str) -> Optional[str]:
@@ -636,7 +741,10 @@ def _q_title_length(music: Music, text: str) -> Optional[str]:
         return None
     nums = _nums(text)
     if nums:
+        # 标题字数题里「是15个字吗」的「是」表示精确等于（字数是离散值，无区间概念）
         res = _cmp_bool(length, text, nums)
+        if res is None and any(k in text for k in ('是', '为', '為', '有')):
+            res = abs(length - nums[0]) < 0.01
         return _r(res, _reason_cmp('判定维度：标题字数', text, nums)) if res is not None else None
     if '长' in text or '長' in text:
         return _r(length >= 12, '判定维度：标题是否较长（≥12 字符）')
@@ -645,12 +753,322 @@ def _q_title_length(music: Music, text: str) -> Optional[str]:
     return None
 
 
+# ───────────────────── 分类（genre）是非题 ─────────────────────
+
+# 版本关键词门控（含错别字「板本」「板」←→「版本」）
+_VERSION_QUERY_WORDS = (
+    '版本', '板本', '代', '版',
+    'version', 'ver',
+)
+# 版本信息题（问是什么版本）→ 走 unknown
+_VERSION_INFO_KW = (
+    '什么版本', '哪个版本', '哪一代', '什么代', '哪个代',
+    '什么版', '哪个版', '什么version', '什么ver',
+)
+# 版本顺序/前后题 → 仍走 LLM（规则不处理顺序判断）
+_VERSION_ORDER_KW = (
+    '及以后', '及以後', '或更早', '或更晚', '之前', '之后',
+    '以前', '以后', '更早', '更晚', '前一代', '后一代',
+    '及之前', '及以后', '之后', '之前', '往后', '往前',
+    '新于', '旧于', '晚于', '早于',
+)
+
+
+def _q_version(music: Music, text: str) -> Optional[str]:
+    """版本是非题：判断曲目版本是否匹配玩家所问的代/版本。
+
+    匹配 _VERSION_KEYWORDS（PLUS 在前避免被基版截胡）和 _VERSION_GROUP_ALIASES
+    （合并叫法如「舞代」「熊华代」）。版本顺序/前后判断仍走 LLM。
+    """
+    # 版本顺序/前后题 → 让给 LLM
+    if any(k in text for k in _VERSION_ORDER_KW):
+        return None
+    # 版本信息题 → 走 unknown
+    if any(k in text for k in _VERSION_INFO_KW):
+        return None
+    # 门控：含版本相关关键词（代/版/version），或含 _VERSION_KEYWORDS 里的
+    # 任一俗称（英文版本名如 green/prism/buddies 可能不带「代/版」字）。
+    # 关键词也需 _norm（去空格+小写）后再匹配，因为 text 已被 _norm 处理。
+    # 注意：单字关键词（紫/绿/粉/超等）必须后接「代/版」才算版本题，
+    # 否则会把「紫谱」「绿谱」等难度颜色误判为版本题。
+    def _kw_match(kw: str, text: str) -> bool:
+        nk = _norm(kw)
+        if not nk:
+            return False
+        if len(nk) == 1 and nk not in ('dx',):
+            # 单字关键词必须后接「代/版」
+            return (nk + '代') in text or (nk + '版') in text
+        return nk in text
+
+    has_ver_kw = any(k in text for k in _VERSION_QUERY_WORDS)
+    if not has_ver_kw:
+        for _canonical, kws in _VERSION_KEYWORDS:
+            if any(_kw_match(kw, text) for kw in kws):
+                has_ver_kw = True
+                break
+        if not has_ver_kw:
+            for group_name, _versions in _VERSION_GROUP_ALIASES:
+                if group_name in text:
+                    has_ver_kw = True
+                    break
+    if not has_ver_kw:
+        return None
+    music_ver = _norm(music.basic_info.version)
+    # 把 music_ver 拆成「基版 + 是否plus」便于精确匹配
+    music_is_plus = music_ver.endswith('plus')
+    music_base = music_ver[:-5].rstrip() if music_is_plus else music_ver
+
+    # 1. 合并叫法（舞代/熊华代/双宴代等）——任一子版本都算
+    for group_name, versions in _VERSION_GROUP_ALIASES:
+        if group_name in text:
+            # 精确匹配：任一子版本的 base+plus 与 music 的 base+plus 一致
+            def _v_match(v: str) -> bool:
+                cv = _norm(v)
+                cv_is_plus = cv.endswith('plus')
+                cv_base = cv[:-5].rstrip() if cv_is_plus else cv
+                return cv_base == music_base and cv_is_plus == music_is_plus
+            matched = any(_v_match(v) for v in versions)
+            return _r(matched, f'判定维度：版本是否为{group_name}')
+    # 2. 单版本匹配（PLUS 在前，避免被基版截胡）
+    for canonical, kws in _VERSION_KEYWORDS:
+        matched_kw = next((kw for kw in kws if _kw_match(kw, text)), None)
+        if matched_kw is not None:
+            cv = _norm(canonical)
+            cv_is_plus = cv.endswith('plus')
+            cv_base = cv[:-5].rstrip() if cv_is_plus else cv
+            # 精确匹配：基版相同且 plus 标志一致
+            matched = (cv_base == music_base) and (cv_is_plus == music_is_plus)
+            # reason 用玩家问的俗称（原始形式），不泄露官方版本名
+            return _r(matched, f'判定维度：版本是否为{matched_kw}')
+    return None
+
+
+def _norm_genre(s: str) -> str:
+    """归一化分类字符串：全角＆→半角&，去空格，小写。"""
+    return (s or '').strip().lower().replace('＆', '&').replace(' ', '').replace('　', '')
+
+
+def _genre_key(music: Music) -> str:
+    """把 genre 字段映射到简化分类 key（pops/niconico/touhou/game/ongeki/utage/maimai）。"""
+    g = _norm_genre(music.basic_info.genre)
+    if 'pops' in g or 'アニメ' in g or 'anime' in g:
+        return 'pops'
+    if 'niconico' in g or 'ボーカロイド' in g or 'vocaloid' in g:
+        return 'niconico'
+    if 'オンゲキ' in g or 'ongeki' in g or 'chunithm' in g:
+        return 'ongeki'
+    if 'ゲーム' in g or 'game' in g or 'variety' in g or 'バラエティ' in g:
+        return 'game'
+    if '東方' in g or 'touhou' in g:
+        return 'touhou'
+    if '宴会' in g or 'utage' in g:
+        return 'utage'
+    if g == 'maimai':
+        return 'maimai'
+    return ''
+
+
+# (genre_key, reason 显示名, (玩家俗称关键词, ...))
+_GENRE_KEYWORDS: Tuple[Tuple[str, str, Tuple[str, ...]], ...] = (
+    ('maimai', '原创曲', ('原创曲', 'maimai原创', '本家曲', '委约曲', '原创')),
+    ('niconico', '术曲', ('术曲', 'v家曲', 'vocaloid曲', 'nico曲', '初音曲',
+                          'v家', 'vocaloid', 'nico', 'ボーカロイド')),
+    ('touhou', '东方曲', ('东方曲', '东方同人', 'touhou', '東方', '东方')),
+    ('pops', '动漫曲', ('动漫曲', '动画曲', 'j-pop', 'jpop', '流行曲',
+                        'pops', '动漫', '动画', 'アニメ', 'anime')),
+    ('game', '游戏曲', ('游戏曲', '游戏')),
+    ('ongeki', '音击/中二节奏曲', ('音击曲', '音击', 'ongeki', 'オンゲキ',
+                                  '中二节奏曲', '中二节奏', 'chunithm', 'チュウニズム')),
+    ('utage', '宴会曲', ('宴会曲', '宴会', '宴会场', 'utage', '宴会場')),
+)
+
+# 出现这些关键词时不抢答分类题（避免复合问题被误判）
+_GENRE_SKIP_KW = (
+    '定数', 'bpm', '版本', '谱师', '铺师', '普师', '标题', '字数', '难度', '等级',
+)
+
+# 信息题关键词——问分类是什么，走 unknown
+_GENRE_INFO_KW = (
+    '什么分类', '什么曲风', '什么类型', '哪个分类', '什么genre', '什么曲种',
+)
+
+
+def _q_genre(music: Music, text: str) -> Optional[str]:
+    """分类是非题：判断曲目分类是否匹配玩家所问。"""
+    # 不要抢答含其他维度关键词的复合问题
+    if any(k in text for k in _GENRE_SKIP_KW):
+        return None
+    # 信息题（「什么分类」）→ 走 unknown
+    if any(k in text for k in _GENRE_INFO_KW):
+        return None
+    # 联动曲：任何非 maimai 分类都算
+    if any(k in text for k in ('联动曲', '合作曲', '联动')):
+        gk = _genre_key(music)
+        return _r(gk != '' and gk != 'maimai', '判定维度：分类是否为联动曲')
+    # 具体分类匹配
+    for gk, display, kws in _GENRE_KEYWORDS:
+        if any(k in text for k in kws):
+            return _r(_genre_key(music) == gk, f'判定维度：分类是否为{display}')
+    return None
+
+
+# ───────────────────── 谱师（charter）是非题 ─────────────────────
+
+# 可选拼音容错（pypinyin 不在硬依赖里；装了就用，没装就跳过）
+try:
+    from pypinyin import lazy_pinyin as _lazy_pinyin
+    _HAS_PYPINYIN = True
+except ImportError:
+    _HAS_PYPINYIN = False
+
+
+def _to_pinyin(s: str) -> str:
+    """转拼音（全小写无分隔）。pypinyin 不可用时返回原串。"""
+    if not _HAS_PYPINYIN or not s:
+        return s or ''
+    return ''.join(_lazy_pinyin(s)).lower()
+
+
+# 谱师关键词（含错别字变体：谱↔铺↔普 形近错字）
+_CHARTER_KEYWORDS = (
+    '谱师', '铺师', '普师',
+    '制谱人', '制铺人', '制普人',
+    '写谱人', '写铺人', '写普人',
+    '作谱者', '作铺者', '作普者',
+    '编谱人', '编铺人', '编普人',
+    '谱面作者', '谱面制作', '铺面作者', '铺面制作', '普面作者', '普面制作',
+    'chart作者',
+    '写谱的', '写铺的', '写普的',
+    '制谱的', '制铺的', '制普的',
+)
+
+# 谱师别名表：官方名 → (别名...)。仅覆盖高频谱师；未收录的用官方名做匹配。
+_CHARTER_ALIASES: Dict[str, Tuple[str, ...]] = {
+    'サファ太': ('沙发太', '沙发', 'safatai', 'safarutai'),
+    'ニャイン': ('nyan', '九条', '9条', 'nyain'),
+    '翠楼屋': ('翠樓屋', '翠楼', 'suirouya'),
+    'はっぴー': ('happy', 'はっぴ', 'happi'),
+    '某S氏': ('某s', 's氏'),
+    '玉子豆腐': ('玉子', '豆腐', 'tamakodofu'),
+    '華火職人': ('华火职人', '华火', '華火', 'hanabi'),
+    '緑風 犬三郎': ('绿风犬三郎', '绿风', '犬三郎'),
+    'mai-Star': ('maistar', 'mai星'),
+    '小鳥遊さん': ('小鳥遊', '小鸟游', 'takanashi'),
+    'すきやき奉行': ('sukiyaki', 'すきやき'),
+    'ぴちネコ': ('pichineco', 'pichi', 'ぴち'),
+    '隅田川星人': ('sumidagawa', '隅田川', 'sumida'),
+    'シチミヘルツ': ('shichimi', '七味', 'shichimihertz'),
+    'LabiLabi': ('labilabi',),
+    'rioN': ('rion',),
+    'Jack': ('jack',),
+    'Techno Kitchen': ('technokitchen', 'techno'),
+}
+
+# 谱师信息题关键词
+_CHARTER_INFO_KW = ('谁', '什么', '哪位', '名字')
+
+
+def _get_charter_aliases(charter: str) -> Tuple[str, ...]:
+    """获取谱师的所有别名（含官方名），_norm 归一化后返回。"""
+    aliases = list(_CHARTER_ALIASES.get(charter, ()))
+    aliases.insert(0, charter)
+    return tuple(_norm(a) for a in aliases if a)
+
+
+def _extract_charter_name(text: str, keyword: str) -> str:
+    """从问题文本中提取谱师关键词后的名字。
+
+    处理连接词错字（是↔事）和疑问词错字（吗↔麻）。
+    """
+    pos = text.find(keyword)
+    if pos < 0:
+        return ''
+    rest = text[pos + len(keyword):]
+    # 去掉连接词（是/为/為/事/的——「事」是「是」的音近错字）
+    while rest and rest[0] in ('是', '为', '為', '事', '的'):
+        rest = rest[1:]
+    # 去掉尾部疑问词（吗/嘛/麻——「麻」是「吗」的形近错字/？/?/呢/啊/呀/吧）
+    while rest and rest[-1] in ('吗', '嘛', '麻', '？', '?', '呢', '啊', '呀', '吧'):
+        rest = rest[:-1]
+    return rest.strip()
+
+
+def _match_charter_name(name: str, charters: List[str]) -> Optional[bool]:
+    """判断名字是否匹配任一谱师。返回 True/False/None(无法判断)。"""
+    if not name:
+        return None
+    name_n = _norm(name)
+    # 直接匹配（精确 + 子串）
+    for charter in charters:
+        for alias in _get_charter_aliases(charter):
+            if not alias:
+                continue
+            if alias == name_n:
+                return True
+            if len(name_n) >= 2 and (alias in name_n or name_n in alias):
+                return True
+    # 拼音模糊匹配（可选，处理繁简/同音错字）
+    if _HAS_PYPINYIN:
+        name_py = _to_pinyin(name_n)
+        if name_py and name_py != name_n:
+            for charter in charters:
+                for alias in _get_charter_aliases(charter):
+                    alias_py = _to_pinyin(alias)
+                    if not alias_py or alias_py == alias:
+                        continue
+                    if alias_py == name_py:
+                        return True
+                    if len(name_py) >= 2 and len(alias_py) >= 2:
+                        if alias_py in name_py or name_py in alias_py:
+                            return True
+    return False
+
+
+def _q_charter(music: Music, text: str) -> Optional[str]:
+    """谱师是非题：判断曲目 MASTER/Re:MASTER 谱师是否匹配玩家所问。
+
+    支持别名表、错别字容错（谱↔铺↔普、是↔事、吗↔麻）、子串匹配、
+    可选拼音匹配（需安装 pypinyin，处理繁简体差异）。
+    """
+    # 门控：含谱师关键词（含错别字变体）
+    matched_kw = None
+    for kw in _CHARTER_KEYWORDS:
+        if kw in text:
+            matched_kw = kw
+            break
+    if matched_kw is None:
+        return None
+    # 信息题（谱师是谁/什么谱师）→ 走 unknown
+    if any(k in text for k in _CHARTER_INFO_KW):
+        return None
+    charters = _get_master_charters(music)
+    if not charters:
+        return _r(False, '判定维度：该曲无谱师署名')
+    # 提取名字并匹配
+    name = _extract_charter_name(text, matched_kw)
+    if name:
+        result = _match_charter_name(name, charters)
+        if result is not None:
+            return _r(result, f'判定维度：谱师是否为{name}')
+    # 反向匹配：检查已知别名是否出现在文本中
+    for charter in charters:
+        for alias in _get_charter_aliases(charter):
+            if alias and len(alias) >= 2 and alias in text:
+                return _r(True, f'判定维度：谱师是否为{alias}')
+    # 提取到了名字但没匹配 → 否
+    if name:
+        return _r(False, f'判定维度：谱师是否为{name}')
+    # 无法提取名字 → 走 LLM 兜底
+    return None
+
+
 # 注意：本玩法只回答「是/否」是非题，不直接给出谱师/曲师/BPM 数值/版本/分类
 # 等客观信息（那样等于开户籍）。玩家想问这些，请用猜测形式：「谱师是X吗」「BPM 大于180吗」。
 
 
-# 仅保留纯数值/字段比对的 handler。版本/分类/艺术家/谱师/标题语种/标题含字等
-# 需要语义理解的维度，统一移交 LLM 兜底判断（_llm_classify）。
+# 纯数值/字段比对的 handler。分类/谱师/版本已纳入规则匹配（别名表+错字容错），
+# 命中即直接回答；版本顺序/前后判断及艺术家/标题语种等需语义理解
+# 的维度，仍移交 LLM 兜底判断（_llm_classify）。
 _QUESTION_HANDLERS: Tuple[QuestionHandler, ...] = (
     _q_white_chart,
     _q_song_type,
@@ -658,6 +1076,9 @@ _QUESTION_HANDLERS: Tuple[QuestionHandler, ...] = (
     _q_ds,
     _q_level_bare,
     _q_title_length,
+    _q_version,
+    _q_genre,
+    _q_charter,
 )
 
 _UNKNOWN_HINT = (
@@ -1144,15 +1565,35 @@ def _strip_guess_prefix(text: str) -> Tuple[str, bool]:
     return _strip_prefix(text, _GUESS_PREFIX_RE)
 
 
-async def _check_guess(guess_text: str, target_music_id: str) -> bool:
-    """猜曲匹配：与「xxx是什么歌」命令完全同源。
+# 从猜曲文本里提取「id/编号/曲号/#」后跟的数字。
+# 匹配「id 123」「id123」「id:123」「编号123」「曲号123」「#123」「id 123」等写法。
+_ID_GUESS_RE = re.compile(r'(?:^|[\s:：#])(?:id|编号|曲号|曲id|song\s*id)\s*[:：#]?\s*(\d+)\s*$', re.IGNORECASE)
+# 仅 # 开头紧跟数字：「#123」
+_HASH_ID_RE = re.compile(r'^#(\d+)$')
 
-    查询顺序（与 command/mai_search.py 的 search_alias_song 一致）：
-    1. 内存别名表 mai.total_alias_list.by_alias —— 命中唯一曲目且 SongID
-       匹配则猜对；多条命中不判定（无法确定玩家指哪首）。
+
+def _extract_id_guess(text: str) -> Optional[str]:
+    """提取「我猜 id 123」类文本中的数字 id，返回数字字符串或 None。"""
+    if not text:
+        return None
+    m = _ID_GUESS_RE.search(text)
+    if m:
+        return m.group(1)
+    m = _HASH_ID_RE.match(text.strip())
+    if m:
+        return m.group(1)
+    return None
+
+
+async def _check_guess(guess_text: str, target_music_id: str) -> bool:
+    """猜曲匹配：与「xxx是什么歌」命令同源（别名查询逻辑一致）。
+
+    查询顺序：
+    1. 内存别名表 mai.total_alias_list.by_alias —— 目标曲在结果里就算猜对。
     2. 内存未命中 → 调水鱼在线 API maiApi.get_songs 补查：
        - 返回 AliasStatus（投票中）不算命中
-       - 返回唯一 Alias 且 SongID 匹配则猜对；多条不判定
+       - 目标曲在结果里就算猜对
+       （多义别名如「心跳」同时对应多首曲，是数据源的事，玩家说对就算对）
     3. 玩家直接猜数字 id → 与目标曲 music.id 比对（id 不是别名，前两步查不到）
     4. 任何异常吞掉返回 False，不影响游戏主流程
     """
@@ -1162,9 +1603,8 @@ async def _check_guess(guess_text: str, target_music_id: str) -> bool:
     try:
         alias_data = mai.total_alias_list.by_alias(name)
         if alias_data:
-            if len(alias_data) != 1:
-                return False
-            return str(alias_data[0].SongID) == str(target_music_id)
+            # 多义别名：目标曲在结果里就算猜对（与在线 API 一致）。
+            return any(str(a.SongID) == str(target_music_id) for a in alias_data)
     except Exception as e:
         log.debug(f'[Guess20Q] 内存别名查询失败 guess={name!r}: {e}')
 
@@ -1177,14 +1617,19 @@ async def _check_guess(guess_text: str, target_music_id: str) -> bool:
             # 投票中的别名状态不算命中
             if type(obj[0]) is AliasStatus:
                 return False
-            # 多个结果无法确定玩家指哪首，不判定
-            if len(obj) != 1:
-                return False
-            return str(obj[0].SongID) == str(target_music_id)
+            # 多义别名（如「心跳」同时是 4 首曲的别名）：只要目标曲在结果里就算猜对。
+            # 别名重复对应多首曲是水鱼数据的事，玩家说对了就该算对。
+            return any(str(o.SongID) == str(target_music_id) for o in obj)
     except Exception as e:
         log.debug(f'[Guess20Q] 在线别名查询失败 guess={name!r}: {e}')
 
     # 3. 数字 id 比对（id 不是别名，前两步查不到）
+    # 支持「我猜 id 123」「我猜id123」「我猜编号123」「我猜曲号123」「我猜#123」等写法：
+    # 先从 name 里提取 id 标记后的数字，再与目标 id 比对。
+    id_num = _extract_id_guess(name)
+    if id_num is not None and id_num == str(target_music_id).lower():
+        return True
+    # 玩家直接发纯数字（「我猜 123」）的情况
     if name == str(target_music_id).lower():
         return True
 
