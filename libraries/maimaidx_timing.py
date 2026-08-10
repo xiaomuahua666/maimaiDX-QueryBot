@@ -106,7 +106,7 @@ async def run_timed(
     """reset 后执行协程并返回 (结果, 总秒数)。billing_qqid 开启查分 BREAK 扣费上下文。
 
         feature_charge: 成功后若会话尚未扣费，则按该业务名结算 query_cost（如 'search'）。
-        render_charge: 成功出图后收取渲染费（含读缓存）；已单独定价的报告图传 False。
+        render_charge: 成功出图后收取生成图片费用（含读缓存）。
     """
     reset()
     t0 = time.perf_counter()
@@ -131,7 +131,7 @@ async def run_timed(
                 if feature_charge:
                     # 查歌/谱面详情等：本会话尚未因 API/缓存扣过才补功能费
                     settle_feature_if_uncharged(billing_qqid, feature_charge)
-                # 渲染费每次都收（含读缓存），FREEDOM 可免
+                # 生成图片每次都收费（含读缓存），FREEDOM 可免
                 if render_charge:
                     settle_image_render(billing_qqid)
     else:

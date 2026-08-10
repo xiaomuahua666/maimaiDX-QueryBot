@@ -32,7 +32,7 @@ DEFAULT_CONFIG: Dict[str, str] = {
     'checkin_base_max': '2',
     'query_cost': '1',
     'cache_query_cost': '1',
-    # 每次成功出图（含读缓存）额外收取的渲染费；0 = 关闭。
+    # 每次成功出图（含读缓存）额外收取的生成图片费用；0 = 关闭。
     'image_render_cost': '1',
     'analysis_input_tokens_per_break': '4000',
     'analysis_output_tokens_per_break': '1000',
@@ -311,6 +311,7 @@ class ServiceChargeResult:
     charged: int
     free: bool
     balance: int
+    listed_cost: int = 0
     freedom: bool = False
     freedom_remaining: float = 0.0
 
@@ -1261,6 +1262,7 @@ class BreakDatabase:
             balance -= charged
         return ServiceChargeResult(
             service, charged, free, balance,
+            listed_cost=cost,
             freedom=freedom, freedom_remaining=freedom_remaining,
         )
 
@@ -2006,6 +2008,50 @@ class BreakDatabase:
             for r in rows
         ]
 
+    def get_freedom_savings_total(self, qqid: int) -> int:
+        """累计 FREEDOM 历史免单金额；旧版未记录 listed_cost 的流水不计。"""
+        rows = self._conn.execute(
+            "SELECT meta FROM break_log WHERE qqid = ? AND meta IS NOT NULL",
+            (qqid,),
+        ).fetchall()
+        total = 0
+        for row in rows:
+            try:
+                meta = json.loads(row['meta'] or '{}')
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(meta, dict) or not meta.get('freedom'):
+                continue
+            try:
+                total += max(0, int(meta.get('listed_cost') or 0))
+            except (TypeError, ValueError):
+                continue
+        return total
+
+    def record_freedom_exemption(
+        self,
+        qqid: int,
+        reason: str,
+        listed_cost: int,
+        *,
+        meta: Optional[dict] = None,
+    ) -> int:
+        """记录一次 FREEDOM 免单并返回包含本次在内的累计节省。"""
+        cost = max(0, int(listed_cost))
+        with self._lock:
+            self._append_log(
+                qqid,
+                0,
+                f'freedom_exempt:{reason}',
+                meta={
+                    **(meta or {}),
+                    'freedom': True,
+                    'listed_cost': cost,
+                },
+            )
+            self._conn.commit()
+            return self.get_freedom_savings_total(qqid)
+
     def list_users(self, *, limit: int = 100, offset: int = 0, search: str = '') -> List[dict]:
         clauses, params = [], []
         if search:
@@ -2702,7 +2748,7 @@ def settle_feature_if_uncharged(qqid: Optional[int], service: str = 'search') ->
 
 
 def ensure_image_render_affordable(qqid: Optional[int]) -> None:
-    """出图前余额检查：渲染费每次都收（含读缓存），FREEDOM 可免。"""
+    """出图前余额检查：生成图片每次都收费（含读缓存），FREEDOM 可免。"""
     if not qqid or is_superuser_exempt(qqid):
         return
     cost = image_render_cost()
@@ -2717,18 +2763,30 @@ def ensure_image_render_affordable(qqid: Optional[int]) -> None:
 
 
 def settle_image_render(qqid: Optional[int]) -> Optional[str]:
-    """成功出图后结算渲染费；返回可展示的额外 footer 行（FREEDOM 减免时）。"""
+    """成功出图后结算生成图片费用；FREEDOM 时返回可展示的 footer。"""
     if not qqid or is_superuser_exempt(qqid):
         return None
     cost = image_render_cost()
     if cost <= 0:
         return None
-    from .maimaidx_card import card_manager, format_duration
+    from .maimaidx_card import card_manager
     session = _charge_session.get()
     f_active, f_remaining, _f_exp = card_manager.freedom_info(qqid)
     if f_active:
         break_db.record_usage(qqid, 'image_render', break_delta=0)
-        line = f'🛡️ 渲染费 FREEDOM 减免（剩余 {format_duration(f_remaining)}）'
+        total_saved = break_db.record_freedom_exemption(
+            qqid,
+            'image_render',
+            cost,
+            meta={'kind': 'image_render'},
+        )
+        line = format_freedom_exemption(
+            qqid,
+            '生成图片',
+            cost,
+            f_remaining,
+            total_saved=total_saved,
+        )
         if session:
             session.extra_lines.append(line)
         return line
@@ -2779,6 +2837,11 @@ def take_break_charge_footer() -> List[str]:
     return lines
 
 
+def replace_break_charge_footer(lines: List[str]) -> None:
+    """替换本次指令待展示的计费说明，用于合并多项成功扣费。"""
+    _pending_charge_footer.set(list(lines) or None)
+
+
 def format_break_insufficient_message(
     qqid: Optional[int],
     required: int,
@@ -2817,8 +2880,28 @@ def cache_query_cost() -> int:
 
 
 def image_render_cost() -> int:
-    """成功出图（含读缓存）的渲染费；0 表示关闭。"""
+    """成功出图（含读缓存）的生成图片费用；0 表示关闭。"""
     return _config_int('image_render_cost', 1)
+
+
+def format_freedom_exemption(
+    qqid: int,
+    label: str,
+    saved: int,
+    remaining: float,
+    *,
+    total_saved: Optional[int] = None,
+) -> str:
+    """统一 FREEDOM 免单文案：本次金额、剩余时长与累计节省。"""
+    from .maimaidx_card import format_duration
+
+    if total_saved is None:
+        total_saved = break_db.get_freedom_savings_total(qqid)
+    return (
+        f'🛡️ {label} FREEDOM 减免了 {max(0, int(saved))} BREAK'
+        f'（剩余 {format_duration(max(0.0, float(remaining)))}，'
+        f'一共省下了 {max(0, int(total_saved))} BREAK）'
+    )
 
 
 _ANALYSIS_PEAK_WINDOWS_UTC8 = (

@@ -168,6 +168,7 @@ https://bot.example.com/ops/maimai/api/...
 | `awmc_item_upsert_cost` | 100 | 高风险道具修改成功价格 |
 | `transfer_fee` | 0 | BREAK 转账手续费 |
 | `lottery_cost` | 2 | BREAK 抽奖每次成本 |
+| `image_render_cost` | 1 | 每次成功生成图片的费用（报告功能费之外另计） |
 | `weekly_report_cost` | 1 | 周报功能费 |
 | `monthly_report_cost` | 2 | 月报功能费 |
 | `annual_report_cost` | 3 | 年报功能费 |

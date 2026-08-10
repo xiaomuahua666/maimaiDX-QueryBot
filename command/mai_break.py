@@ -472,11 +472,11 @@ async def _try_guess_stats_for_awmc(
     return None
 
 
-def _render_awmc_overview(profile, *, display_name: str):
+def _render_awmc_overview(profile, *, display_name: str, title: str):
     """同步生成账号概览图片；任何渲染失败都回退到文本图片，绝不抛异常。"""
     try:
         image_seg = render_account_profile_image(
-            profile, user_name=display_name
+            profile, title=title, user_name=display_name
         )
         if image_seg is not None:
             return image_seg
@@ -485,18 +485,45 @@ def _render_awmc_overview(profile, *, display_name: str):
             f'[BREAK] 我的AWMC卡片渲染失败，回退文本：{type(exc).__name__}: {exc}'
         )
     try:
-        return rank_text_image(format_account_profile(profile))
+        return rank_text_image(format_account_profile(profile, title=title))
     except Exception as exc:
         log.warning(
             f'[BREAK] 我的AWMC文本图渲染失败：{type(exc).__name__}: {exc}'
         )
         return None
 
-def _account_qqid(event: MessageEvent) -> int:
-    """签到/账号类：官方 QQ 必须 qbind；OneBot 直接用消息 QQ。"""
+def _account_qqid(
+    event: MessageEvent, target_id: Optional[int | str] = None
+) -> int:
+    """签到/账号类：有 @ 时查目标，否则查发送者；官方 QQ 必须 qbind。"""
+    if target_id is not None:
+        return int(require_account_qqid(event, target_id))
     if use_qq_mode(event):
         return int(require_account_qqid(event))
     return int(billing_user_id(event))
+
+
+def _awmc_target_display_name(event: MessageEvent, target_id: str) -> str:
+    """优先使用官方 QQ @ 段携带的昵称，缺失时回退到目标 ID。"""
+    target = str(target_id).strip()
+    for mention in getattr(event, 'mentions', None) or ():
+        mention_ids = {
+            str(value).strip()
+            for value in (
+                getattr(mention, 'id', None),
+                getattr(mention, 'user_id', None),
+                getattr(mention, 'member_openid', None),
+            )
+            if value not in (None, '')
+        }
+        if target not in mention_ids:
+            continue
+        name = getattr(mention, 'username', None) or getattr(
+            mention, 'nickname', None
+        )
+        if name:
+            return str(name)
+    return target
 
 
 def _storage_qqids_for_event(event: MessageEvent, account_qqid: int) -> list[int]:
@@ -578,27 +605,36 @@ async def _(event: MessageEvent):
 
 @my_awmc.handle()
 async def _(bot: Bot, event: MessageEvent):
+    target_id = parse_at_target_id(event)
     try:
-        qqid = _account_qqid(event)
+        qqid = _account_qqid(event, target_id)
     except QBindRequiredError as exc:
         await plugin_finish(my_awmc, str(exc), event=event, reply_message=True)
         return
     profile = None
+    if target_id is None:
+        display_name = get_sender_display_name(event) or 'Milk'
+        title = '我的 AWMC 账号'
+    else:
+        display_name = _awmc_target_display_name(event, target_id)
+        title = f'{display_name} 的 AWMC 账号'
     try:
         # 官方 QQ 与 OneBot 统一直接发送账号卡片图片，不再使用合并转发
         # （build_forward_node 会把 MessageSegment 强转成字符串，无法发出图片）。
-        display_name = get_sender_display_name(event) or 'Milk'
         # 资料读取与 Pillow 绘图都放到图片线程池，避免阻塞事件循环导致“无响应”。
         profile = await run_image_cpu(get_account_profile, qqid)
         image_seg = await run_image_cpu(
-            _render_awmc_overview, profile, display_name=display_name
+            _render_awmc_overview,
+            profile,
+            display_name=display_name,
+            title=title,
         )
         # 官方 QQ 群需 publish_qq_image 才会把图片发布并以 Markdown 图显示，
         # 与 B50 / 排行榜成绩图走同一发送路径。
         if image_seg is None:
             await plugin_finish(
                 my_awmc,
-                format_account_profile(profile),
+                format_account_profile(profile, title=title),
                 event=event,
                 reply_message=True,
             )
@@ -618,7 +654,7 @@ async def _(bot: Bot, event: MessageEvent):
             f'{type(exc).__name__}: {exc}'
         )
         try:
-            fallback = format_account_profile(profile)
+            fallback = format_account_profile(profile, title=title)
         except Exception:
             fallback = '账号概览暂时无法生成，请稍后再试。'
         try:

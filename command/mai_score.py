@@ -284,14 +284,25 @@ async def _finish_score(
     if payer is None and billing_event is not None:
         payer = billing_user_id(billing_event)
     payer = normalize_billing_qqid(payer)
-    if service_name and service_cost > 0 and payer:
-        from ..libraries.maimaidx_break import break_db
-        break_db.ensure_service_affordable(payer, service_name, service_cost)
     try:
+        if service_name and service_cost > 0 and payer:
+            from ..libraries.maimaidx_break import break_db, image_render_cost
+            from ..libraries.maimaidx_card import card_manager
+
+            break_db.ensure_service_affordable(payer, service_name, service_cost)
+            if not card_manager.freedom_active(payer):
+                service_due = (
+                    0 if break_db.service_is_free(payer, service_name)
+                    else max(0, int(service_cost))
+                )
+                required = service_due + max(0, image_render_cost())
+                balance = break_db.get_balance(payer)
+                if balance < required:
+                    raise BreakInsufficientError(required, balance, qqid=payer)
         result, total = await run_timed(
             coro,
             billing_qqid=payer,
-            render_charge=not (service_name and service_cost > 0),
+            render_charge=True,
         )
     except BreakInsufficientError as e:
         clear_fetch_meta()
@@ -301,9 +312,6 @@ async def _finish_score(
         clear_fetch_meta()
         await plugin_finish(matcher, str(e), event=billing_event)
         return
-    if service_name and service_cost > 0 and payer:
-        from ..libraries.maimaidx_break import break_db
-        break_db.settle_service_success(payer, service_name, service_cost)
     if isinstance(result, str):
         clear_fetch_meta()
         await plugin_finish(matcher, result, event=billing_event)
@@ -316,6 +324,48 @@ async def _finish_score(
             event=billing_event,
         )
         return
+    if service_name and service_cost > 0 and payer:
+        try:
+            from ..libraries.maimaidx_break import (
+                break_db,
+                image_render_cost,
+                replace_break_charge_footer,
+            )
+
+            charge_result = break_db.settle_service_success(
+                payer, service_name, service_cost
+            )
+            if charge_result.freedom:
+                from ..libraries.maimaidx_break import format_freedom_exemption
+
+                report_labels = {
+                    'weekly_report': '周报（含生成图片）',
+                    'monthly_report': '月报（含生成图片）',
+                    'annual_report': '年报（含生成图片）',
+                    'daily_report': '日报（含生成图片）',
+                }
+                total_saved = break_db.get_freedom_savings_total(payer)
+                replace_break_charge_footer([
+                    format_freedom_exemption(
+                        payer,
+                        report_labels.get(service_name, service_name),
+                        max(0, int(service_cost)) + max(0, image_render_cost()),
+                        charge_result.freedom_remaining,
+                        total_saved=total_saved,
+                    )
+                ])
+            elif charge_result.charged > 0:
+                total_charge = charge_result.charged + max(
+                    0, image_render_cost()
+                )
+                replace_break_charge_footer([
+                    f'💳 消耗 {total_charge} BREAK · '
+                    f'余额 {charge_result.balance} BREAK'
+                ])
+        except BreakInsufficientError as e:
+            clear_fetch_meta()
+            await plugin_finish(matcher, str(e), event=billing_event)
+            return
     footer = _build_footer(
         qqid, total,
         forced_source=forced_source,
