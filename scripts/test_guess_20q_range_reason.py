@@ -138,14 +138,14 @@ def _make_ds_music(purple_ds):
 # 14.4 问「是14吗」→ 应是（14 档 = 14.0~14.5），不是精确等于
 ans, _, reason = classify_question(_make_ds_music(14.4), '紫谱是14吗')
 assert ans == _YES, f'14.4 应属于 14 档: {ans}'
-assert '[14, 14.6)' in reason, reason
+assert '[14.0, 14.5] 闭区间' in reason, reason
 # 14.6 问「是14吗」→ 不是
 ans, _, _ = classify_question(_make_ds_music(14.6), '紫谱是14吗')
 assert ans == _NO, f'14.6 不属 14 档: {ans}'
 # 14.4 问「14+」→ 不是（14+ = 14.6~15.0）
 ans, _, reason = classify_question(_make_ds_music(14.4), '紫谱是14+吗')
 assert ans == _NO, f'14.4 不属 14+: {ans}'
-assert '[14.6, 15)' in reason, reason
+assert '[14.6, 14.9] 闭区间' in reason, reason
 # 14.5 问「14+」→ 不是（14.5 < 14.6，属非+档上界）
 ans, _, _ = classify_question(_make_ds_music(14.5), '紫谱是14+吗')
 assert ans == _NO, f'14.5 不属 14+: {ans}'
