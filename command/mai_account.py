@@ -1698,6 +1698,8 @@ def _charge_text(result, qqid: Optional[int] = None) -> str:
         "awmc_item_upsert": "道具修改",
     }
     label = labels.get(result.service, result.service)
+    if getattr(result, "billing_disabled", False):
+        return f"💳 {label}BREAK 计费已关闭，本次免费 · 余额 {result.balance} BREAK"
     if getattr(result, "free", False):
         return f"💳 {label}今日首次成功，免费 · 余额 {result.balance} BREAK"
     if getattr(result, "freedom", False):

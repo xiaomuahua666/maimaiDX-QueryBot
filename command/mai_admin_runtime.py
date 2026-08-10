@@ -327,7 +327,7 @@ async def _audit_and_ban_preprocessor(
             )
             if request_count is not None and request_count > free_requests and surcharge:
                 payer = int(billing_user_id(event))
-                if not is_superuser_exempt(payer):
+                if not is_superuser_exempt(payer) and break_db.billing_enabled():
                     meta = {
                         "window_seconds": window,
                         "free_requests": free_requests,

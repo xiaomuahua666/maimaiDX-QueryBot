@@ -28,6 +28,9 @@ from .maimaidx_db import create_unified_connection
 from .maimaidx_error import BreakInsufficientError
 
 DEFAULT_CONFIG: Dict[str, str] = {
+    # BREAK 计费总开关：1=开启（默认）；0/false/off/关闭=停止所有功能扣费与余额拦截。
+    # 关闭后签到 / 转账 / 红包 / 管理员增减仍正常，仅 Bot 不再对功能使用收费。
+    'billing_enabled': '1',
     'checkin_base_min': '1',
     'checkin_base_max': '2',
     'query_cost': '1',
@@ -315,6 +318,7 @@ class ServiceChargeResult:
     listed_cost: int = 0
     freedom: bool = False
     freedom_remaining: float = 0.0
+    billing_disabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -1043,6 +1047,11 @@ class BreakDatabase:
         )
         self._conn.commit()
 
+    def billing_enabled(self) -> bool:
+        """BREAK 功能计费总开关；关闭后所有功能扣费与余额拦截一律放行。"""
+        raw = str(self.get_config('billing_enabled', '1') or '1').strip().lower()
+        return raw not in {'0', 'false', 'no', 'off', '关闭', '停用'}
+
     def _ensure_user(self, qqid: int) -> None:
         with self._lock:
             exists = self._conn.execute(
@@ -1162,6 +1171,8 @@ class BreakDatabase:
     ) -> bool:
         if amount <= 0:
             return True
+        if not self.billing_enabled():
+            return True
         from .maimaidx_card import card_manager
         with self._lock:
             if allow_freedom and card_manager.freedom_active(qqid):
@@ -1196,6 +1207,8 @@ class BreakDatabase:
         """原子预扣锐评额度；预扣暂不计入消费统计，等待成功结算或失败退款。"""
         amount = max(0, int(amount))
         if amount <= 0:
+            return True
+        if not self.billing_enabled():
             return True
         with self._lock:
             row = self._conn.execute(
@@ -1310,6 +1323,8 @@ class BreakDatabase:
 
     def ensure_service_affordable(self, qqid: int, service: str, cost: int) -> None:
         """外部业务请求前检查；真正扣费必须在成功后调用 settle_service_success。"""
+        if not self.billing_enabled():
+            return
         if self.service_is_free(qqid, service):
             return
         from .maimaidx_card import card_manager
@@ -1329,6 +1344,11 @@ class BreakDatabase:
     ) -> ServiceChargeResult:
         """成功业务原子结算：DAILY_FREE_SERVICES 每日首次免费，其余每次按配置扣费。"""
         cost = max(0, int(cost))
+        if not self.billing_enabled():
+            return ServiceChargeResult(
+                service, 0, free=False, balance=self.get_balance(qqid),
+                listed_cost=cost, billing_disabled=True,
+            )
         today, now = self._today(), time.time()
         with self._lock:
             row = self._conn.execute(
@@ -2866,7 +2886,7 @@ def normalize_billing_qqid(qqid: Optional[int | str]) -> Optional[int]:
 
 def charge_session_extra(qqid: Optional[int], cost: int, service: str) -> bool:
     """在 break_billing 上下文内额外扣除功能费；成功返回 True。"""
-    if not qqid or cost <= 0 or is_superuser_exempt(qqid):
+    if not qqid or cost <= 0 or is_superuser_exempt(qqid) or not break_db.billing_enabled():
         return True
     session = _charge_session.get()
     if break_db.is_daily_free_available(qqid):
@@ -2887,7 +2907,7 @@ def charge_session_extra(qqid: Optional[int], cost: int, service: str) -> bool:
 
 def settle_feature_if_uncharged(qqid: Optional[int], service: str = 'search') -> None:
     """本地功能（谱面详情等）成功后：若本会话尚未因 API/缓存扣过，则按 query_cost 结算（享每日首免）。"""
-    if not qqid or is_superuser_exempt(qqid):
+    if not qqid or is_superuser_exempt(qqid) or not break_db.billing_enabled():
         return
     session = _charge_session.get()
     if session and (session.spent > 0 or session.used_free):
@@ -2901,7 +2921,7 @@ def settle_feature_if_uncharged(qqid: Optional[int], service: str = 'search') ->
 
 def ensure_image_render_affordable(qqid: Optional[int]) -> None:
     """出图前余额检查：生成图片每次都收费（含读缓存），FREEDOM 可免。"""
-    if not qqid or is_superuser_exempt(qqid):
+    if not qqid or is_superuser_exempt(qqid) or not break_db.billing_enabled():
         return
     cost = image_render_cost()
     if cost <= 0:
@@ -2916,7 +2936,7 @@ def ensure_image_render_affordable(qqid: Optional[int]) -> None:
 
 def settle_image_render(qqid: Optional[int]) -> Optional[str]:
     """成功出图后结算生成图片费用；FREEDOM 时返回可展示的 footer。"""
-    if not qqid or is_superuser_exempt(qqid):
+    if not qqid or is_superuser_exempt(qqid) or not break_db.billing_enabled():
         return None
     cost = image_render_cost()
     if cost <= 0:
@@ -3171,6 +3191,8 @@ def reserve_analysis_charge(qqid: int) -> AnalysisChargeReservation:
     """调用模型前预扣固定额度；FREEDOM 生效时仅保存免单快照。"""
     if is_superuser_exempt(qqid):
         return AnalysisChargeReservation(0)
+    if not break_db.billing_enabled():
+        return AnalysisChargeReservation(0)
     from .maimaidx_card import card_manager
 
     freedom, remaining, _expires_at = card_manager.freedom_info(qqid)
@@ -3189,7 +3211,7 @@ def reserve_analysis_charge(qqid: int) -> AnalysisChargeReservation:
 def refund_analysis_charge(qqid: int, reserved: Any, *, reason: str) -> int:
     """模型或制图失败时退回尚未结算的预扣额度。"""
     amount = max(0, int(getattr(reserved, 'amount', reserved)))
-    if is_superuser_exempt(qqid) or amount <= 0:
+    if is_superuser_exempt(qqid) or amount <= 0 or not break_db.billing_enabled():
         return break_db.get_balance(qqid)
     return break_db.refund_analysis_reservation(
         qqid,
@@ -3200,7 +3222,7 @@ def refund_analysis_charge(qqid: int, reserved: Any, *, reason: str) -> int:
 
 def ensure_query_affordable(qqid: Optional[int]) -> None:
     """查分器/落雪成绩 API 即将发起前：余额或免费额度检查。"""
-    if not qqid or is_superuser_exempt(qqid):
+    if not qqid or is_superuser_exempt(qqid) or not break_db.billing_enabled():
         return
     cost = query_cost()
     balance = break_db.get_balance(qqid)
@@ -3212,7 +3234,7 @@ def ensure_query_affordable(qqid: Optional[int]) -> None:
 
 def settle_prober_fetch(qqid: Optional[int]) -> None:
     """单次查分器/落雪成绩 API 成功后结算（免费额度或扣 BREAK）。"""
-    if not qqid or is_superuser_exempt(qqid):
+    if not qqid or is_superuser_exempt(qqid) or not break_db.billing_enabled():
         return
     session = _charge_session.get()
     cost = query_cost()
@@ -3235,7 +3257,7 @@ def settle_prober_fetch(qqid: Optional[int]) -> None:
 
 def settle_cache_hit(qqid: Optional[int]) -> None:
     """本地缓存命中后结算：检查免费额度或扣 BREAK。"""
-    if not qqid or is_superuser_exempt(qqid):
+    if not qqid or is_superuser_exempt(qqid) or not break_db.billing_enabled():
         return
     session = _charge_session.get()
     cost = cache_query_cost()
@@ -3262,7 +3284,7 @@ def settle_query_api_charge(qqid: Optional[int]) -> None:
     if get_billing_qqid() is not None:
         settle_prober_fetch(qqid)
         return
-    if not qqid or is_superuser_exempt(qqid):
+    if not qqid or is_superuser_exempt(qqid) or not break_db.billing_enabled():
         return
     from .maimaidx_player_cache import peek_fetch_meta
 
@@ -3291,6 +3313,9 @@ def settle_analysis_charge(
     freedom = bool(getattr(reserved, 'freedom', False))
     usage = dict(token_usage or {})
     if is_superuser_exempt(qqid):
+        break_db.record_usage(qqid, 'analysis', break_delta=0)
+        return 0
+    if not break_db.billing_enabled():
         break_db.record_usage(qqid, 'analysis', break_delta=0)
         return 0
     meta = {

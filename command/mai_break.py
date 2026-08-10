@@ -70,6 +70,14 @@ break_economy = on_command(
 awmc_admin_set = on_command('设置BREAK', permission=PLUGIN_ADMIN_ONLY)
 awmc_admin_add = on_command('增减BREAK', permission=PLUGIN_ADMIN_ONLY)
 awmc_admin_config = on_command('BREAK配置', permission=PLUGIN_ADMIN_ONLY)
+awmc_admin_billing_off = on_command(
+    '关闭BREAK计费', aliases={'停用BREAK计费', 'BREAK计费关闭'},
+    permission=PLUGIN_ADMIN_ONLY,
+)
+awmc_admin_billing_on = on_command(
+    '开启BREAK计费', aliases={'启用BREAK计费', 'BREAK计费开启'},
+    permission=PLUGIN_ADMIN_ONLY,
+)
 awmc_admin_view = on_command('查看AWMC', permission=PLUGIN_ADMIN_ONLY)
 ticket_stats_admin = on_command(
     '发票统计', aliases={'ticket统计', 'returnCode统计'}, permission=PLUGIN_ADMIN_ONLY
@@ -780,6 +788,27 @@ async def _(message: Message = CommandArg()):
     key, value = parts[0].strip(), parts[1].strip()
     break_db.set_config(key, value)
     await awmc_admin_config.finish(f'已设置 {key} = {value}', reply_message=True)
+
+
+@awmc_admin_billing_off.handle()
+async def _():
+    break_db.set_config('billing_enabled', '0')
+    log.warning('[BREAK] 管理员已全局关闭 BREAK 计费')
+    await awmc_admin_billing_off.finish(
+        '已全局关闭 BREAK 计费：所有功能不再扣费、余额不足也放行。\n'
+        '签到 / 转账 / 红包 / 管理员增减仍正常。发送「开启BREAK计费」可恢复。',
+        reply_message=True,
+    )
+
+
+@awmc_admin_billing_on.handle()
+async def _():
+    break_db.set_config('billing_enabled', '1')
+    log.warning('[BREAK] 管理员已全局开启 BREAK 计费')
+    await awmc_admin_billing_on.finish(
+        '已全局开启 BREAK 计费，恢复正常扣费与余额检查。',
+        reply_message=True,
+    )
 
 
 # @break_gamble_all.handle()
