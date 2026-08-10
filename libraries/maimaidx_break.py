@@ -2804,8 +2804,8 @@ def _config_int(key: str, default: int) -> int:
 
 
 def is_superuser_exempt(qqid: int) -> bool:
-    from .maimaidx_bot_admin import is_plugin_admin
-    return is_plugin_admin(qqid)
+    # 管理员不再免费使用功能；唯一的计费豁免来源是 FREEDOM 卡。
+    return False
 
 
 def query_cost() -> int:

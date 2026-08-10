@@ -274,7 +274,7 @@ async def _audit_and_ban_preprocessor(
     try:
         payer = int(billing_user_id(event))
         balance = break_db.get_balance(payer)
-        if balance < 0 and not is_plugin_admin(uid) and not _debt_exempt(matcher):
+        if balance < 0 and not _debt_exempt(matcher):
             now = time.time()
             debt_key = str(payer)
             if now - _debt_notified.get(debt_key, 0) > _DEBT_NOTICE_COOLDOWN_SECONDS:
