@@ -240,4 +240,93 @@ admin_api_source = (ROOT / "libraries" / "maimaidx_admin_web.py").read_text(
 assert "async def bans(" in admin_api_source
 assert "/bans" in admin_api_source
 
+# ── 日志翻页快照逻辑 ──
+LogSnapshot = MODULE.LogSnapshot
+import time as _time  # noqa: E402
+
+# 250 行 → 3 页（100+100+50），page 0 = 最新一页 = 末尾 100 行
+snap = LogSnapshot(
+    lines=[f"line{i}" for i in range(250)],
+    errors_only=False,
+    since_today_6=True,
+    fetched_at=_time.time(),
+)
+assert snap.total_pages() == 3, f"250行应3页: {snap.total_pages()}"
+assert snap.current_lines()[0] == "line150", f"page0应从line150开始: {snap.current_lines()[0]}"
+assert snap.current_lines()[-1] == "line249"
+# 上一页（更早）→ page1 = line50..149
+assert snap.go_prev() is True
+assert snap.current_lines()[0] == "line50"
+assert snap.current_lines()[-1] == "line149"
+# 再上一页 → page2 = line0..49（最早一页）
+assert snap.go_prev() is True
+assert snap.current_lines()[0] == "line0"
+assert snap.current_lines()[-1] == "line49"
+# 已到最早，再翻无效
+assert snap.go_prev() is False
+assert snap.current_page == 2
+# 下一页（更新）回到 page1
+assert snap.go_next() is True
+assert snap.current_lines()[0] == "line50"
+# 再下一页回到 page0（最新）
+assert snap.go_next() is True
+assert snap.current_lines()[-1] == "line249"
+# 已在最新，再翻无效
+assert snap.go_next() is False
+
+# 空快照：1 页，无内容
+empty_snap = LogSnapshot(
+    lines=[], errors_only=True, since_today_6=True, fetched_at=_time.time()
+)
+assert empty_snap.total_pages() == 1
+assert empty_snap.current_lines() == []
+
+# 恰好 100 行 = 1 页
+snap100 = LogSnapshot(
+    lines=[f"x{i}" for i in range(100)],
+    errors_only=False,
+    since_today_6=False,
+    fetched_at=_time.time(),
+)
+assert snap100.total_pages() == 1
+assert snap100.go_prev() is False
+assert snap100.go_next() is False
+
+# logs_card 渲染：含页码、模式、刷新/翻页/切换按钮
+# page0=最新一页=最后一页 → 显示「第 3/3 页」
+card = MODULE.logs_card(snap, is_admin=True)
+body = card["elements"][0]["text"]["content"]
+assert "第 3/3 页" in body, f"应显示页码(最新=最后一页): {body.splitlines()[0]}"
+assert "今日 06:00 起" in body, f"应显示模式: {body.splitlines()[0]}"
+assert "共 250 行" in body
+# 收集所有按钮的 action
+btn_actions = []
+for el in card["elements"]:
+    if isinstance(el, dict) and el.get("tag") == "action":
+        for b in el.get("actions", []):
+            btn_actions.append(b["value"]["action"])
+assert "logs_refresh" in btn_actions, f"应有刷新按钮: {btn_actions}"
+assert "logs_prev" in btn_actions, f"应有上一页: {btn_actions}"
+assert "logs_next" in btn_actions, f"应有下一页: {btn_actions}"
+assert "logs_refresh" in btn_actions  # 切换模式也用 logs_refresh
+
+# since_today_6=False 时按钮文案切换为「今日6点起」
+card_all = MODULE.logs_card(snap100, is_admin=False)
+btn_texts_all = []
+for el in card_all["elements"]:
+    if isinstance(el, dict) and el.get("tag") == "action":
+        for b in el.get("actions", []):
+            btn_texts_all.append(b["text"]["content"])
+assert "今日6点起" in btn_texts_all, f"全部模式应有切回今日按钮: {btn_texts_all}"
+
+# _today_boundary_ts：应返回今天 06:00（若当前早于 06:00 则昨天 06:00）
+boundary = MODULE._today_boundary_ts()
+now = _time.time()
+diff = now - boundary
+# 应在 [0, 86400) 内，且对应时刻的 hour=6
+assert 0 <= diff < 86400, f"boundary 应在24h内: diff={diff}"
+bt = _time.localtime(boundary)
+assert bt.tm_hour == 6, f"boundary 应为6点: hour={bt.tm_hour}"
+assert boundary <= now, "boundary 不应晚于当前"
+
 print("Feishu operations bot checks: OK")

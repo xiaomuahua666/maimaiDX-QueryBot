@@ -25,7 +25,64 @@ LOG = logging.getLogger("maimaidx.feishu_ops")
 SERVICE_NAME = "maimaidx-bot.service"
 STATUS_SCRIPT = "/usr/local/bin/maimaidx-report-status"
 MAX_LOG_LINES = 100
+# 刷新时一次性拉取的原始行数（够翻 ~20 页）；错误日志大部分行会被过滤，多拉一些
+LOG_FETCH_LINES = 2000
+LOG_FETCH_LINES_ERRORS = 5000
+# 日志留存窗口起点：每天 06:00 旋转一次（查询时按 since 过滤，不写文件、不会卡顿）
+LOG_DAY_BOUNDARY_HOUR = 6
 MAX_BREAK_GRANT = 100_000
+
+
+@dataclass
+class LogSnapshot:
+    """日志翻页快照。翻页只移动 cursor，不重新调 journalctl；点刷新才覆盖。
+
+    lines 按时间正序（旧→新）存储，lines[-page_size:] 即最新一页。
+    current_page=0 表示最新一页，正向递增表示更早的页。
+    """
+
+    lines: list[str]
+    errors_only: bool
+    since_today_6: bool
+    fetched_at: float
+    page_size: int = MAX_LOG_LINES
+    current_page: int = 0
+
+    def total_pages(self) -> int:
+        if not self.lines:
+            return 1
+        return max(1, (len(self.lines) + self.page_size - 1) // self.page_size)
+
+    def current_lines(self) -> list[str]:
+        if not self.lines:
+            return []
+        total = len(self.lines)
+        end = total - self.current_page * self.page_size
+        start = max(0, end - self.page_size)
+        return self.lines[start:end]
+
+    def go_prev(self) -> bool:
+        """向更早翻一页。已到最早一页返回 False。"""
+        if self.current_page + 1 >= self.total_pages():
+            return False
+        self.current_page += 1
+        return True
+
+    def go_next(self) -> bool:
+        """向更新翻一页。已在最新一页返回 False。"""
+        if self.current_page <= 0:
+            return False
+        self.current_page -= 1
+        return True
+
+
+def _today_boundary_ts() -> float:
+    """返回「当前 06:00」的时间戳；今天还没到 06:00 则返回昨天 06:00。"""
+    now = time.localtime()
+    start = time.mktime(now[:3] + (LOG_DAY_BOUNDARY_HOUR, 0, 0, 0, 0, -1))
+    if start > time.time():
+        start -= 86400
+    return start
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 MENTION_RE = re.compile(r"@_user_\d+\s*")
@@ -588,20 +645,65 @@ def message_stats_card(rows: list[dict[str, Any]], *, days: int = 1) -> dict:
     return _card("消息量统计", "\n".join(lines), template="green", actions=actions)
 
 
-def logs_card(lines: list[str], *, errors_only: bool, is_admin: bool) -> dict:
-    label = "错误日志" if errors_only else "运行日志"
-    body = "\n".join(lines[-MAX_LOG_LINES:]) or "没有匹配的日志。"
+def logs_card(snapshot: LogSnapshot, *, is_admin: bool) -> dict:
+    label = "错误日志" if snapshot.errors_only else "运行日志"
+    page_lines = snapshot.current_lines()
+    body = "\n".join(page_lines) or "没有匹配的日志。"
     body = body[-7000:]
+    total = len(snapshot.lines)
+    total_pages = snapshot.total_pages()
+    # 显示页码：最新一页 = 最后一页，越早页码越小
+    page_num = total_pages - snapshot.current_page
+    mode_label = "今日 06:00 起" if snapshot.since_today_6 else "全部"
+    fetched_ago = format_duration(int(time.time() - snapshot.fetched_at))
+    header_line = (
+        f"已脱敏 · {mode_label} · 共 {total} 行 · 第 {page_num}/{total_pages} 页"
+        f" · 上次刷新 {fetched_ago}前"
+    )
     actions = [
-        _button("刷新", "errors" if errors_only else "logs", primary=True, limit=30),
-        _button("运行状态", "status"),
+        _button(
+            "刷新",
+            "logs_refresh",
+            primary=True,
+            errors_only=snapshot.errors_only,
+            since_today_6=snapshot.since_today_6,
+        ),
+        _button(
+            "上一页(更早)",
+            "logs_prev",
+            errors_only=snapshot.errors_only,
+        ),
+        _button(
+            "下一页(更新)",
+            "logs_next",
+            errors_only=snapshot.errors_only,
+        ),
     ]
+    if snapshot.since_today_6:
+        actions.append(
+            _button(
+                "全部",
+                "logs_refresh",
+                errors_only=snapshot.errors_only,
+                since_today_6=False,
+            )
+        )
+    else:
+        actions.append(
+            _button(
+                "今日6点起",
+                "logs_refresh",
+                errors_only=snapshot.errors_only,
+                since_today_6=True,
+            )
+        )
+    actions.append(_button("运行状态", "status"))
     if is_admin:
         actions.append(_button("管理", "admin_menu"))
     return _card(
         f"AWMC Bot {label}",
-        f"已脱敏，最多显示 {MAX_LOG_LINES} 行。\n{body}",
-        template="red" if errors_only and lines else "blue",
+        f"{header_line}\n{body}",
+        template="red" if snapshot.errors_only and page_lines else "blue",
         actions=actions,
         plain_text=True,
     )
@@ -798,22 +900,32 @@ class SystemController:
         report["disk_percent"] = usage.used / usage.total * 100
         return report
 
-    def logs(self, limit: int, *, errors_only: bool) -> list[str]:
-        limit = min(MAX_LOG_LINES, max(1, int(limit)))
-        raw = self._run(
-            [
-                "journalctl",
-                "-u",
-                SERVICE_NAME,
-                "-n",
-                str(max(limit * 5, 100)),
-                "--no-pager",
-                "-o",
-                "short-iso",
-            ],
-            timeout=10,
-        )
-        return sanitize_logs(raw.splitlines(), errors_only=errors_only)[-limit:]
+    def logs(
+        self, *, errors_only: bool = False, since_today_6: bool = True
+    ) -> list[str]:
+        """拉取脱敏日志。刷新时一次拉够翻多页的量，翻页不再调 journalctl。
+
+        since_today_6=True 时按「当前 06:00 起」过滤（06:00 旋转窗口），
+        满足飞书 bot 留存从 6 点起 24h 轮转的要求，且不写文件、不会卡顿。
+        """
+        fetch = LOG_FETCH_LINES_ERRORS if errors_only else LOG_FETCH_LINES
+        args = [
+            "journalctl",
+            "-u",
+            SERVICE_NAME,
+            "-n",
+            str(fetch),
+            "--no-pager",
+            "-o",
+            "short-iso",
+        ]
+        if since_today_6:
+            since_str = time.strftime(
+                "%Y-%m-%d %H:%M:%S", time.localtime(_today_boundary_ts())
+            )
+            args.extend(["--since", since_str])
+        raw = self._run(args, timeout=15)
+        return sanitize_logs(raw.splitlines(), errors_only=errors_only)
 
     def control(self, operation: str) -> None:
         if operation not in {"start", "stop", "restart"}:
@@ -949,6 +1061,9 @@ class FeishuOpsBot:
         self.system = SystemController()
         self.admin = AdminClient(config.admin_api_url, config.admin_api_token)
         self.actions = ActionStore(config.state_db)
+        # 日志翻页快照：按 (chat_id, errors_only) 隔离。翻页不重新拉 journalctl。
+        self._log_snapshots: dict[tuple[str, bool], LogSnapshot] = {}
+        self._log_lock = threading.Lock()
         self.client = (
             lark_module.Client.builder()
             .app_id(config.app_id)
@@ -1032,10 +1147,35 @@ class FeishuOpsBot:
                 template="red",
             )
 
-    def _safe_logs_card(self, limit: int, errors_only: bool, is_admin: bool) -> dict:
+    def _safe_logs_card(
+        self,
+        errors_only: bool,
+        is_admin: bool,
+        *,
+        chat_id: str = "",
+        since_today_6: bool = True,
+    ) -> dict:
+        """命令/菜单入口：刷新日志快照并渲染卡片。"""
+        return self._refresh_logs(
+            chat_id, errors_only, since_today_6, is_admin
+        )
+
+    def _log_key(self, chat_id: str, errors_only: bool) -> tuple[str, bool]:
+        # 群聊按群隔离；私聊（菜单事件）chat_id 为空，按 open_id 维度由调用方传入
+        return (chat_id or "_private", errors_only)
+
+    def _refresh_logs(
+        self,
+        chat_id: str,
+        errors_only: bool,
+        since_today_6: bool,
+        is_admin: bool,
+    ) -> dict:
+        """重新拉 journalctl，覆盖快照，回到最新一页。"""
         try:
-            lines = self.system.logs(limit, errors_only=errors_only)
-            return logs_card(lines, errors_only=errors_only, is_admin=is_admin)
+            lines = self.system.logs(
+                errors_only=errors_only, since_today_6=since_today_6
+            )
         except Exception as exc:
             LOG.exception("log query failed")
             return _card(
@@ -1043,6 +1183,45 @@ class FeishuOpsBot:
                 f"{type(exc).__name__}：{str(exc)[:300]}",
                 template="red",
             )
+        snapshot = LogSnapshot(
+            lines=lines,
+            errors_only=errors_only,
+            since_today_6=since_today_6,
+            fetched_at=time.time(),
+        )
+        with self._log_lock:
+            self._log_snapshots[self._log_key(chat_id, errors_only)] = snapshot
+        return logs_card(snapshot, is_admin=is_admin)
+
+    def _paginate_logs(
+        self,
+        chat_id: str,
+        errors_only: bool,
+        direction: str,
+        is_admin: bool,
+    ) -> tuple[dict, bool]:
+        """翻页：只移动 cursor，不重新拉 journalctl。无快照时自动刷新一次。
+
+        返回 (卡片, 是否移动成功)；移动失败表示已到边界。
+        """
+        with self._log_lock:
+            snapshot = self._log_snapshots.get(
+                self._log_key(chat_id, errors_only)
+            )
+            if snapshot is not None:
+                if direction == "prev":
+                    moved = snapshot.go_prev()
+                else:
+                    moved = snapshot.go_next()
+                current = snapshot
+        if snapshot is None:
+            return (
+                self._refresh_logs(
+                    chat_id, errors_only, since_today_6=True, is_admin=is_admin
+                ),
+                True,
+            )
+        return logs_card(current, is_admin=is_admin), moved
 
     def _safe_business_card(self, kind: str, *, days: int = 1) -> dict:
         try:
@@ -1111,7 +1290,7 @@ class FeishuOpsBot:
         command, args = parse_command(extract_text(message.content))
         is_admin = self.is_admin(open_id)
         try:
-            card = self._dispatch_command(command, args, open_id, is_admin)
+            card = self._dispatch_command(command, args, open_id, is_admin, chat_id)
         except Exception as exc:
             if isinstance(exc, ValueError):
                 LOG.info("command usage rejected: %s", command)
@@ -1124,7 +1303,12 @@ class FeishuOpsBot:
         self._reply_card(message.message_id, card)
 
     def _dispatch_command(
-        self, command: str, args: list[str], open_id: str, is_admin: bool
+        self,
+        command: str,
+        args: list[str],
+        open_id: str,
+        is_admin: bool,
+        chat_id: str = "",
     ) -> dict:
         if command == "menu":
             return menu_card(
@@ -1135,8 +1319,10 @@ class FeishuOpsBot:
         if command == "status":
             return self._safe_status_card(is_admin)
         if command in {"logs", "errors"}:
-            limit = min(MAX_LOG_LINES, max(1, int(args[0]) if args else 30))
-            return self._safe_logs_card(limit, command == "errors", is_admin)
+            # 忽略旧的行数参数（翻页固定每页 100 行），命令入口等同刷新到最新一页
+            return self._safe_logs_card(
+                command == "errors", is_admin, chat_id=chat_id, since_today_6=True
+            )
         is_super_admin = self.is_super_admin(open_id)
         if command == "permissions":
             if not is_super_admin:
@@ -1368,11 +1554,26 @@ class FeishuOpsBot:
             )
         if action == "status":
             return self._response(self._safe_status_card(is_admin), "状态已刷新")
-        if action in {"logs", "errors"}:
-            limit = min(MAX_LOG_LINES, max(1, int(value.get("limit") or 30)))
-            return self._response(
-                self._safe_logs_card(limit, action == "errors", is_admin), "日志已刷新"
+        if action in {"logs", "errors", "logs_refresh", "logs_prev", "logs_next"}:
+            errors_only = action == "errors" or bool(value.get("errors_only"))
+            if action in {"logs", "errors", "logs_refresh"}:
+                raw_since = value.get("since_today_6")
+                since_today_6 = True if raw_since is None else bool(raw_since)
+                return self._response(
+                    self._refresh_logs(
+                        chat_id, errors_only, since_today_6, is_admin
+                    ),
+                    "日志已刷新",
+                )
+            # 翻页：不重新拉 journalctl，只移动快照 cursor
+            direction = "prev" if action == "logs_prev" else "next"
+            card, moved = self._paginate_logs(
+                chat_id, errors_only, direction, is_admin
             )
+            if not moved:
+                toast = "已是最早一页" if direction == "prev" else "已是最新一页"
+                return self._response(card, toast)
+            return self._response(card)
         if not is_admin:
             return self._response(toast="该操作仅限管理员")
         if action == "permissions":
@@ -1591,10 +1792,15 @@ class FeishuOpsBot:
         if not self.is_admin(open_id):
             return
         key = str(event.event_key or "")
+        # 菜单事件是私聊推送，按 open_id 维度隔离日志快照
         cards = {
             "ops_status": lambda: self._safe_status_card(True),
-            "ops_logs": lambda: self._safe_logs_card(30, False, True),
-            "ops_errors": lambda: self._safe_logs_card(30, True, True),
+            "ops_logs": lambda: self._safe_logs_card(
+                False, True, chat_id=open_id, since_today_6=True
+            ),
+            "ops_errors": lambda: self._safe_logs_card(
+                True, True, chat_id=open_id, since_today_6=True
+            ),
             "ops_admin": lambda: admin_menu_card(
                 is_super_admin=self.is_super_admin(open_id)
             ),
