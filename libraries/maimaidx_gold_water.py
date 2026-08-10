@@ -13,6 +13,7 @@ from .image import DrawText, draw_centered_design_footer, image_to_base64, music
 from .maimaidx_error import UserDisabledQueryError, UserNotFoundError, UserNotExistsError, format_command_error
 from .maimaidx_model import ChartInfo, UserInfo
 from .maimaidx_music import mai
+from .maimaidx_api_data import maiApi
 
 try:
     from .maimaidx_best_50 import changeColumnWidth, coloumWidth, dxScore
