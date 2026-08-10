@@ -197,41 +197,6 @@ assert str(MODULE.LOG_FETCH_LINES_ALL) in run_calls[0][0]
 assert "--since" in run_calls[0][0]
 assert run_calls[0][1] == MODULE.LOG_FETCH_TIMEOUT_SECONDS
 
-# 慢日志刷新必须离开飞书事件线程，完成后另发日志卡片，且不返回占位卡。
-queued_bot = object.__new__(MODULE.FeishuOpsBot)
-queued_bot._log_lock = threading.Lock()
-queued_bot._log_refreshing = set()
-queued_bot._log_snapshots = {}
-refresh_started = threading.Event()
-allow_finish = threading.Event()
-delivered = threading.Event()
-deliveries = []
-
-def fake_refresh(receive_id, errors_only, window_secs, is_admin):
-    refresh_started.set()
-    assert allow_finish.wait(2)
-    return MODULE._card("刷新完成", "ok")
-
-def fake_send(receive_id_type, receive_id, card):
-    deliveries.append((receive_id_type, receive_id, card))
-    delivered.set()
-
-queued_bot._refresh_logs = fake_refresh
-queued_bot._send_card = fake_send
-pending = queued_bot._queue_log_refresh("chat_id", "oc_test", False, 7200, True)
-assert pending is None, "不应返回占位卡"
-assert refresh_started.wait(1)
-assert not delivered.is_set()
-allow_finish.set()
-assert delivered.wait(2)
-assert deliveries[0][0:2] == ("chat_id", "oc_test")
-assert not queued_bot._log_refreshing
-
-# 已有同类刷新任务在跑时，重复提交直接返回 None，不启动新 worker。
-queued_bot._log_refreshing.add(("_private", False))
-dup = queued_bot._queue_log_refresh("chat_id", "oc_dup", False, 7200, True)
-assert dup is None, "重复任务应返回 None"
-
 # --- ban_list command ----------------------------------------------------
 assert MODULE.parse_command("封禁列表") == ("ban_list", [])
 assert MODULE.parse_command("封禁列表 全部") == ("ban_list", ["全部"])
@@ -395,7 +360,6 @@ assert MODULE.parse_window_secs("-1h") is None
 # 场景1：有快照且未过期 → 增量拉取，新行追加到尾部，超限丢头部旧行
 incr_bot = object.__new__(MODULE.FeishuOpsBot)
 incr_bot._log_lock = threading.Lock()
-incr_bot._log_refreshing = set()
 incr_bot._log_snapshots = {}
 # 预置快照：已存满 LOG_FETCH_LINES_ALL 行，最后一行时间戳为 2026-01-01 00:00:00
 full_lines = [
@@ -445,7 +409,6 @@ assert "new line C" in body
 # 场景2：无快照 → 全量拉取，创建新快照
 fresh_bot = object.__new__(MODULE.FeishuOpsBot)
 fresh_bot._log_lock = threading.Lock()
-fresh_bot._log_refreshing = set()
 fresh_bot._log_snapshots = {}
 full_calls = []
 
@@ -467,7 +430,6 @@ assert snap2.last_ts == "2026-01-02 00:00:00"
 # 场景3：增量失败 → fallback 全量
 fb_bot = object.__new__(MODULE.FeishuOpsBot)
 fb_bot._log_lock = threading.Lock()
-fb_bot._log_refreshing = set()
 fb_bot._log_snapshots = {}
 fb_bot._log_snapshots[("oc_fb", False)] = MODULE.LogSnapshot(
     lines=["2026-01-01 00:00:00 INFO old"],
@@ -495,7 +457,6 @@ assert snap3.lines == ["2026-01-01 00:00:05 INFO fallback line"], "fallback 后�
 # 场景4：快照过期（超过 LOG_SNAPSHOT_STALE_SECS）→ 走全量
 stale_bot = object.__new__(MODULE.FeishuOpsBot)
 stale_bot._log_lock = threading.Lock()
-stale_bot._log_refreshing = set()
 stale_bot._log_snapshots = {}
 stale_bot._log_snapshots[("oc_stale", False)] = MODULE.LogSnapshot(
     lines=["2026-01-01 00:00:00 INFO stale"],
@@ -522,7 +483,6 @@ assert stale_calls["full"] == 1, "过期应走全量"
 # 场景5：窗口变更 → 走全量（不能复用旧窗口的增量）
 wchg_bot = object.__new__(MODULE.FeishuOpsBot)
 wchg_bot._log_lock = threading.Lock()
-wchg_bot._log_refreshing = set()
 wchg_bot._log_snapshots = {}
 wchg_bot._log_snapshots[("oc_wchg", False)] = MODULE.LogSnapshot(
     lines=["2026-01-01 00:00:00 INFO old"],

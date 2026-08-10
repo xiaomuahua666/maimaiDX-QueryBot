@@ -29,8 +29,8 @@ MAX_LOG_LINES = 50
 # 5000 行 / 50 每页 = 100 页，翻页足够。
 LOG_FETCH_LINES_ALL = 5000
 LOG_FETCH_TIMEOUT_SECONDS = 30
-# 默认日志窗口：当前往前 2h。
-LOG_WINDOW_DEFAULT_SECS = 7200
+# 默认日志窗口：当前往前 10 分钟。窗口小 + -n 上限，journalctl 同步秒级返回。
+LOG_WINDOW_DEFAULT_SECS = 600
 # 快照过期阈值：超过此时间未刷新则下次走全量，避免漏数据。
 LOG_SNAPSHOT_STALE_SECS = 600
 MAX_BREAK_GRANT = 100_000
@@ -1115,7 +1115,6 @@ class FeishuOpsBot:
         self.actions = ActionStore(config.state_db)
         # 日志翻页快照：按 (chat_id, errors_only) 隔离。翻页不重新拉 journalctl。
         self._log_snapshots: dict[tuple[str, bool], LogSnapshot] = {}
-        self._log_refreshing: set[tuple[str, bool]] = set()
         self._log_lock = threading.Lock()
         self.client = (
             lark_module.Client.builder()
@@ -1200,24 +1199,6 @@ class FeishuOpsBot:
                 template="red",
             )
 
-    def _safe_logs_card(
-        self,
-        errors_only: bool,
-        is_admin: bool,
-        *,
-        chat_id: str = "",
-        window_secs: int = LOG_WINDOW_DEFAULT_SECS,
-        receive_id_type: str = "chat_id",
-    ) -> Optional[dict]:
-        """提交后台日志拉取，不返回占位卡，由 worker 完成后投递日志卡片。"""
-        return self._queue_log_refresh(
-            receive_id_type,
-            chat_id,
-            errors_only,
-            window_secs,
-            is_admin,
-        )
-
     def _log_key(self, chat_id: str, errors_only: bool) -> tuple[str, bool]:
         # 群聊按群隔离；私聊（菜单事件）chat_id 为空，按 open_id 维度由调用方传入
         return (chat_id or "_private", errors_only)
@@ -1298,53 +1279,6 @@ class FeishuOpsBot:
             self._log_snapshots[key] = new_snapshot
         return logs_card(new_snapshot, is_admin=is_admin)
 
-    def _queue_log_refresh(
-        self,
-        receive_id_type: str,
-        receive_id: str,
-        errors_only: bool,
-        window_secs: int,
-        is_admin: bool,
-    ) -> Optional[dict]:
-        """后台拉取 journalctl，完成后把日志卡片发到原会话。
-
-        飞书卡片回调和长连接心跳共用事件线程。journalctl 曾在生产环境连续
-        跑满 20 秒，既让卡片报“目标服务调用超时”，也会拖断 WebSocket。
-        这里只在事件线程登记任务；慢 I/O 全部在线程中完成。
-
-        不返回占位卡：调用方应跳过回复，由 worker 完成后投递日志卡片。
-        返回 None 表示已登记后台任务（或已有同类任务在跑）。
-        """
-        if not receive_id:
-            # 测试或缺少投递目标时保留可诊断的同步回退。
-            return self._refresh_logs(
-                receive_id, errors_only, window_secs, is_admin
-            )
-        key = self._log_key(receive_id, errors_only)
-        with self._log_lock:
-            if key in self._log_refreshing:
-                return None
-            self._log_refreshing.add(key)
-
-        def worker() -> None:
-            try:
-                card = self._refresh_logs(
-                    receive_id, errors_only, window_secs, is_admin
-                )
-                self._send_card(receive_id_type, receive_id, card)
-            except Exception:
-                LOG.exception("failed to deliver refreshed logs")
-            finally:
-                with self._log_lock:
-                    self._log_refreshing.discard(key)
-
-        threading.Thread(
-            target=worker,
-            name=f"logs-refresh-{'errors' if errors_only else 'all'}",
-            daemon=True,
-        ).start()
-        return None
-
     def _paginate_logs(
         self,
         chat_id: str,
@@ -1368,12 +1302,8 @@ class FeishuOpsBot:
                 current = snapshot
         if snapshot is None:
             return (
-                self._queue_log_refresh(
-                    "chat_id",
-                    chat_id,
-                    errors_only,
-                    LOG_WINDOW_DEFAULT_SECS,
-                    is_admin=is_admin,
+                self._refresh_logs(
+                    chat_id, errors_only, LOG_WINDOW_DEFAULT_SECS, is_admin
                 ),
                 True,
             )
@@ -1477,15 +1407,14 @@ class FeishuOpsBot:
             return self._safe_status_card(is_admin)
         if command in {"logs", "errors"}:
             # 解析时间窗口参数：「日志 2h」「错误 10m」「日志 1h」等
-            # 无参数则默认 LOG_WINDOW_DEFAULT_SECS（2h）
+            # 无参数则默认 LOG_WINDOW_DEFAULT_SECS（近 10 分钟）
             window_secs = LOG_WINDOW_DEFAULT_SECS
             if args:
                 parsed = parse_window_secs(args[0])
                 if parsed is not None:
                     window_secs = parsed
-            return self._safe_logs_card(
-                command == "errors", is_admin, chat_id=chat_id,
-                window_secs=window_secs,
+            return self._refresh_logs(
+                chat_id, command == "errors", window_secs, is_admin
             )
         is_super_admin = self.is_super_admin(open_id)
         if command == "permissions":
@@ -1721,28 +1650,17 @@ class FeishuOpsBot:
         if action in {"logs", "errors", "logs_refresh", "logs_prev", "logs_next"}:
             errors_only = action == "errors" or bool(value.get("errors_only"))
             if action in {"logs", "errors", "logs_refresh"}:
-                # 窗口参数：从按钮 value 取，缺省用默认 2h
+                # 窗口参数：从按钮 value 取，缺省用默认（近 10 分钟）
                 raw_window = value.get("window_secs")
                 try:
                     window_secs = int(raw_window) if raw_window is not None else LOG_WINDOW_DEFAULT_SECS
                 except (TypeError, ValueError):
                     window_secs = LOG_WINDOW_DEFAULT_SECS
-                # 刷新同窗口：优先同步增量「去头填尾」，原卡片就地更新
-                if action == "logs_refresh":
-                    with self._log_lock:
-                        snapshot = self._log_snapshots.get(
-                            self._log_key(chat_id, errors_only)
-                        )
-                    if self._can_incremental(snapshot, window_secs):
-                        card = self._refresh_logs(
-                            chat_id, errors_only, window_secs, is_admin
-                        )
-                        return self._response(card, "已刷新")
-                # 无快照/窗口变更/过期：后台全量拉取，完成后另发日志卡片
-                self._queue_log_refresh(
-                    "chat_id", chat_id, errors_only, window_secs, is_admin
+                # 同步拉取（增量优先「去头填尾」，否则全量），原卡片就地更新，不新发卡片
+                card = self._refresh_logs(
+                    chat_id, errors_only, window_secs, is_admin
                 )
-                return self._response(toast="正在后台拉取日志")
+                return self._response(card, "已刷新")
             # 翻页：不重新拉 journalctl，只移动快照 cursor
             direction = "prev" if action == "logs_prev" else "next"
             card, moved = self._paginate_logs(
@@ -1973,19 +1891,11 @@ class FeishuOpsBot:
         # 菜单事件是私聊推送，按 open_id 维度隔离日志快照
         cards = {
             "ops_status": lambda: self._safe_status_card(True),
-            "ops_logs": lambda: self._safe_logs_card(
-                False,
-                True,
-                chat_id=open_id,
-                window_secs=LOG_WINDOW_DEFAULT_SECS,
-                receive_id_type="open_id",
+            "ops_logs": lambda: self._refresh_logs(
+                open_id, False, LOG_WINDOW_DEFAULT_SECS, True
             ),
-            "ops_errors": lambda: self._safe_logs_card(
-                True,
-                True,
-                chat_id=open_id,
-                window_secs=LOG_WINDOW_DEFAULT_SECS,
-                receive_id_type="open_id",
+            "ops_errors": lambda: self._refresh_logs(
+                open_id, True, LOG_WINDOW_DEFAULT_SECS, True
             ),
             "ops_admin": lambda: admin_menu_card(
                 is_super_admin=self.is_super_admin(open_id)
