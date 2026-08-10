@@ -231,7 +231,7 @@ async def _compute_today_gain(qqid: int, top_n: int = 12) -> str:
             picks.append(best)
 
     if not picks:
-        return "今天没有明显吃分候选（可能是当前 B50 已很满，或可提升空间较小）。", None
+        return "今天没有明显吃分候选（可能是当前 B50 已很满，或可提升空间较小）。"
 
     picks.sort(key=lambda x: x.score, reverse=True)
     top = picks[: max(1, min(20, top_n))]
