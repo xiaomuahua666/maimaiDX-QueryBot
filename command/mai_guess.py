@@ -1660,6 +1660,8 @@ async def _(event: MessageEvent):
     first_guess = data.user_attempts[uid_key] == 1
     pic_difficulty = data.difficulty if isinstance(data, GuessPicData) else None
     if match_guess_answer(ans, data.answer, pic_difficulty=pic_difficulty):
+        if data.end:
+            await guess_music_solve.finish()
         data.end = True
         settlement = await _award_guess_points(
             event,
@@ -2842,125 +2844,127 @@ async def _(event: MessageEvent):
         twentyq_guess.unlock(gid)
         raise
 
-    await _guess_notify(guess_20q_start, event, _twentyq_intro(), reply=True)
+    try:
+        await _guess_notify(guess_20q_start, event, _twentyq_intro(), reply=True)
 
-    # ── 阶段1：问问题阶段，不限总时长；空闲超过 TWENTYQ_IDLE_TIMEOUT 才兜底结束 ──
-    idle_timeout_hit = False
-    while data.question_count < data.max_questions:
-        await asyncio.sleep(1)
-        current = twentyq_guess.get(gid)
-        # 游戏被重置/替换：无状态可结算，直接退出。
-        if current is not data:
-            return
-        # 有人猜对（data.end=True）：跳出循环走后续结算，不能 return。
-        if current.end:
-            break
-        if data.idle_seconds() >= TWENTYQ_IDLE_TIMEOUT:
-            idle_timeout_hit = True
-            break
-
-    current = twentyq_guess.get(gid)
-    # 仅当游戏被重置/替换时才退出；猜对导致的 end 要继续走结算。
-    if current is not data:
-        return
-
-    # ── 阶段2：猜测阶段（正常问完进入；空闲超时/猜对跳过直接收尾）──
-    if not idle_timeout_hit and not data.end and data.question_count >= data.max_questions:
-        await _guess_notify(
-            guess_20q_start, event,
-            f'📝 提问次数用完啦！进入猜曲阶段，限时 {TWENTYQ_GUESS_WINDOW} 秒，'
-            f'用「我猜 曲名」抢猜～',
-        )
-        remaining = TWENTYQ_GUESS_WINDOW
-        while remaining > 0:
+        # ── 阶段1：问问题阶段，不限总时长；空闲超过 TWENTYQ_IDLE_TIMEOUT 才兜底结束 ──
+        idle_timeout_hit = False
+        while data.question_count < data.max_questions:
             await asyncio.sleep(1)
             current = twentyq_guess.get(gid)
             # 游戏被重置/替换：无状态可结算，直接退出。
             if current is not data:
                 return
-            # 有人猜对：跳出循环走后续结算，不能 return。
+            # 有人猜对（data.end=True）：跳出循环走后续结算，不能 return。
             if current.end:
                 break
-            remaining -= 1
-            if remaining in TWENTYQ_COUNTDOWN:
-                await _guess_notify(
-                    guess_20q_start, event,
-                    f'⏳ 猜曲阶段还剩 {remaining} 秒！',
-                )
+            if data.idle_seconds() >= TWENTYQ_IDLE_TIMEOUT:
+                idle_timeout_hit = True
+                break
 
-    current = twentyq_guess.get(gid)
-    if current is not data:
-        return
+        current = twentyq_guess.get(gid)
+        # 仅当游戏被重置/替换时才退出；猜对导致的 end 要继续走结算。
+        if current is not data:
+            return
 
-    if data.winner_uid:
-        uid = data.winner_uid
-        name = data.winner_name or '群友'
-        # 先提示「正在结算」再做积分计算，确保该提示在结算结果消息之前发出。
-        await _guess_notify(
-            guess_20q_start, event,
-            f'⏳ 正在结算 {name} 的本局贡献…',
-        )
-        raw_base = twentyq_base_points(data.question_count)
-        multiplier = 1
-        multiplier_tags: List[str] = []
-        if await guess_boost_card.consume_one(gid, uid):
-            multiplier *= 2
-            multiplier_tags.append('限时加倍卡×2')
-        (
-            added, _raw, combo, _streak, total, rank, period_snapshot,
-        ) = await guess_score.award_correct_guess(
-            gid, uid, name, raw_base, multiplier,
-            mode=guess_score.MODE_20Q,
-        )
-        settlement = guess_score.format_settlement_lines(
-            added, raw_base, combo, multiplier, _streak, total, rank,
-            period_snapshot, multiplier_tags,
-        )
-        from ..libraries.maimaidx_break import break_db
-
-        reward = break_db.award_guess_points(
-            data.winner_billing, added, group_id=str(gid),
-        )
-        break_part = ''
-        if reward.break_added > 0:
-            double_tag = ''
-            if reward.doubled:
-                from ..libraries.maimaidx_card import format_duration
-                double_tag = (
-                    f'（双倍BREAK卡生效中，剩余 {format_duration(reward.double_remaining)}）'
-                )
-            break_part = (
-                f'\n💳 猜对奖励 +{reward.break_added} BREAK'
-                f'（余额 {reward.balance}）{double_tag}'
+        # ── 阶段2：猜测阶段（正常问完进入；空闲超时/猜对跳过直接收尾）──
+        if not idle_timeout_hit and not data.end and data.question_count >= data.max_questions:
+            await _guess_notify(
+                guess_20q_start, event,
+                f'📝 提问次数用完啦！进入猜曲阶段，限时 {TWENTYQ_GUESS_WINDOW} 秒，'
+                f'用「我猜 曲名」抢猜～',
             )
-        log.info(
-            f'[Guess20Q] 猜对结束 gid={gid} answer={data.music.title} '
-            f'id={data.music.id} winner={name}({uid}) '
-            f'questions={data.question_count}/{data.max_questions}'
-        )
-        result = (
-            f'🎉 恭喜 {name} 猜对啦！全场共提问 {data.question_count} 次。\n'
-            f'{twentyq_guess.reveal_text(data)}\n\n{settlement}{break_part}'
-        )
-        await _safe_matcher_send(
-            guess_20q_start, event, result, gid, fatal=False,
-        )
-    else:
-        await guess_score.reset_all_streaks(gid)
-        log.info(
-            f'[Guess20Q] 超时结束 gid={gid} answer={data.music.title} '
-            f'id={data.music.id} questions={data.question_count}/{data.max_questions} '
-            f'无人猜对'
-        )
-        result = (
-            '⏰ 时间到（或提问机会已用完），没有人猜出来喵～\n'
-            f'{twentyq_guess.reveal_text(data)}'
-        )
-        await _safe_matcher_send(
-            guess_20q_start, event, result, gid, fatal=False,
-        )
+            remaining = TWENTYQ_GUESS_WINDOW
+            while remaining > 0:
+                await asyncio.sleep(1)
+                current = twentyq_guess.get(gid)
+                # 游戏被重置/替换：无状态可结算，直接退出。
+                if current is not data:
+                    return
+                # 有人猜对：跳出循环走后续结算，不能 return。
+                if current.end:
+                    break
+                remaining -= 1
+                if remaining in TWENTYQ_COUNTDOWN:
+                    await _guess_notify(
+                        guess_20q_start, event,
+                        f'⏳ 猜曲阶段还剩 {remaining} 秒！',
+                    )
 
-    twentyq_guess.end(gid, expected=data)
+        current = twentyq_guess.get(gid)
+        if current is not data:
+            return
+
+        if data.winner_uid:
+            uid = data.winner_uid
+            name = data.winner_name or '群友'
+            # 先提示「正在结算」再做积分计算，确保该提示在结算结果消息之前发出。
+            await _guess_notify(
+                guess_20q_start, event,
+                f'⏳ 正在结算 {name} 的本局贡献…',
+            )
+            raw_base = twentyq_base_points(data.question_count)
+            multiplier = 1
+            multiplier_tags: List[str] = []
+            if await guess_boost_card.consume_one(gid, uid):
+                multiplier *= 2
+                multiplier_tags.append('限时加倍卡×2')
+            (
+                added, _raw, combo, _streak, total, rank, period_snapshot,
+            ) = await guess_score.award_correct_guess(
+                gid, uid, name, raw_base, multiplier,
+                mode=guess_score.MODE_20Q,
+            )
+            settlement = guess_score.format_settlement_lines(
+                added, raw_base, combo, multiplier, _streak, total, rank,
+                period_snapshot, multiplier_tags,
+            )
+            from ..libraries.maimaidx_break import break_db
+
+            reward = break_db.award_guess_points(
+                data.winner_billing, added, group_id=str(gid),
+            )
+            break_part = ''
+            if reward.break_added > 0:
+                double_tag = ''
+                if reward.doubled:
+                    from ..libraries.maimaidx_card import format_duration
+                    double_tag = (
+                        f'（双倍BREAK卡生效中，剩余 {format_duration(reward.double_remaining)}）'
+                    )
+                break_part = (
+                    f'\n💳 猜对奖励 +{reward.break_added} BREAK'
+                    f'（余额 {reward.balance}）{double_tag}'
+                )
+            log.info(
+                f'[Guess20Q] 猜对结束 gid={gid} answer={data.music.title} '
+                f'id={data.music.id} winner={name}({uid}) '
+                f'questions={data.question_count}/{data.max_questions}'
+            )
+            result = (
+                f'🎉 恭喜 {name} 猜对啦！全场共提问 {data.question_count} 次。\n'
+                f'{twentyq_guess.reveal_text(data)}\n\n{settlement}{break_part}'
+            )
+            await _safe_matcher_send(
+                guess_20q_start, event, result, gid, fatal=False,
+            )
+        else:
+            await guess_score.reset_all_streaks(gid)
+            log.info(
+                f'[Guess20Q] 超时结束 gid={gid} answer={data.music.title} '
+                f'id={data.music.id} questions={data.question_count}/{data.max_questions} '
+                f'无人猜对'
+            )
+            result = (
+                '⏰ 时间到（或提问机会已用完），没有人猜出来喵～\n'
+                f'{twentyq_guess.reveal_text(data)}'
+            )
+            await _safe_matcher_send(
+                guess_20q_start, event, result, gid, fatal=False,
+            )
+    finally:
+        # 确保结算阶段异常时释放群状态；end 内部有 expected 身份校验，重复调用安全。
+        twentyq_guess.end(gid, expected=data)
     await guess_20q_start.finish()
 
 

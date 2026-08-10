@@ -144,9 +144,9 @@ async def _(event: MessageEvent, match = RegexMatched()):
                 if _ra != 0:
                     ds = round(_ra / 22.4, 1)
                     musiclist = mai.total_list.filter(ds=(ds, ds + 1))
-                    for _m in musiclist:
-                        if int(_m.id) in ignore:
-                            musiclist.remove(_m)
+                    musiclist = type(musiclist)(
+                        m for m in musiclist if int(m.id) not in ignore
+                    )
                     music = musiclist.random()
             except (UserNotFoundError, UserDisabledQueryError):
                 pass

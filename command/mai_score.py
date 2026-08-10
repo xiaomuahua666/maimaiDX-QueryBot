@@ -2067,6 +2067,8 @@ async def _(event: MessageEvent, message: Message = CommandArg()):
             hold = int(chart.notes.hold)
             touch = int(chart.notes.touch) if len(chart.notes) == 5 else 0
             brk = int(chart.notes.brk)
+            if brk <= 0:
+                await score.finish('该谱面音符数据异常，无法计算分数线', reply_message=True)
             total_score = tap * 500 + slide * 1500 + hold * 1000 + touch * 500 + brk * 2500
             break_bonus = 0.01 / brk
             break_50_reduce = total_score * break_bonus / 4

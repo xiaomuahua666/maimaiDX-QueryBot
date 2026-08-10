@@ -301,12 +301,28 @@ def install_qq_event_compat() -> None:
     except (ImportError, AttributeError):
         return
 
-    # Adapter 1.7.x does not declare ``member_role`` on GroupMemberAuthor and
-    # therefore drops the field from Tencent's payload.  Keep unknown fields so
-    # group owner/admin checks can use the role when the platform sends it.
+    # Adapter versions differ on whether GroupMemberAuthor declares
+    # ``member_role``:
+    #   - 1.7.x does not declare it at all; we need extra="allow" so
+    #     Tencent's payload is not dropped.
+    #   - newer versions declare it as a required ``str``, which breaks
+    #     tests and code that construct events without the field.
+    # In both cases make it ``Optional[str]`` with a default of None.
     try:
-        GroupMemberAuthor.__annotations__["member_role"] = str | None
+        from pydantic.fields import FieldInfo
+
         GroupMemberAuthor.model_config["extra"] = "allow"
+        if "member_role" in GroupMemberAuthor.model_fields:
+            field = GroupMemberAuthor.model_fields["member_role"]
+            if field.is_required():
+                GroupMemberAuthor.model_fields["member_role"] = FieldInfo(
+                    default=None, annotation=Optional[str],
+                )
+        else:
+            GroupMemberAuthor.__annotations__["member_role"] = Optional[str]
+            GroupMemberAuthor.model_fields["member_role"] = FieldInfo(
+                default=None, annotation=Optional[str],
+            )
         GroupMemberAuthor.model_rebuild(force=True)
         author_aliases = {
             "role": property(
