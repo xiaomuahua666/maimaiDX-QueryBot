@@ -461,10 +461,10 @@ def calculate_streak_bonus(streak: int, bonuses: list[int], growth: int) -> int:
 
 
 def calculate_luck_break(luck: int) -> tuple[int, int]:
-    """人品值按普通四舍五入取整到十位，再换算为 BREAK。"""
+    """人品值按普通四舍五入取整到十位，再 ÷20 换算为 BREAK（整体减半）。"""
     value = max(0, min(100, int(luck)))
     rounded = ((value + 5) // 10) * 10
-    return rounded, rounded // 10
+    return rounded, rounded // 20
 
 
 def calculate_red_packet_claim(remaining_amount: int, remaining_count: int) -> int:

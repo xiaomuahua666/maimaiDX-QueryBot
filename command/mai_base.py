@@ -95,12 +95,12 @@ async def _(event: MessageEvent):
     if reward.awarded:
         msg += (
             f'今日 BREAK：{rp} 四舍五入为 {rounded_rp}，'
-            f'获得 {reward.amount} BREAK（余额 {reward.balance}）\n'
+            f'÷20 获得 {reward.amount} BREAK（余额 {reward.balance}）\n'
         )
     else:
         msg += (
             f'今日 BREAK：已领取 {reward.amount} BREAK，'
-            f'不会重复发放（余额 {reward.balance}）\n'
+            f'不会重复发放（人品 ÷20，余额 {reward.balance}）\n'
         )
     for i in range(11):
         if wm_value[i] == 3:
