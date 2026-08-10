@@ -23,11 +23,13 @@ from ..libraries.b50_analysis.adapter import fetch_for_analysis
 from ..libraries.maimaidx_break import (
     analysis_token_cost,
     break_db,
+    ensure_image_render_affordable,
     format_analysis_cost_line,
     format_analysis_pricing_help,
     refund_analysis_charge,
     reserve_analysis_charge,
     settle_analysis_charge,
+    settle_image_render,
     take_break_charge_footer,
 )
 from ..libraries.maimaidx_error import BreakInsufficientError, format_command_error, QBindRequiredError
@@ -180,6 +182,14 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
             matcher, str(e), event=event, mention_sender=use_qq_mode(event)
         )
         return
+    try:
+        ensure_image_render_affordable(billing_qq)
+    except BreakInsufficientError as e:
+        refund_analysis_charge(billing_qq, reserved, reason='render:insufficient')
+        await plugin_finish(
+            matcher, str(e), event=event, mention_sender=use_qq_mode(event)
+        )
+        return
 
     failure_stage = '分析生成'
     try:
@@ -247,6 +257,9 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
     footer_parts = []
     if query_footer:
         footer_parts.extend(query_footer)
+    render_line = settle_image_render(billing_qq)
+    if render_line:
+        footer_parts.append(render_line)
     footer_parts.append(
         format_analysis_cost_line(
             charged=charged,

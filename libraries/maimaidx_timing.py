@@ -101,10 +101,12 @@ async def run_timed(
     *,
     billing_qqid: Optional[int] = None,
     feature_charge: Optional[str] = None,
+    render_charge: bool = True,
 ) -> tuple[T, float]:
     """reset 后执行协程并返回 (结果, 总秒数)。billing_qqid 开启查分 BREAK 扣费上下文。
 
-    feature_charge: 成功后若会话尚未扣费，则按该业务名结算 query_cost（如 'search'）。
+        feature_charge: 成功后若会话尚未扣费，则按该业务名结算 query_cost（如 'search'）。
+        render_charge: 成功出图后收取渲染费（含读缓存）；已单独定价的报告图传 False。
     """
     reset()
     t0 = time.perf_counter()
@@ -112,21 +114,26 @@ async def run_timed(
         from .maimaidx_break import (
             break_billing,
             ensure_query_affordable,
+            ensure_image_render_affordable,
             normalize_billing_qqid,
             settle_feature_if_uncharged,
+            settle_image_render,
         )
         billing_qqid = normalize_billing_qqid(billing_qqid)
         if feature_charge:
             ensure_query_affordable(billing_qqid)
+        if render_charge:
+            ensure_image_render_affordable(billing_qqid)
         async with break_billing(billing_qqid):
             result = await coro
-            # 仅成功出图扣功能费；纯文本错误提示不扣
-            if (
-                feature_charge
-                and not isinstance(result, str)
-                and is_valid_image_result(result)
-            ):
-                settle_feature_if_uncharged(billing_qqid, feature_charge)
+            # 成功出图才扣费；纯文本错误提示不扣
+            if not isinstance(result, str) and is_valid_image_result(result):
+                if feature_charge:
+                    # 查歌/谱面详情等：本会话尚未因 API/缓存扣过才补功能费
+                    settle_feature_if_uncharged(billing_qqid, feature_charge)
+                # 渲染费每次都收（含读缓存），FREEDOM 可免
+                if render_charge:
+                    settle_image_render(billing_qqid)
     else:
         result = await coro
     return result, time.perf_counter() - t0

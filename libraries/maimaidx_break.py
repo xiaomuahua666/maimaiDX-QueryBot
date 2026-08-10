@@ -32,6 +32,8 @@ DEFAULT_CONFIG: Dict[str, str] = {
     'checkin_base_max': '2',
     'query_cost': '1',
     'cache_query_cost': '1',
+    # 每次成功出图（含读缓存）额外收取的渲染费；0 = 关闭。
+    'image_render_cost': '1',
     'analysis_input_tokens_per_break': '4000',
     'analysis_output_tokens_per_break': '1000',
     'analysis_min_cost': '2',
@@ -2620,6 +2622,7 @@ class _BreakChargeSession:
     spent: int = 0
     used_free: bool = False
     balance: int = 0
+    extra_lines: List[str] = field(default_factory=list)
 
 
 _billing_qqid: contextvars.ContextVar[Optional[int]] = contextvars.ContextVar(
@@ -2698,6 +2701,46 @@ def settle_feature_if_uncharged(qqid: Optional[int], service: str = 'search') ->
         raise BreakInsufficientError(cost, break_db.get_balance(qqid), qqid=qqid)
 
 
+def ensure_image_render_affordable(qqid: Optional[int]) -> None:
+    """出图前余额检查：渲染费每次都收（含读缓存），FREEDOM 可免。"""
+    if not qqid or is_superuser_exempt(qqid):
+        return
+    cost = image_render_cost()
+    if cost <= 0:
+        return
+    from .maimaidx_card import card_manager
+    if card_manager.freedom_active(qqid):
+        return
+    balance = break_db.get_balance(qqid)
+    if balance < cost:
+        raise BreakInsufficientError(cost, balance, qqid=qqid)
+
+
+def settle_image_render(qqid: Optional[int]) -> Optional[str]:
+    """成功出图后结算渲染费；返回可展示的额外 footer 行（FREEDOM 减免时）。"""
+    if not qqid or is_superuser_exempt(qqid):
+        return None
+    cost = image_render_cost()
+    if cost <= 0:
+        return None
+    from .maimaidx_card import card_manager, format_duration
+    session = _charge_session.get()
+    f_active, f_remaining, _f_exp = card_manager.freedom_info(qqid)
+    if f_active:
+        break_db.record_usage(qqid, 'image_render', break_delta=0)
+        line = f'🛡️ 渲染费 FREEDOM 减免（剩余 {format_duration(f_remaining)}）'
+        if session:
+            session.extra_lines.append(line)
+        return line
+    if not break_db.try_consume(qqid, cost, 'image_render', meta={'kind': 'image_render'}, allow_freedom=False):
+        raise BreakInsufficientError(cost, break_db.get_balance(qqid), qqid=qqid)
+    break_db.record_usage(qqid, 'image_render', break_delta=-cost)
+    if session:
+        session.spent += cost
+        session.balance = break_db.get_balance(qqid)
+    return None
+
+
 @asynccontextmanager
 async def break_billing(qqid: Optional[int]):
     """指令级扣费上下文：查分器/落雪成绩 API 成功后会在此 qq 上结算 BREAK。"""
@@ -2716,12 +2759,15 @@ async def break_billing(qqid: Optional[int]):
         yield
     finally:
         session = _charge_session.get()
-        if session and (session.spent > 0 or session.used_free):
-            if session.spent == 0:
+        if session and (session.spent > 0 or session.used_free or session.extra_lines):
+            lines: List[str] = []
+            if session.used_free and session.spent == 0:
                 lines = [f'💳 今日首次查分免费 · 余额 {session.balance} BREAK']
-            else:
+            elif session.spent > 0:
                 hint = '（含今日免费）' if session.used_free else ''
                 lines = [f'💳 消耗 {session.spent} BREAK{hint} · 余额 {session.balance} BREAK']
+            for extra in session.extra_lines:
+                lines.append(extra)
             _pending_charge_footer.set(lines)
         _billing_qqid.reset(t1)
         _charge_session.reset(t2)
@@ -2768,6 +2814,11 @@ def query_cost() -> int:
 
 def cache_query_cost() -> int:
     return _config_int('cache_query_cost', 1)
+
+
+def image_render_cost() -> int:
+    """成功出图（含读缓存）的渲染费；0 表示关闭。"""
+    return _config_int('image_render_cost', 1)
 
 
 _ANALYSIS_PEAK_WINDOWS_UTC8 = (

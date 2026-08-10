@@ -288,7 +288,11 @@ async def _finish_score(
         from ..libraries.maimaidx_break import break_db
         break_db.ensure_service_affordable(payer, service_name, service_cost)
     try:
-        result, total = await run_timed(coro, billing_qqid=payer)
+        result, total = await run_timed(
+            coro,
+            billing_qqid=payer,
+            render_charge=not (service_name and service_cost > 0),
+        )
     except BreakInsufficientError as e:
         clear_fetch_meta()
         await plugin_finish(matcher, str(e), event=billing_event)
