@@ -1115,6 +1115,7 @@ class FeishuOpsBot:
         self.actions = ActionStore(config.state_db)
         # 日志翻页快照：按 (chat_id, errors_only) 隔离。翻页不重新拉 journalctl。
         self._log_snapshots: dict[tuple[str, bool], LogSnapshot] = {}
+        self._log_refreshing: set[tuple[str, bool]] = set()
         self._log_lock = threading.Lock()
         self.client = (
             lark_module.Client.builder()
@@ -1172,6 +1173,23 @@ class FeishuOpsBot:
         response = self.client.im.v1.message.create(request)
         if not response.success():
             raise RuntimeError(f"Feishu send failed: {response.code} {response.msg}")
+
+    def _patch_card(self, message_id: str, card: dict) -> None:
+        """就地更新已有卡片消息的内容（不新发消息）。"""
+        im = self.lark.im.v1
+        request = (
+            im.PatchMessageRequest.builder()
+            .message_id(message_id)
+            .request_body(
+                im.PatchMessageRequestBody.builder()
+                .content(json.dumps(card, ensure_ascii=False))
+                .build()
+            )
+            .build()
+        )
+        response = self.client.im.v1.message.patch(request)
+        if not response.success():
+            raise RuntimeError(f"Feishu patch failed: {response.code} {response.msg}")
 
     @staticmethod
     def _response(card: dict | None = None, toast: str = "") -> dict:
@@ -1278,6 +1296,51 @@ class FeishuOpsBot:
         with self._log_lock:
             self._log_snapshots[key] = new_snapshot
         return logs_card(new_snapshot, is_admin=is_admin)
+
+    def _async_log_refresh(
+        self,
+        *,
+        chat_id: str,
+        errors_only: bool,
+        window_secs: int,
+        is_admin: bool,
+        message_id: str = "",
+        receive_id_type: str = "chat_id",
+    ) -> bool:
+        """后台拉取日志并更新卡片。
+
+        飞书卡片回调有 3s 超时限制，journalctl 可能超过此阈值。
+        此方法立即返回，在后台线程完成拉取：
+        - 有 message_id 时：patch 原卡片就地更新（刷新场景）
+        - 无 message_id 时：发送新卡片（从菜单/命令首次打开日志场景）
+
+        返回 True 表示已提交后台任务，False 表示已有同类任务在跑。
+        """
+        key = self._log_key(chat_id, errors_only)
+        with self._log_lock:
+            if key in self._log_refreshing:
+                return False
+            self._log_refreshing.add(key)
+
+        def worker() -> None:
+            try:
+                card = self._refresh_logs(
+                    chat_id, errors_only, window_secs, is_admin
+                )
+                if message_id:
+                    self._patch_card(message_id, card)
+                else:
+                    self._send_card(receive_id_type, chat_id, card)
+            except Exception:
+                LOG.exception("async log refresh failed")
+            finally:
+                with self._log_lock:
+                    self._log_refreshing.discard(key)
+
+        threading.Thread(
+            target=worker, name="logs-refresh", daemon=True
+        ).start()
+        return True
 
     def _paginate_logs(
         self,
@@ -1413,9 +1476,14 @@ class FeishuOpsBot:
                 parsed = parse_window_secs(args[0])
                 if parsed is not None:
                     window_secs = parsed
-            return self._refresh_logs(
-                chat_id, command == "errors", window_secs, is_admin
+            # 后台拉取后发送新卡片（不回占位卡，不阻塞 WebSocket 心跳）
+            self._async_log_refresh(
+                chat_id=chat_id,
+                errors_only=command == "errors",
+                window_secs=window_secs,
+                is_admin=is_admin,
             )
+            return None
         is_super_admin = self.is_super_admin(open_id)
         if command == "permissions":
             if not is_super_admin:
@@ -1633,6 +1701,7 @@ class FeishuOpsBot:
         event = data.event
         open_id = str(event.operator.open_id or "")
         chat_id = str(event.context.open_chat_id or "")
+        message_id = str(event.context.open_message_id or "")
         value = dict(event.action.value or {})
         action = str(value.get("action") or "")
         is_admin = self.is_admin(open_id)
@@ -1656,11 +1725,20 @@ class FeishuOpsBot:
                     window_secs = int(raw_window) if raw_window is not None else LOG_WINDOW_DEFAULT_SECS
                 except (TypeError, ValueError):
                     window_secs = LOG_WINDOW_DEFAULT_SECS
-                # 同步拉取（增量优先「去头填尾」，否则全量），原卡片就地更新，不新发卡片
-                card = self._refresh_logs(
-                    chat_id, errors_only, window_secs, is_admin
+                # 飞书卡片回调有 3s 超时限制，journalctl 可能超时。
+                # 后台拉取：有 message_id 时 patch 原卡片就地更新（刷新），
+                # 无 message_id 时发送新卡片（从菜单首次打开）。
+                submitted = self._async_log_refresh(
+                    chat_id=chat_id,
+                    errors_only=errors_only,
+                    window_secs=window_secs,
+                    is_admin=is_admin,
+                    message_id=message_id if action == "logs_refresh" else "",
                 )
-                return self._response(card, "已刷新")
+                toast = "正在刷新日志" if (submitted and action == "logs_refresh") else (
+                    "正在拉取日志" if submitted else "已有刷新任务在执行"
+                )
+                return self._response(toast=toast)
             # 翻页：不重新拉 journalctl，只移动快照 cursor
             direction = "prev" if action == "logs_prev" else "next"
             card, moved = self._paginate_logs(
@@ -1889,14 +1967,17 @@ class FeishuOpsBot:
             return
         key = str(event.event_key or "")
         # 菜单事件是私聊推送，按 open_id 维度隔离日志快照
+        if key in {"ops_logs", "ops_errors"}:
+            self._async_log_refresh(
+                chat_id=open_id,
+                errors_only=key == "ops_errors",
+                window_secs=LOG_WINDOW_DEFAULT_SECS,
+                is_admin=True,
+                receive_id_type="open_id",
+            )
+            return
         cards = {
             "ops_status": lambda: self._safe_status_card(True),
-            "ops_logs": lambda: self._refresh_logs(
-                open_id, False, LOG_WINDOW_DEFAULT_SECS, True
-            ),
-            "ops_errors": lambda: self._refresh_logs(
-                open_id, True, LOG_WINDOW_DEFAULT_SECS, True
-            ),
             "ops_admin": lambda: admin_menu_card(
                 is_super_admin=self.is_super_admin(open_id)
             ),

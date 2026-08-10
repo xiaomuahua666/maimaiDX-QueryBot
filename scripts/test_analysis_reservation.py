@@ -59,6 +59,8 @@ namespace = {
 exec(compile(ast.Module(body=[test_class], type_ignores=[]), str(source_path), "exec"), namespace)
 
 db = namespace["ReservationDb"]()
+# 上游 billing_enabled 计费总开关默认开启；ReservationDb 未提取该方法，注入桩
+db.billing_enabled = lambda: True
 db._conn = sqlite3.connect(":memory:")
 db._conn.row_factory = sqlite3.Row
 db._conn.executescript(

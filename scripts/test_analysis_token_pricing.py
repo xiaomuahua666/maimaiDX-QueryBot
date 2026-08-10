@@ -117,6 +117,9 @@ class FakeBreakDb:
         self.adjustment = None
         self.usage = None
 
+    def billing_enabled(self):
+        return True
+
     def add_balance(self, qqid, delta, reason, *, meta=None):
         self.adjustment = (qqid, delta, reason, meta)
         self.balance += delta
