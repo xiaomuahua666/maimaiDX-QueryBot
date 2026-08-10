@@ -61,6 +61,7 @@ DEFAULT_CONFIG: Dict[str, str] = {
     'upload_lx_cost': '2',
     'upload_all_cost': '3',
     'ticket_cost_per_multiplier': '10',
+    'ticket_status_cost': '1',
     'awmc_read_cost': '5',
     'awmc_status_cost': '2',
     'awmc_music_upsert_cost': '75',

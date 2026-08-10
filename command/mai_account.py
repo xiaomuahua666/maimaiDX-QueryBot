@@ -1647,6 +1647,8 @@ def _service_cost(service: str, *, multiple: int = 1) -> int:
     if service == "ticket":
         unit = int(break_db.get_config("ticket_cost_per_multiplier", "10"))
         return max(0, unit) * max(1, multiple)
+    if service == "ticket_status":
+        return max(0, int(break_db.get_config("ticket_status_cost", "1")))
     if service == "awmc_status":
         return max(0, int(break_db.get_config("awmc_status_cost", "2")))
     if service in {"awmc_preview", "awmc_items", "awmc_gate_status"}:
@@ -1685,6 +1687,7 @@ def _charge_text(result, qqid: Optional[int] = None) -> str:
     labels = {
         "upload": "成绩上传",
         "ticket": "发票",
+        "ticket_status": "舞萌票券状态",
         "awmc_status": "账号状态查询",
         "awmc_preview": "账号预览查询",
         "awmc_items": "道具查询",
@@ -1723,6 +1726,7 @@ async def _(event: MessageEvent):
     lx_cost = break_db.get_config("upload_lx_cost", "2")
     all_cost = break_db.get_config("upload_all_cost", "3")
     ticket_unit = break_db.get_config("ticket_cost_per_multiplier", "10")
+    ticket_status_cost = break_db.get_config("ticket_status_cost", "1")
     read_cost = break_db.get_config("awmc_read_cost", "5")
     status_cost = break_db.get_config("awmc_status_cost", "2")
     edit_cost = break_db.get_config("awmc_music_upsert_cost", "75")
@@ -1740,7 +1744,8 @@ async def _(event: MessageEvent):
         "lxbind：落雪 OAuth（推荐）；maibindlx <导入Token> 为兼容方式\n"
         "发送二维码：始终上传 AWMCNET；已绑定水鱼/落雪时同时同步对应平台\n"
         "maiu / maiul / maiua：AWMCNET + 指定且已绑定的外部平台\n"
-        f"发票 / fp <{ticket_multipliers}> / mai查票 / mai地图 / maiping\n"
+        f"发票 / fp <{ticket_multipliers}> / mai地图 / maiping\n"
+        f"mai查票 / 查票：查询舞萌票券状态，每次成功查询 {ticket_status_cost} BREAK，失败不扣费\n"
         "mai预览 / 预览：查询账号预览；mai道具 / 道具：查询全部道具\n"
         "mai门状态 / 查门：查询 Kaleidx Gate\n"
         "mai改成绩 / 改分 [歌曲 难度 达成率 DX分 FC FS]：交互或一步编辑成绩\n"
@@ -3234,36 +3239,27 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
 
 @account_ticket_status.handle()
 async def _(event: MessageEvent):
-    key, binding, error = _binding_or_error(event)
-    if error or binding is None:
-        if error and "二维码缓存" in error:
-            remember_pending_account_retry(key, "ticket_status")
-            await plugin_finish(
-                account_ticket_status,
-                _pending_qrcode_prompt("已过期，需刷新", "票券查询"),
-                event=event,
-                reply_message=True,
-            )
-        await plugin_finish(account_ticket_status, error or "账号未绑定", event=event)
     try:
-        async with machine_session():
-            result = await sw_api.get_user_charge(binding.qrcode)
-        text = _format_ticket_status(result)
+        text = await _run_paid_awmc_read(
+            event,
+            service="ticket_status",
+            fetch=sw_api.get_user_charge,
+            formatter=_format_ticket_status,
+        )
     except Exception as exc:
-        if _is_sgid_expired_error(exc):
-            account_db.mark_qrcode_result(key, False)
-            remember_pending_account_retry(key, "ticket_status")
+        if isinstance(exc, QrcodeRefreshRequiredError):
             await plugin_finish(
                 account_ticket_status,
-                _pending_qrcode_prompt("已过期，需刷新", "票券查询"),
+                str(exc),
                 event=event,
                 reply_message=True,
             )
         detail = _exception_detail(exc)
+        key = _user_key(event)
         ref = _log(key, "ticket_status", "error", detail)
         await plugin_finish(
             account_ticket_status,
-            f"票券查询失败：{detail}\nRef_ID: {ref}",
+            f"票券查询失败：{detail}\n本次不扣 BREAK\nRef_ID: {ref}",
             event=event,
             reply_message=True,
         )
@@ -3282,6 +3278,7 @@ async def _run_paid_awmc_read(
         if error and "二维码缓存" in error:
             remember_pending_account_retry(key, service)
             label = {
+                "ticket_status": "票券查询",
                 "awmc_preview": "账号预览查询",
                 "awmc_items": "道具查询",
                 "awmc_gate_status": "门状态查询",
@@ -3296,6 +3293,7 @@ async def _run_paid_awmc_read(
     except Exception as exc:
         if _is_sgid_expired_error(exc):
             label = {
+                "ticket_status": "票券查询",
                 "awmc_preview": "账号预览查询",
                 "awmc_items": "道具查询",
                 "awmc_gate_status": "门状态查询",
@@ -3351,13 +3349,12 @@ async def continue_pending_account_retry(
                 event, service=operation, fetch=fetch, formatter=formatter
             )
         if operation == "ticket_status":
-            try:
-                result = await sw_api.get_user_charge(qrcode)
-            except Exception as exc:
-                if _is_sgid_expired_error(exc):
-                    _raise_sgid_refresh_required(key, operation, payload, "票券查询")
-                raise
-            return _format_ticket_status(result)
+            return await _run_paid_awmc_read(
+                event,
+                service=operation,
+                fetch=sw_api.get_user_charge,
+                formatter=_format_ticket_status,
+            )
         if operation == "region":
             try:
                 result = await sw_api.get_user_region(qrcode)
