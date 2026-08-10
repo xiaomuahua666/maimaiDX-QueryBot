@@ -569,6 +569,7 @@ class BreakDatabase:
         if self._conn._backend == 'sqlite':
             self._conn.executescript(_CREATE_SQL)
         self._ensure_config_primary_key_mysql()
+        self._repair_break_usage_schema_mysql()
         self._seed_config()
         self._prune_unbound_hash_users()
         self._prune_empty_users()
@@ -636,6 +637,121 @@ class BreakDatabase:
                 pass
             log.warning(
                 f'[BREAK] 修复 {table} 主键失败（已忽略）：'
+                f'{type(exc).__name__}: {exc}'
+            )
+
+    def _repair_break_usage_schema_mysql(self) -> None:
+        """修复旧 SQLite→MySQL 迁移丢失的约束与 NULL 计数。
+
+        旧迁移器没有识别 SQLite 的表级复合主键，导致
+        ``break_daily_usage(qqid, date)`` 没有唯一约束。随后每次
+        ``INSERT IGNORE`` 都会插入一条新行，而资料卡的普通 SELECT 又可能
+        读到最早的 0 行。同时，早期 ``break_users`` 数值列允许 NULL，
+        ``NULL + 1`` 永远仍是 NULL，累计查分/分析便一直显示 0。
+
+        日表的每次更新会作用于同一用户同一天的所有重复行，因此最早一行
+        保存了完整累计值；按列 MAX 合并可以无损恢复。用户累计计数再以合并
+        后的日表求和补齐，最后补上唯一键，迁移全程用 RENAME TABLE 原子切换。
+        """
+        if self._conn._backend != 'mysql':
+            return
+        prefix = getattr(self._conn, '_prefix', '') or ''
+        users = f'{prefix}break_users'
+        daily = f'{prefix}break_daily_usage'
+        raw = self._conn._conn
+        try:
+            with raw.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) AS cnt FROM ("
+                    "SELECT index_name, GROUP_CONCAT(column_name "
+                    "ORDER BY seq_in_index) AS cols "
+                    "FROM information_schema.statistics "
+                    "WHERE table_schema = DATABASE() AND table_name = %s "
+                    "AND non_unique = 0 GROUP BY index_name"
+                    ") AS indexes_found WHERE cols = 'qqid,date'",
+                    (daily,),
+                )
+                has_daily_key = int((cur.fetchone() or {}).get('cnt', 0) or 0) > 0
+
+                if not has_daily_key:
+                    repaired = f'{daily}__repair'
+                    old = f'{daily}__old'
+                    cur.execute(f"DROP TABLE IF EXISTS `{repaired}`")
+                    cur.execute(f"DROP TABLE IF EXISTS `{old}`")
+                    cur.execute(
+                        f"CREATE TABLE `{repaired}` ("
+                        "`qqid` BIGINT NOT NULL, `date` VARCHAR(32) NOT NULL, "
+                        "`free_used` BIGINT NOT NULL DEFAULT 0, "
+                        "`query_count` BIGINT NOT NULL DEFAULT 0, "
+                        "`analysis_count` BIGINT NOT NULL DEFAULT 0, "
+                        "`break_spent` BIGINT NOT NULL DEFAULT 0, "
+                        "`break_gained` BIGINT NOT NULL DEFAULT 0, "
+                        "PRIMARY KEY (`qqid`, `date`)"
+                        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
+                        "COLLATE=utf8mb4_unicode_ci"
+                    )
+                    cur.execute(
+                        f"INSERT INTO `{repaired}` "
+                        "(`qqid`, `date`, `free_used`, `query_count`, "
+                        "`analysis_count`, `break_spent`, `break_gained`) "
+                        f"SELECT `qqid`, CAST(`date` AS CHAR(32)), "
+                        "MAX(COALESCE(`free_used`, 0)), "
+                        "MAX(COALESCE(`query_count`, 0)), "
+                        "MAX(COALESCE(`analysis_count`, 0)), "
+                        "MAX(COALESCE(`break_spent`, 0)), "
+                        "MAX(COALESCE(`break_gained`, 0)) "
+                        f"FROM `{daily}` WHERE `qqid` IS NOT NULL "
+                        "AND `date` IS NOT NULL GROUP BY `qqid`, CAST(`date` AS CHAR(32))"
+                    )
+                    cur.execute(f"SELECT COUNT(*) AS cnt FROM `{daily}`")
+                    before = int((cur.fetchone() or {}).get('cnt', 0) or 0)
+                    cur.execute(f"SELECT COUNT(*) AS cnt FROM `{repaired}`")
+                    after = int((cur.fetchone() or {}).get('cnt', 0) or 0)
+                    cur.execute(
+                        f"RENAME TABLE `{daily}` TO `{old}`, "
+                        f"`{repaired}` TO `{daily}`"
+                    )
+                    cur.execute(f"DROP TABLE `{old}`")
+                    log.info(
+                        f'[BREAK] 已修复 MySQL 日用量复合主键：'
+                        f'{before} 行合并为 {after} 行'
+                    )
+
+                # 从已经去重的每日统计恢复 NULL/偏小的历史累计。正常非 NULL
+                # 计数用 GREATEST 保留，避免任何旧日表缺失时倒退。
+                cur.execute(
+                    f"UPDATE `{users}` AS u LEFT JOIN ("
+                    "SELECT `qqid`, SUM(`query_count`) AS queries, "
+                    "SUM(`analysis_count`) AS analyses "
+                    f"FROM `{daily}` GROUP BY `qqid`"
+                    ") AS d ON d.qqid = u.qqid SET "
+                    "u.total_query_count = GREATEST("
+                    "COALESCE(u.total_query_count, 0), COALESCE(d.queries, 0)), "
+                    "u.total_analysis_count = GREATEST("
+                    "COALESCE(u.total_analysis_count, 0), COALESCE(d.analyses, 0)), "
+                    "u.balance = COALESCE(u.balance, 0), "
+                    "u.streak = COALESCE(u.streak, 0), "
+                    "u.created_at = COALESCE(u.created_at, u.updated_at, UNIX_TIMESTAMP()), "
+                    "u.updated_at = COALESCE(u.updated_at, u.created_at, UNIX_TIMESTAMP())"
+                )
+                cur.execute(
+                    f"ALTER TABLE `{users}` "
+                    "MODIFY `qqid` BIGINT NOT NULL, "
+                    "MODIFY `balance` BIGINT NOT NULL DEFAULT 0, "
+                    "MODIFY `streak` BIGINT NOT NULL DEFAULT 0, "
+                    "MODIFY `total_query_count` BIGINT NOT NULL DEFAULT 0, "
+                    "MODIFY `total_analysis_count` BIGINT NOT NULL DEFAULT 0, "
+                    "MODIFY `created_at` DOUBLE NOT NULL, "
+                    "MODIFY `updated_at` DOUBLE NOT NULL"
+                )
+            raw.commit()
+        except Exception as exc:
+            try:
+                raw.rollback()
+            except Exception:
+                pass
+            log.warning(
+                f'[BREAK] 修复 MySQL 使用统计失败（读取侧仍会聚合兜底）：'
                 f'{type(exc).__name__}: {exc}'
             )
 
@@ -1004,7 +1120,7 @@ class BreakDatabase:
         if kind == 'query':
             self._conn.execute(
                 """UPDATE break_users SET
-                   total_query_count = total_query_count + 1,
+                   total_query_count = COALESCE(total_query_count, 0) + 1,
                    last_query_at = ?,
                    updated_at = ?
                    WHERE qqid = ?""",
@@ -1020,7 +1136,7 @@ class BreakDatabase:
         elif kind == 'analysis':
             self._conn.execute(
                 """UPDATE break_users SET
-                   total_analysis_count = total_analysis_count + 1,
+                   total_analysis_count = COALESCE(total_analysis_count, 0) + 1,
                    last_analysis_at = ?,
                    updated_at = ?
                    WHERE qqid = ?""",
@@ -1991,11 +2107,39 @@ class BreakDatabase:
 
     def get_user_row(self, qqid: int) -> dict:
         row = self._conn.execute('SELECT * FROM break_users WHERE qqid = ?', (qqid,)).fetchone()
-        return dict(row) if row else {}
+        result = dict(row) if row else {}
+        if result:
+            # MySQL 启动迁移若因临时 DDL 权限/锁失败，仍从每日统计恢复展示。
+            # 这里始终取较大值，也覆盖旧 NULL 在首次新调用后变成 1、但历史
+            # 日统计其实更大的情况。
+            totals = self._conn.execute(
+                """SELECT COALESCE(SUM(query_count), 0) AS total_query_count,
+                          COALESCE(SUM(analysis_count), 0) AS total_analysis_count
+                   FROM (
+                       SELECT MAX(COALESCE(query_count, 0)) AS query_count,
+                              MAX(COALESCE(analysis_count, 0)) AS analysis_count
+                       FROM break_daily_usage
+                       WHERE qqid = ? GROUP BY date
+                   ) AS daily_totals""",
+                (qqid,),
+            ).fetchone()
+            totals = dict(totals) if totals else {}
+            for key in ('total_query_count', 'total_analysis_count'):
+                result[key] = max(
+                    int(result.get(key) or 0), int(totals.get(key) or 0)
+                )
+        return result
 
     def get_daily_row(self, qqid: int) -> dict:
         row = self._conn.execute(
-            'SELECT * FROM break_daily_usage WHERE qqid = ? AND date = ?',
+            """SELECT qqid, date,
+                      MAX(COALESCE(free_used, 0)) AS free_used,
+                      MAX(COALESCE(query_count, 0)) AS query_count,
+                      MAX(COALESCE(analysis_count, 0)) AS analysis_count,
+                      MAX(COALESCE(break_spent, 0)) AS break_spent,
+                      MAX(COALESCE(break_gained, 0)) AS break_gained
+               FROM break_daily_usage WHERE qqid = ? AND date = ?
+               GROUP BY qqid, date""",
             (qqid, self._today()),
         ).fetchone()
         return dict(row) if row else {}

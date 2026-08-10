@@ -5,6 +5,7 @@ from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 import sys
 import tempfile
+import threading
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -184,6 +185,46 @@ for required in (
 bot_source = (ROOT / "scripts" / "feishu_ops_bot.py").read_text(encoding="utf-8")
 assert '"im.message.reaction.created_v1"' in bot_source
 assert "register_p2_customized_event" in bot_source
+assert 'LOG_FETCH_LINES_ALL = 5000' in bot_source
+
+# journalctl 的今日窗口也必须有行数与执行时间硬上限。
+controller = MODULE.SystemController()
+run_calls = []
+controller._run = lambda args, timeout=15: run_calls.append((args, timeout)) or ""
+assert controller.logs(since_today_6=True) == []
+assert "-n" in run_calls[0][0]
+assert str(MODULE.LOG_FETCH_LINES_ALL) in run_calls[0][0]
+assert run_calls[0][1] == MODULE.LOG_FETCH_TIMEOUT_SECONDS
+
+# 慢日志刷新必须离开飞书事件线程，并在完成后另发结果卡片。
+queued_bot = object.__new__(MODULE.FeishuOpsBot)
+queued_bot._log_lock = threading.Lock()
+queued_bot._log_refreshing = set()
+queued_bot._log_snapshots = {}
+refresh_started = threading.Event()
+allow_finish = threading.Event()
+delivered = threading.Event()
+deliveries = []
+
+def fake_refresh(receive_id, errors_only, since_today_6, is_admin):
+    refresh_started.set()
+    assert allow_finish.wait(2)
+    return MODULE._card("刷新完成", "ok")
+
+def fake_send(receive_id_type, receive_id, card):
+    deliveries.append((receive_id_type, receive_id, card))
+    delivered.set()
+
+queued_bot._refresh_logs = fake_refresh
+queued_bot._send_card = fake_send
+pending = queued_bot._queue_log_refresh("chat_id", "oc_test", False, True, True)
+assert pending["header"]["title"]["content"] == "日志刷新已提交"
+assert refresh_started.wait(1)
+assert not delivered.is_set()
+allow_finish.set()
+assert delivered.wait(2)
+assert deliveries[0][0:2] == ("chat_id", "oc_test")
+assert not queued_bot._log_refreshing
 
 # --- ban_list command ----------------------------------------------------
 assert MODULE.parse_command("封禁列表") == ("ban_list", [])

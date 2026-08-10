@@ -28,6 +28,7 @@ MAX_LOG_LINES = 50
 # 刷新时一次性拉取的原始行数上限（两种模式都用，防 journalctl 超时）。
 # 5000 行 / 50 每页 = 100 页，翻页足够；日志多时无 -n 会卡 20s+ 超时。
 LOG_FETCH_LINES_ALL = 5000
+LOG_FETCH_TIMEOUT_SECONDS = 30
 # 日志留存窗口起点：每天 06:00 旋转一次（查询时按 since 过滤，不写文件、不会卡顿）
 LOG_DAY_BOUNDARY_HOUR = 6
 MAX_BREAK_GRANT = 100_000
@@ -901,7 +902,7 @@ class SystemController:
     def logs(
         self, *, errors_only: bool = False, since_today_6: bool = True
     ) -> list[str]:
-        """拉取脱敏日志。刷新时拉取窗口内的日志进快照，翻页走缓存。
+        """拉取有界、脱敏的日志；翻页走内存快照。
 
         两种模式都带 -n 上限 + --since 过滤，避免日志量大时 journalctl
         超时（实测日志多时无 -n 会卡 20s+ 超时）。
@@ -923,7 +924,7 @@ class SystemController:
                 "%Y-%m-%d %H:%M:%S", time.localtime(_today_boundary_ts())
             )
             args.extend(["--since", since_str])
-        raw = self._run(args, timeout=30)
+        raw = self._run(args, timeout=LOG_FETCH_TIMEOUT_SECONDS)
         return sanitize_logs(raw.splitlines(), errors_only=errors_only)
 
     def control(self, operation: str) -> None:
@@ -1062,6 +1063,7 @@ class FeishuOpsBot:
         self.actions = ActionStore(config.state_db)
         # 日志翻页快照：按 (chat_id, errors_only) 隔离。翻页不重新拉 journalctl。
         self._log_snapshots: dict[tuple[str, bool], LogSnapshot] = {}
+        self._log_refreshing: set[tuple[str, bool]] = set()
         self._log_lock = threading.Lock()
         self.client = (
             lark_module.Client.builder()
@@ -1153,10 +1155,15 @@ class FeishuOpsBot:
         *,
         chat_id: str = "",
         since_today_6: bool = True,
+        receive_id_type: str = "chat_id",
     ) -> dict:
-        """命令/菜单入口：刷新日志快照并渲染卡片。"""
-        return self._refresh_logs(
-            chat_id, errors_only, since_today_6, is_admin
+        """提交后台日志刷新，立即返回占位卡，避免阻塞飞书事件线程。"""
+        return self._queue_log_refresh(
+            receive_id_type,
+            chat_id,
+            errors_only,
+            since_today_6,
+            is_admin,
         )
 
     def _log_key(self, chat_id: str, errors_only: bool) -> tuple[str, bool]:
@@ -1192,6 +1199,59 @@ class FeishuOpsBot:
             self._log_snapshots[self._log_key(chat_id, errors_only)] = snapshot
         return logs_card(snapshot, is_admin=is_admin)
 
+    def _queue_log_refresh(
+        self,
+        receive_id_type: str,
+        receive_id: str,
+        errors_only: bool,
+        since_today_6: bool,
+        is_admin: bool,
+    ) -> dict:
+        """后台拉取 journalctl，并把结果另发到原会话。
+
+        飞书卡片回调和长连接心跳共用事件线程。journalctl 曾在生产环境连续
+        跑满 20 秒，既让卡片报“目标服务调用超时”，也会拖断 WebSocket。
+        这里只在事件线程登记任务；慢 I/O 全部在线程中完成。
+        """
+        if not receive_id:
+            # 测试或缺少投递目标时保留可诊断的同步回退。
+            return self._refresh_logs(
+                receive_id, errors_only, since_today_6, is_admin
+            )
+        key = self._log_key(receive_id, errors_only)
+        with self._log_lock:
+            if key in self._log_refreshing:
+                return _card(
+                    "日志刷新中",
+                    "已有同类日志刷新任务正在执行，请稍候。",
+                    template="orange",
+                )
+            self._log_refreshing.add(key)
+
+        def worker() -> None:
+            try:
+                card = self._refresh_logs(
+                    receive_id, errors_only, since_today_6, is_admin
+                )
+                self._send_card(receive_id_type, receive_id, card)
+            except Exception:
+                LOG.exception("failed to deliver refreshed logs")
+            finally:
+                with self._log_lock:
+                    self._log_refreshing.discard(key)
+
+        threading.Thread(
+            target=worker,
+            name=f"logs-refresh-{'errors' if errors_only else 'all'}",
+            daemon=True,
+        ).start()
+        scope = "今日 06:00 起" if since_today_6 else "历史"
+        return _card(
+            "日志刷新已提交",
+            f"正在后台读取{scope}日志，完成后会发送新卡片。",
+            template="orange",
+        )
+
     def _paginate_logs(
         self,
         chat_id: str,
@@ -1215,8 +1275,12 @@ class FeishuOpsBot:
                 current = snapshot
         if snapshot is None:
             return (
-                self._refresh_logs(
-                    chat_id, errors_only, since_today_6=True, is_admin=is_admin
+                self._queue_log_refresh(
+                    "chat_id",
+                    chat_id,
+                    errors_only,
+                    since_today_6=True,
+                    is_admin=is_admin,
                 ),
                 True,
             )
@@ -1559,10 +1623,14 @@ class FeishuOpsBot:
                 raw_since = value.get("since_today_6")
                 since_today_6 = True if raw_since is None else bool(raw_since)
                 return self._response(
-                    self._refresh_logs(
-                        chat_id, errors_only, since_today_6, is_admin
+                    self._queue_log_refresh(
+                        "chat_id",
+                        chat_id,
+                        errors_only,
+                        since_today_6,
+                        is_admin,
                     ),
-                    "日志已刷新",
+                    "日志已在后台刷新",
                 )
             # 翻页：不重新拉 journalctl，只移动快照 cursor
             direction = "prev" if action == "logs_prev" else "next"
@@ -1795,10 +1863,18 @@ class FeishuOpsBot:
         cards = {
             "ops_status": lambda: self._safe_status_card(True),
             "ops_logs": lambda: self._safe_logs_card(
-                False, True, chat_id=open_id, since_today_6=True
+                False,
+                True,
+                chat_id=open_id,
+                since_today_6=True,
+                receive_id_type="open_id",
             ),
             "ops_errors": lambda: self._safe_logs_card(
-                True, True, chat_id=open_id, since_today_6=True
+                True,
+                True,
+                chat_id=open_id,
+                since_today_6=True,
+                receive_id_type="open_id",
             ),
             "ops_admin": lambda: admin_menu_card(
                 is_super_admin=self.is_super_admin(open_id)
