@@ -2968,6 +2968,17 @@ async def _(event: MessageEvent):
     await guess_20q_start.finish()
 
 
+# 你想我猜（20 问）测试期提示：每隔几次提问追加一次，结算/猜对/失败等关键节点始终追加。
+# 避免每条回复都带提示造成刷屏，同时保证玩家有反馈通道。
+_TWENTYQ_TEST_NOTICE = '\n\n— 测试版本，如遇数据/语义错误请联系管理员反馈。'
+_TWENTYQ_NOTICE_EVERY_N = 5  # 提问回复每 N 条带一次提示
+
+
+def _twentyq_notice_for_question(used: int) -> str:
+    """提问回复的提示：每 N 次提问带一次。used 为已用提问次数（从 1 起）。"""
+    return _TWENTYQ_TEST_NOTICE if used % _TWENTYQ_NOTICE_EVERY_N == 0 else ''
+
+
 @guess_20q_solve.handle()
 async def _(event: MessageEvent):
     gid = get_event_group_id(event)
@@ -2999,7 +3010,7 @@ async def _(event: MessageEvent):
         if not reacted:
             await _guess_notify(
                 guess_20q_solve, event,
-                f'✅ {get_sender_display_name(event)} 猜对了！',
+                f'✅ {get_sender_display_name(event)} 猜对了！{_TWENTYQ_TEST_NOTICE}',
                 mention_sender=True,
             )
         return
@@ -3019,7 +3030,7 @@ async def _(event: MessageEvent):
         hint = f'「{guess_text}」' if guess_text else ''
         await _guess_notify(
             guess_20q_solve, event,
-            f'❌ {hint}不对哦，继续猜～',
+            f'❌ {hint}不对哦，继续猜～{_TWENTYQ_TEST_NOTICE}',
             mention_sender=True,
         )
         return
@@ -3027,7 +3038,7 @@ async def _(event: MessageEvent):
     if kind == 'busy':
         await _guess_notify(
             guess_20q_solve, event,
-            '喵～上一个问题还在确认中（可能正在问 AI），请稍等一下再提问哦～',
+            f'喵～上一个问题还在确认中（可能正在问 AI），请稍等一下再提问哦～{_TWENTYQ_TEST_NOTICE}',
             mention_sender=True,
         )
         return
@@ -3036,9 +3047,11 @@ async def _(event: MessageEvent):
         suffix = f'\n（还可提问 {result["remaining"]} 次）'
         if result.get('last'):
             suffix = '\n⚠️ 提问次数用完啦！接下来只能用「我猜 曲名」抢猜。'
+        # 提问回复：每 N 次带一次测试提示，避免刷屏
+        notice = _twentyq_notice_for_question(result.get('used', 0))
         await _guess_notify(
             guess_20q_solve, event,
-            f'{result["answer"]}{suffix}',
+            f'{result["answer"]}{suffix}{notice}',
             mention_sender=True,
         )
         return
@@ -3046,7 +3059,7 @@ async def _(event: MessageEvent):
     if kind == 'no_questions':
         await _guess_notify(
             guess_20q_solve, event,
-            '提问次数用完啦，用「我猜 曲名」抢猜吧～',
+            f'提问次数用完啦，用「我猜 曲名」抢猜吧～{_TWENTYQ_TEST_NOTICE}',
             mention_sender=True,
         )
         return
@@ -3054,14 +3067,15 @@ async def _(event: MessageEvent):
     if kind == 'failed':
         await _guess_notify(
             guess_20q_solve, event,
-            '唔…这不是 Milk 心里想的那首喵，很遗憾本局结束。',
+            f'唔…这不是 Milk 心里想的那首喵，很遗憾本局结束。{_TWENTYQ_TEST_NOTICE}',
             mention_sender=True,
         )
         return
 
     if kind == 'unknown':
         await _guess_notify(
-            guess_20q_solve, event, result['answer'],
+            guess_20q_solve, event,
+            f'{result["answer"]}{_TWENTYQ_TEST_NOTICE}',
             mention_sender=True,
         )
 

@@ -337,7 +337,8 @@ def _reason_cmp(dim: str, text: str, nums: List[float], *, plus: bool = False) -
     n = nums[0]
     num = f'{n:g}'
     if plus:
-        return f'{dim} 是否为 {n:g}+（{n + 0.6:g}~{n + 1.0:g}）'
+        # +档：[n+0.6, n+1.0) 左闭右开
+        return f'{dim} 是否为 {n:g}+（[{n + 0.6:g}, {n + 1.0:g})）'
     t = text
     if any(k in t for k in _CMP_GE):
         return f'{dim} 是否 ≥ {num}'
@@ -350,8 +351,11 @@ def _reason_cmp(dim: str, text: str, nums: List[float], *, plus: bool = False) -
     if any(k in t for k in _CMP_EQ):
         return f'{dim} 是否 = {num}'
     if len(nums) >= 2:
-        return f'{dim} 是否在 {nums[0]:g}~{nums[1]:g} 之间'
-    return f'{dim} 是否为 {num}'
+        return f'{dim} 是否在 [{nums[0]:g}, {nums[1]:g}] 之间'
+    # 整数定数档位：[n, n+0.6) 左闭右开（.0~.5 属该档，.6~.9 属 +档）
+    if n == int(n):
+        return f'{dim} 是否为 {num} 档（[{n:g}, {n + 0.6:g})）'
+    return f'{dim} 是否 = {num}'
 
 
 # 版本匹配表：canonical 为完整版本字符串（小写），kws 为玩家可能的俗称。
@@ -359,34 +363,46 @@ def _reason_cmp(dim: str, text: str, nums: List[float], *, plus: bool = False) -
 # 这类子串问题。PLUS 与基版必须分条录入（顺序：PLUS 在前，基版在后）。
 _VERSION_KEYWORDS = (
     # 新框体（DX 全系列）——按发售倒序，PLUS 在前、基版在后
-    # CiRCLE PLUS（2026-03）/ CiRCLE（2025-09）：圈代（俗称取「circle」谐音/字形）
+    # 发售日数据来自 SEGA 官方 arcade 页面
+    # CiRCLE PLUS（2026-03-19）/ CiRCLE（2025-09-18）：圈代（俗称取「circle」谐音/字形）
     ('maimai でらっくす circle plus', ('circle plus', 'circle+', '圈代+', '圈+')),
     ('maimai でらっくす circle', ('circle', '圈代', '圈')),
-    # PRiSM PLUS（2025-03）/ PRiSM（2024-09）：镜代
+    # PRiSM PLUS（2025-03-13）/ PRiSM（2024-09-12）：镜代
     ('maimai でらっくす prism plus', ('prism plus', 'prism+', '镜+', '镜代+')),
     ('maimai でらっくす prism', ('prism', '镜代', '镜')),
+    # BUDDiES PLUS（2024-03-21）/ BUDDiES（2023-09-14）：宴代/双代
     ('maimai でらっくす buddies plus', ('buddies plus', 'buddies+', '宴代', '宴+')),
     ('maimai でらっくす buddies', ('buddies', '双代', '双')),
+    # FESTiVAL PLUS（2023-03-23）/ FESTiVAL（2022-09-15）：祝代/祭代
     ('maimai でらっくす festival plus', ('festival plus', 'festival+', '祝代', '祝+')),
     ('maimai でらっくす festival', ('festival', '祭代', '祭')),
+    # UNiVERSE PLUS（2022-03-24）/ UNiVERSE（2021-09-16）：星代/宙代
     ('maimai でらっくす universe plus', ('universe plus', 'universe+', '星代', '星+')),
     ('maimai でらっくす universe', ('universe', '宙代', '宙')),
+    # Splash PLUS（2021-03-18）/ Splash（2020-09-17）：煌代/爽代
     ('maimai でらっくす splash plus', ('splash plus', 'splash+', '煌代', '煌')),
     ('maimai でらっくす splash', ('splash', '爽代', '爽')),
+    # でらっくす PLUS（2020-01-23）/ でらっくす（2019-07-11）：华代/熊代
     ('maimai でらっくす plus', ('でらっくす plus', 'deluxe plus', 'dx+', '华代', '華代', '华')),
     ('maimai でらっくす', ('でらっくす', 'deluxe', 'dx', '熊代', '熊')),
     # 旧框——按发售正序
+    # FiNALE（2018-12-13）：辉代；MiLK PLUS（2018-06-21）：雪代；MiLK（2017-12-14）：白代
     ('maimai finale', ('finale', '辉代', '辉')),
     ('maimai milk plus', ('milk plus', 'milk+', '雪代', '雪')),
     ('maimai milk', ('milk', '白代', '白')),
+    # MURASAKi PLUS（2017-06-22）：堇代；MURASAKi（2016-12-15）：紫代
     ('maimai murasaki plus', ('murasaki plus', 'murasaki+', '堇代', '菫代', '堇', '菫')),
     ('maimai murasaki', ('murasaki', '紫代', '紫')),
+    # PiNK PLUS（2016-06-30）：樱代；PiNK（2015-12-09）：桃代/粉代
     ('maimai pink plus', ('pink plus', 'pink+', '樱代', '櫻代', '樱', '櫻')),
     ('maimai pink', ('pink', '桃代', '粉代', '桃', '粉')),
+    # ORANGE PLUS（2015-03-19）：晓代；ORANGE（2014-09-18）：橙代
     ('maimai orange plus', ('orange plus', 'orange+', '晓代', '曉代', '晓', '曉')),
     ('maimai orange', ('orange', '橙代', '橙')),
+    # GreeN PLUS（2014-02-26）：檄代；GreeN（2013-07-11）：超代/绿代
     ('maimai green plus', ('green plus', 'green+', '檄代', '檄')),
     ('maimai green', ('green', '超代', '绿代', '超', '绿')),
+    # maimai PLUS（2012-12-13）：真代+；maimai（2012-07-11）：初代/真代
     ('maimai plus', ('maimai plus', 'maimai+', '真代+', '无印+')),
     ('maimai', ('maimai', '初代', '真代', '无印', '最早', '第一作')),
 )
@@ -410,6 +426,46 @@ _VERSION_GROUP_ALIASES = (
     ('祭祝代', frozenset({'maimai でらっくす festival', 'maimai でらっくす festival plus'})),
     ('双宴代', frozenset({'maimai でらっくす buddies', 'maimai でらっくす buddies plus'})),
 )
+
+# 版本发售顺序表（从旧到新，按官方发售日正序）。
+# 数据来源：SEGA 官方 arcade 页面（sega.jp/arcade）。
+# 用于规则层「雪代之前吗 / 雪代及以后吗」等版本顺序二分法判断，
+# 不再依赖 LLM。索引越大 = 版本越新。
+_VERSION_ORDER = (
+    'maimai',                           # 2012-07-11 初代/真代
+    'maimai plus',                      # 2012-12-13 真代+
+    'maimai green',                     # 2013-07-11 超代/绿代
+    'maimai green plus',                # 2014-02-26 檄代
+    'maimai orange',                    # 2014-09-18 橙代
+    'maimai orange plus',               # 2015-03-19 晓代
+    'maimai pink',                      # 2015-12-09 桃代/粉代
+    'maimai pink plus',                 # 2016-06-30 樱代
+    'maimai murasaki',                  # 2016-12-15 紫代
+    'maimai murasaki plus',             # 2017-06-22 堇代
+    'maimai milk',                      # 2017-12-14 白代
+    'maimai milk plus',                 # 2018-06-21 雪代
+    'maimai finale',                    # 2018-12-13 辉代
+    'maimai でらっくす',                # 2019-07-11 熊代
+    'maimai でらっくす plus',           # 2020-01-23 华代
+    'maimai でらっくす splash',         # 2020-09-17 爽代
+    'maimai でらっくす splash plus',    # 2021-03-18 煌代
+    'maimai でらっくす universe',       # 2021-09-16 宙代
+    'maimai でらっくす universe plus',  # 2022-03-24 星代
+    'maimai でらっくす festival',       # 2022-09-15 祭代
+    'maimai でらっくす festival plus',  # 2023-03-23 祝代
+    'maimai でらっくす buddies',        # 2023-09-14 双代
+    'maimai でらっくす buddies plus',   # 2024-03-21 宴代
+    'maimai でらっくす prism',          # 2024-09-12 镜代
+    'maimai でらっくす prism plus',     # 2025-03-13 镜+
+    'maimai でらっくす circle',         # 2025-09-18 圈代
+    'maimai でらっくす circle plus',    # 2026-03-19 圈+
+)
+# 版本 → 发售顺序索引（归一化后查找：去空格+小写，与 _norm 一致）
+# 注意：此处 _norm 尚未定义（在下方），故内联等价归一化（版本串无「比X大」句式）。
+_VERSION_INDEX = {
+    v.lower().replace(' ', '').replace('　', ''): i
+    for i, v in enumerate(_VERSION_ORDER)
+}
 
 _CJK_RE = re.compile(r'[\u4e00-\u9fff]')
 _KANA_RE = re.compile(r'[\u3040-\u30ff]')
@@ -435,21 +491,25 @@ _VALUE_QUERY_WORDS = (
 # 比较词分类常量：按「≥ / ≤ / > / < / =」五类归组，覆盖简繁体、口语、书面、符号。
 # _cmp_bool 判断时必须按「≥ 在 > 前、≤ 在 < 前」的顺序，否则「大于等于」会被「大于」抢先。
 _CMP_GE = (  # ≥（含等号）
-    '以上', '不低于', '不小于', '不低於', '不小於', '最少', '至少', '起码', '起碼',
+    '不低于', '不小于', '不低於', '不小於', '最少', '至少', '起码', '起碼',
     '最少有', '最少是', '大于等于', '大於等於', '大于等於', '大於等于',
     '≥', '>=', '≧', '=>',
 )
 _CMP_LE = (  # ≤（含等号）
-    '以下', '不高于', '不超过', '不大於', '不超過', '最多', '至多', '至多到',
+    '不高于', '不超过', '不大於', '不超過', '最多', '至多', '至多到',
     '最多有', '最多是', '小于等于', '小於等於', '小于等於', '小於等于',
     '≤', '<=', '≦', '=<',
 )
 _CMP_GT = (  # > 严格大于
-    '大于', '大於', '超过', '超過', '高于', '高於', '多过', '多過', '多于', '多於',
+    # 「以上」按玩家口语语义为严格大于（不含本数）；
+    # 需含等号场景请用「至少/大于等于/不低于」等明确词。
+    '以上', '大于', '大於', '超过', '超過', '高于', '高於', '多过', '多過', '多于', '多於',
     '超出', '>', '＞',
 )
 _CMP_LT = (  # < 严格小于
-    '小于', '小於', '低于', '低於', '不到', '不满', '不滿', '少于', '少於',
+    # 「以下」按玩家口语语义为严格小于（不含本数）；
+    # 需含等号场景请用「至多/小于等于/不高于」等明确词。
+    '以下', '小于', '小於', '低于', '低於', '不到', '不满', '不滿', '少于', '少於',
     '不足', '没到', '沒到', '未到', '未满', '未滿', '<', '＜',
 )
 _CMP_EQ = (  # = 等于
@@ -660,18 +720,25 @@ def _q_ds(music: Music, text: str) -> Optional[str]:
             (n + 0.6) <= target_ds < (n + 1.0),
             _reason_cmp(f'判定维度：{color}定数', text, nums, plus=True),
         )
-    # 定数题里「是14吗」指的是 14 档（14.0~14.5），不能像 BPM 那样把「是」
-    # 当成精确相等——否则 14.4 会被误判为「不是14」。只有出现明确比较词
-    # （大于/小于/以上/以下/等于 等）时才走数值比较。
-    # 注意：舞萌定数的小数档位为 .0/.5/.6/.7/.8/.9。
-    # 「14+」指 14.6~14.9（+档）；「14」（非+档）指 14.0~14.5（含 .5）。
+    # 明确比较词（大于/小于/以上/以下/等于 等）→ 走数值比较
     if any(k in text for k in _CMP_WORDS):
         res = _cmp_bool(target_ds, text, nums)
         if res is not None:
             return _r(res, _reason_cmp(f'判定维度：{color}定数', text, nums))
+    # 小数定数（如 12.6/13.7）→ 精确等于比较。
+    # 玩家精确到小数位就是问定数（ds），不是问定级（level）。
+    # 舞萌定数小数档位为 .0/.5/.6/.7/.8/.9，带小数即精确指定。
+    if n != int(n):
+        return _r(
+            abs(target_ds - n) < 0.01,
+            f'判定维度：{color}定数是否 = {n:g}',
+        )
+    # 整数定数（如 13/14）→ 档位判断（定级 level）。
+    # 「14」指 14 档（14.0~14.5），「14+」指 14.6~14.9（+档，上面已处理）。
+    # 不能像 BPM 那样把「是」当精确相等——否则 14.4 会被误判为「不是14」。
     return _r(
         n <= target_ds < n + 0.6,
-        f'判定维度：{color}定数是否为 {n:g} 档（{n:g}~{n + 0.5:g}）',
+        _reason_cmp(f'判定维度：{color}定数', text, nums),
     )
 
 
@@ -696,11 +763,17 @@ def _q_level_bare(music: Music, text: str) -> Optional[str]:
     if has_plus:
         return _r(
             (n + 0.6) <= target_ds < (n + 1.0),
-            f'判定维度：{color}定数 是否为 {n:g}+（{n + 0.6:g}~{n + 1.0:g}）',
+            f'判定维度：{color}定数是否为 {n:g}+（[{n + 0.6:g}, {n + 1.0:g})）',
+        )
+    # 小数定数（如 13.5/13.6）→ 精确等于；整数（如 13/14）→ 档位判断
+    if n != int(n):
+        return _r(
+            abs(target_ds - n) < 0.01,
+            f'判定维度：{color}定数是否 = {n:g}',
         )
     return _r(
         n <= target_ds < n + 0.6,
-        f'判定维度：{color}定数是否为 {n:g} 档（{n:g}~{n + 0.5:g}）',
+        f'判定维度：{color}定数是否为 {n:g} 档（[{n:g}, {n + 0.6:g})）',
     )
 
 
@@ -772,22 +845,204 @@ _VERSION_INFO_KW = (
     '什么版本', '哪个版本', '哪一代', '什么代', '哪个代',
     '什么版', '哪个版', '什么version', '什么ver',
 )
-# 版本顺序/前后题 → 仍走 LLM（规则不处理顺序判断）
-_VERSION_ORDER_KW = (
-    '及以后', '及以後', '或更早', '或更晚', '之前', '之后',
-    '以前', '以后', '更早', '更晚', '前一代', '后一代',
-    '及之前', '及以后', '之后', '之前', '往后', '往前',
-    '新于', '旧于', '晚于', '早于',
+
+# ASCII 版本名片段（小写）。用于 _looks_like_ascii_version_text 判定疑似版本题。
+# 收录新框/旧框罗马音版本词的「特征子串」，能容忍常见拼写错误（muilk→mlik 等）。
+# 必须够长（≥3 字符）避免误伤：dx 仅 2 字符单用易误判（"index"/"next" 等），故
+# dx 单独走 + / plus / 加 后缀判定。
+_ASCII_VERSION_FRAGMENTS = (
+    'milk', 'mlik', 'muilk', 'imlk',  # milk（白代/雪代）—— 字母顺序错乱
+    'buddies', 'buddys', 'budies', 'buudies', 'buddise', 'buddes',  # buddies（双代/宴代）
+    'splash', 'splsh', 'salsh', 'splah',  # splash（爽代/煌代）
+    'universe', 'univ', 'unvierse', 'unverse',  # universe（宙代/星代）
+    'festival', 'fest', 'festval', 'festivla',  # festival（祭代/祝代）
+    'prism', 'prsm', 'pirsm', 'prizm', 'przm',  # prism（镜代/镜+）
+    'circle', 'circl', 'cricle', 'cirle',  # circle（圈代/圈+）
+    'finale', 'fnal', 'finlae', 'fniale',    # finale（辉代）
+    'murasaki', 'mura', 'murasaki',  # murasaki（紫代/堇代）
+    'orange', 'pink', 'green',        # 旧框（橙/桃/绿代）—— 这些英文词日常也可能出现，
+                                      # 故仅在含 plus/+ / 加 时才视为版本题
 )
+# plus 的常见写法（含错字）
+_PLUS_VARIANTS = ('plus', 'plsu', 'pls', '+', '加', '家', '佳')  # 「家/佳」为「+」谐音错字
+
+
+def _looks_like_ascii_version_text(text: str) -> bool:
+    """判定文本是否疑似 ASCII 版本名提问（容错拼写错误）。
+
+    触发条件（满足任一）：
+    1. 含 ≥4 字符的版本罗马音片段（milk/buddies/splash/universe/festival/prism/
+       circle/finale/murasaki）——这些词日常极少出现，命中即高度疑似版本题；
+       orange/pink/green 因日常词义较常见，不单独触发。
+    2. 含短版本片段（dx/orange/pink/green）且后接 plus 变体（如 dx+ / orange加）。
+    3. 含 plus 变体（plus/plsu/+/加）且文本明显是版本语境（含「代/版/version」）。
+
+    目的：放宽门控让规则未命中的拼写错误版本题能交 LLM 兜底判断，
+    同时避免把日常闲聊误判为版本题。
+    """
+    t = text.lower()
+    # 1. 长版本片段直接命中
+    for frag in _ASCII_VERSION_FRAGMENTS:
+        if len(frag) >= 4 and frag in t:
+            # orange/pink/green 日常词义太常见，需额外 plus 限定才视为版本题
+            if frag in ('orange', 'pink', 'green'):
+                if any(p in t for p in _PLUS_VARIANTS):
+                    return True
+                continue
+            return True
+    # 2. 短版本片段 + plus 变体（dx+ / dx加 / dxplus）
+    if ('dx' in t or 'deluxe' in t) and any(p in t for p in _PLUS_VARIANTS):
+        return True
+    # 3. plus 变体 + 版本语境词（避免「1+1」纯算术误判）
+    if any(p in t for p in _PLUS_VARIANTS) and any(
+        k in t for k in ('代', '版', 'version', 'ver')
+    ):
+        return True
+    return False
+
+# 版本顺序方向词。判断顺序必须 GE→LE→LT→GT（含等号在前，避免「及以后」被
+# 「以后」抢先命中走严格 >）。语义与数值比较一致：
+#   「及以后/不早于/以来」= ≥ 本代（含本代）；「及以前/及之前/不晚于」= ≤ 本代（含本代）
+#   「之前/以前/前面/更早/早于/旧于」= < 本代（不含）；「之后/以后/后面/更晚/晚于/新于」= > 本代（不含）
+# 「不早于/不晚于」与定数的「不低于/不高于」对称；注意必须放在 LT/GT 前，
+# 否则「不晚于」里的「晚于」(GT) 会抢先命中。
+_VER_ORDER_GE = ('及以后', '及以後', '或更晚', '不早于', '以来')      # >= 本代
+_VER_ORDER_LE = ('及以前', '及之前', '及更早', '或更早', '不晚于')  # <= 本代
+_VER_ORDER_LT = ('之前', '以前', '前面', '更早', '早于', '往前', '前一代', '旧于')  # < 本代
+_VER_ORDER_GT = ('之后', '以后', '后面', '更晚', '晚于', '新于', '往后', '后一代')  # > 本代
+# 全部顺序关键词（_q_version 门控：命中这些时让给 _q_version_order）
+_VERSION_ORDER_KW = _VER_ORDER_GE + _VER_ORDER_LE + _VER_ORDER_LT + _VER_ORDER_GT
+
+# 「比 X 早/晚/新/旧」句式 → 方向归一化（与定数 _BI_CMP_RE 对称，但版本无数字，
+# 只看形容词）。早/旧 → <；晚/新 → >。版本俗称里不含「早晚新旧」四字，安全。
+# 非贪婪 + 长度上限，避免跨句子误匹配。
+_VER_BI_CMP_RE = re.compile(r'比.{0,30}?(早|晚|新|旧)')
+
+
+def _ver_kw_match(kw: str, text: str) -> bool:
+    """版本俗称匹配（模块级，_q_version 与 _q_version_order 共用）。
+
+    text 已被 _norm（去空格+小写）处理。单字关键词必须后接「代/版」，
+    避免把「紫谱」「绿谱」等难度颜色误判为版本题。ASCII 关键词需词边界匹配。
+    """
+    nk = _norm(kw)
+    if not nk:
+        return False
+    if len(nk) == 1 and nk not in ('dx',):
+        # 单字关键词必须后接「代/版」
+        return (nk + '代') in text or (nk + '版') in text
+    # ASCII 版本关键词（dx/milk/milkplus/milk+/buddies/finale/green/
+    # orange/pink/murasaki/prism/festival/universe/splash/circle 等）
+    # 需词边界匹配：关键词后紧跟 ASCII 字母/数字视为复合词，不单独命中。
+    # 避免把「dx2025」「milk2025」「buddiesfamily」「milkyway」等复合词
+    # 误判为版本题。中文俗称（雪代/圈代等）不受影响，走 substring。
+    if nk.isascii():
+        idx = text.find(nk)
+        while idx != -1:
+            after = text[idx + len(nk): idx + len(nk) + 1]
+            if not after or not (after.isascii() and after.isalnum()):
+                return True
+            idx = text.find(nk, idx + len(nk))
+        return False
+    return nk in text
+
+
+def _music_version_index(music: Music) -> Optional[int]:
+    """曲目版本在 _VERSION_ORDER 中的索引。无法识别时返回 None。"""
+    mv = _norm(music.basic_info.version)
+    # 直接命中
+    if mv in _VERSION_INDEX:
+        return _VERSION_INDEX[mv]
+    # 兜底：曲库可能存「maimai でらっくす buddies」但归一化去空格后仍应命中；
+    # 若仍不命中（极端数据），返回 None 让 LLM 处理。
+    return None
+
+
+def _q_version_order(music: Music, text: str) -> Optional[str]:
+    """版本顺序二分法是非题：判断曲目版本是否在玩家所问代「之前/之后/及以后」等。
+
+    基于 _VERSION_ORDER 发售顺序表做索引比较，不再依赖 LLM。
+    例：「雪代之前吗」→ 版本 < 雪代(MiLK PLUS)；「雪代及以后吗」→ 版本 >= 雪代。
+    合并叫法（熊华代/双宴代等）按区间 [lo, hi] 判断：
+      「G及以后」= >= lo；「G及以前」= <= hi；「G之前」= < lo；「G之后」= > hi。
+    reason 只回显玩家问的俗称与方向，不泄露曲目真实版本。
+    """
+    # 无任何顺序方向词 → 看是否「比X早/晚/新/旧」句式；都不是则交给 _q_version
+    has_dir = any(k in text for k in _VERSION_ORDER_KW)
+    bi_m = _VER_BI_CMP_RE.search(text) if not has_dir else None
+    if not has_dir and not bi_m:
+        return None
+    # 方向判断（含等号优先：GE→LE→LT→GT，最后 bi-cmp 句式）
+    if any(k in text for k in _VER_ORDER_GE):
+        op = 'ge'
+    elif any(k in text for k in _VER_ORDER_LE):
+        op = 'le'
+    elif any(k in text for k in _VER_ORDER_LT):
+        op = 'lt'
+    elif any(k in text for k in _VER_ORDER_GT):
+        op = 'gt'
+    elif bi_m:
+        # 比X早/旧 → <；比X晚/新 → >
+        op = 'lt' if bi_m.group(1) in ('早', '旧') else 'gt'
+    else:
+        return None
+
+    m_idx = _music_version_index(music)
+    if m_idx is None:
+        # 曲目版本不在顺序表里，规则无法判断，交给 LLM
+        return None
+
+    # 1. 合并叫法（熊华代/双宴代等）→ 区间 [lo, hi]
+    for group_name, versions in _VERSION_GROUP_ALIASES:
+        if group_name not in text:
+            continue
+        idxs = [_VERSION_INDEX.get(_norm(v)) for v in versions]
+        if any(i is None for i in idxs):
+            continue
+        lo, hi = min(idxs), max(idxs)
+        if op == 'ge':
+            flag = m_idx >= lo
+        elif op == 'le':
+            flag = m_idx <= hi
+        elif op == 'lt':
+            flag = m_idx < lo
+        else:
+            flag = m_idx > hi
+        sym = {'ge': '≥', 'le': '≤', 'lt': '<', 'gt': '>'}[op]
+        return _r(flag, f'判定维度：版本是否为{group_name}及对应顺序（{sym}{group_name}）')
+
+    # 2. 单版本匹配（PLUS 在前，避免被基版截胡）
+    for canonical, kws in _VERSION_KEYWORDS:
+        matched_kw = next((kw for kw in kws if _ver_kw_match(kw, text)), None)
+        if matched_kw is None:
+            continue
+        cv = _norm(canonical)
+        target_idx = _VERSION_INDEX.get(cv)
+        if target_idx is None:
+            continue
+        if op == 'ge':
+            flag = m_idx >= target_idx
+        elif op == 'le':
+            flag = m_idx <= target_idx
+        elif op == 'lt':
+            flag = m_idx < target_idx
+        else:
+            flag = m_idx > target_idx
+        sym = {'ge': '≥', 'le': '≤', 'lt': '<', 'gt': '>'}[op]
+        # reason 用玩家问的俗称（原始形式），不泄露官方版本名
+        return _r(flag, f'判定维度：版本是否为{matched_kw}对应顺序（{sym}{matched_kw}）')
+    # 含顺序方向词但未匹配到任何版本俗称 → 交给 LLM
+    return None
 
 
 def _q_version(music: Music, text: str) -> Optional[str]:
     """版本是非题：判断曲目版本是否匹配玩家所问的代/版本。
 
     匹配 _VERSION_KEYWORDS（PLUS 在前避免被基版截胡）和 _VERSION_GROUP_ALIASES
-    （合并叫法如「舞代」「熊华代」）。版本顺序/前后判断仍走 LLM。
+    （合并叫法如「舞代」「熊华代」）。版本顺序/前后判断由 _q_version_order 处理。
     """
-    # 版本顺序/前后题 → 让给 LLM
+    # 版本顺序/前后题 → 已由 _q_version_order 处理；若到这里说明未匹配到版本，
+    # 仍交给 LLM，避免 _q_version 把「雪代之前吗」误当作「是雪代吗」。
     if any(k in text for k in _VERSION_ORDER_KW):
         return None
     # 版本信息题 → 走 unknown
@@ -798,19 +1053,10 @@ def _q_version(music: Music, text: str) -> Optional[str]:
     # 关键词也需 _norm（去空格+小写）后再匹配，因为 text 已被 _norm 处理。
     # 注意：单字关键词（紫/绿/粉/超等）必须后接「代/版」才算版本题，
     # 否则会把「紫谱」「绿谱」等难度颜色误判为版本题。
-    def _kw_match(kw: str, text: str) -> bool:
-        nk = _norm(kw)
-        if not nk:
-            return False
-        if len(nk) == 1 and nk not in ('dx',):
-            # 单字关键词必须后接「代/版」
-            return (nk + '代') in text or (nk + '版') in text
-        return nk in text
-
     has_ver_kw = any(k in text for k in _VERSION_QUERY_WORDS)
     if not has_ver_kw:
         for _canonical, kws in _VERSION_KEYWORDS:
-            if any(_kw_match(kw, text) for kw in kws):
+            if any(_ver_kw_match(kw, text) for kw in kws):
                 has_ver_kw = True
                 break
         if not has_ver_kw:
@@ -818,6 +1064,11 @@ def _q_version(music: Music, text: str) -> Optional[str]:
                 if group_name in text:
                     has_ver_kw = True
                     break
+    # 放宽门控：玩家用 ASCII 版本名提问时常拼错（muilkplus/buddies→buudies/dx+→dx加），
+    # 规则精确匹配不到，但句式明显是版本题（含 plus/+ / 罗马音版本词片段）。
+    # 此时放行交 LLM 兜底（LLM 提示词已含错字容错说明），避免直接 unknown。
+    if not has_ver_kw:
+        has_ver_kw = _looks_like_ascii_version_text(text)
     if not has_ver_kw:
         return None
     music_ver = _norm(music.basic_info.version)
@@ -838,7 +1089,7 @@ def _q_version(music: Music, text: str) -> Optional[str]:
             return _r(matched, f'判定维度：版本是否为{group_name}')
     # 2. 单版本匹配（PLUS 在前，避免被基版截胡）
     for canonical, kws in _VERSION_KEYWORDS:
-        matched_kw = next((kw for kw in kws if _kw_match(kw, text)), None)
+        matched_kw = next((kw for kw in kws if _ver_kw_match(kw, text)), None)
         if matched_kw is not None:
             cv = _norm(canonical)
             cv_is_plus = cv.endswith('plus')
@@ -858,15 +1109,15 @@ def _norm_genre(s: str) -> str:
 def _genre_key(music: Music) -> str:
     """把 genre 字段映射到简化分类 key（pops/niconico/touhou/game/ongeki/utage/maimai）。"""
     g = _norm_genre(music.basic_info.genre)
-    if 'pops' in g or 'アニメ' in g or 'anime' in g:
+    if 'pops' in g or 'アニメ' in g or 'anime' in g or '流行' in g or '动漫' in g:
         return 'pops'
-    if 'niconico' in g or 'ボーカロイド' in g or 'vocaloid' in g:
+    if 'niconico' in g or 'ボーカロイド' in g or 'vocaloid' in g or '术力口' in g or 'v家' in g:
         return 'niconico'
-    if 'オンゲキ' in g or 'ongeki' in g or 'chunithm' in g:
+    if 'オンゲキ' in g or 'ongeki' in g or 'chunithm' in g or '音击' in g or '中二' in g:
         return 'ongeki'
-    if 'ゲーム' in g or 'game' in g or 'variety' in g or 'バラエティ' in g:
+    if 'ゲーム' in g or 'game' in g or 'variety' in g or 'バラエティ' in g or '游戏' in g:
         return 'game'
-    if '東方' in g or 'touhou' in g:
+    if '東方' in g or 'touhou' in g or '东方' in g:
         return 'touhou'
     if '宴会' in g or 'utage' in g:
         return 'utage'
@@ -878,14 +1129,15 @@ def _genre_key(music: Music) -> str:
 # (genre_key, reason 显示名, (玩家俗称关键词, ...))
 _GENRE_KEYWORDS: Tuple[Tuple[str, str, Tuple[str, ...]], ...] = (
     ('maimai', '原创曲', ('原创曲', 'maimai原创', '本家曲', '委约曲', '原创')),
-    ('niconico', '术曲', ('术曲', 'v家曲', 'vocaloid曲', 'nico曲', '初音曲',
+    ('niconico', '术曲', ('术曲', '术力口', 'v家曲', 'vocaloid曲', 'nico曲', '初音曲',
                           'v家', 'vocaloid', 'nico', 'ボーカロイド')),
     ('touhou', '东方曲', ('东方曲', '东方同人', 'touhou', '東方', '东方')),
     ('pops', '动漫曲', ('动漫曲', '动画曲', 'j-pop', 'jpop', '流行曲',
                         'pops', '动漫', '动画', 'アニメ', 'anime')),
     ('game', '游戏曲', ('游戏曲', '游戏')),
+    # 音击&中二节奏是同一个分类（オンゲキ＆CHUNITHM），两种俗称都必须命中规则
     ('ongeki', '音击/中二节奏曲', ('音击曲', '音击', 'ongeki', 'オンゲキ',
-                                  '中二节奏曲', '中二节奏', 'chunithm', 'チュウニズム')),
+                                  '中二节奏曲', '中二节奏', '中二', 'chunithm', 'チュウニズム')),
     ('utage', '宴会曲', ('宴会曲', '宴会', '宴会场', 'utage', '宴会場')),
 )
 
@@ -1131,9 +1383,9 @@ def _q_charter(music: Music, text: str) -> Optional[str]:
 # 等客观信息（那样等于开户籍）。玩家想问这些，请用猜测形式：「谱师是X吗」「BPM 大于180吗」。
 
 
-# 纯数值/字段比对的 handler。分类/谱师/版本已纳入规则匹配（别名表+错字容错），
-# 命中即直接回答；版本顺序/前后判断及艺术家/标题语种等需语义理解
-# 的维度，仍移交 LLM 兜底判断（_llm_classify）。
+# 纯数值/字段比对的 handler。分类/谱师/版本/版本顺序已纳入规则匹配
+# （别名表+错字容错+发售顺序表），命中即直接回答；艺术家/标题语种等需语义
+# 理解的维度，仍移交 LLM 兜底判断（_llm_classify）。
 _QUESTION_HANDLERS: Tuple[QuestionHandler, ...] = (
     _q_white_chart,
     _q_song_type,
@@ -1141,6 +1393,7 @@ _QUESTION_HANDLERS: Tuple[QuestionHandler, ...] = (
     _q_ds,
     _q_level_bare,
     _q_title_length,
+    _q_version_order,
     _q_version,
     _q_genre,
     _q_charter,
@@ -1364,6 +1617,10 @@ _GUESS_20Q_LLM_SYSTEM = """\
       · 名字陌生或无法确定是否同一人 → 回「无法回答」，不要因字面不同就回否（那会冤枉玩家），
         也不要在不确定时强行回是。
     - 版本俗称同样容忍错字：「双代」打成「霜代」、「宴代」打成「燕代」等，按发音/形近理解。
+    - ASCII 版本名（milk/buddies/splash/universe/festival/prism/circle/finale/murasaki/dx）
+      也容忍拼写错误：字母顺序颠倒（milk→muilk/mlik）、漏字（buddies→budies）、
+      形近替换（plus→plsu）、+ 号写成「加/家/佳」谐音等。按玩家想表达的版本理解，
+      再与曲目特征版本比对。例：「muilkplus」= milk plus = 雪代；「buudies」= buddies = 双代。
     容错只用于「理解玩家意图」，不改变判定标准；判定仍以曲目特征里的真实字段值为准。
 
 【安全约束】

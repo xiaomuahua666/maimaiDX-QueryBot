@@ -75,8 +75,11 @@ assert _c_g is True and _ans_g == _YES, f'术曲题应规则命中回答是: con
 assert 'niconico' not in _r_g and 'vocaloid' not in _r_g, f'分类reason不应泄露真值: {_r_g}'
 # 艺术家仍移交 LLM；版本已纳入规则（stub version=buddies → 是双代=是）
 assert classify_question(m, '艺术家是deco27吗')[1] is False, '艺术家题移交 LLM'
-# 版本顺序/前后题仍走 LLM
-assert classify_question(m, '在雪代及以后吗')[1] is False, '版本顺序题移交 LLM'
+# 版本顺序/前后题 → 规则层命中（基于发售顺序表，不再走 LLM）
+# m=buddies(双代, idx21), 雪代=milk plus(idx11), 及以后→>=11 → 是
+_a, _c, _r = classify_question(m, '在雪代及以后吗')
+assert _c is True and _a == _YES, f'版本顺序题应规则命中回答是: consumed={_c}, ans={_a}'
+assert '雪代' in _r and '≥' in _r, f'reason应含雪代与方向: {_r}'
 
 # ── 并发锁：上一条没处理完时，第二条返回 busy ──
 # 用 monkeypatch 让 _check_guess 挂起，模拟正在判定
@@ -135,14 +138,14 @@ def _make_ds_music(purple_ds):
 # 14.4 问「是14吗」→ 应是（14 档 = 14.0~14.5），不是精确等于
 ans, _, reason = classify_question(_make_ds_music(14.4), '紫谱是14吗')
 assert ans == _YES, f'14.4 应属于 14 档: {ans}'
-assert '14~14.5' in reason, reason
+assert '[14, 14.6)' in reason, reason
 # 14.6 问「是14吗」→ 不是
 ans, _, _ = classify_question(_make_ds_music(14.6), '紫谱是14吗')
 assert ans == _NO, f'14.6 不属 14 档: {ans}'
 # 14.4 问「14+」→ 不是（14+ = 14.6~15.0）
 ans, _, reason = classify_question(_make_ds_music(14.4), '紫谱是14+吗')
 assert ans == _NO, f'14.4 不属 14+: {ans}'
-assert '14.6~15' in reason, reason
+assert '[14.6, 15)' in reason, reason
 # 14.5 问「14+」→ 不是（14.5 < 14.6，属非+档上界）
 ans, _, _ = classify_question(_make_ds_music(14.5), '紫谱是14+吗')
 assert ans == _NO, f'14.5 不属 14+: {ans}'
@@ -204,6 +207,24 @@ assert _a == _YES, f'東方 问东方应回是: {_a}'
 _g_ut = _make_genre_music('宴会場')
 _a, _, _ = classify_question(_g_ut, '是宴会曲吗')
 assert _a == _YES, f'宴会場 问宴会应回是: {_a}'
+
+# オンゲキ＆CHUNITHM → 音击=是、中二=是、中二节奏=是（同一分类两种俗称必须一致）
+_g_og = _make_genre_music('オンゲキ＆CHUNITHM')
+_a_og1, _c_og1, _ = classify_question(_g_og, '是音击吗')
+assert _c_og1 and _a_og1 == _YES, f'オンゲキ 问音击应回是: {_a_og1}'
+_a_og2, _c_og2, _ = classify_question(_g_og, '是中二吗')
+assert _c_og2 and _a_og2 == _YES, f'オンゲキ 问中二应回是: {_a_og2}'
+_a_og3, _c_og3, _ = classify_question(_g_og, '是中二节奏吗')
+assert _c_og3 and _a_og3 == _YES, f'オンゲキ 问中二节奏应回是: {_a_og3}'
+_a_og4, _c_og4, _ = classify_question(_g_og, '是chunithm吗')
+assert _c_og4 and _a_og4 == _YES, f'オンゲキ 问chunithm应回是: {_a_og4}'
+# 非音击分类问音击 → 不是
+_a_og5, _, _ = classify_question(_g_mai, '是音击吗')
+assert _a_og5 == _NO, f'maimai 问音击应回不是: {_a_og5}'
+# 中文 genre 也要能匹配
+_g_og_cn = _make_genre_music('音击与中二节奏')
+assert classify_question(_g_og_cn, '是音击吗')[0] == _YES, '中文genre音击应回是'
+assert classify_question(_g_og_cn, '是中二吗')[0] == _YES, '中文genre中二应回是'
 
 # 分类信息题 → unknown
 assert classify_question(_g_nico, '是什么分类')[1] is False, '分类信息题应走 unknown'
@@ -501,11 +522,177 @@ assert _a == _NO, f'でらっくす(新框) 问舞代应回不是: {_a}'
 # 版本信息题 → unknown
 assert classify_question(_v_buddies, '是什么版本')[1] is False, '版本信息题应走 unknown'
 assert classify_question(_v_buddies, '哪一代')[1] is False, '版本信息题应走 unknown'
-# 版本顺序题 → 仍走 LLM
-assert classify_question(_v_buddies, '在雪代及以后吗')[1] is False, '版本顺序题应走 LLM'
-assert classify_question(_v_buddies, '比双代更早吗')[1] is False, '版本顺序题应走 LLM'
+# 版本顺序题 → 规则层命中（基于发售顺序表，不再走 LLM）
+# buddies(idx21) >= 雪代(idx11) → 是
+_a, _c, _r = classify_question(_v_buddies, '在雪代及以后吗')
+assert _c is True and _a == _YES, f'雪代及以后应回是: consumed={_c}, ans={_a}'
+# buddies(idx21) < 双代(idx21) → 不是（更早=不含本代）
+_a, _c, _r = classify_question(_v_buddies, '比双代更早吗')
+assert _c is True and _a == _NO, f'比双代更早应回不是: consumed={_c}, ans={_a}'
+
+# ── ASCII 版本关键词词边界：避免「dx2025」「milk2025」「buddiesfamily」等复合词误判 ──
+# 熊代曲：是dx=是、是dx代=是、是dx版=是；但 dx2025/dx123 不应被版本handler拦截
+_a, _c, _ = classify_question(_v_dx, '是dx吗')
+assert _c and _a == _YES, f'熊代 问dx应回是: {_a}'
+_a, _c, _ = classify_question(_v_dx, '是dx代吗')
+assert _c and _a == _YES, f'熊代 问dx代应回是: {_a}'
+_a, _c, _ = classify_question(_v_dx, '是dx版吗')
+assert _c and _a == _YES, f'熊代 问dx版应回是: {_a}'
+# dx 后跟 ASCII 字母/数字 → 不是版本题，不应被拦截（走 unknown/LLM）
+assert classify_question(_v_dx, '是dx2025吗')[1] is False, 'dx2025 不应被版本handler拦截'
+assert classify_question(_v_dx, '是dx123吗')[1] is False, 'dx123 不应被版本handler拦截'
+# 非熊代曲问 dx → 不是（版本不匹配）
+_a, _c, _ = classify_question(_v_buddies, '是dx吗')
+assert _c and _a == _NO, f'buddies 问dx应回不是: {_a}'
+
+# milk 基版（白代）/ milk plus（雪代）— 俗称映射与词边界
+_v_milk = _make_ver_music('maimai milk')
+_v_milkp = _make_ver_music('maimai milk plus')
+# 雪代 = milk plus，白代 = milk 基版
+_a, _c, _ = classify_question(_v_milkp, '是雪代吗')
+assert _c and _a == _YES, f'milk plus 问雪代应回是: {_a}'
+_a, _c, _ = classify_question(_v_milk, '是白代吗')
+assert _c and _a == _YES, f'milk 问白代应回是: {_a}'
+# milk plus ≠ 白代；milk ≠ 雪代
+_a, _c, _ = classify_question(_v_milkp, '是白代吗')
+assert _c and _a == _NO, f'milk plus 问白代应回不是: {_a}'
+_a, _c, _ = classify_question(_v_milk, '是雪代吗')
+assert _c and _a == _NO, f'milk 问雪代应回不是: {_a}'
+# milk plus 各英文问法
+for _q in ('是milkplus吗', '是milk plus吗', '是milk+吗'):
+    _a, _c, _ = classify_question(_v_milkp, _q)
+    assert _c and _a == _YES, f'milk plus 问「{_q}」应回是: {_a}'
+# milk 基版问 milkplus → 不是（基版≠plus）
+_a, _c, _ = classify_question(_v_milk, '是milkplus吗')
+assert _c and _a == _NO, f'milk 问milkplus应回不是: {_a}'
+# 复合词不命中：milk2025/milkyway/milktea 不应被 milk 或 milk plus 拦截
+for _q in ('是milk2025吗', '是milkyway吗', '是milktea吗'):
+    assert classify_question(_v_milk, _q)[1] is False, f'「{_q}」不应被版本handler拦截'
+    assert classify_question(_v_milkp, _q)[1] is False, f'「{_q}」不应被版本handler拦截'
+
+# buddies（双代）— 复合词不命中
+for _q in ('是buddies2025吗', '是buddiesfamily吗', '是buddy吗'):
+    assert classify_question(_v_buddies, _q)[1] is False, f'「{_q}」不应被版本handler拦截'
+# 是buddies吗 正常命中
+_a, _c, _ = classify_question(_v_buddies, '是buddies吗')
+assert _c and _a == _YES, f'buddies 问buddies应回是: {_a}'
+
+# finale（辉代）— 复合词不命中
+_v_finale = _make_ver_music('maimai finale')
+for _q in ('是finale2025吗', '是finals吗'):
+    assert classify_question(_v_finale, _q)[1] is False, f'「{_q}」不应被版本handler拦截'
+_a, _c, _ = classify_question(_v_finale, '是finale吗')
+assert _c and _a == _YES, f'finale 问finale应回是: {_a}'
 
 print('version rule tests passed')
+
+# ── 版本顺序二分法判断（规则层，基于发售顺序表）──
+# 顺序索引参考：白代(milk)=10, 雪代(milk plus)=11, 辉代(finale)=12,
+# 熊代(でらっくす)=13, 双代(buddies)=21, 镜代(prism)=23, 圈代(circle)=25
+_v_white = _make_ver_music('maimai milk')       # 白代 idx10
+_v_snow = _make_ver_music('maimai milk plus')   # 雪代 idx11
+_v_finale_v = _make_ver_music('maimai finale')  # 辉代 idx12
+
+# 雪代及以后吗：白代(idx10) < 雪代(idx11) → 不是
+_a, _c, _r = classify_question(_v_white, '雪代及以后吗')
+assert _c and _a == _NO, f'白代 问雪代及以后应回不是: {_a}'
+assert '雪代' in _r and '≥' in _r, f'reason应含雪代/≥: {_r}'
+# 雪代及以后吗：雪代(idx11) >= 雪代(idx11) → 是（及=含本代）
+_a, _c, _ = classify_question(_v_snow, '雪代及以后吗')
+assert _c and _a == _YES, f'雪代 问雪代及以后应回是(含本代): {_a}'
+# 雪代及以后吗：辉代(idx12) >= 雪代(idx11) → 是
+_a, _c, _ = classify_question(_v_finale_v, '雪代及以后吗')
+assert _c and _a == _YES, f'辉代 问雪代及以后应回是: {_a}'
+
+# 雪代之前吗：辉代(idx12) < 雪代(idx11) → 不是
+_a, _c, _r = classify_question(_v_finale_v, '雪代之前吗')
+assert _c and _a == _NO, f'辉代 问雪代之前应回不是: {_a}'
+assert '雪代' in _r and '<' in _r, f'reason应含雪代/<: {_r}'
+# 雪代之前吗：白代(idx10) < 雪代(idx11) → 是
+_a, _c, _ = classify_question(_v_white, '雪代之前吗')
+assert _c and _a == _YES, f'白代 问雪代之前应回是: {_a}'
+# 雪代之前吗：雪代(idx11) < 雪代(idx11) → 不是（之前=不含本代）
+_a, _c, _ = classify_question(_v_snow, '雪代之前吗')
+assert _c and _a == _NO, f'雪代 问雪代之前应回不是(不含本代): {_a}'
+
+# 雪代及以前吗：雪代(idx11) <= 雪代(idx11) → 是
+_a, _c, _r = classify_question(_v_snow, '雪代及以前吗')
+assert _c and _a == _YES, f'雪代 问雪代及以前应回是(含本代): {_a}'
+assert '雪代' in _r and '≤' in _r, f'reason应含雪代/≤: {_r}'
+# 雪代及以前吗：辉代(idx12) <= 雪代(idx11) → 不是
+_a, _c, _ = classify_question(_v_finale_v, '雪代及以前吗')
+assert _c and _a == _NO, f'辉代 问雪代及以前应回不是: {_a}'
+
+# 雪代之后吗：辉代(idx12) > 雪代(idx11) → 是
+_a, _c, _r = classify_question(_v_finale_v, '雪代之后吗')
+assert _c and _a == _YES, f'辉代 问雪代之后应回是: {_a}'
+assert '雪代' in _r and '>' in _r, f'reason应含雪代/>: {_r}'
+# 雪代之后吗：雪代(idx11) > 雪代(idx11) → 不是（之后=不含本代）
+_a, _c, _ = classify_question(_v_snow, '雪代之后吗')
+assert _c and _a == _NO, f'雪代 问雪代之后应回不是(不含本代): {_a}'
+
+# 玩家口语变体：「雪代前面吗」「雪代后面吗」
+_a, _c, _ = classify_question(_v_white, '雪代前面吗')
+assert _c and _a == _YES, f'白代 问雪代前面应回是: {_a}'
+_a, _c, _ = classify_question(_v_finale_v, '雪代后面吗')
+assert _c and _a == _YES, f'辉代 问雪代后面应回是: {_a}'
+
+# 合并叫法顺序：双宴代 = [双代(21), 宴代(22)]
+# 双代(21) 问「双宴代及以后吗」→ >=lo(21) → 是
+_a, _c, _r = classify_question(_v_buddies, '双宴代及以后吗')
+assert _c and _a == _YES, f'双代 问双宴代及以后应回是: {_a}'
+assert '双宴代' in _r and '≥' in _r, f'reason应含双宴代/≥: {_r}'
+# 白代(10) 问「双宴代及以后吗」→ 10>=21 → 不是
+_a, _c, _ = classify_question(_v_white, '双宴代及以后吗')
+assert _c and _a == _NO, f'白代 问双宴代及以后应回不是: {_a}'
+# 白代(10) 问「双宴代之前吗」→ 10<21 → 是
+_a, _c, _ = classify_question(_v_white, '双宴代之前吗')
+assert _c and _a == _YES, f'白代 问双宴代之前应回是: {_a}'
+# 双代(21) 问「双宴代之前吗」→ 21<21 → 不是（在区间内不算之前）
+_a, _c, _ = classify_question(_v_buddies, '双宴代之前吗')
+assert _c and _a == _NO, f'双代 问双宴代之前应回不是: {_a}'
+
+# reason 不泄露曲目真实版本
+_r_test = classify_question(_v_buddies, '雪代及以后吗')[2]
+assert 'buddies' not in _r_test.lower() and '双代' not in _r_test, f'reason不应泄露真实版本: {_r_test}'
+
+# 含顺序方向词但未匹配到版本俗称 → 仍走 LLM（consumed=False）
+assert classify_question(_v_buddies, '是前面吗')[1] is False, '无版本俗称的顺序题应走 LLM'
+
+# ── 「比X早/晚/新/旧」句式（与定数「比X大/小」对称）──
+# 辉代(idx12) 比雪代(idx11) 晚 → 是
+_a, _c, _ = classify_question(_v_finale_v, '比雪代晚吗')
+assert _c and _a == _YES, f'辉代 比雪代晚应回是: {_a}'
+# 白代(idx10) 比雪代(idx11) 早 → 是
+_a, _c, _ = classify_question(_v_white, '比雪代早吗')
+assert _c and _a == _YES, f'白代 比雪代早应回是: {_a}'
+# 辉代(idx12) 比雪代(idx11) 新 → 是
+_a, _c, _ = classify_question(_v_finale_v, '比雪代新吗')
+assert _c and _a == _YES, f'辉代 比雪代新应回是: {_a}'
+# 白代(idx10) 比雪代(idx11) 旧 → 是
+_a, _c, _ = classify_question(_v_white, '比雪代旧吗')
+assert _c and _a == _YES, f'白代 比雪代旧应回是: {_a}'
+# 雪代(idx11) 比雪代(idx11) 早 → 不是（严格小于）
+_a, _c, _ = classify_question(_v_snow, '比雪代早吗')
+assert _c and _a == _NO, f'雪代 比雪代早应回不是(严格<): {_a}'
+
+# ── 「不晚于/不早于」（与定数「不低于/不高于」对称，含等号）──
+# 雪代(idx11) 不晚于雪代(idx11) → 是（≤含本代）
+_a, _c, _r = classify_question(_v_snow, '不晚于雪代吗')
+assert _c and _a == _YES, f'雪代 不晚于雪代应回是(含本代): {_a}'
+assert '雪代' in _r and '≤' in _r, f'reason应含雪代/≤: {_r}'
+# 辉代(idx12) 不晚于雪代(idx11) → 不是
+_a, _c, _ = classify_question(_v_finale_v, '不晚于雪代吗')
+assert _c and _a == _NO, f'辉代 不晚于雪代应回不是: {_a}'
+# 雪代(idx11) 不早于雪代(idx11) → 是（≥含本代）
+_a, _c, _r = classify_question(_v_snow, '不早于雪代吗')
+assert _c and _a == _YES, f'雪代 不早于雪代应回是(含本代): {_a}'
+assert '雪代' in _r and '≥' in _r, f'reason应含雪代/≥: {_r}'
+# 白代(idx10) 不早于雪代(idx11) → 不是
+_a, _c, _ = classify_question(_v_white, '不早于雪代吗')
+assert _c and _a == _NO, f'白代 不早于雪代应回不是: {_a}'
+
+print('version order tests passed')
 
 # ── 区间题 + 「以下」类测试（紫谱=14.6）──
 # 「定数是14以下的吗」→ 以下 → ≤14 → 14.6 不满足 → 不是
