@@ -285,6 +285,13 @@ class Guess20QManager:
         # 规则未命中 → LLM 兜底判断（开关开启且配置了 key 时）
         # 注意：LLM 看到完整问题（含「不是/无」等否定词），已按语义直接判断，
         # 这里不再做 _apply_negation 反转，否则会双重反转。
+        # 离谱题（谱师/艺术家属性、数量、主观题等）：不走 LLM，不消耗次数。
+        # LLM 对小众创作者的性别/国籍/产出量等信息不可靠，统一拒绝。
+        if _is_unanswerable_question(question_text):
+            log.info(
+                f'[Guess20Q] 离谱题拒绝 question={question_text!r}（不走 LLM）'
+            )
+            return {'kind': 'unknown', 'answer': _UNANSWERABLE_HINT}
         log.info(f'[Guess20Q] 规则未命中，尝试 LLM 兜底 question={question_text!r}')
         llm_result = await _llm_classify(data.music, question_text, _get_config())
         # await 期间游戏可能被超时/重置/猜对结束，或被其他玩家用完提问次数，
@@ -942,30 +949,64 @@ _CHARTER_KEYWORDS = (
     '制谱的', '制铺的', '制普的',
 )
 
+# 艺术家关键词（含错别字变体：曲师可能指谱师也可能指曲作者，按上下文判断）
+_ARTIST_KEYWORDS = (
+    '艺术家', '曲作者', '曲师', '作曲', '作曲家', '原曲作者',
+    '音乐作者', '歌手', '演唱者', 'artist',
+)
+
 # 谱师别名表：官方名 → (别名...)。仅覆盖高频谱师；未收录的用官方名做匹配。
 _CHARTER_ALIASES: Dict[str, Tuple[str, ...]] = {
-    'サファ太': ('沙发太', '沙发', 'safatai', 'safarutai'),
+    'サファ太': ('沙发太', '沙发', 'safatai', 'safarutai', '翠',
+              # サファ太的马甲署名（同一个人换皮写谱）
+              'safata.hz', 'safata.gz', 'safata.ghz', 'safatahz',
+              # 合作名（safaTA=サファ太 + mago=玉子）：FFT MASTER 署名
+              'safatamago',
+              ),
     'ニャイン': ('nyan', '九条', '9条', 'nyain'),
-    '翠楼屋': ('翠樓屋', '翠楼', 'suirouya'),
-    'はっぴー': ('happy', 'はっぴ', 'happi'),
+    '翠楼屋': ('翠樓屋', 'suirouya'),
+    # はっぴー 的马甲：緑風 犬三郎 / 原田ひろゆき（gamerch 官方证实的別名義）
+    'はっぴー': ('happy', 'はっぴ', 'happi', '哈皮',
+              '緑風 犬三郎', '绿风犬三郎', '原田ひろゆき',
+              ),
     '某S氏': ('某s', 's氏'),
-    '玉子豆腐': ('玉子', '豆腐', 'tamakodofu'),
-    '華火職人': ('华火职人', '华火', '華火', 'hanabi'),
-    '緑風 犬三郎': ('绿风犬三郎', '绿风', '犬三郎'),
-    'mai-Star': ('maistar', 'mai星'),
-    '小鳥遊さん': ('小鳥遊', '小鸟游', 'takanashi'),
+    # 合作名 safataTA+mago 归属：玉子豆腐也参与（FFT MASTER）
+    '玉子豆腐': ('tamakodofu', 'safatamago'),
+    '華火職人': ('华火职人', '華火職人'),
+    'mai-Star': ('maistar', '麦斯达'),
+    # 小鳥遊さん 的马甲：Phoenix（gamerch 官方证实的別名義）
+    '小鳥遊さん': ('小鳥遊', '小鸟游', 'takanashi', 'phoenix'),
     'すきやき奉行': ('sukiyaki', 'すきやき'),
     'ぴちネコ': ('pichineco', 'pichi', 'ぴち'),
     '隅田川星人': ('sumidagawa', '隅田川', 'sumida'),
-    'シチミヘルツ': ('shichimi', '七味', 'shichimihertz'),
+    # シチミヘルツ 的马甲：7.3Hz / 7.3GHz（gamerch 官方证实的別名義）
+    'シチミヘルツ': ('shichimi', 'shichimihertz', '7.3hz', '7.3ghz', '7.3'),
+    'Luxizhel': ('luxizhel',),
     'LabiLabi': ('labilabi',),
     'rioN': ('rion',),
     'Jack': ('jack',),
     'Techno Kitchen': ('technokitchen', 'techno'),
 }
 
-# 谱师信息题关键词
-_CHARTER_INFO_KW = ('谁', '什么', '哪位', '名字')
+# 谱师信息题关键词（直接问答案，走 unknown 不消耗次数）
+# 含数量信息词（多少/几首/几个），让「谱师写过几首」「谱师有多少作品」走 unknown
+_CHARTER_INFO_KW = ('谁', '什么', '哪位', '名字', '多少', '几首', '几个', '几条')
+
+# 谱师属性/数量/主观是非题关键词：这些不是「谱师是X吗」的名字匹配题，
+# 规则无法判断谱师本人的性别/国籍/产出量/知名度等，走 LLM 兜底。
+# 用词组而非单字，避免误匹配谱师名字（翠楼屋/沙发太/shichimi 等）里的字。
+_CHARTER_PROPERTY_KW = (
+    # 数量是非题：「谱师写过的谱多吗」「谱师写过的歌少吗」
+    '多吗', '少吗', '多不多', '少不少',
+    # 知名度/主观：「谱师有名吗」「谱师厉害吗」
+    '厉害', '有名', '出名', '知名', '大佬', '大神',
+    # 性别：「谱师是男的吗」「谱师是女的吗」
+    '男的', '女的', '男性', '女性', '男生', '女生',
+    # 国籍：「谱师是日本人吗」「谱师是中国人吗」
+    '日本人', '中国人', '韩国', '美国', '国人',
+    # 产出/其他属性是非题：「谱师写过别的谱吗」「谱师还活着吗」
+    '写过', '做过', '活着', '去世', '其他', '别的',
+)
 
 
 def _get_charter_aliases(charter: str) -> Tuple[str, ...]:
@@ -999,13 +1040,33 @@ def _match_charter_name(name: str, charters: List[str]) -> Optional[bool]:
         return None
     name_n = _norm(name)
     # 直接匹配（精确 + 子串）
+    # 单字别名只做精确匹配，避免「翠」误匹配「翠楼屋」等含同字的名字
     for charter in charters:
         for alias in _get_charter_aliases(charter):
             if not alias:
                 continue
             if alias == name_n:
                 return True
-            if len(name_n) >= 2 and (alias in name_n or name_n in alias):
+            if len(alias) >= 2 and len(name_n) >= 2 and (alias in name_n or name_n in alias):
+                return True
+    # 反向匹配：玩家问的 name 属于某官方名条目时，检查曲谱师是否在该条目别名里
+    # （合作名场景：曲谱师=safaTAmago，玩家问 サファ太/玉子豆腐 应回是）
+    for charter in charters:
+        charter_n = _norm(charter)
+        for official, aliases in _CHARTER_ALIASES.items():
+            all_n = [_norm(official)] + [_norm(a) for a in aliases]
+            # name 是否命中该条目（official 或其别名）
+            name_hit = any(
+                name_n == an or (len(an) >= 2 and len(name_n) >= 2 and (an in name_n or name_n in an))
+                for an in all_n
+            )
+            if not name_hit:
+                continue
+            # 曲谱师是否在该条目别名里
+            if any(
+                charter_n == an or (len(an) >= 2 and len(charter_n) >= 2 and (an in charter_n or charter_n in an))
+                for an in all_n
+            ):
                 return True
     # 拼音模糊匹配（可选，处理繁简/同音错字）
     if _HAS_PYPINYIN:
@@ -1038,8 +1099,12 @@ def _q_charter(music: Music, text: str) -> Optional[str]:
             break
     if matched_kw is None:
         return None
-    # 信息题（谱师是谁/什么谱师）→ 走 unknown
+    # 信息题（谱师是谁/什么谱师/写过几首）→ 走 unknown
     if any(k in text for k in _CHARTER_INFO_KW):
+        return None
+    # 属性/数量/主观是非题（谱师写过的谱多吗/是男的吗/是日本人吗/有名吗…）
+    # 规则无法判断谱师本人的性别/国籍/产出量/知名度等，走 LLM 兜底。
+    if any(k in text for k in _CHARTER_PROPERTY_KW):
         return None
     charters = _get_master_charters(music)
     if not charters:
@@ -1092,6 +1157,31 @@ _UNKNOWN_HINT = (
     '· 标题：「我问标题是英文吗」「我问标题里有 Bad 吗」「我问标题是 10 个字吗」\n'
     '注：定数问题请指明绿/黄/红/紫/白谱，否则无法回答。猜曲名用「我猜 曲名」。'
 )
+
+# 离谱题提示：规则层识别为无法回答的维度（谱师/艺术家属性、数量、主观题等），
+# 不走 LLM（LLM 对小众谱师信息不可靠），不消耗次数。
+_UNANSWERABLE_HINT = (
+    '唔…这类问题 Milk 回答不了喵。Milk 只能回答曲目本身的是非题（分类/BPM/定数/'
+    '版本/谱面类型/谱师名字/标题特征），不回答谱师或艺术家本人的性别/国籍/产出量/'
+    '知名度等属性题。请换种问法，例如「我问谱师是沙发太吗」。'
+)
+
+
+def _is_unanswerable_question(text: str) -> bool:
+    """离谱题检测：规则层识别为无法回答的维度，不走 LLM，不消耗次数。
+
+    谱师/艺术师的属性、数量、主观是非题（性别/国籍/产出量/知名度等），
+    规则无法判断，LLM 对小众创作者信息也不可靠，统一拒绝。
+    """
+    # 谱师属性题：含谱师关键词 + 属性关键词
+    has_charter_kw = any(kw in text for kw in _CHARTER_KEYWORDS)
+    if has_charter_kw and any(k in text for k in _CHARTER_PROPERTY_KW):
+        return True
+    # 艺术家属性题：含艺术家关键词 + 属性关键词
+    has_artist_kw = any(kw in text for kw in _ARTIST_KEYWORDS)
+    if has_artist_kw and any(k in text for k in _CHARTER_PROPERTY_KW):
+        return True
+    return False
 
 
 # ───────────────────── LLM 兜底（规则未命中时） ─────────────────────

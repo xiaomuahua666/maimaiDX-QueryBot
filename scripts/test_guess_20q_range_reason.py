@@ -246,13 +246,101 @@ assert _a == _YES, f'带空格也应匹配: {_a}'
 # 谱师信息题 → unknown
 assert classify_question(_g_sf, '谱师是谁')[1] is False, '谱师信息题应走 unknown'
 assert classify_question(_g_sf, '是哪位谱师')[1] is False, '谱师信息题应走 unknown'
+# 数量信息题（几首/多少）→ unknown
+assert classify_question(_g_sf, '谱师写过几首')[1] is False, '数量信息题应走 unknown'
+assert classify_question(_g_sf, '谱师有多少作品')[1] is False, '数量信息题应走 unknown'
 # 无谱师署名
 _g_no = _make_genre_music('maimai', charter='-')
 _a, _c, _ = classify_question(_g_no, '谱师是沙发太吗')
 assert _c and _a == _NO, f'无谱师署名应回不是: {_a}'
 
+# 谱师属性/数量/主观是非题 → 走 LLM（不消耗，consumed=False）
+# 历史 bug：「谱师写过的谱多吗」被 _q_charter 提取出 name='写过的谱多'，
+# 匹配不到谱师后误回「不是喵」，应改为走 LLM 兜底。
+for _prop_q in (
+    '谱师写过的谱多吗',     # 数量是非题（用户实际触发 case）
+    '谱师写过的歌少吗',     # 数量是非题
+    '谱师是男的吗',         # 性别
+    '谱师是女的吗',         # 性别
+    '谱师是日本人吗',       # 国籍
+    '谱师是中国人吗',       # 国籍
+    '谱师有名吗',           # 知名度
+    '谱师厉害吗',           # 主观
+    '谱师写过别的谱吗',     # 产出属性
+    '谱师还活着吗',         # 其他属性
+):
+    _a_p, _c_p, _ = classify_question(_g_sf, _prop_q)
+    assert _c_p is False, f'属性题「{_prop_q}」应走 LLM 不消耗次数: consumed={_c_p}, ans={_a_p[:30]}'
+
+# 正常名字匹配不受影响
+_a, _c, _ = classify_question(_g_sf, '谱师是沙发太吗')
+assert _c and _a == _YES, f'名字匹配仍应命中: {_a}'
+_a, _c, _ = classify_question(_g_sf, '谱师是翠楼屋吗')
+assert _c and _a == _NO, f'名字匹配不中应回不是: {_a}'
+
 # 不抢答定数题
 assert classify_question(_g_sf, '紫谱定数是14吗')[1] is True, '定数题不应被谱师handler抢答'
+
+# ── _is_unanswerable_question：离谱题不走 LLM，不消耗次数 ──
+from libraries.maimaidx_guess_20q import _is_unanswerable_question  # noqa: E402
+# 谱师属性题
+assert _is_unanswerable_question('谱师写过的谱多吗'), '谱师数量题应判为离谱题'
+assert _is_unanswerable_question('谱师是男的吗'), '谱师性别题应判为离谱题'
+assert _is_unanswerable_question('谱师是日本人吗'), '谱师国籍题应判为离谱题'
+assert _is_unanswerable_question('谱师有名吗'), '谱师知名度题应判为离谱题'
+# 艺术家属性题
+assert _is_unanswerable_question('艺术家是女的吗'), '艺术家性别题应判为离谱题'
+assert _is_unanswerable_question('曲师是中国人吗'), '艺术家国籍题应判为离谱题'
+# 正常题不误判
+assert not _is_unanswerable_question('谱师是沙发太吗'), '谱师名字匹配题不是离谱题'
+assert not _is_unanswerable_question('BPM大于180吗'), 'BPM题不是离谱题'
+assert not _is_unanswerable_question('紫谱定数是14吗'), '定数题不是离谱题'
+
+# ── Luxizhel 别名匹配（官方名/罗马音）──
+_g_lx = _make_genre_music('maimai', charter='Luxizhel')
+_a, _c, _ = classify_question(_g_lx, '谱师是luxizhel吗')
+assert _c and _a == _YES, f'Luxizhel 问luxizhel应回是: {_a}'
+_a, _c, _ = classify_question(_g_lx, '谱师是Luxizhel吗')
+assert _c and _a == _YES, f'Luxizhel 问Luxizhel应回是: {_a}'
+
+# ── サファ太马甲 Safata.Hz / Safata.GHz + 俗称 翠 ──
+# 曲目谱师=サファ太，玩家用马甲署名提问应回是（同一个人换皮写谱）
+_g_sf = _make_genre_music('maimai', charter='サファ太')
+for _alias_q in ('谱师是Safata.Hz吗', '谱师是safata.hz吗', '谱师是Safata.GHz吗', '谱师是safatahz吗', '谱师是翠吗'):
+    _a, _c, _ = classify_question(_g_sf, _alias_q)
+    assert _c and _a == _YES, f'サファ太 问「{_alias_q}」应回是: {_a}'
+
+# ── 合作名 safaTAmago = サファ太 + 玉子豆腐（FFT MASTER 署名）──
+# 双向匹配：曲署名是合作名时，问任一参与方都应回是；反之亦然
+_g_co = _make_genre_music('maimai', charter='safaTAmago')
+for _alias_q in ('谱师是サファ太吗', '谱师是沙发太吗', '谱师是玉子豆腐吗'):
+    _a, _c, _ = classify_question(_g_co, _alias_q)
+    assert _c and _a == _YES, f'合作名safaTAmago 问「{_alias_q}」应回是: {_a}'
+# 反向：曲署名是单方，问合作名也回是（该方参与了合作）
+_g_sf2 = _make_genre_music('maimai', charter='サファ太')
+_a, _c, _ = classify_question(_g_sf2, '谱师是safatamago吗')
+assert _c and _a == _YES, f'サファ太 问safatamago应回是: {_a}'
+_g_tk2 = _make_genre_music('maimai', charter='玉子豆腐')
+_a, _c, _ = classify_question(_g_tk2, '谱师是safatamago吗')
+assert _c and _a == _YES, f'玉子豆腐 问safatamago应回是: {_a}'
+
+# ── はっぴー马甲 緑風 犬三郎 / 原田ひろゆき ──
+_g_hp = _make_genre_music('maimai', charter='はっぴー')
+for _alias_q in ('谱师是緑風 犬三郎吗', '谱师是绿风犬三郎吗', '谱师是原田ひろゆき吗', '谱师是哈皮吗'):
+    _a, _c, _ = classify_question(_g_hp, _alias_q)
+    assert _c and _a == _YES, f'はっぴー 问「{_alias_q}」应回是: {_a}'
+
+# ── シチミヘルツ马甲 7.3Hz / 7.3GHz ──
+_g_sc = _make_genre_music('maimai', charter='シチミヘルツ')
+for _alias_q in ('谱师是7.3Hz吗', '谱师是7.3GHz吗', '谱师是7.3吗'):
+    _a, _c, _ = classify_question(_g_sc, _alias_q)
+    assert _c and _a == _YES, f'シチミヘルツ 问「{_alias_q}」应回是: {_a}'
+
+# ── 小鳥遊さん马甲 Phoenix ──
+_g_tk = _make_genre_music('maimai', charter='小鳥遊さん')
+for _alias_q in ('谱师是Phoenix吗', '谱师是phoenix吗', '谱师是小鸟游吗', '谱师是takanashi吗'):
+    _a, _c, _ = classify_question(_g_tk, _alias_q)
+    assert _c and _a == _YES, f'小鳥遊さん 问「{_alias_q}」应回是: {_a}'
 
 print('charter rule tests passed')
 
