@@ -60,46 +60,43 @@ def _make_genre_music(genre, version='maimai でらっくす buddies'):
 # ── 案例曲目：分类=niconico & VOCALOID（即用户报告的 bug 曲目）──
 m_nico = _make_genre_music('niconico & VOCALOID')
 
-# 1) 玩家问「是舞萌吗」→ 规则层命中（舞萌在 _GENRE_KEYWORDS 的 maimai 行）
-#    分类=niconico ≠ maimai → 必须回「否」。这是用户报告的 bug，核心断言。
+# 1) 玩家问「是舞萌吗」→ 含「舞萌」字样，规则层不抢答，交给 AI 判断
+#    （「舞萌」有歧义：分类? 版本? 游戏归属? 规则层无法消歧）
 ans, consumed, reason = classify_question(m_nico, '是舞萌吗')
-assert consumed is True, (
-    f'「是舞萌吗」应被规则层命中（舞萌关键词在 maimai 行），但 consumed={consumed}'
+assert consumed is False, (
+    f'「是舞萌吗」含舞萌字样，规则层不应抢答，但 consumed={consumed}'
 )
-assert ans == _NO, (
-    f'分类=niconico 问「是舞萌吗」必须回「否」（不是 maimai 分类），实际 {ans}'
-)
-assert 'maimai' in reason or '原创' in reason, (
-    f'reason 应说明判定维度为 maimai 分类：{reason!r}'
-)
-# reason 不能泄露真实分类
-assert 'niconico' not in reason and 'VOCALOID' not in reason.lower(), (
-    f'reason 不应泄露真实分类：{reason!r}'
-)
-print(f'✓ 核心case：分类=niconico 问「是舞萌吗」→ 否（规则层命中），reason={reason!r}')
+print(f'✓ 核心case：分类=niconico 问「是舞萌吗」→ 规则层不抢答（交 AI 判断）')
 
-# 2) 反例：分类=maimai 的曲目，问「是舞萌吗」→ 回「是」
+# 2) 反例：分类=maimai（中文"舞萌"）的曲目，问「是舞萌吗」→ 同样交 AI
+m_mai_cn = _make_genre_music('舞萌')
+ans, consumed, reason = classify_question(m_mai_cn, '是舞萌吗')
+assert consumed is False, (
+    f'分类=舞萌(中文) 问「是舞萌吗」含舞萌字样，规则层不应抢答，实际 consumed={consumed}'
+)
+print(f'✓ 反例：分类=舞萌(中文) 问「是舞萌吗」→ 规则层不抢答（交 AI 判断）')
+
+# 2b) 反例：分类=maimai（英文）的曲目，问「是舞萌吗」→ 同样交 AI
 m_mai = _make_genre_music('maimai')
 ans, consumed, reason = classify_question(m_mai, '是舞萌吗')
-assert consumed is True and ans == _YES, (
-    f'分类=maimai 问「是舞萌吗」应回「是」（规则层命中），实际 {ans} consumed={consumed}'
+assert consumed is False, (
+    f'分类=maimai 问「是舞萌吗」含舞萌字样，规则层不应抢答，实际 consumed={consumed}'
 )
-print(f'✓ 反例：分类=maimai 问「是舞萌吗」→ 是（规则层命中）')
+print(f'✓ 反例：分类=maimai 问「是舞萌吗」→ 规则层不抢答（交 AI 判断）')
 
-# 3) 「是舞萌曲吗」「是舞萌原创吗」「是舞萌分类吗」同样走规则层
-for q in ('是舞萌曲吗', '是舞萌原创吗', '是舞萌分类吗'):
+# 3) 「是舞萌曲吗」「是舞萌原创吗」「是舞萌分类吗」「是舞萌DX某年代吗」均含舞萌，交 AI
+for q in ('是舞萌曲吗', '是舞萌原创吗', '是舞萌分类吗', '是舞萌DX BUDDiES代吗', '是舞萌游戏的曲吗'):
     _a, _c, _r = classify_question(m_nico, q)
-    assert _c is True, f'「{q}」应被规则层命中，consumed={_c}'
-    assert _a == _NO, f'分类=niconico 问「{q}」应回否，实际 {_a}'
-print(f'✓ 「舞萌曲/舞萌原创/舞萌分类」均规则层命中且正确回否')
+    assert _c is False, f'「{q}」含舞萌字样，规则层不应抢答，consumed={_c}'
+print(f'✓ 「舞萌曲/舞萌原创/舞萌分类/舞萌DX年代/舞萌游戏」均交 AI 判断')
 
-# 4) 「是原创曲吗」「是本家曲吗」「是委约曲吗」同样走规则层
+# 4) 「是原创曲吗」「是本家曲吗」「是委约曲吗」不含「舞萌」，仍走规则层
 for q in ('是原创曲吗', '是本家曲吗', '是委约曲吗'):
     _a, _c, _r = classify_question(m_nico, q)
-    assert _c is True and _a == _NO, f'分类=niconico 问「{q}」应回否：{_a} consumed={_c}'
-print(f'✓ 「原创曲/本家曲/委约曲」均规则层命中且正确回否')
+    assert _c is True and _a == _NO, f'分类=niconico 问「{q}」应走规则层并回否：{_a} consumed={_c}'
+print(f'✓ 「原创曲/本家曲/委约曲」不含舞萌，仍走规则层且正确回否')
 
-# 5) 「是舞代吗」是版本题（舞代=旧框），不是分类题，走版本规则
+# 5) 「是舞代吗」是版本题（舞代=旧框），不含「舞萌」，走版本规则
 #    m_nico=buddies（新框），舞代=旧框 → 不是
 _a, _c, _r = classify_question(m_nico, '是舞代吗')
 assert _c is True, f'「是舞代吗」应走版本规则'
@@ -112,24 +109,49 @@ _a, _c, _r = classify_question(m_finale, '是舞代吗')
 assert _c is True and _a == _YES, f'finale 是舞代（旧框）：{_a}'
 print(f'✓ finale 问「是舞代吗」→ 是')
 
-# 7) 否定句：「不是舞萌吗」分类=niconico → 不是 maimai → 「不是舞萌」为真 → 反转回是
-#    注：_apply_negation 在 classify_question 之外，这里只测原始判定
+# 7) 否定句：「不是舞萌吗」含舞萌，同样交 AI（规则层不抢答）
 _a, _c, _r = classify_question(m_nico, '不是舞萌吗')
-assert _c is True and _a == _NO, f'分类=niconico 「不是舞萌吗」原始判定应回否（不是maimai）：{_a}'
-print(f'✓ 否定句原始判定：分类=niconico 「不是舞萌吗」→ 否（_apply_negation 会反转）')
+assert _c is False, f'「不是舞萌吗」含舞萌字样，规则层不应抢答：{_c}'
+print(f'✓ 否定句「不是舞萌吗」含舞萌 → 交 AI 判断')
 
-# 8) LLM 提示词仍保留「舞萌」歧义消解规则（双管齐下，防规则层遗漏的变体）
+# 8) LLM 提示词保留「舞萌」歧义消解规则（三种含义：分类/版本/游戏归属）
 assert '最高优先级' in mod._GUESS_20Q_LLM_SYSTEM, '系统提示词应含「最高优先级」舞萌歧义消解'
 assert '舞萌' in mod._GUESS_20Q_LLM_SYSTEM, '系统提示词应含「舞萌」关键词'
 assert '所有曲都是舞萌DX' in mod._GUESS_20Q_LLM_SYSTEM, '系统提示词应禁止回答游戏归属'
-print(f'✓ LLM 提示词保留「舞萌」歧义消解规则（双管齐下）')
+# 新增：版本/年份消歧 + 消歧原则
+assert '版本/年份是非题' in mod._GUESS_20Q_LLM_SYSTEM, '应含版本/年份消歧规则'
+assert '消歧原则' in mod._GUESS_20Q_LLM_SYSTEM, '应含消歧原则'
+# 年份↔版本速查表（覆盖「舞萌DX 2024 年」类问题）
+assert '年份↔版本速查' in mod._GUESS_20Q_LLM_SYSTEM, '应含年份↔版本速查表'
+assert '2024=宴代' in mod._GUESS_20Q_LLM_SYSTEM, '年份速查应含 2024=宴代'
+assert '2023=祝代' in mod._GUESS_20Q_LLM_SYSTEM, '年份速查应含 2023=祝代'
+assert '2026=圈+' in mod._GUESS_20Q_LLM_SYSTEM, '年份速查应含 2026=圈+'
+# 修正：华代是 2020 年（2020-01 发售），不是 2021 年
+assert '2020=华代' in mod._GUESS_20Q_LLM_SYSTEM, '华代应归 2020 年（2020-01 发售）'
+assert '2021=煌代' in mod._GUESS_20Q_LLM_SYSTEM, '2021 年应是煌代/宙代（不含华代）'
+# 修正：prism plus 主俗称是「彩代」，不是「镜+」
+assert '2025=彩代' in mod._GUESS_20Q_LLM_SYSTEM, 'prism plus 主俗称是彩代'
+# 简写形式说明（「dx2026」「舞萌2026」等无「年/代」字的写法）
+assert 'dx2026' in mod._GUESS_20Q_LLM_SYSTEM, '应含简写形式 dx2026 说明'
+# 年份指版本发售年，不是 release_date（防「鲁迅不是周树人」式误判）
+assert '版本发售年' in mod._GUESS_20Q_LLM_SYSTEM, '应说明年份指版本发售年非 release_date'
+# 通用版本规则（第 7 条）也含年份速查，覆盖无「舞萌」字样的年份题
+assert mod._GUESS_20Q_LLM_SYSTEM.count('年份↔版本速查') >= 2, '年份速查应在舞萌消歧和通用版本规则各出现一次'
+# 「其他游戏」分类映射
+assert '其他游戏' in mod._GUESS_20Q_LLM_SYSTEM, '应含「其他游戏」→ GAME&VARIETY 映射'
+print(f'✓ LLM 提示词含「舞萌」三义消解规则（分类/版本年份/游戏归属）+ 年份速查 + 其他游戏分类')
 
-# 9) 其他分类曲目问「是舞萌吗」→ 否（非 maimai 分类）
-for genre in ('東方Project', 'POPS&ANIME', 'GAME&VARIETY', 'オンゲキ＆CHUNITHM', '宴会場'):
+# 9) 其他分类曲目问「是舞萌吗」→ 含舞萌，均交 AI（不再走规则层）
+for genre in ('東方Project', 'POPS&ANIME', 'GAME&VARIETY', 'オンゲキ＆CHUNITHM', '宴会場', '舞萌'):
     m_other = _make_genre_music(genre)
     _a, _c, _r = classify_question(m_other, '是舞萌吗')
-    assert _c is True and _a == _NO, f'分类={genre} 问「是舞萌吗」应回否：{_a} consumed={_c}'
-print(f'✓ 东方/pops/game/音击/宴会 分类问「是舞萌吗」→ 否')
+    assert _c is False, f'分类={genre} 问「是舞萌吗」含舞萌应交 AI：consumed={_c}'
+print(f'✓ 所有分类问「是舞萌吗」→ 交 AI 判断')
+
+# 10) _genre_key 中文匹配修复：genre=舞萌(中文) 应映射到 maimai
+assert mod._genre_key(m_mai_cn) == 'maimai', 'genre=舞萌(中文) 应映射到 maimai'
+assert mod._genre_key(m_mai) == 'maimai', 'genre=maimai(英文) 应映射到 maimai'
+print(f'✓ _genre_key 中英文 maimai 匹配均正确')
 
 print()
 print('all maimai disambiguation tests passed')

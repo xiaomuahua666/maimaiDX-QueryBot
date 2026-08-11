@@ -53,8 +53,12 @@ for idx, m in enumerate(sample):
     print(f'\n[{idx+1}/{len(sample)}] {m.title[:30]}')
     print(f'    真实特征: genre={m.basic_info.genre}({gi}) version={m.basic_info.version}(idx={vi}) bpm={m.basic_info.bpm} purple_ds={purple:g}')
     for q, expected in cases:
-        total += 1
         ans, consumed, reason = classify_question(m, q)
+        if not consumed:
+            # 规则层未命中（含「舞萌」等歧义词走 LLM），不计入错误，单独标记
+            print(f'    → LLM Q:{q!r:30} (规则未命中，交 AI) | {reason}')
+            continue
+        total += 1
         expected_ans = _YES if expected else _NO
         ok = (ans == expected_ans)
         if ok:
