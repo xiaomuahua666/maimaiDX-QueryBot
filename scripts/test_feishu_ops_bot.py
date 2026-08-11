@@ -197,7 +197,7 @@ assert str(MODULE.LOG_FETCH_LINES_ALL) in run_calls[0][0]
 assert "--since" in run_calls[0][0]
 assert run_calls[0][1] == MODULE.LOG_FETCH_TIMEOUT_SECONDS
 
-# ── 后台日志刷新：worker 完成后另发新卡片，立即返回占位卡 ──
+# ── 后台日志刷新：先发占位卡，worker 完成后发新卡片并撤回占位卡 ──
 queued_bot = object.__new__(MODULE.FeishuOpsBot)
 queued_bot._log_lock = threading.Lock()
 queued_bot._log_refreshing = set()
@@ -206,6 +206,8 @@ refresh_started = threading.Event()
 allow_finish = threading.Event()
 delivered = threading.Event()
 deliveries = []
+recalled = threading.Event()
+recall_ids = []
 
 def fake_refresh(receive_id, errors_only, window_secs, is_admin):
     refresh_started.set()
@@ -214,26 +216,42 @@ def fake_refresh(receive_id, errors_only, window_secs, is_admin):
 
 def fake_send(receive_id_type, receive_id, card):
     deliveries.append((receive_id_type, receive_id, card))
-    delivered.set()
+    # 第一次是占位卡，第二次是结果卡片
+    if len(deliveries) == 2:
+        delivered.set()
+    return f"om_{len(deliveries)}"
+
+def fake_delete(message_id):
+    recall_ids.append(message_id)
+    recalled.set()
 
 queued_bot._refresh_logs = fake_refresh
 queued_bot._send_card = fake_send
+queued_bot._delete_card = fake_delete
+# 正常提交返回 None（不再返回占位卡）
 pending = queued_bot._queue_log_refresh("chat_id", "oc_test", False, 300, True)
-assert pending["header"]["title"]["content"] == "日志刷新已提交"
-assert "近 5m" in pending["elements"][0]["text"]["content"]
+assert pending is None, "正常提交应返回 None（占位卡已自行发送）"
+# 占位卡已发送（第一张）
+assert len(deliveries) == 1, "应先发占位卡"
+assert deliveries[0][2]["header"]["title"]["content"] == "日志刷新中"
+assert "近 5m" in deliveries[0][2]["elements"][0]["text"]["content"]
 assert refresh_started.wait(1)
-assert not delivered.is_set()
+assert not delivered.is_set(), "worker 应等待 allow_finish"
 allow_finish.set()
-assert delivered.wait(2)
-assert deliveries[0][0:2] == ("chat_id", "oc_test")
-assert deliveries[0][2]["header"]["title"]["content"] == "刷新完成"
-assert not queued_bot._log_refreshing
+assert delivered.wait(2), "worker 应发送结果卡片"
+# 结果卡片已发送（第二张）
+assert deliveries[1][2]["header"]["title"]["content"] == "刷新完成"
+assert deliveries[1][0:2] == ("chat_id", "oc_test")
+# 占位卡已被撤回
+assert recalled.wait(2), "应撤回占位卡"
+assert recall_ids[0] == "om_1", f"应撤回占位卡 id, got {recall_ids[0]}"
+assert not queued_bot._log_refreshing, "完成后应清空 refreshing set"
 
 # 已有同类刷新任务在跑时，重复提交返回「刷新中」占位卡，不启动新 worker。
 queued_bot._log_refreshing.add(("oc_dup", False))
 dup = queued_bot._queue_log_refresh("chat_id", "oc_dup", False, 300, True)
 assert dup["header"]["title"]["content"] == "日志刷新中"
-assert len(deliveries) == 1, "重复提交不应再投递新卡片"
+assert len(deliveries) == 2, "重复提交不应再投递新卡片"
 
 # --- ban_list command ----------------------------------------------------
 assert MODULE.parse_command("封禁列表") == ("ban_list", [])

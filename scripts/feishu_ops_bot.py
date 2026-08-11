@@ -1155,7 +1155,7 @@ class FeishuOpsBot:
         if not response.success():
             raise RuntimeError(f"Feishu reply failed: {response.code} {response.msg}")
 
-    def _send_card(self, receive_id_type: str, receive_id: str, card: dict) -> None:
+    def _send_card(self, receive_id_type: str, receive_id: str, card: dict) -> str:
         im = self.lark.im.v1
         request = (
             im.CreateMessageRequest.builder()
@@ -1173,6 +1173,19 @@ class FeishuOpsBot:
         response = self.client.im.v1.message.create(request)
         if not response.success():
             raise RuntimeError(f"Feishu send failed: {response.code} {response.msg}")
+        return str(response.data.message_id or "")
+
+    def _delete_card(self, message_id: str) -> None:
+        """撤回机器人自己发送的消息（24h 内有效，超时静默失败）。"""
+        if not message_id:
+            return
+        im = self.lark.im.v1
+        request = im.DeleteMessageRequest.builder().message_id(message_id).build()
+        response = self.client.im.v1.message.delete(request)
+        if not response.success():
+            LOG.warning(
+                "failed to recall card %s: %s %s", message_id, response.code, response.msg
+            )
 
     @staticmethod
     def _response(card: dict | None = None, toast: str = "") -> dict:
@@ -1288,8 +1301,8 @@ class FeishuOpsBot:
         chat_id: str = "",
         window_secs: int = LOG_WINDOW_DEFAULT_SECS,
         receive_id_type: str = "chat_id",
-    ) -> dict:
-        """提交后台日志拉取，立即返回占位卡，由 worker 完成后投递日志卡片。"""
+    ) -> dict | None:
+        """提交后台日志拉取，worker 完成后投递日志卡片并撤回占位卡。"""
         return self._queue_log_refresh(
             receive_id_type,
             chat_id,
@@ -1305,12 +1318,15 @@ class FeishuOpsBot:
         errors_only: bool,
         window_secs: int,
         is_admin: bool,
-    ) -> dict:
-        """后台拉取 journalctl，完成后把日志卡片另发到原会话。
+    ) -> dict | None:
+        """后台拉取 journalctl，完成后另发新卡片并撤回占位卡。
 
         飞书卡片回调和长连接心跳共用事件线程。journalctl 曾在生产环境连续
         跑满 20 秒，既让卡片报“目标服务调用超时”，也会拖断 WebSocket。
         这里只在事件线程登记任务；慢 I/O 全部在线程中完成。
+
+        正常提交返回 None：先发占位卡拿 message_id，worker 完成后发新卡片
+        再撤回占位卡，避免占位卡刷屏。重复提交返回「刷新中」占位卡。
         """
         if not receive_id:
             # 测试或缺少投递目标时保留可诊断的同步回退。
@@ -1327,12 +1343,33 @@ class FeishuOpsBot:
                 )
             self._log_refreshing.add(key)
 
+        if window_secs >= 3600 and window_secs % 3600 == 0:
+            scope = f"近 {window_secs // 3600}h"
+        elif window_secs >= 60 and window_secs % 60 == 0:
+            scope = f"近 {window_secs // 60}m"
+        else:
+            scope = f"近 {window_secs}s"
+        placeholder = _card(
+            "日志刷新中",
+            f"正在后台读取{scope}日志，完成后会发送新卡片。",
+            template="orange",
+        )
+        try:
+            placeholder_id = self._send_card(receive_id_type, receive_id, placeholder)
+        except Exception:
+            LOG.warning(
+                "placeholder card send failed; worker will deliver result directly"
+            )
+            placeholder_id = ""
+
         def worker() -> None:
             try:
                 card = self._refresh_logs(
                     receive_id, errors_only, window_secs, is_admin
                 )
                 self._send_card(receive_id_type, receive_id, card)
+                if placeholder_id:
+                    self._delete_card(placeholder_id)
             except Exception:
                 LOG.exception("failed to deliver refreshed logs")
             finally:
@@ -1344,17 +1381,7 @@ class FeishuOpsBot:
             name=f"logs-refresh-{'errors' if errors_only else 'all'}",
             daemon=True,
         ).start()
-        if window_secs >= 3600 and window_secs % 3600 == 0:
-            scope = f"近 {window_secs // 3600}h"
-        elif window_secs >= 60 and window_secs % 60 == 0:
-            scope = f"近 {window_secs // 60}m"
-        else:
-            scope = f"近 {window_secs}s"
-        return _card(
-            "日志刷新已提交",
-            f"正在后台读取{scope}日志，完成后会发送新卡片。",
-            template="orange",
-        )
+        return None
 
     def _paginate_logs(
         self,
@@ -1494,7 +1521,7 @@ class FeishuOpsBot:
                 parsed = parse_window_secs(args[0])
                 if parsed is not None:
                     window_secs = parsed
-            # 后台拉取后发送新卡片，立即返回占位卡，不阻塞 WebSocket 心跳
+            # 后台拉取后发送新卡片并撤回占位卡，不阻塞 WebSocket 心跳
             return self._safe_logs_card(
                 command == "errors", is_admin, chat_id=chat_id,
                 window_secs=window_secs,
@@ -1741,7 +1768,8 @@ class FeishuOpsBot:
                 except (TypeError, ValueError):
                     window_secs = LOG_WINDOW_DEFAULT_SECS
                 # 飞书卡片回调有 3s 超时限制，journalctl 可能超时。
-                # 后台拉取，立即返回占位卡，完成后另发新日志卡片。
+                # 后台拉取，先发占位卡，worker 完成后另发新卡片并撤回占位卡。
+                # 正常时 card=None（只返回 toast）；重复提交时 card=「刷新中」。
                 card = self._queue_log_refresh(
                     "chat_id",
                     chat_id,
