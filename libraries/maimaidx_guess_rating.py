@@ -17,6 +17,15 @@ from .maimaidx_model import ChartInfo, UserInfo
 # ─────────────────────── 常量 ───────────────────────
 
 DEFAULT_DURATION = 60
+MIN_DURATION = 30  # 最短局时长（秒），不得提前结算
+
+# BREAK 奖励统一规则：仅前两名可获得 BREAK，分别为 2 / 1。
+# 积分（score_bonus）仍按难度递增，BREAK 与难度解耦。
+RATING_BREAK_BONUS: Tuple[int, int, int] = (2, 1, 0)
+# 第一名误差超过该值时，本局不发放任何 BREAK
+RATING_BREAK_MAX_DIFF = 200
+# 参与人数（不含题主）达到该值才可产生 BREAK 奖励
+RATING_BREAK_MIN_PLAYERS = 3
 
 
 @dataclass(frozen=True)
@@ -33,14 +42,14 @@ class RatingDifficulty:
 
 
 RATING_DIFFICULTIES: Dict[int, RatingDifficulty] = {
-    1: RatingDifficulty(1, 20, True,  True,  False, (15, 5, 3), (3, 1, 0)),
-    2: RatingDifficulty(2, 16, True,  False, False, (18, 6, 4), (4, 1, 0)),
-    3: RatingDifficulty(3, 12, False, False, False, (21, 7, 5), (4, 2, 0)),
-    4: RatingDifficulty(4, 8,  False, False, False, (24, 8, 6), (5, 2, 1)),
-    5: RatingDifficulty(5, 8,  False, False, True,  (30, 10, 7), (6, 3, 1)),
+    1: RatingDifficulty(1, 20, True,  True,  False, (15, 5, 3), RATING_BREAK_BONUS),
+    2: RatingDifficulty(2, 16, True,  False, False, (18, 6, 4), RATING_BREAK_BONUS),
+    3: RatingDifficulty(3, 12, False, False, False, (21, 7, 5), RATING_BREAK_BONUS),
+    4: RatingDifficulty(4, 8,  False, False, False, (24, 8, 6), RATING_BREAK_BONUS),
+    5: RatingDifficulty(5, 8,  False, False, True,  (30, 10, 7), RATING_BREAK_BONUS),
 }
 
-PARTICIPATION_SCORE = 1  # 参与奖
+PARTICIPATION_SCORE = 1  # 参与奖（仅积分，无 BREAK）
 
 
 # ─────────────────────── 数据结构 ───────────────────────
@@ -252,7 +261,14 @@ class GuessRatingManager:
         return f'✅ {name} 已作答（{len(data.entries)}人参与）'
 
     def settle(self, gid: int) -> Optional[RatingGuessSettlement]:
-        """结算：计算排名与奖励。"""
+        """结算：计算排名与奖励。
+
+        BREAK 奖励规则（与难度解耦）：
+        - 仅前两名可获得 BREAK，分别为 2 / 1；
+        - 有效参与人数（不含题主）不足 3 人时，本局不产生 BREAK；
+        - 第一名误差超过 RATING_BREAK_MAX_DIFF 时，本局不产生 BREAK。
+        积分（score）仍按难度前三发放，其余参与者 1 分参与奖。
+        """
         data = self.groups.get(gid)
         if data is None:
             return None
@@ -273,6 +289,13 @@ class GuessRatingManager:
             key=lambda e: (e.diff, e.first_at),
         )
 
+        # 判断本局是否产生 BREAK
+        break_eligible = len(ranked) >= RATING_BREAK_MIN_PLAYERS
+        if break_eligible and ranked:
+            top_diff = ranked[0].diff
+            if top_diff > RATING_BREAK_MAX_DIFF:
+                break_eligible = False
+
         rewards: List[RatingGuessReward] = []
         difficulty = RATING_DIFFICULTIES.get(
             data.difficulty, RATING_DIFFICULTIES[1]
@@ -281,9 +304,13 @@ class GuessRatingManager:
             rank = i + 1
             if 1 <= rank <= 3:
                 score = difficulty.score_bonus[rank - 1]
-                bp = difficulty.break_bonus[rank - 1]
             else:
-                score, bp = PARTICIPATION_SCORE, 0
+                score = PARTICIPATION_SCORE
+            # BREAK：仅前两名，且需满足参与人数与第一名误差门槛
+            if break_eligible and 1 <= rank <= 2:
+                bp = RATING_BREAK_BONUS[rank - 1]
+            else:
+                bp = 0
             rewards.append(RatingGuessReward(
                 uid=entry.uid,
                 billing_id=entry.billing_id,

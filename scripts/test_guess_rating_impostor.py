@@ -128,8 +128,10 @@ def main() -> None:
     rating.submit(1, "c", "C", 103, 14970)
     rating_settlement = rating.settle(1)
     assert rating_settlement is not None
+    # 新规则：BREAK 与难度解耦，前二名 2/1，第三名 0；
+    # 3 名有效参与者（题主排除），第一名差 10 ≤ 200，满足发奖门槛。
     assert [(r.score, r.break_points) for r in rating_settlement.rewards] == [
-        (24, 5), (8, 2), (6, 1),
+        (24, 2), (8, 1), (6, 0),
     ]
 
     impostor = GuessImpostorManager()

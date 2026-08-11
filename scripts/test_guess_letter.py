@@ -27,7 +27,6 @@ names = {
     "WEIGHT_SONG_OPEN",
     "STAR_THRESHOLDS",
     "SCORE_POOL_BY_STAR",
-    "BREAK_POOL_BY_STAR",
     "format_elapsed",
     "format_elapsed_diff_suffix",
     "format_finish_elapsed_line",
@@ -129,7 +128,6 @@ letter_reward_multiplier = ns["letter_reward_multiplier"]
 letter_triple_active = ns["letter_triple_active"]
 letter_triple_banner = ns["letter_triple_banner"]
 SCORE_POOL_BY_STAR = ns["SCORE_POOL_BY_STAR"]
-BREAK_POOL_BY_STAR = ns["BREAK_POOL_BY_STAR"]
 
 # Combo：开字母补齐 ≥2；开歌 = 1 + 附带补齐
 assert combo_solved_count(completed=0) == 0
@@ -269,29 +267,30 @@ assert abs(result.elapsed - 25.5) < 1e-9
 assert result.stars == 5
 assert result.reward_multiplier == 1
 assert result.score_pool == SCORE_POOL_BY_STAR[5]
-assert result.break_pool == BREAK_POOL_BY_STAR[5]
+# 甲 song_opens=1、乙 letter_completes=1，各完整开出1首并列最多 → 各得2，总池4
+assert result.break_pool == 4
 assert sum(r.score for r in result.rewards) == result.score_pool
 assert sum(r.break_points for r in result.rewards) == result.break_pool
 text = format_settlement_message(result)
 assert "25.500秒" in text
 assert "⭐️⭐️⭐️⭐️⭐️" in text
-assert "本局奖池：40 分 / 8 BREAK" in text
+assert "本局奖池：40 分 / 4 BREAK" in text
 assert "按贡献分配" in text
 assert "限时×" not in text
 assert "本局阈值" not in text  # 阈值放分成图，短文案不含
 
-# 限时×3：奖池与发放均乘倍，文案标注
+# 限时×3：积分池与 BREAK 均乘倍，文案标注
 triple = settle_board.settle(
     now=1025.5, event_now=LETTER_TRIPLE_START + 60
 )
 assert triple.reward_multiplier == LETTER_TRIPLE_MULTIPLIER
 assert triple.score_pool == SCORE_POOL_BY_STAR[5] * LETTER_TRIPLE_MULTIPLIER
-assert triple.break_pool == BREAK_POOL_BY_STAR[5] * LETTER_TRIPLE_MULTIPLIER
+assert triple.break_pool == 4 * LETTER_TRIPLE_MULTIPLIER
 assert sum(r.score for r in triple.rewards) == triple.score_pool
 assert sum(r.break_points for r in triple.rewards) == triple.break_pool
 triple_text = format_settlement_message(triple)
 assert f"限时×{LETTER_TRIPLE_MULTIPLIER}" in triple_text
-assert "120 分 / 24 BREAK" in triple_text
+assert "120 分 / 12 BREAK" in triple_text
 assert letter_triple_active(now=LETTER_TRIPLE_START)
 assert not letter_triple_active(now=LETTER_TRIPLE_START + LETTER_TRIPLE_DURATION)
 assert "限时×" in letter_triple_banner(now=LETTER_TRIPLE_START + 1)

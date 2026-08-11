@@ -54,9 +54,10 @@ STAR_THRESHOLDS: Tuple[Tuple[float, int], ...] = (
     (180.0, 1),
 )
 
-# 星级 → 全员积分池 / BREAK 池（再按贡献分配；明显弱于「每开一次就涨」）
+# 星级 → 全员积分池（再按贡献分配；明显弱于「每开一次就涨」）
 SCORE_POOL_BY_STAR: Dict[int, int] = {5: 40, 4: 28, 3: 20, 2: 12, 1: 8, 0: 4}
-BREAK_POOL_BY_STAR: Dict[int, int] = {5: 8, 4: 6, 3: 4, 2: 3, 1: 2, 0: 1}
+# BREAK 不再走星级奖池：每个开出完整曲目(song_opens≥1)者得 1，
+# 开歌数量最多者(含并列)得 2。限时倍率仍可放大。
 
 # 开字母限时活动：结算分数 / BREAK ×3（仅开字母；过期自动恢复 1 倍）
 # 自 2026-07-19 23:30 CST（≈ 1784475000）起持续 7 天
@@ -502,12 +503,27 @@ class LetterBoard:
         stars = star_for_elapsed(elapsed, caps)
         mult = letter_reward_multiplier(now=event_now)
         score_pool = SCORE_POOL_BY_STAR.get(stars, SCORE_POOL_BY_STAR[0]) * mult
-        break_pool = BREAK_POOL_BY_STAR.get(stars, BREAK_POOL_BY_STAR[0]) * mult
         weights = {
             uid: c.weight for uid, c in self.contributions.items() if c.weight > 0
         }
         score_map = distribute_pool(weights, score_pool)
-        break_map = distribute_pool(weights, break_pool)
+
+        # BREAK 按「完整开出曲目数」计数，不随星级/贡献权重分配：
+        # 每完整开出一首(song_opens 直接猜中 + letter_completes 字母补齐)
+        # 的人得 1；开出数量最多者(含并列)得 2。
+        # 0 星(超时极慢通关)不发 BREAK；限时倍率整体放大。
+        break_map: Dict[str, int] = {}
+        openers = {
+            uid: c.song_opens + c.letter_completes
+            for uid, c in self.contributions.items()
+            if c.song_opens + c.letter_completes > 0
+        }
+        if stars >= 1 and openers:
+            top_opens = max(openers.values())
+            for uid, n in openers.items():
+                break_map[uid] = (2 if n == top_opens else 1) * mult
+        break_pool = sum(break_map.values())
+
         rewards: List[LetterPlayerReward] = []
         for uid, c in sorted(
             self.contributions.items(),

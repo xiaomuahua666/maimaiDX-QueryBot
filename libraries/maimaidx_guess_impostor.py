@@ -16,6 +16,8 @@ IMPOSTOR_CARD_COUNT = 5
 IMPOSTOR_DURATION = 45
 IMPOSTOR_SCORE_REWARDS = (10, 6, 3)
 IMPOSTOR_BREAK_REWARDS = (2, 1, 0)
+# 有效参与人数（排除题主与内鬼）达到该值才可产生 BREAK
+IMPOSTOR_BREAK_MIN_PLAYERS = 3
 
 
 @dataclass
@@ -169,6 +171,8 @@ class GuessImpostorManager:
             (entry for entry in valid_entries if entry.answer == data.answer),
             key=lambda entry: entry.first_at,
         )
+        # 有效作答人数不足时不发 BREAK（积分照常）
+        break_eligible = len(valid_entries) >= IMPOSTOR_BREAK_MIN_PLAYERS
         rewards: List[ImpostorReward] = []
         for index, entry in enumerate(correct):
             reward_index = min(index, len(IMPOSTOR_SCORE_REWARDS) - 1)
@@ -178,7 +182,11 @@ class GuessImpostorManager:
                 billing_id=entry.billing_id,
                 rank=index + 1,
                 score=IMPOSTOR_SCORE_REWARDS[reward_index],
-                break_points=IMPOSTOR_BREAK_REWARDS[reward_index],
+                break_points=(
+                    IMPOSTOR_BREAK_REWARDS[reward_index]
+                    if break_eligible and index < len(IMPOSTOR_BREAK_REWARDS)
+                    else 0
+                ),
             ))
         wrong_names = [
             entry.name for entry in valid_entries if entry.answer != data.answer

@@ -63,6 +63,7 @@ from ..libraries.maimaidx_model import (
 )
 from ..libraries.maimaidx_guess_rating import (
     DEFAULT_DURATION,
+    MIN_DURATION,
     RATING_DIFFICULTIES,
     format_reward_text,
     pick_random_candidate,
@@ -1969,7 +1970,7 @@ def _parse_rating_match(matched) -> tuple[int, int]:
     duration_raw = matched.group(3)
     difficulty = int(attached or spaced) if (attached or spaced) else random.randint(1, 4)
     duration = int(duration_raw) if duration_raw else DEFAULT_DURATION
-    return difficulty, max(10, min(300, duration))
+    return difficulty, max(MIN_DURATION, min(300, duration))
 
 
 async def _prerender_reveal_segment(sd_best, dx_best, target_name, target_rating):
@@ -2062,7 +2063,7 @@ async def _(event: MessageEvent, matched=RegexMatched()):
         难度 {difficulty} · 展示 {len(selected)} 首 / 共 {data.total_chart_count} 首
         ⏱ {duration}秒作答时间，发送数字猜Rating（可修改）
         最接近者获胜 🏆
-        题主不能作答或参与奖励；难度越高积分与BREAK越高。
+        题主不能作答或参与奖励；满3人开局才发BREAK，前二名分别+2/+1，第一名差>200本局无BREAK。
     ''')
 
     compact = bool(getattr(maiconfig, 'maimaidx_compact_messages', True))

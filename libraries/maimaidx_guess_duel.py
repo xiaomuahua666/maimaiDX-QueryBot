@@ -27,8 +27,10 @@ DUEL_ROUNDS = 5
 DUEL_ROUND_DURATION = 20  # 每轮作答秒数
 # 通过 1~5 轮累计积分
 DUEL_ROUND_SCORES = (1, 2, 4, 7, 12)
-# 全通关前三额外 BREAK 奖励
+# 全通关前二额外 BREAK 奖励
 DUEL_BREAK_BONUS = (2, 1, 0)
+# 有效参与人数达到该值才可产生 BREAK
+DUEL_BREAK_MIN_PLAYERS = 3
 # 提问类型
 TYPE_DS = 'ds'           # 定数
 TYPE_NOTES = 'notes'     # 物量
@@ -609,11 +611,17 @@ class GuessDuelManager:
             p.finish_rank = i + 1
             p.finish_time = p.last_correct_at
 
+        # 有效参与人数不足时不发 BREAK（积分照常）
+        break_eligible = len(data.participants) >= DUEL_BREAK_MIN_PLAYERS
         rewards: List[Tuple[str, str, int, int, int]] = []
         for p in survivors:
             base_score = sum(DUEL_ROUND_SCORES[:total_rounds])
             rank_idx = min(p.finish_rank - 1, len(DUEL_BREAK_BONUS) - 1)
-            break_bonus = DUEL_BREAK_BONUS[rank_idx]
+            break_bonus = (
+                DUEL_BREAK_BONUS[rank_idx]
+                if break_eligible and p.finish_rank <= 2
+                else 0
+            )
             rewards.append((
                 p.uid, p.name, p.finish_rank, base_score, break_bonus,
             ))
