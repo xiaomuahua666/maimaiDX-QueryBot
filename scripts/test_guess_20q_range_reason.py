@@ -323,20 +323,20 @@ assert _c and _a == _NO, f'名字匹配不中应回不是: {_a}'
 # 不抢答定数题
 assert classify_question(_g_sf, '紫谱定数是14吗')[1] is True, '定数题不应被谱师handler抢答'
 
-# ── _is_unanswerable_question：离谱题不走 LLM，不消耗次数 ──
-from libraries.maimaidx_guess_20q import _is_unanswerable_question  # noqa: E402
-# 谱师属性题
-assert _is_unanswerable_question('谱师写过的谱多吗'), '谱师数量题应判为离谱题'
-assert _is_unanswerable_question('谱师是男的吗'), '谱师性别题应判为离谱题'
-assert _is_unanswerable_question('谱师是日本人吗'), '谱师国籍题应判为离谱题'
-assert _is_unanswerable_question('谱师有名吗'), '谱师知名度题应判为离谱题'
-# 艺术家属性题
-assert _is_unanswerable_question('艺术家是女的吗'), '艺术家性别题应判为离谱题'
-assert _is_unanswerable_question('曲师是中国人吗'), '艺术家国籍题应判为离谱题'
-# 正常题不误判
-assert not _is_unanswerable_question('谱师是沙发太吗'), '谱师名字匹配题不是离谱题'
-assert not _is_unanswerable_question('BPM大于180吗'), 'BPM题不是离谱题'
-assert not _is_unanswerable_question('紫谱定数是14吗'), '定数题不是离谱题'
+# ── 离谱题（谱师/艺术家属性题）规则不命中，交 LLM 兜底 ──
+# _q_charter 对属性题 return None 放行给 LLM；LLM 据提示词规则 5 回「无法回答」不消耗次数。
+# 谱师属性题：规则不命中（consumed=False）
+for q in ('谱师写过的谱多吗', '谱师是男的吗', '谱师是日本人吗', '谱师有名吗'):
+    _, consumed, _ = classify_question(m, q)
+    assert consumed is False, f'谱师属性题 {q!r} 应规则不命中交 LLM: {consumed}'
+# 艺术家属性题：规则不命中（_q_charter 门控含艺术家关键词，但属性题 return None）
+for q in ('艺术家是女的吗', '曲师是中国人吗'):
+    _, consumed, _ = classify_question(m, q)
+    assert consumed is False, f'艺术家属性题 {q!r} 应规则不命中交 LLM: {consumed}'
+# 正常题规则命中（consumed=True）
+assert classify_question(m, '谱师是サファ太吗')[1] is True, '谱师名字匹配题应规则命中'
+assert classify_question(m, 'BPM大于180吗')[1] is True, 'BPM题应规则命中'
+assert classify_question(m, '紫谱定数是14吗')[1] is True, '定数题应规则命中'
 
 # ── Luxizhel 别名匹配（官方名/罗马音）──
 _g_lx = _make_genre_music('maimai', charter='Luxizhel')

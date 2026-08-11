@@ -203,21 +203,32 @@ assert '无法回答' in _GUESS_20Q_LLM_SYSTEM, '提示词应说明输出「无�
 assert 'JSON' in _GUESS_20Q_LLM_SYSTEM, '提示词应要求 JSON 输出'
 assert 'understand' in _GUESS_20Q_LLM_SYSTEM, '提示词应要求返回判定理解'
 assert 'music_profile' in _GUESS_20Q_LLM_SYSTEM, '提示词应包含曲目特征占位符'
-assert '禁止透露或猜测曲名' in _GUESS_20Q_LLM_SYSTEM, '提示词应禁止透露曲名'
+assert '禁止出现标题原文' in _GUESS_20Q_LLM_SYSTEM, '提示词应禁止透露标题'
 assert '直接问答案' in _GUESS_20Q_LLM_SYSTEM, '提示词应说明直接问答案走无法回答'
+# 只用已知信息判断，禁止联网/外部知识/记忆补充；主观是非题即使形式是是否题也回无法回答
+assert '禁止联网搜索' in _GUESS_20Q_LLM_SYSTEM, '提示词应禁止联网搜索'
+assert '禁止调用外部知识' in _GUESS_20Q_LLM_SYSTEM, '提示词应禁止调用外部知识'
+assert '曲目特征里能否找到' in _GUESS_20Q_LLM_SYSTEM, '提示词应说明判断标准是特征里能否找到答案'
+assert '这歌好听吗' in _GUESS_20Q_LLM_SYSTEM, '提示词应举例主观是非题回无法回答'
+assert '即使形式上是是否题也不准答' in _GUESS_20Q_LLM_SYSTEM, '提示词应说明主观是否题不准答'
 print('  ✓ 提示词包含所有关键约束')
 
-# ── 测试 7：_build_music_profile 不泄漏曲名 ──
-print('测试 7: _build_music_profile 不泄漏曲名')
+# ── 测试 7：_build_music_profile 直接给出标题（供 LLM 判断字符题），但不泄漏曲 id ──
+print('测试 7: _build_music_profile 直接给出标题，不泄漏曲 id')
 profile = _build_music_profile(_make_music())
-assert 'PANDORA' not in profile, f'特征描述不应包含曲名: {profile}'
-assert 'pandora' not in profile.lower(), f'特征描述不应包含曲名(小写): {profile}'
+# 标题已直接嵌入特征，供 LLM 拿玩家问的字符与标题原文比对（安全约束禁止 LLM 复述标题）
+assert '标题：PANDORA PARADOX' in profile, f'特征应直接给出完整标题: {profile}'
+# 曲 id 仍不得泄漏（id 不是字符题的判断依据）
 assert '10044' not in profile, f'特征描述不应包含曲 id: {profile}'
 assert '分类' in profile
 assert 'BPM' in profile
 assert '版本' in profile
 assert '定数' in profile
-print('  ✓ 特征描述不含曲名/id')
+# 不再做 title_lang 预分类（中文/英文/日文等），由 LLM 拿标题原文直接比对
+assert '中文/汉字' not in profile
+assert '英文/拉丁' not in profile
+assert '日文（含假名）' not in profile
+print('  ✓ 特征直接给出标题、不含曲 id、无 title_lang 预分类')
 
 # ── 测试 8：提示词应说明否定句处理方式 ──
 print('测试 8: 提示词应说明否定句处理')
@@ -322,7 +333,8 @@ print('  ✓ 通过（非是/否输出被丢弃）')
 print('测试 12: 提示词含安全约束')
 assert '安全约束' in _GUESS_20Q_LLM_SYSTEM, '提示词应有安全约束段'
 assert '忽略' in _GUESS_20Q_LLM_SYSTEM, '提示词应说明忽略注入指令'
-assert '禁止在回答中复述' in _GUESS_20Q_LLM_SYSTEM, '提示词应禁止复述特征'
+assert '绝不能复述' in _GUESS_20Q_LLM_SYSTEM, '提示词应禁止复述特征'
+assert '禁止出现标题原文' in _GUESS_20Q_LLM_SYSTEM, '提示词应禁止出现标题原文'
 print('  ✓ 通过')
 
 # ── 测试 13：LLM 并发信号量限制 ──

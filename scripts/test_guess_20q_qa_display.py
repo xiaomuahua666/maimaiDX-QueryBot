@@ -162,9 +162,17 @@ assert '任一对象命中' in _GUESS_20Q_LLM_SYSTEM, '应说明按 OR 逻辑判
 assert '不要回「无法回答」' in _GUESS_20Q_LLM_SYSTEM, '多对象问句不应拒答'
 # 「或更晚/或更早」等版本顺序方向词不算多对象问句
 assert '或更晚' in _GUESS_20Q_LLM_SYSTEM
-# 规则14：标题字符是非题
+# 规则14：标题字符是非题——直接拿标题判断，支持同时问多个字符
 assert '标题字符' in _GUESS_20Q_LLM_SYSTEM or '标题含' in _GUESS_20Q_LLM_SYSTEM
-assert '出现的字母' in _GUESS_20Q_LLM_SYSTEM
+assert '「标题」字段' in _GUESS_20Q_LLM_SYSTEM
+assert '任一命中回「是」' in _GUESS_20Q_LLM_SYSTEM
+assert '绝不能回「未提供」「信息不足」「无法回答」' in _GUESS_20Q_LLM_SYSTEM
+# 安全约束：禁止复述标题
+assert '禁止出现标题原文' in _GUESS_20Q_LLM_SYSTEM
+assert '仅供你判断字符题' in _GUESS_20Q_LLM_SYSTEM
+# 防止变相猜曲名：连续 2+ 字符子串题回无法回答
+assert '多字符连续子串题' in _GUESS_20Q_LLM_SYSTEM
+assert '视为猜曲名' in _GUESS_20Q_LLM_SYSTEM
 print('LLM prompt multi-object & title-char rule tests passed')
 
 
@@ -331,35 +339,21 @@ print('mixed scenario tests passed')
 
 from libraries.maimaidx_guess_20q import _build_music_profile
 
-# 英文标题：PANDORA PARADOX → 应含字母集合、空格、无数字
+# 标题直接给出，让 LLM 判断任意「标题含 X 吗」
 profile_en = _build_music_profile(_make_music(title='PANDORA PARADOX'))
-assert '出现的字母：' in profile_en, f'英文标题应含字母集合: {profile_en}'
-assert 'P' in profile_en and 'A' in profile_en and 'D' in profile_en
-assert '含空格：是' in profile_en
-# 不应直接泄漏完整标题
-assert 'PANDORA' not in profile_en, f'profile 不应含完整标题: {profile_en}'
+assert '标题：PANDORA PARADOX' in profile_en, f'profile 应含完整标题: {profile_en}'
 
-# 含数字标题：应含数字集合
-profile_num = _build_music_profile(_make_music(title='CO5M1C R4ILROAD'))
-assert '出现的数字：' in profile_num
-assert '5' in profile_num and '1' in profile_num and '4' in profile_num
-
-# 含特殊符号标题
-profile_sym = _build_music_profile(_make_music(title='GEMINI -M-'))
-assert '特殊符号：' in profile_sym
-assert '-' in profile_sym
-
-# 中文标题：给汉字数量，不给具体汉字
+# 中文标题
 profile_cjk = _build_music_profile(_make_music(title='甜蜜魔法', genre='舞萌'))
-assert '汉字数量：4' in profile_cjk
-assert '不提供具体汉字' in profile_cjk
-# 不应泄漏具体汉字
-assert '甜' not in profile_cjk and '蜜' not in profile_cjk
+assert '标题：甜蜜魔法' in profile_cjk
 
-# 日文假名标题：给假名数量，不给具体假名
+# 日文假名标题
 profile_kana = _build_music_profile(_make_music(title='だんだん早くなる'))
-assert '假名数量：' in profile_kana
-assert '不提供具体假名' in profile_kana
+assert '标题：だんだん早くなる' in profile_kana
+
+# 含数字/符号标题
+profile_mix = _build_music_profile(_make_music(title='CO5M1C R4ILROAD'))
+assert '标题：CO5M1C R4ILROAD' in profile_mix
 
 print('title char profile tests passed')
 
