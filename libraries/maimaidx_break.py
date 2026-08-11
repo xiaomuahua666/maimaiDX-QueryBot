@@ -82,6 +82,11 @@ DEFAULT_CONFIG: Dict[str, str] = {
     'red_packet_expire_minutes': '10',
     'red_packet_max_total': '10000',
     'red_packet_max_count': '100',
+    # 限时免费时段：free_window_enabled=1 开启；free_window_hours 如 '17,20'
+    # 表示每天 17:00~20:00 全功能免费（含查分/出图/锐评/上传等所有扣费点）。
+    # 格式异常或缺失时安全降级为「不免费」，绝不抛异常。
+    'free_window_enabled': '0',
+    'free_window_hours': '',
 }
 
 LEGACY_ECONOMY_DEFAULTS: Dict[str, str] = {
@@ -319,6 +324,7 @@ class ServiceChargeResult:
     freedom: bool = False
     freedom_remaining: float = 0.0
     billing_disabled: bool = False
+    free_window: bool = False
 
 
 @dataclass(frozen=True)
@@ -326,6 +332,7 @@ class AnalysisChargeReservation:
     amount: int
     freedom: bool = False
     freedom_remaining: float = 0.0
+    free_window: bool = False
 
 
 @dataclass
@@ -1175,6 +1182,13 @@ class BreakDatabase:
             return True
         from .maimaidx_card import card_manager
         with self._lock:
+            if is_free_window_active():
+                self._append_log(
+                    qqid, 0, f'free_window_exempt:{reason}',
+                    meta={**(meta or {}), 'free_window': True, 'listed_cost': amount},
+                )
+                self._conn.commit()
+                return True
             if allow_freedom and card_manager.freedom_active(qqid):
                 self._append_log(
                     qqid, 0, f'freedom_exempt:{reason}',
@@ -1325,6 +1339,8 @@ class BreakDatabase:
         """外部业务请求前检查；真正扣费必须在成功后调用 settle_service_success。"""
         if not self.billing_enabled():
             return
+        if is_free_window_active():
+            return
         if self.service_is_free(qqid, service):
             return
         from .maimaidx_card import card_manager
@@ -1351,23 +1367,26 @@ class BreakDatabase:
             )
         today, now = self._today(), time.time()
         with self._lock:
-            row = self._conn.execute(
-                """SELECT free_used FROM break_service_daily
-                   WHERE qqid=? AND date=? AND service=?""",
-                (qqid, today, service),
-            ).fetchone()
-            free = (
-                service in DAILY_FREE_SERVICES
-                and (not row or int(row['free_used']) == 0)
-            )
+            free_window = is_free_window_active()
+            free = False
             freedom = False
             freedom_remaining = 0.0
-            if not free:
-                from .maimaidx_card import card_manager
-                f_active, f_remaining, _f_exp = card_manager.freedom_info(qqid, now=now)
-                freedom = bool(f_active)
-                freedom_remaining = f_remaining
-            charged = 0 if free else cost
+            if not free_window:
+                row = self._conn.execute(
+                    """SELECT free_used FROM break_service_daily
+                       WHERE qqid=? AND date=? AND service=?""",
+                    (qqid, today, service),
+                ).fetchone()
+                free = (
+                    service in DAILY_FREE_SERVICES
+                    and (not row or int(row['free_used']) == 0)
+                )
+                if not free:
+                    from .maimaidx_card import card_manager
+                    f_active, f_remaining, _f_exp = card_manager.freedom_info(qqid, now=now)
+                    freedom = bool(f_active)
+                    freedom_remaining = f_remaining
+            charged = 0 if (free or free_window) else cost
             if freedom:
                 charged = 0
             balance = self.get_balance(qqid)
@@ -1401,6 +1420,8 @@ class BreakDatabase:
             detail.update({'service': service, 'free': free, 'listed_cost': cost})
             if freedom:
                 detail['freedom'] = True
+            if free_window:
+                detail['free_window'] = True
             self._append_log(qqid, -charged, f'service:{service}', meta=detail)
             self._conn.commit()
             balance -= charged
@@ -1408,6 +1429,7 @@ class BreakDatabase:
             service, charged, free, balance,
             listed_cost=cost,
             freedom=freedom, freedom_remaining=freedom_remaining,
+            free_window=free_window,
         )
 
     def transfer(self, sender: int, recipient: int, amount: int) -> TransferResult:
@@ -2224,6 +2246,29 @@ class BreakDatabase:
             self._conn.commit()
             return self.get_freedom_savings_total(qqid)
 
+    def record_free_window_exemption(
+        self,
+        qqid: int,
+        reason: str,
+        listed_cost: int,
+        *,
+        meta: Optional[dict] = None,
+    ) -> None:
+        """记录一次限时免费时段免单（delta=0，不扣余额）。"""
+        cost = max(0, int(listed_cost))
+        with self._lock:
+            self._append_log(
+                qqid,
+                0,
+                f'free_window_exempt:{reason}',
+                meta={
+                    **(meta or {}),
+                    'free_window': True,
+                    'listed_cost': cost,
+                },
+            )
+            self._conn.commit()
+
     def list_users(self, *, limit: int = 100, offset: int = 0, search: str = '') -> List[dict]:
         clauses, params = [], []
         if search:
@@ -2889,6 +2934,12 @@ def charge_session_extra(qqid: Optional[int], cost: int, service: str) -> bool:
     if not qqid or cost <= 0 or is_superuser_exempt(qqid) or not break_db.billing_enabled():
         return True
     session = _charge_session.get()
+    if is_free_window_active():
+        break_db.record_usage(qqid, service, break_delta=0)
+        break_db.record_free_window_exemption(qqid, service, cost, meta={'kind': service})
+        if session:
+            session.balance = break_db.get_balance(qqid)
+        return True
     if break_db.is_daily_free_available(qqid):
         break_db.mark_daily_free_used(qqid)
         break_db.record_usage(qqid, service, break_delta=0)
@@ -2926,6 +2977,8 @@ def ensure_image_render_affordable(qqid: Optional[int]) -> None:
     cost = image_render_cost()
     if cost <= 0:
         return
+    if is_free_window_active():
+        return
     from .maimaidx_card import card_manager
     if card_manager.freedom_active(qqid):
         return
@@ -2959,6 +3012,15 @@ def settle_image_render(qqid: Optional[int]) -> Optional[str]:
             f_remaining,
             total_saved=total_saved,
         )
+        if session:
+            session.extra_lines.append(line)
+        return line
+    if is_free_window_active():
+        break_db.record_usage(qqid, 'image_render', break_delta=0)
+        break_db.record_free_window_exemption(
+            qqid, 'image_render', cost, meta={'kind': 'image_render'},
+        )
+        line = format_free_window_exemption(qqid, '生成图片', cost)
         if session:
             session.extra_lines.append(line)
         return line
@@ -3076,6 +3138,11 @@ def format_freedom_exemption(
     )
 
 
+def format_free_window_exemption(qqid: int, label: str, saved: int) -> str:
+    """限时免费时段免单文案。"""
+    return f'🕐 {label} 限时免费时段减免了 {max(0, int(saved))} BREAK'
+
+
 _ANALYSIS_PEAK_WINDOWS_UTC8 = (
     (9, 0, 12, 0),   # 09:00–12:00
     (14, 0, 18, 0),  # 14:00–18:00
@@ -3094,6 +3161,37 @@ def is_analysis_peak_hour() -> bool:
         if start <= minutes < end:
             return True
     return False
+
+
+def is_free_window_active(*, now: Optional[float] = None) -> bool:
+    """当前是否处于限时免费时段（UTC+8）。
+
+    配置：break_config 的 free_window_enabled（1=开启）+ free_window_hours
+    （如 '17,20' 表示每天 17:00~20:00 全功能免费）。
+    任何配置缺失/格式异常均安全降级为「不免费」，绝不抛异常。
+    """
+    raw_en = str(break_db.get_config('free_window_enabled', '0') or '0').strip().lower()
+    if raw_en not in {'1', 'true', 'yes', 'on', '开', '开启'}:
+        return False
+    raw_hours = str(break_db.get_config('free_window_hours', '') or '').strip()
+    if not raw_hours:
+        return False
+    parts = [p.strip() for p in raw_hours.split(',') if p.strip()]
+    if len(parts) != 2:
+        return False
+    try:
+        start = int(parts[0])
+        end = int(parts[1])
+    except (TypeError, ValueError):
+        return False
+    if not (0 <= start <= 23 and 1 <= end <= 24):
+        return False
+    if start >= end:
+        return False
+    from datetime import timezone
+    ts = now if now is not None else time.time()
+    dt = datetime.fromtimestamp(ts, tz=timezone(timedelta(hours=8)))
+    return start <= dt.hour < end
 
 
 def analysis_base_cost() -> int:
@@ -3193,6 +3291,8 @@ def reserve_analysis_charge(qqid: int) -> AnalysisChargeReservation:
         return AnalysisChargeReservation(0)
     if not break_db.billing_enabled():
         return AnalysisChargeReservation(0)
+    if is_free_window_active():
+        return AnalysisChargeReservation(0, free_window=True)
     from .maimaidx_card import card_manager
 
     freedom, remaining, _expires_at = card_manager.freedom_info(qqid)
@@ -3224,6 +3324,8 @@ def ensure_query_affordable(qqid: Optional[int]) -> None:
     """查分器/落雪成绩 API 即将发起前：余额或免费额度检查。"""
     if not qqid or is_superuser_exempt(qqid) or not break_db.billing_enabled():
         return
+    if is_free_window_active():
+        return
     cost = query_cost()
     balance = break_db.get_balance(qqid)
     if break_db.is_daily_free_available(qqid):
@@ -3238,6 +3340,12 @@ def settle_prober_fetch(qqid: Optional[int]) -> None:
         return
     session = _charge_session.get()
     cost = query_cost()
+    if is_free_window_active():
+        break_db.record_usage(qqid, 'query', break_delta=0)
+        break_db.record_free_window_exemption(qqid, 'query', cost, meta={'kind': 'prober_api'})
+        if session:
+            session.balance = break_db.get_balance(qqid)
+        return
     if break_db.is_daily_free_available(qqid):
         break_db.mark_daily_free_used(qqid)
         break_db.record_usage(qqid, 'query', break_delta=0)
@@ -3262,6 +3370,12 @@ def settle_cache_hit(qqid: Optional[int]) -> None:
     session = _charge_session.get()
     cost = cache_query_cost()
     if cost <= 0:
+        return
+    if is_free_window_active():
+        break_db.record_usage(qqid, 'query', break_delta=0)
+        break_db.record_free_window_exemption(qqid, 'query', cost, meta={'kind': 'cache_hit'})
+        if session:
+            session.balance = break_db.get_balance(qqid)
         return
     if break_db.is_daily_free_available(qqid):
         break_db.mark_daily_free_used(qqid)
@@ -3292,6 +3406,10 @@ def settle_query_api_charge(qqid: Optional[int]) -> None:
     if meta is None or meta.origin != 'api':
         return
     cost = query_cost()
+    if is_free_window_active():
+        break_db.record_usage(qqid, 'query', break_delta=0)
+        break_db.record_free_window_exemption(qqid, 'query', cost, meta={'kind': 'prober_api'})
+        return
     if break_db.is_daily_free_available(qqid):
         break_db.mark_daily_free_used(qqid)
         break_db.record_usage(qqid, 'query', break_delta=0)
@@ -3311,6 +3429,7 @@ def settle_analysis_charge(
     cost = max(0, int(cost))
     reserved_amount = max(0, int(getattr(reserved, 'amount', reserved)))
     freedom = bool(getattr(reserved, 'freedom', False))
+    free_window = bool(getattr(reserved, 'free_window', False))
     usage = dict(token_usage or {})
     if is_superuser_exempt(qqid):
         break_db.record_usage(qqid, 'analysis', break_delta=0)
@@ -3332,6 +3451,10 @@ def settle_analysis_charge(
             cost,
             meta=meta,
         )
+        return 0
+    if free_window:
+        break_db.record_usage(qqid, 'analysis', break_delta=0)
+        break_db.record_free_window_exemption(qqid, 'b50_analysis', cost, meta=meta)
         return 0
     if reserved_amount > 0:
         balance = break_db.settle_analysis_reservation(
