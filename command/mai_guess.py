@@ -92,6 +92,7 @@ from ..libraries.maimaidx_guess_20q import (
     TWENTYQ_MAX_QUESTIONS,
     twentyq_base_points,
     twentyq_guess,
+    _qa_display_info,
 )
 from ..libraries.maimaidx_music_info import *
 from ..libraries.maimaidx_platform import (
@@ -3119,7 +3120,8 @@ async def _(event: MessageEvent):
     else:
         for i, qa in enumerate(data.qa, 1):
             name = qa.name or '群友'
-            lines.append(f'{i}. [{name}] {qa.question}\n   → {qa.answer}')
+            info = _qa_display_info(qa)
+            lines.append(f'{i}. [{name}] {info}\n   → {qa.answer}')
     remaining_q = data.remaining()
     if remaining_q > 0:
         lines.append(f'\n还剩 {remaining_q} 次提问机会，猜曲名用「我猜 曲名」。')
