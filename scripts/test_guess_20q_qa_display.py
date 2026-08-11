@@ -151,46 +151,56 @@ assert _summarize_qa([]) == ''
 print('_summarize_qa tests passed')
 
 
-# ═══════════════════ 3. LLM 提示词含选择语义规则 ═══════════════════
+# ═══════════════════ 3. LLM 提示词含多对象/集合归属规则 ═══════════════════
 
-assert '选择问句' in _GUESS_20Q_LLM_SYSTEM, '提示词应含选择问句规则'
+# 规则13：多对象问句按 OR 逻辑回答（不拒答）
+assert '多对象问句' in _GUESS_20Q_LLM_SYSTEM, '提示词应含多对象问句规则'
+assert '集合归属' in _GUESS_20Q_LLM_SYSTEM
 assert '或' in _GUESS_20Q_LLM_SYSTEM and '还是' in _GUESS_20Q_LLM_SYSTEM
-assert '一次只问一个' in _GUESS_20Q_LLM_SYSTEM or '分开提问' in _GUESS_20Q_LLM_SYSTEM
-# 「或更晚/或更早」等版本顺序方向词不算选择问句
+assert '之一' in _GUESS_20Q_LLM_SYSTEM and '其中之一' in _GUESS_20Q_LLM_SYSTEM
+assert '任一对象命中' in _GUESS_20Q_LLM_SYSTEM, '应说明按 OR 逻辑判断'
+assert '不要回「无法回答」' in _GUESS_20Q_LLM_SYSTEM, '多对象问句不应拒答'
+# 「或更晚/或更早」等版本顺序方向词不算多对象问句
 assert '或更晚' in _GUESS_20Q_LLM_SYSTEM
-print('LLM prompt choice-semantics rule tests passed')
+# 规则14：标题字符是非题
+assert '标题字符' in _GUESS_20Q_LLM_SYSTEM or '标题含' in _GUESS_20Q_LLM_SYSTEM
+assert '出现的字母' in _GUESS_20Q_LLM_SYSTEM
+print('LLM prompt multi-object & title-char rule tests passed')
 
 
 # ═══════════════════ 4. 选择问句不被规则命中（走 LLM） ═══════════════════
 
-# _is_choice_question 单元测试
+# _is_choice_question 单元测试（含集合归属关键词）
 assert _is_choice_question('是超代或檄代吗') is True
 assert _is_choice_question('是动漫曲还是游戏曲吗') is True
 assert _is_choice_question('是 SD 还是 DX 谱') is True
+assert _is_choice_question('分类是否在舞萌、中二音击、流行动漫其中之一') is True
+assert _is_choice_question('分类属于术曲或东方曲') is True
 assert _is_choice_question('是檄代吗') is False
-assert _is_choice_question('是檄代或更晚吗') is False, '「或更晚」是顺序方向词，不算选择问句'
-assert _is_choice_question('是檄代或更早吗') is False, '「或更早」是顺序方向词，不算选择问句'
+assert _is_choice_question('是檄代或更晚吗') is False, '「或更晚」是顺序方向词，不算多对象问句'
+assert _is_choice_question('是檄代或更早吗') is False, '「或更早」是顺序方向词，不算多对象问句'
 assert _is_choice_question('有白谱吗') is False
 assert _is_choice_question('是熊代吗') is False
 print('_is_choice_question unit tests passed')
 
 music = _make_music()
-# 选择问句 → 规则不命中 → 走 LLM
-for choice_q in ('是超代或檄代吗', '是动漫曲还是游戏曲吗', '是 SD 还是 DX 谱'):
+# 多对象问句 → 规则不命中 → 走 LLM（按 OR 逻辑回答）
+for choice_q in ('是超代或檄代吗', '是动漫曲还是游戏曲吗', '是 SD 还是 DX 谱',
+                 '分类是否在舞萌、中二音击、流行动漫其中之一'):
     _, consumed, _ = classify_question(music, choice_q)
-    assert consumed is False, f'选择问句 {choice_q!r} 不应被规则命中'
+    assert consumed is False, f'多对象问句 {choice_q!r} 不应被规则命中'
 
-# 对照：非选择问句「是檄代吗」应被规则命中
+# 对照：非多对象问句「是檄代吗」应被规则命中
 _, consumed_geki, reason_geki = classify_question(music, '是檄代吗')
-assert consumed_geki is True, '非选择问句「是檄代吗」应被规则命中'
+assert consumed_geki is True, '非多对象问句「是檄代吗」应被规则命中'
 assert '檄代' in reason_geki
-# 「或更晚」是版本顺序方向词，应被 _q_version_order 命中（不算选择问句）
+# 「或更晚」是版本顺序方向词，应被 _q_version_order 命中（不算多对象问句）
 _, consumed_order, _ = classify_question(music, '是檄代或更晚吗')
 assert consumed_order is True, '「或更晚」是顺序方向词，应被规则命中'
 # 「或更早」同理
 _, consumed_order2, _ = classify_question(music, '是檄代或更早吗')
 assert consumed_order2 is True, '「或更早」是顺序方向词，应被规则命中'
-print('choice-question rule-bypass tests passed')
+print('multi-object question rule-bypass tests passed')
 
 
 # ═══════════════════ 5. 端到端：选择问句走 LLM 回「无法回答」不消耗次数 ═══════════════════
@@ -230,14 +240,38 @@ def _run(data, text, mock_llm):
         mod._get_config = orig_cfg
 
 
-# 场景 A：选择问句「是超代或檄代吗」→ LLM 回无法回答 → 不消耗次数
+# 场景 A：多对象问句「是超代或檄代吗」→ 走 LLM → 按 OR 逻辑回答
+# 曲目是 maimai でらっくす（熊代），超代/檄代都不命中 → LLM 回「否」→ 消耗次数
 data_a = _make_data()
-mock_llm = _make_mock_llm({}, default='无法回答')
+mock_llm = _make_mock_llm({'是超代或檄代吗': '否'}, default='无法回答')
 result_a = _run(data_a, '是超代或檄代吗', mock_llm)
-assert result_a['kind'] == 'unknown', f'选择问句应回 unknown: {result_a}'
-assert data_a.question_count == 0, f'选择问句不应消耗次数: {data_a.question_count}'
-assert len(data_a.qa) == 0, '选择问句不应记录 QA'
-print('choice-question unanswerable end-to-end tests passed')
+assert result_a['kind'] == 'question', f'多对象问句应走 LLM 回答: {result_a}'
+assert result_a['answer'].startswith('不是喵'), f'OR 全不命中应回否: {result_a}'
+assert data_a.question_count == 1, f'多对象问句应消耗次数: {data_a.question_count}'
+print('multi-object OR-logic end-to-end tests passed')
+
+# 场景 A2：集合归属问句「分类是否在舞萌、中二音击、流行动漫其中之一」
+# 曲目分类=舞萌（maimai），命中舞萌 → LLM 回「是」
+data_a2 = _make_data()
+mock_llm_a2 = _make_mock_llm(
+    {'分类是否在舞萌、中二音击、流行动漫其中之一': '是'}, default='无法回答')
+result_a2 = _run(data_a2, '分类是否在舞萌、中二音击、流行动漫其中之一', mock_llm_a2)
+assert result_a2['kind'] == 'question', f'集合归属问句应走 LLM 回答: {result_a2}'
+assert result_a2['answer'].startswith('是喵'), f'命中应回是: {result_a2}'
+assert data_a2.question_count == 1
+print('set-membership OR-logic end-to-end tests passed')
+
+# 场景 A3：标题字符题「标题里有 P 吗」→ 走 LLM
+# 曲目标题=PANDORA PARADOX，含字母 P → LLM 回「是」
+data_a3 = _make_data()
+# 先确认规则不命中（标题字符题无规则 handler）
+_, consumed_a3, _ = classify_question(_make_music(), '标题里有P吗')
+assert consumed_a3 is False, '标题字符题应不被规则命中（走 LLM）'
+mock_llm_a3 = _make_mock_llm({'标题里有p吗': '是'}, default='无法回答')
+result_a3 = _run(data_a3, '标题里有P吗', mock_llm_a3)
+assert result_a3['kind'] == 'question', f'标题字符题应走 LLM 回答: {result_a3}'
+assert result_a3['answer'].startswith('是喵'), f'含 P 应回是: {result_a3}'
+print('title-char end-to-end tests passed')
 
 # 场景 B：规则命中题「是檄代吗」→ _respond 存 reason → 已有信息用 reason 展示
 data_b = _make_data()
@@ -273,24 +307,60 @@ assert qa_entry_c.reason == 'mock 判定维度', \
 assert _qa_display_info(qa_entry_c) == 'mock 判定维度'
 print('LLM-hit reason storage & display tests passed')
 
-# 场景 D：混合场景 — 选择问句（不消耗）+ 规则题（消耗）→ 已有信息只含规则题
+# 场景 D：混合场景 — 多对象问句（LLM 回答，消耗）+ 规则题（消耗）
 data_d = _make_data()
-mock_llm_d = _make_mock_llm({}, default='无法回答')
-# 选择问句：无法回答，不消耗
+# 多对象问句：LLM 按 OR 逻辑回答（全不命中→否），消耗次数 + 记录
+mock_llm_d = _make_mock_llm({'是超代或檄代吗': '否'}, default='无法回答')
 _run(data_d, '是超代或檄代吗', mock_llm_d)
-assert data_d.question_count == 0
+assert data_d.question_count == 1
 # 规则题：消耗 + 存 reason
 _run(data_d, '是檄代吗', mock_llm_d)
-assert data_d.question_count == 1
+assert data_d.question_count == 2
 # 再来一个规则题
 _run(data_d, '有白谱吗', mock_llm_d)
-assert data_d.question_count == 2
-assert len(data_d.qa) == 2
+assert data_d.question_count == 3
+assert len(data_d.qa) == 3
 summary_d = _summarize_qa(data_d.qa)
 assert '檄代' in summary_d
 assert '白谱' in summary_d
-# 选择问句未被记录
-assert '超代或檄代' not in summary_d, f'选择问句不应出现在已有信息: {summary_d}'
+# 多对象问句的 reason 也应记录（mock reason）
 print('mixed scenario tests passed')
+
+
+# ═══════════════════ 6. _build_music_profile 标题字符特征 ═══════════════════
+
+from libraries.maimaidx_guess_20q import _build_music_profile
+
+# 英文标题：PANDORA PARADOX → 应含字母集合、空格、无数字
+profile_en = _build_music_profile(_make_music(title='PANDORA PARADOX'))
+assert '出现的字母：' in profile_en, f'英文标题应含字母集合: {profile_en}'
+assert 'P' in profile_en and 'A' in profile_en and 'D' in profile_en
+assert '含空格：是' in profile_en
+# 不应直接泄漏完整标题
+assert 'PANDORA' not in profile_en, f'profile 不应含完整标题: {profile_en}'
+
+# 含数字标题：应含数字集合
+profile_num = _build_music_profile(_make_music(title='CO5M1C R4ILROAD'))
+assert '出现的数字：' in profile_num
+assert '5' in profile_num and '1' in profile_num and '4' in profile_num
+
+# 含特殊符号标题
+profile_sym = _build_music_profile(_make_music(title='GEMINI -M-'))
+assert '特殊符号：' in profile_sym
+assert '-' in profile_sym
+
+# 中文标题：给汉字数量，不给具体汉字
+profile_cjk = _build_music_profile(_make_music(title='甜蜜魔法', genre='舞萌'))
+assert '汉字数量：4' in profile_cjk
+assert '不提供具体汉字' in profile_cjk
+# 不应泄漏具体汉字
+assert '甜' not in profile_cjk and '蜜' not in profile_cjk
+
+# 日文假名标题：给假名数量，不给具体假名
+profile_kana = _build_music_profile(_make_music(title='だんだん早くなる'))
+assert '假名数量：' in profile_kana
+assert '不提供具体假名' in profile_kana
+
+print('title char profile tests passed')
 
 print('\n===== all qa_display & choice-semantics tests passed =====')
