@@ -100,6 +100,7 @@ from ..libraries.maimaidx_platform import (
     GroupId,
     adapt_guess_outbound,
     billing_user_id,
+    build_command_keyboard_message,
     build_mention_message,
     ensure_sender_mention,
     format_forward_nodes_as_text,
@@ -133,6 +134,36 @@ def _has_guess_sync_pending(event) -> bool:
 
 
 GROUP_MESSAGE = Rule(_is_group_message)
+
+_GUESS_SHORTCUTS = (
+    ('再来猜歌', '猜歌'),
+    ('再猜封面', '猜封面'),
+    ('再猜曲子', '猜曲子'),
+    ('再猜谱面', '猜谱面'),
+    ('猜 Rating', '猜rating'),
+    ('B50 找内鬼', '找内鬼'),
+    ('极限二选一', '极限二选一'),
+    ('你想我猜', '你想我猜'),
+    ('我的猜歌', '我的猜歌'),
+    ('本群排行', '本群猜歌排行'),
+)
+
+
+async def _send_guess_shortcuts(
+    matcher: Matcher,
+    event: MessageEvent,
+    gid: GroupId,
+) -> None:
+    payload = build_command_keyboard_message(
+        _GUESS_SHORTCUTS,
+        event=event,
+        title='🎮 再来一把',
+        id_prefix='maimaidx-guess',
+    )
+    if payload is not None:
+        await _safe_matcher_send(
+            matcher, event, payload, gid, fatal=False,
+        )
 GUESS_SYNC_PENDING = Rule(_has_guess_sync_pending)
 
 
@@ -817,6 +848,7 @@ async def _send_guess_answer_bundle(
                 matcher, event, chart_bgm, gid,
                 media=True, fatal=False, timeout=GUESS_SEND_TIMEOUT_VIDEO,
             )
+        await _send_guess_shortcuts(matcher, event, gid)
         return
 
     if lines:
@@ -845,6 +877,7 @@ async def _send_guess_answer_bundle(
             matcher, event, chart_bgm, gid,
             media=True, fatal=False, timeout=GUESS_SEND_TIMEOUT_VIDEO,
         )
+    await _send_guess_shortcuts(matcher, event, gid)
 
 
 async def _send_guess_score_forward(
@@ -2167,6 +2200,7 @@ async def _(event: MessageEvent, matched=RegexMatched()):
         await _safe_matcher_send(guess_rating_start, event, result_text, gid, fatal=False)
 
     rating_guess.end(gid, expected=data)
+    await _send_guess_shortcuts(guess_rating_start, event, gid)
     await guess_rating_start.finish()
 
 
@@ -2409,6 +2443,7 @@ async def _(event: MessageEvent):
         )
 
     impostor_guess.end(gid, expected=data)
+    await _send_guess_shortcuts(guess_impostor_start, event, gid)
     await guess_impostor_start.finish()
 
 
@@ -2724,6 +2759,7 @@ async def _(event: MessageEvent):
         )
     finally:
         duel_guess.end(gid, expected=data)
+    await _send_guess_shortcuts(guess_duel_start, event, gid)
     await guess_duel_start.finish()
 
 
@@ -2967,6 +3003,7 @@ async def _(event: MessageEvent):
     finally:
         # 确保结算阶段异常时释放群状态；end 内部有 expected 身份校验，重复调用安全。
         twentyq_guess.end(gid, expected=data)
+    await _send_guess_shortcuts(guess_20q_start, event, gid)
     await guess_20q_start.finish()
 
 

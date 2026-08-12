@@ -45,6 +45,7 @@ from ..libraries.maimaidx_music import guess
 from ..libraries.maimaidx_platform import (
     adapt_guess_outbound,
     billing_user_id,
+    build_command_keyboard_message,
     ensure_sender_mention,
     get_event_group_id,
     get_sender_display_name,
@@ -52,6 +53,19 @@ from ..libraries.maimaidx_platform import (
     platform_user_id,
     resolve_reply_message,
     use_qq_mode,
+)
+
+_LETTER_SHORTCUTS = (
+    ('再来开字母', '开字母'),
+    ('猜歌', '猜歌'),
+    ('猜封面', '猜封面'),
+    ('猜曲子', '猜曲子'),
+    ('猜谱面', '猜谱面'),
+    ('猜 Rating', '猜rating'),
+    ('B50 找内鬼', '找内鬼'),
+    ('极限二选一', '极限二选一'),
+    ('你想我猜', '你想我猜'),
+    ('开字母排行', '开字母排行'),
 )
 
 _RESERVED_PREFIXES = (
@@ -318,6 +332,17 @@ async def _maybe_finish_board(
         adapt_guess_outbound(msg, event=event),
         reply_message=resolve_reply_message(event, reply_message=True),
     )
+    shortcuts = build_command_keyboard_message(
+        _LETTER_SHORTCUTS,
+        event=event,
+        title='🎮 再来一把',
+        id_prefix='maimaidx-letter',
+    )
+    if shortcuts is not None:
+        await matcher.send(
+            shortcuts,
+            reply_message=False,
+        )
     await matcher.finish()
 
 

@@ -105,6 +105,21 @@ account_music_delete = on_command(
 account_ticket_clear = on_command("mai清票", aliases={"清空票券", "清票"})
 account_item_upsert = on_command("mai改道具", aliases={"修改道具", "改道具"})
 account_opt = on_command("mai查询opt", aliases={"查询opt"})
+
+_ACCOUNT_SHORTCUTS = (
+    ('MyMai', 'mymai'),
+    ('游玩地图', 'mai地图'),
+    ('发票 ×2', 'mai发票 2'),
+    ('查询票券', 'mai查票'),
+    ('账号预览', 'mai预览'),
+    ('查看道具', 'mai道具'),
+    ('门状态', 'mai门状态'),
+    ('修改成绩', 'mai改成绩'),
+    ('修改道具', 'mai改道具'),
+    ('上传水鱼', 'maiu'),
+    ('上传落雪', 'maiul'),
+    ('账号帮助', 'mai账号'),
+)
 # Help remains available before qbind so users can discover the binding flow.
 setattr(account_help, '_maimaidx_qbind_exempt', True)
 # 涉及账号状态、外部上传或机台会话的命令按用户串行执行。
@@ -1951,8 +1966,12 @@ async def _(
                 key, "status", "success",
                 f"preview_source=sgid_cache,charged={charge.charged}",
             )
-            await account_status.finish(
-                text + f"\n{_charge_text(charge, int(key))}\nRef_ID: {ref}", reply_message=True
+            await plugin_finish(
+                account_status,
+                text + f"\n{_charge_text(charge, int(key))}\nRef_ID: {ref}",
+                event=event,
+                reply_message=True,
+                qq_buttons=_ACCOUNT_SHORTCUTS,
             )
     track_event(session_key("account_status", event), event)
     await account_status.send(_status_qrcode_prompt(cache_label), reply_message=True)
@@ -1976,7 +1995,13 @@ async def _(
         text = await _render_account_status(event, binding)
         ref = _log(key, "status", "success", "preview_source=stored,cancelled_refresh")
         finish_pending(pending_key)
-        await account_status.finish(text + f"\nRef_ID: {ref}", reply_message=True)
+        await plugin_finish(
+            account_status,
+            text + f"\nRef_ID: {ref}",
+            event=event,
+            reply_message=True,
+            qq_buttons=_ACCOUNT_SHORTCUTS,
+        )
 
     recall_notice = ""
     from ..libraries.maimaidx_platform import foreign_recall_notice, recall_message
@@ -2040,9 +2065,12 @@ async def _(
         f"preview_source=user_refresh,charged={charge.charged}",
     )
     finish_pending(pending_key)
-    await account_status.finish(
+    await plugin_finish(
+        account_status,
         recall_notice + text + f"\n{_charge_text(charge, int(key))}\nRef_ID: {ref}",
+        event=event,
         reply_message=True,
+        qq_buttons=_ACCOUNT_SHORTCUTS,
     )
 
 
@@ -3256,7 +3284,13 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
         )
     except Exception as exc:
         text = _ticket_failure_text(key, multiple, exc)
-    await plugin_finish(account_ticket, text, event=event, reply_message=True)
+    await plugin_finish(
+        account_ticket,
+        text,
+        event=event,
+        reply_message=True,
+        qq_buttons=_ACCOUNT_SHORTCUTS,
+    )
 
 
 @account_ticket_status.handle()
@@ -3285,7 +3319,13 @@ async def _(event: MessageEvent):
             event=event,
             reply_message=True,
         )
-    await plugin_finish(account_ticket_status, text, event=event, reply_message=True)
+    await plugin_finish(
+        account_ticket_status,
+        text,
+        event=event,
+        reply_message=True,
+        qq_buttons=_ACCOUNT_SHORTCUTS,
+    )
 
 
 async def _run_paid_awmc_read(
@@ -3591,7 +3631,13 @@ async def _(event: MessageEvent):
             event=event,
             reply_message=True,
         )
-    await plugin_finish(account_preview, text, event=event, reply_message=True)
+    await plugin_finish(
+        account_preview,
+        text,
+        event=event,
+        reply_message=True,
+        qq_buttons=_ACCOUNT_SHORTCUTS,
+    )
 
 
 @account_items.handle()
@@ -3615,7 +3661,13 @@ async def _(event: MessageEvent):
             event=event,
             reply_message=True,
         )
-    await plugin_finish(account_items, text, event=event, reply_message=True)
+    await plugin_finish(
+        account_items,
+        text,
+        event=event,
+        reply_message=True,
+        qq_buttons=_ACCOUNT_SHORTCUTS,
+    )
 
 
 @account_gate_status.handle()
@@ -3639,7 +3691,13 @@ async def _(event: MessageEvent):
             event=event,
             reply_message=True,
         )
-    await plugin_finish(account_gate_status, text, event=event, reply_message=True)
+    await plugin_finish(
+        account_gate_status,
+        text,
+        event=event,
+        reply_message=True,
+        qq_buttons=_ACCOUNT_SHORTCUTS,
+    )
 
 
 @account_music_upsert.handle()
@@ -4110,7 +4168,10 @@ async def _(event: MessageEvent):
         )
     # 与 maibot 一致：用 regionId → WAHLAP_REGIONS 映射省份名，勿依赖 regionName。
     await plugin_finish(
-        account_region, format_user_region_block(result), event=event
+        account_region,
+        format_user_region_block(result),
+        event=event,
+        qq_buttons=_ACCOUNT_SHORTCUTS,
     )
 
 

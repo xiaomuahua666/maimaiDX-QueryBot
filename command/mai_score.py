@@ -200,6 +200,66 @@ group_lock_board = on_command('群锁血榜', aliases={'群内锁血榜', '锁�
 friend_battle = on_command('友人对战', aliases={'好友对战'})
 friend_battle_rank = on_command('友人对战排行', aliases={'友人排行', '友人对战排名'})
 
+
+_B50_SHORTCUTS = (
+    ('标准 B50', 'b50'),
+    ('全部 A50', 'a50'),
+    ('AP50', 'ap50'),
+    ('FC50', 'fc50'),
+    ('寸50', '寸50'),
+    ('名刀50', '名刀50'),
+    ('越级50', '越级50'),
+    ('拟合50', '拟合50'),
+    ('含金量', '含金量'),
+    ('含水量', '含水量'),
+    ('B50 地板', 'b50地板'),
+    ('刷新 B50', '刷新b50'),
+)
+_CONTENT_SHORTCUTS = (
+    ('含金量', '含金量'),
+    ('含水量', '含水量'),
+    ('我有多菜', '我有多菜'),
+    ('标准 B50', 'b50'),
+)
+_REPORT_SHORTCUTS = (
+    ('日报', '日报'),
+    ('周报', '周报'),
+    ('月报', '月报'),
+    ('年报', '年报'),
+    ('成绩趋势', '成绩趋势'),
+    ('吃分推荐', '吃分推荐'),
+    ('查看存档', '查看存档'),
+    ('立即存储', '立即存储数据'),
+)
+
+
+def _score_shortcuts(matcher) -> tuple[tuple[str, str], ...]:
+    if any(
+        matcher is candidate
+        for candidate in (gold_content, water_content, how_weak)
+    ):
+        return _CONTENT_SHORTCUTS
+    if any(
+        matcher is candidate
+        for candidate in (
+            best50, best_all50, refresh_b50, fcb50, fcallb50, apb50,
+            apallb50, fit_b50, fit_all_b50, sun_b50, sun_all_b50,
+            lock_b50, lock_ab50, yueji_b50, yueji_ab50, ideal_b50,
+            ideal_ab50, floor_query, version_b50, legacy_b50, legacy_b35,
+            dx2025_b50, dx2026_b35, difficulty_b50, difficulty_ab50,
+        )
+    ):
+        return _B50_SHORTCUTS
+    if any(
+        matcher is candidate
+        for candidate in (
+            weekly_report, monthly_report, annual_report, daily_report,
+            today_gain_recommend, awmcnet_trend, storage_snapshot,
+        )
+    ):
+        return _REPORT_SHORTCUTS
+    return ()
+
 def get_at_qq(message: MessageEvent) -> Optional[int]:
     target = parse_at_target_id(message)
     if target is None:
@@ -377,6 +437,7 @@ async def _finish_score(
         footer=footer,
         event=billing_event,
         publish_qq_image=True,
+        qq_buttons=_score_shortcuts(matcher),
     )
 
 
