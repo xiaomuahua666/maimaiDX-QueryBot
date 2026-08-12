@@ -38,8 +38,8 @@ from nonebot_plugin_maimaidx.libraries.maimaidx_db import (  # noqa: E402
 
 keyboard = _build_welcome_keyboard().model_dump(exclude_none=True)
 buttons = [button for row in keyboard['content']['rows'] for button in row['buttons']]
-assert len(keyboard['content']['rows']) == 2
-assert all(len(row['buttons']) <= 5 for row in keyboard['content']['rows'])
+assert len(keyboard['content']['rows']) == 3
+assert all(len(row['buttons']) <= 3 for row in keyboard['content']['rows'])
 
 commands = {
     button['render_data']['label']: button['action']['data']
@@ -49,10 +49,10 @@ commands = {
 assert commands == {
     '签到': '签到',
     '今日舞萌': '今日舞萌',
-    '锐评一下': '锐评一下',
+    'B50 锐评': '锐评一下',
     '吃分推荐': '吃分推荐',
-    '我要上分': 'mai什么推分',
-    '周报（需开启数据储存）': '周报',
+    '推分推荐': 'mai什么推分',
+    '周报': '周报',
 }
 # The target matchers are registered in QQ mode; type=2 + enter=True sends
 # these command texts back as ordinary user messages through the same router.
@@ -74,7 +74,7 @@ for button in buttons:
         assert action['enter'] is True
         assert action['reply'] is False
 
-assert re.fullmatch(r'.*mai.*什么(.+)?', commands['我要上分'])
+assert re.fullmatch(r'.*mai.*什么(.+)?', commands['推分推荐'])
 help_button = next(button for button in buttons if button['id'] == 'welcome-help-link')
 assert help_button['action'] == {
     'type': 0,
@@ -95,6 +95,8 @@ payload = _oauth_success_payload(
 segments = list(payload)
 assert [segment.type for segment in segments] == ['markdown', 'keyboard']
 assert '3 BREAK' in segments[0].data['markdown'].content
+assert '论坛绑定成功' in segments[0].data['markdown'].content
+assert 'OAuth' not in segments[0].data['markdown'].content
 
 # 用内存数据库验证永久幂等，不接触开发/生产余额库。
 original_conn = break_db._conn

@@ -2685,7 +2685,7 @@ def build_command_keyboard(
     buttons: Iterable[tuple[str, str]],
     *,
     event=None,
-    columns: int = 4,
+    columns: int = 3,
     id_prefix: str = 'maimaidx-command',
 ) -> Any | None:
     """Build an official-QQ keyboard whose buttons send normal commands.
@@ -2746,7 +2746,7 @@ def build_command_keyboard_message(
     *,
     event=None,
     title: str = '🎛️ 快捷操作',
-    columns: int = 4,
+    columns: int = 3,
     id_prefix: str = 'maimaidx-command',
 ) -> Any | None:
     """Build the small follow-up message used to display command buttons."""
@@ -2857,13 +2857,16 @@ async def plugin_send(
     event=None,
     reply_message: bool = True,
     mention_sender: Optional[bool] = None,
+    publish_qq_image: bool = False,
 ) -> Any:
     if mention_sender is None:
         mention_sender = event is not None and get_event_group_id(event) is not None
     if mention_sender:
         message = ensure_sender_mention(message, event)
     reply = resolve_reply_message(event, reply_message=reply_message)
-    payload = adapt_reply_payload(message, event=event)
+    payload = adapt_reply_payload(
+        message, event=event, publish_qq_image=publish_qq_image,
+    )
     return await matcher.send(payload, reply_message=reply)
 
 

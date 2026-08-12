@@ -85,6 +85,9 @@ namespace = {
     "log": SimpleNamespace(info=lambda *_: None, warning=lambda *_: None),
     "machine_session": machine_session,
     "redact": lambda value: str(value),
+    "find_sw_api_error": lambda _exc: None,
+    "format_sw_api_quota_error": lambda error: str(error),
+    "SwApiError": type("SwApiError", (Exception,), {}),
     "httpx": SimpleNamespace(
         TimeoutException=type("HttpxTimeout", (Exception,), {}),
         ConnectError=type("HttpxConnectError", (Exception,), {}),

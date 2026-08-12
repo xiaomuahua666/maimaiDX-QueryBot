@@ -156,7 +156,9 @@ def main() -> None:
     media_message, media_messages = platform._split_qq_media_message(image_reply)
     assert [part.type for part in media_message] == ["text", "file_image"]
     fallback_content = media_message[0].data["text"]
-    assert fallback_content.startswith('@Tester\n\n')
+    # Spacing was intentionally tightened: a media-only reply needs no blank
+    # caption after the visible fallback @ name.
+    assert fallback_content == '@Tester'
     assert "查询结果" not in fallback_content
     extracted_fallback = QQBot._extract_send_message(
         media_message, escape_text=False
@@ -173,7 +175,7 @@ def main() -> None:
     )
     remote_message, remote_messages = platform._split_qq_media_message(remote_media)
     assert [part.type for part in remote_message] == ["text", "image"]
-    assert remote_message[0].data["text"].startswith('@Tester\n\n')
+    assert remote_message[0].data["text"] == '@Tester'
     assert "查询结果" not in remote_message[0].data["text"]
     assert remote_messages == []
 
@@ -198,7 +200,7 @@ def main() -> None:
             "text", "text", "file_image"
         ]
         fallback_content = media_message[0].data["text"]
-        assert fallback_content.startswith('@Tester\n\n')
+        assert fallback_content == '@Tester\n'
         assert "查询结果" not in fallback_content
         assert media_message[1].data["text"] == "footer | text 😀"
         assert len(followups) == 0
@@ -406,7 +408,7 @@ def main() -> None:
     assert [part.type for part in calls[0]["message"]] == ["text", "image"]
     # This synthetic remote mention has no username metadata, so the safe
     # native-media fallback uses the generic visible label.
-    assert calls[0]["message"][0].data["text"].startswith('@用户\n\n')
+    assert calls[0]["message"][0].data["text"] == '@用户'
 
     # A fallback media request now consumes no additional reply slot.
     calls.clear()

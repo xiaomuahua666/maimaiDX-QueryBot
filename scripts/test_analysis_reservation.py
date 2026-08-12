@@ -112,6 +112,25 @@ assert db.refund_analysis_reservation(2, 10, meta={"reason": "test"}) == 18
 daily = db._conn.execute("SELECT * FROM break_daily_usage WHERE qqid=2").fetchone()
 assert daily is None
 
+# 退款流水写入失败时，余额增加也必须回滚。
+assert db.try_reserve_analysis(2, 10)
+original_append_log = db._append_log
+db._append_log = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+    RuntimeError("ledger unavailable")
+)
+try:
+    try:
+        db.refund_analysis_reservation(2, 10, meta={"reason": "test rollback"})
+    except RuntimeError as exc:
+        assert str(exc) == "ledger unavailable"
+    else:
+        raise AssertionError("退款流水失败必须向上报告")
+finally:
+    db._append_log = original_append_log
+assert db.get_balance(2) == 8
+# 回滚后的连接仍可继续完成退款。
+assert db.refund_analysis_reservation(2, 10, meta={"reason": "retry"}) == 18
+
 db._conn.execute(
     "INSERT INTO break_users (qqid, balance, created_at, updated_at) VALUES (3, 9, ?, ?)",
     (now, now),
@@ -126,6 +145,8 @@ logs = db._conn.execute(
 assert [(row["delta"], row["reason"]) for row in logs] == [
     (-10, "b50_analysis_precharge"),
     (-30, "b50_analysis_settlement"),
+    (-10, "b50_analysis_precharge"),
+    (10, "b50_analysis_refund"),
     (-10, "b50_analysis_precharge"),
     (10, "b50_analysis_refund"),
 ]

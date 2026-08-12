@@ -47,6 +47,15 @@ from ..libraries.maimaidx_reaction import react_processing
 
 _peer_stats = None
 
+_ANALYSIS_SHORTCUTS = (
+    ('再锐评', '锐评一下'),
+    ('标准 B50', 'b50'),
+    ('AP50', 'ap50'),
+    ('FC50', 'fc50'),
+    ('含金量', '含金量'),
+    ('含水量', '含水量'),
+)
+
 
 def get_peer_stats():
     global _peer_stats
@@ -58,6 +67,40 @@ def get_peer_stats():
 def set_peer_stats(stats):
     global _peer_stats
     _peer_stats = stats
+
+
+async def _deliver_result_or_refund(
+    matcher: Matcher,
+    event: MessageEvent,
+    image: io.BytesIO,
+    billing_qq: int,
+    reserved,
+) -> bool:
+    """Only let the caller settle a reservation after the image was sent."""
+    try:
+        await plugin_send(
+            matcher,
+            MessageSegment.image(image),
+            event=event,
+            mention_sender=use_qq_mode(event),
+            publish_qq_image=True,
+        )
+    except BaseException as exc:
+        refund_analysis_charge(
+            billing_qq,
+            reserved,
+            reason=f'发送结果:{type(exc).__name__}',
+        )
+        if not isinstance(exc, Exception):
+            raise
+        await plugin_finish(
+            matcher,
+            f'锐评图片发送失败：{exc}（预扣已全额退回）',
+            event=event,
+            mention_sender=use_qq_mode(event),
+        )
+        return False
+    return True
 
 
 b50_analysis_cmd = on_command(
@@ -251,19 +294,43 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
         output_tokens,
         usage_available=usage_available,
     )
-    charged = settle_analysis_charge(
-        billing_qq,
-        cost,
-        reserved=reserved,
-        token_usage=token_usage,
-    )
+    # 先确认成品图片已成功交付，再结算预扣。过去在这里先扣费，QQ 图片
+    # 上传失败时就会出现“没收到结果、退款也没执行”的资金安全问题。
+    if not await _deliver_result_or_refund(
+        matcher, event, buf, billing_qq, reserved,
+    ):
+        return
+
+    # 图片已经送达。按真实 Token 多退少补；余额允许为负数。
+    try:
+        render_line = settle_image_render(billing_qq)
+        charged = settle_analysis_charge(
+            billing_qq,
+            cost,
+            reserved=reserved,
+            token_usage=token_usage,
+        )
+    except Exception as e:
+        refund_analysis_charge(
+            billing_qq,
+            reserved,
+            reason=f'结算异常:{type(e).__name__}',
+        )
+        log.exception(f'[b50_analysis] 结算失败 qq={billing_qq}: {e}')
+        await plugin_finish(
+            matcher,
+            '锐评图片已发送，但结算异常；本次预扣已退回。',
+            event=event,
+            mention_sender=use_qq_mode(event),
+            qq_buttons=_ANALYSIS_SHORTCUTS,
+        )
+        return
 
     balance = break_db.get_balance(billing_qq)
     query_footer = take_break_charge_footer()
     footer_parts = []
     if query_footer:
         footer_parts.extend(query_footer)
-    render_line = settle_image_render(billing_qq)
     if render_line:
         footer_parts.append(render_line)
     if reserved.freedom:
@@ -285,11 +352,11 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
                 usage_available=usage_available,
             )
         )
-    footer = '\n' + '\n'.join(footer_parts)
+    footer = '\n'.join(footer_parts)
     await plugin_finish(
         matcher,
-        MessageSegment.image(buf) + MessageSegment.text(footer),
+        footer,
         event=event,
         mention_sender=use_qq_mode(event),
-        publish_qq_image=True,
+        qq_buttons=_ANALYSIS_SHORTCUTS,
     )

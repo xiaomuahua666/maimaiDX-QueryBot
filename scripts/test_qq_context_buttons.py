@@ -20,6 +20,7 @@ nonebot.init()
 
 from nonebot_plugin_maimaidx.command import (  # noqa: E402
     mai_account,
+    mai_b50_analysis,
     mai_guess,
     mai_letter,
     mai_score,
@@ -48,7 +49,7 @@ def command_map(buttons):
     )
     data = keyboard.model_dump(exclude_none=True)
     rows = data['content']['rows']
-    assert all(len(row['buttons']) <= 4 for row in rows)
+    assert all(len(row['buttons']) <= 3 for row in rows)
     flattened = [button for row in rows for button in row['buttons']]
     for button in flattened:
         action = button['action']
@@ -87,6 +88,22 @@ assert games['极限二选一'] == '极限二选一'
 
 letter = command_map(mai_letter._LETTER_SHORTCUTS)
 assert letter['再来开字母'] == '开字母'
+
+analysis = command_map(mai_b50_analysis._ANALYSIS_SHORTCUTS)
+assert analysis['再锐评'] == '锐评一下'
+assert analysis['标准 B50'] == 'b50'
+
+# Three columns leave enough room for every concise label in official QQ.
+all_context_buttons = (
+    mai_score._B50_SHORTCUTS
+    + mai_score._CONTENT_SHORTCUTS
+    + mai_score._REPORT_SHORTCUTS
+    + mai_account._ACCOUNT_SHORTCUTS
+    + mai_guess._GUESS_SHORTCUTS
+    + mai_letter._LETTER_SHORTCUTS
+    + mai_b50_analysis._ANALYSIS_SHORTCUTS
+)
+assert all(len(label) <= 9 for label, _command in all_context_buttons)
 
 payload = build_command_keyboard_message(
     mai_guess._GUESS_SHORTCUTS,

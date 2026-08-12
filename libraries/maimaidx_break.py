@@ -1253,14 +1253,20 @@ class BreakDatabase:
             return self.get_balance(qqid)
         self._ensure_user(qqid)
         with self._lock:
-            now = time.time()
-            self._conn.execute(
-                'UPDATE break_users SET balance = balance + ?, updated_at = ? WHERE qqid = ?',
-                (reserved, now, qqid),
-            )
-            self._append_log(qqid, reserved, 'b50_analysis_refund', meta=meta)
-            self._conn.commit()
-            return self.get_balance(qqid)
+            try:
+                now = time.time()
+                self._conn.execute(
+                    'UPDATE break_users SET balance = balance + ?, updated_at = ? WHERE qqid = ?',
+                    (reserved, now, qqid),
+                )
+                self._append_log(qqid, reserved, 'b50_analysis_refund', meta=meta)
+                self._conn.commit()
+                return self.get_balance(qqid)
+            except BaseException:
+                # 余额与退款流水必须同成同败，避免出现“日志写失败但余额
+                # 已加回”或连接继续携带半截事务。
+                self._conn.rollback()
+                raise
 
     def settle_analysis_reservation(
         self,
@@ -3378,7 +3384,9 @@ def reserve_analysis_charge(qqid: int) -> AnalysisChargeReservation:
 def refund_analysis_charge(qqid: int, reserved: Any, *, reason: str) -> int:
     """模型或制图失败时退回尚未结算的预扣额度。"""
     amount = max(0, int(getattr(reserved, 'amount', reserved)))
-    if is_superuser_exempt(qqid) or amount <= 0 or not break_db.billing_enabled():
+    # 退款必须以预扣事实为准。即使管理员在处理中关闭计费，或者把用户
+    # 加入免单名单，已扣走的余额也仍然必须原路退回。
+    if amount <= 0:
         return break_db.get_balance(qqid)
     return break_db.refund_analysis_reservation(
         qqid,

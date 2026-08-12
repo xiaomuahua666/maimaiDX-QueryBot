@@ -201,21 +201,21 @@ def _oauth_success_payload(
     name = _escape_markdown_value(profile.get('username') or profile.get('xf_user_id'))
     email = _escape_markdown_value(profile.get('email'))
     qq = _escape_markdown_value(profile.get('legacy_qq'))
-    lines = ['## 论坛 OAuth 绑定成功', '']
+    lines = ['## 论坛绑定成功', '']
     if prefix.strip():
         lines.extend(f'> {line}' for line in prefix.splitlines() if line.strip())
         lines.append('')
     lines.extend(
         [
-            f'- **论坛账号**：{name}',
+            f'- **论坛**：{name}',
             f'- **邮箱**：{email}',
             f'- **查分 QQ**：{qq}',
             '',
-            '现在可以直接使用签到、查分、B50 等账号功能。',
+            '已可使用：签到、查分、B50 等账号功能。',
         ]
     )
     if reward_awarded:
-        lines.append('要开始了哟～首次绑定奖励已发放 **3 BREAK** 喵！')
+        lines.append('🎁 首次绑定奖励：**+3 BREAK**')
     keyboard = _build_welcome_keyboard()
     return QQMessage(
         [
@@ -317,6 +317,7 @@ async def _complete_oauth_paste(
             reward_awarded=reward_awarded,
         ),
         event=event,
+        mention_sender=False,
     )
 
 
@@ -497,10 +498,10 @@ def _build_welcome_keyboard() -> MessageKeyboard:
     action_buttons = [
         ('签到', '签到'),
         ('今日舞萌', '今日舞萌'),
-        ('锐评一下', '锐评一下'),
+        ('B50 锐评', '锐评一下'),
         ('吃分推荐', '吃分推荐'),
-        ('我要上分', 'mai什么推分'),
-        ('周报（需开启数据储存）', '周报'),
+        ('推分推荐', 'mai什么推分'),
+        ('周报', '周报'),
     ]
     buttons = [
         Button(
@@ -528,7 +529,7 @@ def _build_welcome_keyboard() -> MessageKeyboard:
         )
     )
     rows = [
-        InlineKeyboardRow(buttons=buttons[start : start + 5])
-        for start in range(0, len(buttons), 5)
+        InlineKeyboardRow(buttons=buttons[start : start + 3])
+        for start in range(0, len(buttons), 3)
     ]
     return MessageKeyboard(content=InlineKeyboard(rows=rows))
