@@ -137,6 +137,12 @@ LOTTERY_HELP = (
     '非空奖概率 65%，单抽期望返还 1.6 BREAK；最多 10 连抽，长期仍为净消耗。'
 )
 
+_AWMC_SHORTCUTS = (
+    ('签到', '签到'), ('我的 AWMC', '我的AWMC'),
+    ('BREAK 统计', 'BREAK统计'), ('我的卡密', '我的卡密'),
+    ('转账', '转账BREAK'), ('抽奖', 'BREAK抽奖'),
+)
+
 # GAMBLE_ALL_HELP = (
 #     '【倾家荡产】\n'
 #     '梭哈你的全部 BREAK，一抽定生死！\n\n'
@@ -591,7 +597,10 @@ async def _(event: MessageEvent):
     text = format_checkin_result(result)
     if storage_on and not storage_eligible:
         text += break_db.format_storage_pending_tip()
-    await awmc_checkin.finish(text, reply_message=True)
+    await plugin_finish(
+        awmc_checkin, text, event=event, reply_message=True,
+        qq_buttons=_AWMC_SHORTCUTS,
+    )
 
 
 @awmc_makeup_checkin.handle()
@@ -645,6 +654,7 @@ async def _(bot: Bot, event: MessageEvent):
                 format_account_profile(profile, title=title),
                 event=event,
                 reply_message=True,
+                qq_buttons=_AWMC_SHORTCUTS,
             )
             return
         await plugin_finish(
@@ -653,6 +663,7 @@ async def _(bot: Bot, event: MessageEvent):
             event=event,
             reply_message=True,
             publish_qq_image=True,
+            qq_buttons=_AWMC_SHORTCUTS,
         )
     except FinishedException:
         return
@@ -671,6 +682,7 @@ async def _(bot: Bot, event: MessageEvent):
                 fallback,
                 event=event,
                 reply_message=True,
+                qq_buttons=_AWMC_SHORTCUTS,
             )
         except FinishedException:
             return

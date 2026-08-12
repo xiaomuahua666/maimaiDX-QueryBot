@@ -2903,6 +2903,29 @@ async def plugin_finish(
         qq_buttons or (), event=event,
     )
     if keyboard_message is not None:
+        # Pure text/Markdown can share one official-QQ message with a native
+        # keyboard. Only media payloads need the existing two-message split.
+        try:
+            payload_parts = list(payload)
+        except TypeError:
+            payload_parts = []
+        media_types = {
+            'image', 'file_image', 'record', 'file_audio', 'video',
+            'file_video', 'audio',
+        }
+        if payload_parts and not any(
+            getattr(segment, 'type', '') in media_types
+            for segment in payload_parts
+        ):
+            from nonebot.adapters.qq.message import Message as QQMessage
+
+            # The payload already contains the result text/Markdown.  Append
+            # only the keyboard segment so an official QQ message never ends
+            # up with two competing Markdown segments.
+            keyboard_parts = list(keyboard_message)
+            combined = QQMessage(payload_parts + keyboard_parts[-1:])
+            await matcher.finish(combined, reply_message=reply)
+            return
         # Attachments and keyboards use different QQ msg_type values. Send the
         # result first, then finish with the compact keyboard follow-up so an
         # image can never be discarded in favour of the buttons.

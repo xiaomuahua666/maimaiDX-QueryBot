@@ -10,7 +10,16 @@ from ..libraries.maimaidx_music import feature_manager
 from ..libraries.maimaidx_music_info import *
 from ..libraries.maimaidx_error import QBindRequiredError
 from ..libraries.maimaidx_player_score import *
-from ..libraries.maimaidx_platform import billing_user_id, event_group_data_id, resolve_score_qqid
+from ..libraries.maimaidx_platform import (
+    billing_user_id,
+    build_command_keyboard_message,
+    event_group_data_id,
+    platform_user_id,
+    plugin_finish,
+    resolve_score_qqid,
+    use_qq_mode,
+)
+from ..libraries.maimaidx_qq_bind import qq_bind_db
 from ..libraries.maimaidx_timing import finish_timed, finish_timed_sync
 from ..libraries.maimaidx_update_plate import *
 from ..libraries.tool import qqhash
@@ -32,6 +41,49 @@ my_rating_ranking   = on_command('我的排名')
 theme_cmd           = on_command('主题', aliases={'theme'})
 
 
+_QQ_HELP_POPULAR = (
+    ('标准 B50', 'b50'), ('刷新 B50', '刷新b50'), ('B50 锐评', '锐评一下'),
+    ('AP50', 'ap50'), ('FC50', 'fc50'), ('吃分推荐', '吃分推荐'),
+    ('含金量', '含金量'), ('含水量', '含水量'), ('MyMai', 'mymai'),
+    ('签到', '签到'), ('猜歌', '猜歌'), ('猜封面', '猜封面'),
+    ('今日舞萌', '今日舞萌'), ('查歌', '查歌'), ('完整文档', '帮助 文档'),
+)
+
+_TODAY_SHORTCUTS = (
+    ('再看运势', '今日舞萌'), ('标准 B50', 'b50'),
+    ('吃分推荐', '吃分推荐'), ('签到', '签到'),
+    ('猜歌', '猜歌'), ('帮助', 'help'),
+)
+
+
+def _qq_help_message(event: MessageEvent, section: str = ''):
+    """Build one qbind-first or popular-command official QQ help message."""
+    if not use_qq_mode(event):
+        return None
+    bound = qq_bind_db.get_legacy_qq(platform_user_id(event))
+    if bound is None:
+        return build_command_keyboard_message(
+            (('绑定 qbind', 'qbind'),),
+            event=event,
+            title='尚未绑定查分 QQ\n请先点击下方按钮完成论坛绑定。',
+            columns=1,
+            id_prefix='maimaidx-help-qbind',
+        )
+    key = str(section or '').strip()
+    title = '🎛️ AWMC 指令菜单'
+    if key == '文档':
+        title += '\n完整说明：https://wiki.awmc.team/guide/bot/intro'
+    else:
+        title += '\n这里是最常用的功能；完整用法请查看文档。'
+    return build_command_keyboard_message(
+        _QQ_HELP_POPULAR,
+        event=event,
+        title=title,
+        columns=3,
+        id_prefix='maimaidx-help-home',
+    )
+
+
 @update_data.handle()
 async def _(event: PrivateMessageEvent):
     await mai.get_music(force=True)
@@ -49,7 +101,14 @@ async def _():
 
 
 @short_help.handle()
-async def _():
+async def _(event: MessageEvent, args: Message = CommandArg()):
+    payload = _qq_help_message(event, args.extract_plain_text())
+    if payload is not None:
+        await plugin_finish(
+            short_help, payload, event=event,
+            reply_message=False, mention_sender=False,
+        )
+        return
     await short_help.finish(
         '机器人帮助请前往\nhttps://wiki.awmc.team/guide/bot/intro',
     )
@@ -113,7 +172,10 @@ async def _(event: MessageEvent):
     msg += f'ID.{music.id} - {music.title}'
     msg += MessageSegment.image(music_picture(music.id))
     msg += ds
-    await mai_today.finish(msg, reply_message=True)
+    await plugin_finish(
+        mai_today, msg, event=event, reply_message=True,
+        qq_buttons=_TODAY_SHORTCUTS,
+    )
 
 
 @mai_what.handle()

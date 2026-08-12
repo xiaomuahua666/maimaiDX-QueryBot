@@ -102,6 +102,37 @@ def message_parts(record: tuple[object, dict]):
 
 
 async def main() -> None:
+    # help is deliberately qbind-exempt so it can perform its own first-step
+    # routing instead of being swallowed by the global account gate.
+    help_unbound_bot = FakeQQBot()
+    await handle_event(help_unbound_bot, make_event("help", 8))
+    assert len(help_unbound_bot.sent) == 1
+    help_parts, _kwargs = message_parts(help_unbound_bot.sent[0])
+    assert [part.type for part in help_parts] == ["markdown", "keyboard"]
+    help_keyboard = help_parts[1].data["keyboard"].model_dump(exclude_none=True)
+    help_buttons = [
+        button
+        for row in help_keyboard["content"]["rows"]
+        for button in row["buttons"]
+    ]
+    assert [(button["render_data"]["label"], button["action"]["data"])
+            for button in help_buttons] == [("绑定 qbind", "qbind")]
+
+    original_help_qbind = QqBindDatabase.get_legacy_qq
+    QqBindDatabase.get_legacy_qq = lambda self, uid: (
+        123456789
+        if str(uid) == "dispatch-unbound-openid-9"
+        else original_help_qbind(self, uid)
+    )
+    try:
+        help_bound_bot = FakeQQBot()
+        await handle_event(help_bound_bot, make_event("帮助", 9))
+        assert len(help_bound_bot.sent) == 1
+        bound_help_parts, _kwargs = message_parts(help_bound_bot.sent[0])
+        assert [part.type for part in bound_help_parts] == ["markdown", "keyboard"]
+    finally:
+        QqBindDatabase.get_legacy_qq = original_help_qbind
+
     roast_bot = FakeQQBot()
     await handle_event(roast_bot, make_event("锐评一下", 1))
     # All score-dependent commands now share the qbind gate. An unbound QQ
@@ -173,8 +204,8 @@ async def main() -> None:
         '<qqbot-at-user id="dispatch-unbound-openid-4" />\n'
     )
 
-    # Sign-in is a plain-text handler and must use the same single text-chain
-    # @ payload as the query-result fallback.
+    # Sign-in is a plain-text handler: result and related shortcuts must share
+    # one official-QQ message.
     original_checkin = mai_break.break_db.checkin
     original_checkin_formatter = mai_break.format_checkin_result
     original_checkin_qqid = mai_break._account_qqid
@@ -197,13 +228,24 @@ async def main() -> None:
         assert checkin_bot.sent
         parts, kwargs = message_parts(checkin_bot.sent[0])
         assert kwargs.get("reply_message") is not True
-        assert len(parts) == 1
-        assert parts[0].type == "markdown"
+        assert [part.type for part in parts] == ["markdown", "keyboard"]
         checkin_text = parts[0].data["markdown"].content
         assert checkin_text.startswith(
             '<qqbot-at-user id="dispatch-unbound-openid-6" />\n'
         )
         assert "✅ AWMC 签到成功！" in checkin_text
+        checkin_keyboard = parts[1].data["keyboard"].model_dump(
+            exclude_none=True
+        )
+        checkin_buttons = [
+            button
+            for row in checkin_keyboard["content"]["rows"]
+            for button in row["buttons"]
+        ]
+        assert any(
+            button["action"]["data"] == "我的AWMC"
+            for button in checkin_buttons
+        )
     finally:
         mai_break.break_db.checkin = original_checkin
         mai_break.format_checkin_result = original_checkin_formatter

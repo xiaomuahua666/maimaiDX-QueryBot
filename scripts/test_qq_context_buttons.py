@@ -21,9 +21,12 @@ nonebot.init()
 from nonebot_plugin_maimaidx.command import (  # noqa: E402
     mai_account,
     mai_b50_analysis,
+    mai_base,
+    mai_break,
     mai_guess,
     mai_letter,
     mai_score,
+    mai_search,
 )
 from nonebot_plugin_maimaidx.libraries.maimaidx_platform import (  # noqa: E402
     build_command_keyboard,
@@ -90,8 +93,22 @@ letter = command_map(mai_letter._LETTER_SHORTCUTS)
 assert letter['再来开字母'] == '开字母'
 
 analysis = command_map(mai_b50_analysis._ANALYSIS_SHORTCUTS)
-assert analysis['再锐评'] == '锐评一下'
+assert analysis['锐评'] == '锐评一下'
 assert analysis['标准 B50'] == 'b50'
+
+today = command_map(mai_base._TODAY_SHORTCUTS)
+assert today['再看运势'] == '今日舞萌'
+assert today['吃分推荐'] == '吃分推荐'
+
+awmc = command_map(mai_break._AWMC_SHORTCUTS)
+assert awmc['签到'] == '签到'
+assert awmc['我的 AWMC'] == '我的AWMC'
+assert awmc['转账'] == '转账BREAK'
+
+search = command_map(mai_search._SEARCH_SHORTCUTS)
+assert search['查歌'] == '查歌'
+assert search['定数查歌'] == '定数查歌'
+assert search['谱师查歌'] == '谱师查歌'
 
 # Three columns leave enough room for every concise label in official QQ.
 all_context_buttons = (
@@ -102,6 +119,9 @@ all_context_buttons = (
     + mai_guess._GUESS_SHORTCUTS
     + mai_letter._LETTER_SHORTCUTS
     + mai_b50_analysis._ANALYSIS_SHORTCUTS
+    + mai_base._TODAY_SHORTCUTS
+    + mai_break._AWMC_SHORTCUTS
+    + mai_search._SEARCH_SHORTCUTS
 )
 assert all(len(label) <= 9 for label, _command in all_context_buttons)
 
@@ -144,6 +164,24 @@ assert any(segment.type == 'file_image' for segment in qq_matcher.calls[0][1])
 assert [segment.type for segment in qq_matcher.calls[1][1]] == [
     'markdown', 'keyboard'
 ]
+
+# Pure text and its keyboard stay in one official-QQ message.  The keyboard's
+# helper heading is intentionally omitted because the result is already the
+# message heading/body.
+qq_text_matcher = FakeMatcher()
+asyncio.run(
+    plugin_finish(
+        qq_text_matcher,
+        '普通结果',
+        event=qq_event,
+        qq_buttons=mai_score._CONTENT_SHORTCUTS,
+    )
+)
+assert [call[0] for call in qq_text_matcher.calls] == ['finish']
+assert [segment.type for segment in qq_text_matcher.calls[0][1]] == [
+    'markdown', 'keyboard'
+]
+assert '普通结果' in qq_text_matcher.calls[0][1][0].data['markdown'].content
 
 onebot_matcher = FakeMatcher()
 asyncio.run(

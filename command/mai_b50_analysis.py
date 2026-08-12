@@ -48,7 +48,7 @@ from ..libraries.maimaidx_reaction import react_processing
 _peer_stats = None
 
 _ANALYSIS_SHORTCUTS = (
-    ('再锐评', '锐评一下'),
+    ('锐评', '锐评一下'),
     ('标准 B50', 'b50'),
     ('AP50', 'ap50'),
     ('FC50', 'fc50'),

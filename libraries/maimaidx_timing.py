@@ -224,16 +224,26 @@ async def finish_timed_sync(
     *args,
     extra: str = '',
     reply_message: bool = True,
+    event=None,
+    qq_buttons=None,
     **kwargs,
 ) -> None:
     """计时执行同步生成函数（线程池，不堵事件循环），成功时追加 ⏱️ 耗时后 finish。"""
     import asyncio
 
     result, total = await asyncio.to_thread(run_timed_call, fn, *args, **kwargs)
+    from .maimaidx_platform import plugin_finish
+
     if isinstance(result, str):
-        await matcher.finish(result, reply_message=reply_message)
+        await plugin_finish(
+            matcher, result, event=event, reply_message=reply_message,
+            qq_buttons=qq_buttons,
+        )
         return
-    await matcher.finish(
+    await plugin_finish(
+        matcher,
         attach_timing(result, total, extra=extra),
+        event=event,
         reply_message=reply_message,
+        qq_buttons=qq_buttons,
     )
