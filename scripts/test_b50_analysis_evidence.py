@@ -29,6 +29,8 @@ sd = [chart(i, f"Old {i}", ra=250) for i in range(1, 36)]
 dx = [chart(100 + i, f"New {i}", ra=270) for i in range(1, 16)]
 sd.append(chart(1001, "Old Push", ra=240, achievement=99.8))
 dx.append(chart(1002, "New Push", ra=240, achievement=99.8))
+sd.append(chart(1003, "Already SSS Plus", ra=282, achievement=100.5))
+dx.append(chart(1004, "Already Theory", ra=282, achievement=101.0))
 
 chart_stats = {}
 for row in sd[:35] + dx[:15]:
@@ -83,5 +85,8 @@ assert new_push["replacement_floor"] == 270
 assert new_push["gain_100"] == 10
 assert old_push["estimated_gain"] == old_push["gain_100"]
 assert new_push["estimated_gain"] == new_push["gain_100"]
+assert "Already SSS Plus" not in push_by_title
+assert "Already Theory" not in push_by_title
+assert all(row["achievements"] < 100.5 for row in context["push_candidates"])
 
 print("b50 evidence tests: ok")

@@ -173,6 +173,7 @@ async def finish_timed(
     billing_qqid: Optional[int] = None,
     feature_charge: Optional[str] = None,
     event=None,
+    qq_buttons=None,
 ) -> None:
     """计时执行生成协程，成功时追加 ⏱️ 耗时后 finish。"""
     from .maimaidx_break import take_break_charge_footer
@@ -187,7 +188,10 @@ async def finish_timed(
         )
     except BreakInsufficientError as e:
         clear_fetch_meta()
-        await plugin_finish(matcher, str(e), event=event, reply_message=reply_message)
+        await plugin_finish(
+            matcher, str(e), event=event, reply_message=reply_message,
+            qq_buttons=qq_buttons,
+        )
         return
     charge = take_break_charge_footer()
     if charge:
@@ -198,7 +202,10 @@ async def finish_timed(
         if not result.strip():
             await matcher.finish(reply_message=reply)
             return
-        await plugin_finish(matcher, result, event=event, reply_message=reply_message)
+        await plugin_finish(
+            matcher, result, event=event, reply_message=reply_message,
+            qq_buttons=qq_buttons,
+        )
         return
     if not is_valid_image_result(result):
         clear_fetch_meta()
@@ -207,6 +214,7 @@ async def finish_timed(
             '成绩图生成失败，请稍后重试或联系管理员。',
             event=event,
             reply_message=reply_message,
+            qq_buttons=qq_buttons,
         )
         return
     await plugin_finish(
@@ -214,6 +222,7 @@ async def finish_timed(
         attach_timing(result, total, extra=extra),
         event=event,
         reply_message=reply_message,
+        qq_buttons=qq_buttons,
     )
 
 
@@ -224,16 +233,26 @@ async def finish_timed_sync(
     *args,
     extra: str = '',
     reply_message: bool = True,
+    event=None,
+    qq_buttons=None,
     **kwargs,
 ) -> None:
     """计时执行同步生成函数（线程池，不堵事件循环），成功时追加 ⏱️ 耗时后 finish。"""
     import asyncio
 
     result, total = await asyncio.to_thread(run_timed_call, fn, *args, **kwargs)
+    from .maimaidx_platform import plugin_finish
+
     if isinstance(result, str):
-        await matcher.finish(result, reply_message=reply_message)
+        await plugin_finish(
+            matcher, result, event=event, reply_message=reply_message,
+            qq_buttons=qq_buttons,
+        )
         return
-    await matcher.finish(
+    await plugin_finish(
+        matcher,
         attach_timing(result, total, extra=extra),
+        event=event,
         reply_message=reply_message,
+        qq_buttons=qq_buttons,
     )

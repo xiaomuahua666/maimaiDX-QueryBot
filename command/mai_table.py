@@ -15,6 +15,7 @@ from ..libraries.maimaidx_platform import (
     billing_user_id,
     get_sender_display_name,
     parse_at_target_id,
+    plugin_finish,
     resolve_score_qqid,
 )
 
@@ -28,9 +29,36 @@ plate_table_pfm         = on_regex(r'^([真超檄橙暁晓桃櫻樱紫菫堇白�
 rise_score              = on_regex(r'^我要在?([0-9]+\+?)?[上加\+]([0-9]+)?分\s?(.+)?')
 plate_process           = on_regex(r'^([真超檄橙暁晓桃櫻樱紫菫堇白雪輝辉舞霸熊華华爽煌星宙祭祝双宴镜彩丸圆])([極极将舞神者]舞?)进度\s?(.+)?')
 level_process           = on_regex(r'^([0-9]+\+?)\s?([abcdsfxp\+]+)\s?([\u4e00-\u9fa5]+)?\s?进度\s?([0-9]+)?(.+)?', re.IGNORECASE)
-# 等级牌子进度：13将 / 14+极进度 / 13舞舞 等（等价于 13sss进度、13fc进度、13fdx进度）
-level_plate_progress    = on_regex(r'^([0-9]+\+?)(舞舞|将|極|极|神|者)(?:进度)?(?:\s+(已完成|未完成|未开始|未游玩))?(?:\s+(\d+))?\s*(.*)?$')
+# 等级牌子进度：13将 / 14+极进度 / 10将完成表 等
+# （等价于 13sss进度、13fc进度、13fdx进度）。用户名参数必须以空白
+# 分隔，避免把“完成表”这类指令后缀误当成查分器用户名。
+LEVEL_PLATE_PROGRESS_PATTERN = (
+    r'^([0-9]+\+?)(舞舞|将|極|极|神|者)(?:进度|完成表)?'
+    r'(?:\s+(已完成|未完成|未开始|未游玩))?'
+    r'(?:\s+(\d+))?(?:\s+(.+))?$'
+)
+level_plate_progress    = on_regex(LEVEL_PLATE_PROGRESS_PATTERN)
 level_achievement_list  = on_regex(r'^([0-9]+\.?[0-9]?\+?)\s?分数列表\s?([0-9]+)?\s?(.+)?')
+
+
+def _level_table_shortcuts(level: str) -> tuple[tuple[str, str], ...]:
+    return (
+        (f'{level} SSS+ 表', f'{level}完成表'),
+        (f'{level} FC 表', f'{level}fc完成表'),
+        (f'{level} AP 表', f'{level}ap完成表'),
+        (f'{level} 分数', f'{level}分数列表'),
+        ('牌子统计', '牌子统计'), ('吃分推荐', '吃分推荐'),
+        ('标准 B50', 'b50'), ('刷新 B50', '刷新b50'),
+    )
+
+
+def _plate_shortcuts(prefix: str) -> tuple[tuple[str, str], ...]:
+    return (
+        (f'{prefix}完成表', f'{prefix}完成表'),
+        (f'{prefix}进度', f'{prefix}进度'),
+        ('牌子统计', '牌子统计'), ('底力分析', '底力分析'),
+        ('吃分推荐', '吃分推荐'), ('标准 B50', 'b50'),
+    )
 
 
 def get_at_qq(message: MessageEvent) -> Optional[int]:
@@ -83,6 +111,8 @@ async def _(event: MessageEvent, match = RegexMatched()):
             rating_table_pfm,
             draw_rating_table(resolve_score_qqid(event), ra, True if plan and plan.lower() in comboRank else False),
             billing_qqid=billing_user_id(event),
+            event=event,
+            qq_buttons=_level_table_shortcuts(ra),
         )
     else:
         await rating_table_pfm.finish('无法识别的定数', reply_message=True)
@@ -102,6 +132,7 @@ async def _(event: MessageEvent, match = RegexMatched()):
         plate_table_pfm,
         draw_plate_table(qqid, ver, plan, page),
         billing_qqid=billing_user_id(event), event=event,
+        qq_buttons=_plate_shortcuts(f'{match.group(1)}{plan}'),
     )
 
 
@@ -126,7 +157,7 @@ async def _(event: MessageEvent, match = RegexMatched(), user_id: Optional[int] 
             billing_qqid=billing_user_id(event),
         )
     except BreakInsufficientError as e:
-        await rise_score.finish(str(e), reply_message=True)
+        await plugin_finish(rise_score, str(e), event=event, reply_message=True)
         return
     charge = take_break_charge_footer()
     charge_text = ('\n' + '\n'.join(charge)) if charge else ''
@@ -150,6 +181,7 @@ async def _(event: MessageEvent, match = RegexMatched(), user_id: Optional[int] 
     await finish_timed(
         plate_process, player_plate_data(qqid, '', ver, plan, user_name=display_name),
         billing_qqid=billing_user_id(event), event=event,
+        qq_buttons=_plate_shortcuts(f'{match.group(1)}{plan}'),
     )
 
 
@@ -188,6 +220,7 @@ async def _(event: MessageEvent, match = RegexMatched(), user_id: Optional[int] 
         level_process_data(qqid, username, level, plan, category, int(page) if page else 1),
         billing_qqid=billing_user_id(event),
         event=event,
+        qq_buttons=_level_table_shortcuts(level),
     )
 
 
@@ -229,7 +262,9 @@ async def _level_plate_progress(event: MessageEvent, match=RegexMatched(), user_
     try:
         result, total = await run_timed(_generate(), billing_qqid=billing_user_id(event))
     except BreakInsufficientError as e:
-        await level_plate_progress.finish(str(e), reply_message=True)
+        await plugin_finish(
+            level_plate_progress, str(e), event=event, reply_message=True,
+        )
         return
     except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
         await level_plate_progress.finish(str(e), reply_message=True)
@@ -239,11 +274,20 @@ async def _level_plate_progress(event: MessageEvent, match=RegexMatched(), user_
     charge = take_break_charge_footer()
     charge_text = ('\n' + '\n'.join(charge)) if charge else ''
     if isinstance(pic, str):
-        await level_plate_progress.finish(pic + charge_text, reply_message=True)
+        await plugin_finish(
+            level_plate_progress,
+            pic + charge_text,
+            event=event,
+            reply_message=True,
+            qq_buttons=_plate_shortcuts(f'{level}{plan_cn}'),
+        )
     from nonebot.adapters.onebot.v11 import Message
-    await level_plate_progress.finish(
+    await plugin_finish(
+        level_plate_progress,
         attach_timing(Message(summary) + Message(pic), total, extra=charge_text.strip()),
+        event=event,
         reply_message=True,
+        qq_buttons=_plate_shortcuts(f'{level}{plan_cn}'),
     )
 
 
@@ -269,4 +313,5 @@ async def _(event: MessageEvent, match = RegexMatched(), user_id: Optional[int] 
         level_achievement_list_data(qqid, username, rating, int(page) if page else 1),
         billing_qqid=billing_user_id(event),
         event=event,
+        qq_buttons=_level_table_shortcuts(str(rating)),
     )

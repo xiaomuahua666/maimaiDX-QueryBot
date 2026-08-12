@@ -1,47 +1,100 @@
-"""帮助/help 命令简洁回复回归测试。
+#!/usr/bin/env python3
+"""help：官方 QQ 未绑定只给 qbind，绑定后单条展示热门功能。"""
 
-用户发送 `帮助` 或 `help` 后，Bot 应回复：
-    机器人帮助请前往
-    https://wiki.awmc.team/guide/bot/intro
+from __future__ import annotations
 
-原先 `帮助maimaiDX` 回复一张大图，过于臃肿；新增独立的简洁文本入口。
-"""
-
+import os
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[1]
+sys.path = [item for item in sys.path if item and Path(item).resolve() != ROOT]
+sys.path.insert(0, str(ROOT.parent))
+os.environ.setdefault("COMMAND_START", '["", "/"]')
+os.environ.setdefault("MAIMAIDXPATH", str(ROOT / "static"))
+os.environ.setdefault("MAIMAIDX_STORAGE_FAIL_FAST", "false")
+os.environ.setdefault("MAIMAIDX_MESSAGE_STATS_ENABLED", "false")
+os.environ.setdefault("MAIMAIDX_BUSY_SURCHARGE_ENABLED", "false")
+
+import nonebot
+
+nonebot.init()
+
+from nonebot_plugin_maimaidx.command import mai_base  # noqa: E402
+
+
+qq_event = SimpleNamespace(
+    group_openid="group-openid",
+    get_user_id=lambda: "help-openid",
+)
+onebot_event = SimpleNamespace(
+    user_id=123456789,
+    get_user_id=lambda: "123456789",
+)
+
+
+def keyboard_buttons(message) -> list[dict]:
+    assert [segment.type for segment in message] == ["markdown", "keyboard"]
+    keyboard = message[1].data["keyboard"].model_dump(exclude_none=True)
+    rows = keyboard["content"]["rows"]
+    assert len(rows) <= 5
+    assert all(len(row["buttons"]) <= 3 for row in rows)
+    return [button for row in rows for button in row["buttons"]]
+
+
+original_get_legacy_qq = mai_base.qq_bind_db.get_legacy_qq
+try:
+    mai_base.qq_bind_db.get_legacy_qq = lambda _pid: None
+    unbound = mai_base._qq_help_message(qq_event)
+    unbound_buttons = keyboard_buttons(unbound)
+    assert len(unbound_buttons) == 1
+    assert unbound_buttons[0]["render_data"]["label"] == "绑定 qbind"
+    assert unbound_buttons[0]["action"]["data"] == "qbind"
+    assert "尚未绑定" in unbound[0].data["markdown"].content
+
+    mai_base.qq_bind_db.get_legacy_qq = lambda _pid: 123456789
+    bound = mai_base._qq_help_message(qq_event)
+    bound_buttons = keyboard_buttons(bound)
+    # Exactly one full keyboard: popular commands only, no multi-message menu.
+    assert len(bound_buttons) == 15
+    commands = {
+        button["render_data"]["label"]: button["action"]["data"]
+        for button in bound_buttons
+    }
+    assert commands == {
+        "标准 B50": "b50",
+        "刷新 B50": "刷新b50",
+        "B50 锐评": "锐评一下",
+        "AP50": "ap50",
+        "FC50": "fc50",
+        "吃分推荐": "吃分推荐",
+        "含金量": "含金量",
+        "含水量": "含水量",
+        "MyMai": "mymai",
+        "签到": "签到",
+        "猜歌": "猜歌",
+        "猜封面": "猜封面",
+        "今日舞萌": "今日舞萌",
+        "查歌": "查歌",
+        "完整文档": "帮助 文档",
+    }
+    assert "最常用" in bound[0].data["markdown"].content
+
+    docs = mai_base._qq_help_message(qq_event, "文档")
+    assert "https://wiki.awmc.team/guide/bot/intro" in (
+        docs[0].data["markdown"].content
+    )
+finally:
+    mai_base.qq_bind_db.get_legacy_qq = original_get_legacy_qq
+
+# OneBot keeps the existing concise wiki response and receives no QQ menu.
+assert mai_base._qq_help_message(onebot_event) is None
+
 source = (ROOT / "command" / "mai_base.py").read_text(encoding="utf-8")
+assert "on_command('帮助', aliases={'help'})" in source
+assert "_maimaidx_qbind_exempt" in source
+assert "机器人帮助请前往" in source
 
-# 1. 必须注册裸命令 `帮助`，且 `help` 作为别名
-assert "on_command('帮助'" in source, "缺少 on_command('帮助') 注册"
-# 别名 help 必须出现在该注册行的 aliases 中
-help_reg_line_start = source.index("on_command('帮助'")
-help_reg_line_end = source.index("\n", help_reg_line_start)
-help_reg_line = source[help_reg_line_start:help_reg_line_end]
-assert "aliases" in help_reg_line, "帮助命令缺少 aliases"
-assert "'help'" in help_reg_line or '"help"' in help_reg_line, (
-    "帮助命令别名未包含 help"
-)
-
-# 2. 必须回复简洁文本，不发送图片
-#    精确定位 @short_help.handle() 处理器块（到下一个顶层 @ 装饰器）
-handler_anchor = source.index("@short_help.handle()")
-handler_idx = source.index("@", handler_anchor)
-next_at = source.find("\n@", handler_idx + 1)
-handler_block = source[handler_idx:next_at]
-
-assert "机器人帮助请前往" in handler_block, "处理器未回复「机器人帮助请前往」"
-assert "https://wiki.awmc.team/guide/bot/intro" in handler_block, (
-    "处理器未包含帮助链接 https://wiki.awmc.team/guide/bot/intro"
-)
-assert "MessageSegment.image" not in handler_block, "帮助命令不应再发送图片"
-assert "maimaidxhelp.png" not in handler_block, "帮助命令不应再引用 maimaidxhelp.png"
-
-# 3. 不应使用 reply_message=True：官方 QQ 下会占用被动回复配额（5 分钟窗口、
-#    单消息 5 次上限），帮助命令不需要引用效果。
-assert "reply_message" not in handler_block, (
-    "帮助命令不应使用 reply_message=True，避免占用官方 QQ 被动回复配额"
-)
-
-print("help short reply tests: ok")
+print("help qbind/popular-menu tests: ok")

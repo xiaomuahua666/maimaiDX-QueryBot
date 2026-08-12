@@ -118,7 +118,37 @@ def test_command_uses_freedom_footer() -> None:
     assert "reserved.freedom_remaining" in source
 
 
+def test_existing_reservation_refunds_even_if_billing_changes() -> None:
+    """预扣是既成事实，处理中关闭计费也不能吞掉退款。"""
+    payer = 123456789
+    reservation = maimaidx_break.AnalysisChargeReservation(10)
+    refund_calls: list[tuple] = []
+    originals = {
+        "billing_enabled": maimaidx_break.break_db.billing_enabled,
+        "refund": maimaidx_break.break_db.refund_analysis_reservation,
+        "balance": maimaidx_break.break_db.get_balance,
+    }
+    maimaidx_break.break_db.billing_enabled = lambda: False
+    maimaidx_break.break_db.refund_analysis_reservation = (
+        lambda *args, **kwargs: refund_calls.append((args, kwargs)) or 37
+    )
+    maimaidx_break.break_db.get_balance = lambda _qqid: 27
+    try:
+        balance = maimaidx_break.refund_analysis_charge(
+            payer, reservation, reason="delivery failed",
+        )
+    finally:
+        maimaidx_break.break_db.billing_enabled = originals["billing_enabled"]
+        maimaidx_break.break_db.refund_analysis_reservation = originals["refund"]
+        maimaidx_break.break_db.get_balance = originals["balance"]
+
+    assert balance == 37
+    assert refund_calls[0][0] == (payer, 10)
+    assert refund_calls[0][1]["meta"]["reason"] == "delivery failed"
+
+
 test_freedom_skips_analysis_precharge()
 test_freedom_settlement_records_exemption()
 test_command_uses_freedom_footer()
+test_existing_reservation_refunds_even_if_billing_changes()
 print("analysis freedom tests: ok")

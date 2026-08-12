@@ -200,6 +200,69 @@ group_lock_board = on_command('群锁血榜', aliases={'群内锁血榜', '锁�
 friend_battle = on_command('友人对战', aliases={'好友对战'})
 friend_battle_rank = on_command('友人对战排行', aliases={'友人排行', '友人对战排名'})
 
+
+_B50_SHORTCUTS = (
+    ('标准 B50', 'b50'),
+    ('全部 A50', 'a50'),
+    ('AP50', 'ap50'),
+    ('FC50', 'fc50'),
+    ('寸50', '寸50'),
+    ('名刀50', '名刀50'),
+    ('越级50', '越级50'),
+    ('拟合50', '拟合50'),
+    ('含金量', '含金量'),
+    ('含水量', '含水量'),
+    ('B50 地板', 'b50地板'),
+    ('刷新 B50', '刷新b50'),
+    ('自动上传 B50', 'maiua'),
+    ('PC50', 'pc50'),
+    ('我的 PC', '我的pc数'),
+)
+_CONTENT_SHORTCUTS = (
+    ('含金量', '含金量'),
+    ('含水量', '含水量'),
+    ('我有多菜', '我有多菜'),
+    ('标准 B50', 'b50'),
+)
+_REPORT_SHORTCUTS = (
+    ('日报', '日报'),
+    ('周报', '周报'),
+    ('月报', '月报'),
+    ('年报', '年报'),
+    ('成绩趋势', '成绩趋势'),
+    ('吃分推荐', '吃分推荐'),
+    ('查看存档', '查看存档'),
+    ('立即存储', '立即存储数据'),
+)
+
+
+def _score_shortcuts(matcher) -> tuple[tuple[str, str], ...]:
+    if any(
+        matcher is candidate
+        for candidate in (gold_content, water_content, how_weak)
+    ):
+        return _CONTENT_SHORTCUTS
+    if any(
+        matcher is candidate
+        for candidate in (
+            best50, best_all50, refresh_b50, fcb50, fcallb50, apb50,
+            apallb50, fit_b50, fit_all_b50, sun_b50, sun_all_b50,
+            lock_b50, lock_ab50, yueji_b50, yueji_ab50, ideal_b50,
+            ideal_ab50, floor_query, version_b50, legacy_b50, legacy_b35,
+            dx2025_b50, dx2026_b35, difficulty_b50, difficulty_ab50,
+        )
+    ):
+        return _B50_SHORTCUTS
+    if any(
+        matcher is candidate
+        for candidate in (
+            weekly_report, monthly_report, annual_report, daily_report,
+            today_gain_recommend, awmcnet_trend, storage_snapshot,
+        )
+    ):
+        return _REPORT_SHORTCUTS
+    return ()
+
 def get_at_qq(message: MessageEvent) -> Optional[int]:
     target = parse_at_target_id(message)
     if target is None:
@@ -377,6 +440,7 @@ async def _finish_score(
         footer=footer,
         event=billing_event,
         publish_qq_image=True,
+        qq_buttons=_score_shortcuts(matcher),
     )
 
 
@@ -431,7 +495,7 @@ async def _refresh_b50(
                 force_refresh=True,
             )
     except BreakInsufficientError as e:
-        await refresh_b50.finish(str(e), reply_message=True)
+        await plugin_finish(refresh_b50, str(e), event=event, reply_message=True)
         return
     except LxnsDataError as e:
         await refresh_b50.finish(str(e), reply_message=True)
@@ -1244,7 +1308,7 @@ async def _disable_data_storage(event: MessageEvent):
 async def _store_data_now(event: MessageEvent):
     """立即存储数据：手动触发成绩存储"""
     qqid = resolve_score_qqid(event)
-    
+
     # 检查是否已开启存储
     if not data_storage.is_enabled(qqid):
         await store_data_now.finish(
@@ -1253,7 +1317,7 @@ async def _store_data_now(event: MessageEvent):
             reply_message=True
         )
         return
-    
+
     if not bool(getattr(maiconfig, 'maimaidx_compact_messages', True)):
         await store_data_now.send('正在获取并存储你的成绩数据，请稍候...', reply_message=True)
     
@@ -1471,8 +1535,25 @@ async def _today_gain_recommend(event: MessageEvent):
             reply_message=True,
         )
         return
-    await _finish_score(today_gain_recommend, generate_today_gain_recommendation_image(qqid), qqid,
-        billing_qqid=event.user_id,
+    result = await generate_today_gain_recommendation_image(qqid)
+    if isinstance(result, str):
+        await today_gain_recommend.finish(result, reply_message=True)
+        return
+
+    async def _image_coro():
+        from ..libraries.maimaidx_break import settle_feature_if_uncharged
+
+        settle_feature_if_uncharged(
+            billing_user_id(event), 'today_gain_recommend'
+        )
+        return result
+
+    await _finish_score(
+        today_gain_recommend,
+        _image_coro(),
+        qqid,
+        billing_qqid=billing_user_id(event),
+        billing_event=event,
     )
 
 
@@ -1526,7 +1607,9 @@ async def _plate_count_stats(event: MessageEvent, user_id: Optional[int] = Depen
         async with break_billing(event.user_id):
             records = await fetch_dev_records_as_score_records(qqid)
     except BreakInsufficientError as e:
-        await plate_count_stats.finish(str(e), reply_message=True)
+        await plugin_finish(
+            plate_count_stats, str(e), event=event, reply_message=True,
+        )
         return
     except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
         await plate_count_stats.finish(str(e), reply_message=True)
@@ -1680,7 +1763,7 @@ async def _(
             billing_qqid=event.user_id,
         )
     except BreakInsufficientError as e:
-        await legacy_b50.finish(str(e), reply_message=True)
+        await plugin_finish(legacy_b50, str(e), event=event, reply_message=True)
         return
     if isinstance(result, str):
         await legacy_b50.finish(result, reply_message=True)
@@ -1740,7 +1823,7 @@ async def _(
             billing_qqid=event.user_id,
         )
     except BreakInsufficientError as e:
-        await legacy_b35.finish(str(e), reply_message=True)
+        await plugin_finish(legacy_b35, str(e), event=event, reply_message=True)
         return
     if isinstance(result, str):
         await legacy_b35.finish(result, reply_message=True)
@@ -1776,7 +1859,7 @@ async def _(event: MessageEvent, user_id: Optional[int] = Depends(get_at_qq)):
             billing_qqid=event.user_id,
         )
     except BreakInsufficientError as e:
-        await dx2025_b50.finish(str(e), reply_message=True)
+        await plugin_finish(dx2025_b50, str(e), event=event, reply_message=True)
         return
     if isinstance(result, str):
         await dx2025_b50.finish(result, reply_message=True)

@@ -102,32 +102,56 @@ def message_parts(record: tuple[object, dict]):
 
 
 async def main() -> None:
+    # help is deliberately qbind-exempt so it can perform its own first-step
+    # routing instead of being swallowed by the global account gate.
+    help_unbound_bot = FakeQQBot()
+    await handle_event(help_unbound_bot, make_event("help", 8))
+    assert len(help_unbound_bot.sent) == 1
+    help_parts, _kwargs = message_parts(help_unbound_bot.sent[0])
+    assert [part.type for part in help_parts] == ["markdown", "keyboard"]
+    help_keyboard = help_parts[1].data["keyboard"].model_dump(exclude_none=True)
+    help_buttons = [
+        button
+        for row in help_keyboard["content"]["rows"]
+        for button in row["buttons"]
+    ]
+    assert [(button["render_data"]["label"], button["action"]["data"])
+            for button in help_buttons] == [("绑定 qbind", "qbind")]
+
+    original_help_qbind = QqBindDatabase.get_legacy_qq
+    QqBindDatabase.get_legacy_qq = lambda self, uid: (
+        123456789
+        if str(uid) == "dispatch-unbound-openid-9"
+        else original_help_qbind(self, uid)
+    )
+    try:
+        help_bound_bot = FakeQQBot()
+        await handle_event(help_bound_bot, make_event("帮助", 9))
+        assert len(help_bound_bot.sent) == 1
+        bound_help_parts, _kwargs = message_parts(help_bound_bot.sent[0])
+        assert [part.type for part in bound_help_parts] == ["markdown", "keyboard"]
+    finally:
+        QqBindDatabase.get_legacy_qq = original_help_qbind
+
     roast_bot = FakeQQBot()
     await handle_event(roast_bot, make_event("锐评一下", 1))
-    assert len(roast_bot.sent) >= 2
+    # All score-dependent commands now share the qbind gate. An unbound QQ
+    # user must receive the binding guide instead of entering the paid roast.
+    assert len(roast_bot.sent) == 1
     parts, kwargs = message_parts(roast_bot.sent[0])
-    assert kwargs.get("reply_message") is False
+    assert kwargs.get("reply_message") is not True
     assert parts[0].type == "markdown"
     roast_content = parts[0].data["markdown"].content
-    assert roast_content.startswith(
-        '<qqbot-at-user id="dispatch-unbound-openid-1" />\n'
-    )
-    assert any(
-        segment.type == "markdown"
-        and "正在处理 B50 锐评" in segment.data["markdown"].content
-        for segment in parts
-    )
+    assert "qbind" in roast_content
+    assert "正在处理 B50 锐评" not in roast_content
 
     awmc_bot = FakeQQBot()
     await handle_event(awmc_bot, make_event("我的AWMC", 2))
     assert awmc_bot.sent
     parts, kwargs = message_parts(awmc_bot.sent[0])
-    assert kwargs.get("reply_message") is False
+    assert kwargs.get("reply_message") is not True
     assert parts[0].type == "markdown"
     awmc_content = parts[0].data["markdown"].content
-    assert awmc_content.startswith(
-        '<qqbot-at-user id="dispatch-unbound-openid-2" />\n'
-    )
     assert any(
         segment.type == "markdown"
         and "qbind" in segment.data["markdown"].content
@@ -153,7 +177,7 @@ async def main() -> None:
         await handle_event(bound_awmc_bot, make_event("我的AWMC", 3))
         assert bound_awmc_bot.sent
         parts, kwargs = message_parts(bound_awmc_bot.sent[0])
-        assert kwargs.get("reply_message") is False
+        assert kwargs.get("reply_message") is not True
         assert parts[0].type == "mention_user"
         assert parts[0].data.get("user_id") == "dispatch-unbound-openid-3"
         assert any(segment.type == "file_image" for segment in parts)
@@ -174,47 +198,71 @@ async def main() -> None:
     await handle_event(legacy_finish_bot, make_event("AWMC帮助", 4))
     assert legacy_finish_bot.sent
     parts, kwargs = message_parts(legacy_finish_bot.sent[0])
-    assert kwargs.get("reply_message") is False
+    assert kwargs.get("reply_message") is not True
     assert parts[0].type == "markdown"
     assert parts[0].data["markdown"].content.startswith(
         '<qqbot-at-user id="dispatch-unbound-openid-4" />\n'
     )
 
-    # Sign-in is a plain-text handler and must use the same single text-chain
-    # @ payload as the query-result fallback.
+    # Sign-in is a plain-text handler: result and related shortcuts must share
+    # one official-QQ message.
     original_checkin = mai_break.break_db.checkin
     original_checkin_formatter = mai_break.format_checkin_result
     original_checkin_qqid = mai_break._account_qqid
     original_checkin_storage = mai_break._storage_status_for_event
+    original_checkin_qbind = QqBindDatabase.get_legacy_qq
     mai_break.break_db.checkin = lambda *args, **kwargs: SimpleNamespace()
     mai_break.format_checkin_result = lambda _result: (
         "✅ AWMC 签到成功！\n💰 获得：23 BREAK"
     )
     mai_break._account_qqid = lambda _event: 123456789
     mai_break._storage_status_for_event = lambda _event, _qqid: (False, False)
+    QqBindDatabase.get_legacy_qq = lambda self, uid: (
+        123456789
+        if str(uid) == "dispatch-unbound-openid-6"
+        else original_checkin_qbind(self, uid)
+    )
     try:
         checkin_bot = FakeQQBot()
         await handle_event(checkin_bot, make_event("签到", 6))
         assert checkin_bot.sent
         parts, kwargs = message_parts(checkin_bot.sent[0])
-        assert kwargs.get("reply_message") is False
-        assert len(parts) == 1
-        assert parts[0].type == "markdown"
+        assert kwargs.get("reply_message") is not True
+        assert [part.type for part in parts] == ["markdown", "keyboard"]
         checkin_text = parts[0].data["markdown"].content
         assert checkin_text.startswith(
             '<qqbot-at-user id="dispatch-unbound-openid-6" />\n'
         )
         assert "✅ AWMC 签到成功！" in checkin_text
+        checkin_keyboard = parts[1].data["keyboard"].model_dump(
+            exclude_none=True
+        )
+        checkin_buttons = [
+            button
+            for row in checkin_keyboard["content"]["rows"]
+            for button in row["buttons"]
+        ]
+        assert any(
+            button["action"]["data"] == "我的AWMC"
+            for button in checkin_buttons
+        )
     finally:
         mai_break.break_db.checkin = original_checkin
         mai_break.format_checkin_result = original_checkin_formatter
         mai_break._account_qqid = original_checkin_qqid
         mai_break._storage_status_for_event = original_checkin_storage
+        QqBindDatabase.get_legacy_qq = original_checkin_qbind
 
+    original_guess_qbind = QqBindDatabase.get_legacy_qq
     original_guess_enabled = mai_guess.guess.is_enabled
     original_build_guess_stats = mai_guess.guess_score.build_user_guess_stats
     original_guess_stats_image = mai_guess.personal_guess_stats_image_b64
     mai_guess.guess.is_enabled = lambda _gid: True
+    QqBindDatabase.get_legacy_qq = lambda self, uid: (
+        123456789
+        if str(uid) == "dispatch-unbound-openid-7"
+        else original_guess_qbind(self, uid)
+    )
     mai_guess.guess_score.build_user_guess_stats = lambda gid, uid: {
         "uid": str(uid),
         "name": "测试用户",
@@ -232,11 +280,12 @@ async def main() -> None:
         await handle_event(guess_stats_bot, make_event("我的猜歌", 7))
         assert guess_stats_bot.sent
         parts, kwargs = message_parts(guess_stats_bot.sent[0])
-        assert kwargs.get("reply_message") is False
+        assert kwargs.get("reply_message") is not True
         assert parts[0].type == "mention_user"
         assert parts[0].data.get("user_id") == "dispatch-unbound-openid-7"
         assert any(segment.type == "file_image" for segment in parts)
     finally:
+        QqBindDatabase.get_legacy_qq = original_guess_qbind
         mai_guess.guess.is_enabled = original_guess_enabled
         mai_guess.guess_score.build_user_guess_stats = original_build_guess_stats
         mai_guess.personal_guess_stats_image_b64 = original_guess_stats_image

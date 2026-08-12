@@ -42,6 +42,7 @@ from ..libraries.maimaidx_platform import (
     build_image_message,
     build_markdown_link_message,
     deliver_forward_messages,
+    plugin_finish,
     resolve_score_qqid,
     use_qq_mode,
 )
@@ -54,6 +55,12 @@ search_charter      = on_command('谱师查歌', aliases={'search charter'})
 search_alias_song   = on_endswith(('是什么歌', '是啥歌'))
 query_chart         = on_regex(r'^id\s?([0-9]+)$', re.IGNORECASE)
 chart_preview       = on_regex(r'^谱面\s?([0-9]+)(绿|黄|红|紫|白)$')
+
+_SEARCH_SHORTCUTS = (
+    ('查歌', '查歌'), ('定数查歌', '定数查歌'), ('BPM 查歌', 'bpm查歌'),
+    ('曲师查歌', '曲师查歌'), ('谱师查歌', '谱师查歌'),
+    ('今日舞萌', '今日舞萌'),
+)
 
 
 def _guess_anti_cheat_active(group_id) -> bool:
@@ -300,7 +307,9 @@ async def _send_song_info_then_pmyx_forward(
             _gen(), billing_qqid=billing_user_id(event), feature_charge='search'
         )
     except BreakInsufficientError as e:
-        await matcher.finish(str(e), reply_message=reply)
+        await plugin_finish(
+            matcher, str(e), event=event, reply_message=reply,
+        )
         return
     except QBindRequiredError as e:
         await matcher.finish(str(e), reply_message=reply)
@@ -433,6 +442,8 @@ async def _(bot: Bot, event: GroupMessageEvent, message: Message = CommandArg())
     await finish_timed_sync(
         search_music,
         lambda: MessageSegment.image(text_to_bytes_io(search_result)),
+        event=event,
+        qq_buttons=_SEARCH_SHORTCUTS,
     )
 
 
@@ -478,6 +489,8 @@ async def _(event: MessageEvent, message: Message = CommandArg()):
     await finish_timed_sync(
         search_base,
         lambda: MessageSegment.image(text_to_bytes_io(search_result)),
+        event=event,
+        qq_buttons=_SEARCH_SHORTCUTS,
     )
 
 
@@ -523,6 +536,8 @@ async def _(event: MessageEvent, message: Message = CommandArg()):
     await finish_timed_sync(
         search_bpm,
         lambda: MessageSegment.image(text_to_bytes_io(search_result)),
+        event=event,
+        qq_buttons=_SEARCH_SHORTCUTS,
     )
 
 
@@ -562,6 +577,8 @@ async def _(event: MessageEvent, message: Message = CommandArg()):
     await finish_timed_sync(
         search_artist,
         lambda: MessageSegment.image(text_to_bytes_io(search_result)),
+        event=event,
+        qq_buttons=_SEARCH_SHORTCUTS,
     )
 
 
@@ -608,6 +625,8 @@ async def _(event: MessageEvent, message: Message = CommandArg()):
     await finish_timed_sync(
         search_charter,
         lambda: MessageSegment.image(text_to_bytes_io(search_result)),
+        event=event,
+        qq_buttons=_SEARCH_SHORTCUTS,
     )
 
 

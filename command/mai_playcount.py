@@ -30,6 +30,7 @@ from ..libraries.maimaidx_platform import (
     parse_at_target_id,
     platform_user_id,
     plugin_finish,
+    plugin_send,
     rank_text_image,
     recall_message,
     resolve_score_qqid,
@@ -62,6 +63,14 @@ pc50 = on_command('pc50', aliases={'PC50', '嫖娼50'})
 pca50 = on_command('pca50', aliases={'PCA50', '嫖娼a50'})
 pc_rank50 = on_command('游玩排行50', aliases={'游玩PC50', 'PC游玩50', 'pc游玩50'})
 setattr(update_pc, '_maimaidx_serial_user_operation', True)
+
+_PC_SHORTCUTS = (
+    ('PC50', 'pc50'), ('PCA50', 'pca50'),
+    ('游玩排行 50', '游玩排行50'), ('我的 PC', '我的pc数'),
+    ('PC 排行', 'pc排行'), ('更新 PC', '更新pc数'),
+    ('自动上传 B50', 'maiua'), ('标准 B50', 'b50'),
+    ('MyMai', 'mymai'),
+)
 
 # user_id -> group_id；关机时可据此通知对应群
 _waiting_qrcode: dict[int, object] = {}
@@ -403,18 +412,24 @@ async def _handle_sdgb_update(
     else:
         msg = success_builder(count, total_plays)
 
-    await matcher.finish(
-        MessageSegment.reply(event.message_id) + MessageSegment.text(msg)
+    await plugin_finish(
+        matcher,
+        msg,
+        event=event,
+        reply_message=True,
+        qq_buttons=_PC_SHORTCUTS,
     )
 
 
 @qrcode_auto_listener.handle()
-async def _auto_qrcode_update(bot: Bot, event: MessageEvent):
+async def _auto_qrcode_update(matcher: Matcher, bot: Bot, event: MessageEvent):
     """直发 SGWCMAID/官方链接自动处理。"""
     qrcode_data = extract_sgwcmaid_qrcode(event.get_plaintext())
     if not qrcode_data:
         return
-    await _process_auto_qrcode(bot, event, qrcode_data, source='text')
+    await _process_auto_qrcode(
+        bot, event, qrcode_data, source='text', matcher=matcher,
+    )
 
 
 @image_qrcode_auto_listener.handle()
@@ -459,7 +474,9 @@ async def _auto_image_qrcode_update(
     token = admin_audit.set_current_ref(ref)
     try:
         try:
-            await _process_auto_qrcode(bot, event, qrcode_data, source='image')
+            await _process_auto_qrcode(
+                bot, event, qrcode_data, source='image', matcher=matcher,
+            )
         except Exception as exc:
             admin_audit.finish_trace(ref, 'error', error=exc)
             raise
@@ -478,6 +495,7 @@ async def _process_auto_qrcode(
     qrcode_data: str,
     *,
     source: str,
+    matcher: Matcher,
 ):
     """统一处理文字、链接及图片识别出的舞萌凭据。"""
     # 图片/文本一旦识别为敏感凭据就优先撤回；OneBot 偶发不返回时最多等 3 秒，
@@ -532,6 +550,7 @@ async def _process_auto_qrcode(
             qqid=qqid,
             recalled=recalled,
             recall_warning=recall_warning,
+            matcher=matcher,
         )
     finally:
         finish_account_operation(qqid)
@@ -546,6 +565,7 @@ async def _process_auto_qrcode_for_account(
     qqid: int,
     recalled: bool,
     recall_warning: str,
+    matcher: Matcher,
 ):
     """Process an identified QR code while its account guard is held."""
     from ..libraries.maimaidx_account_db import account_db
@@ -872,12 +892,13 @@ async def _process_auto_qrcode_for_account(
                 f'[QrcodeAuto] 调度数据集落盘失败 qq={qqid}: '
                 f'{type(exc).__name__}: {exc}'
             )
-        prefix = (
-            MessageSegment.at(event.user_id) + MessageSegment.text('\n')
-            if isinstance(event, GroupMessageEvent)
-            else Message()
+        await plugin_send(
+            matcher,
+            msg,
+            event=event,
+            reply_message=False,
+            qq_buttons=_PC_SHORTCUTS,
         )
-        await bot.send(event, message=prefix + MessageSegment.text(msg))
     finally:
         _qrcode_auto_processing.discard(qqid)
 
@@ -895,9 +916,12 @@ async def handle_my_pc(bot: Bot, event: GroupMessageEvent):
 
     records = pc_db.get_user_play_counts(qqid)
     if not records:
-        await my_pc.finish(
-            MessageSegment.reply(event.message_id)
-            + MessageSegment.text('你还没有PC数据，请先使用「更新pc数」命令登录机台并同步数据。')
+        await plugin_finish(
+            my_pc,
+            '你还没有 PC 数据，请先更新 PC 并同步机台数据。',
+            event=event,
+            reply_message=True,
+            qq_buttons=_PC_SHORTCUTS,
         )
 
     total_plays = pc_db.get_user_total_plays(qqid)
@@ -914,7 +938,10 @@ async def handle_my_pc(bot: Bot, event: GroupMessageEvent):
         lines.append(f'{i:2}. {title} [{r.level}] - {r.play_count} 次')
 
     msg = '\n'.join(lines)
-    await my_pc.finish(MessageSegment.reply(event.message_id) + MessageSegment.text(msg))
+    await plugin_finish(
+        my_pc, msg, event=event, reply_message=True,
+        qq_buttons=_PC_SHORTCUTS,
+    )
 
 
 @pc_rank.handle()
@@ -949,6 +976,7 @@ async def handle_pc_rank(bot: Bot, event: GroupMessageEvent):
         rank_text_image(msg),
         event=event,
         reply_message=True,
+        qq_buttons=_PC_SHORTCUTS,
     )
 
 
@@ -1003,7 +1031,10 @@ async def handle_pc_detail(bot: Bot, event: GroupMessageEvent, arg: Message = Co
         lines.append(f'  {r.level} - {r.play_count} 次')
 
     msg = '\n'.join(lines)
-    await pc_detail.finish(MessageSegment.reply(event.message_id) + MessageSegment.text(msg))
+    await plugin_finish(
+        pc_detail, msg, event=event, reply_message=True,
+        qq_buttons=_PC_SHORTCUTS,
+    )
 
 
 @pc50.handle()
@@ -1020,12 +1051,15 @@ async def handle_pc50(
         async with break_billing(event.user_id):
             result = await generate_pc50(qqid)
     except BreakInsufficientError as e:
-        await pc50.finish(str(e), reply_message=True)
+        await plugin_finish(pc50, str(e), event=event, reply_message=True)
         return
     charge = take_break_charge_footer()
     if charge and not isinstance(result, str):
         result = result + MessageSegment.text('\n' + '\n'.join(charge))
-    await pc50.finish(result, reply_message=True)
+    await plugin_finish(
+        pc50, result, event=event, reply_message=True,
+        qq_buttons=_PC_SHORTCUTS,
+    )
 
 
 @pca50.handle()
@@ -1042,12 +1076,15 @@ async def handle_pca50(
         async with break_billing(event.user_id):
             result = await generate_pca50(qqid)
     except BreakInsufficientError as e:
-        await pca50.finish(str(e), reply_message=True)
+        await plugin_finish(pca50, str(e), event=event, reply_message=True)
         return
     charge = take_break_charge_footer()
     if charge and not isinstance(result, str):
         result = result + MessageSegment.text('\n' + '\n'.join(charge))
-    await pca50.finish(result, reply_message=True)
+    await plugin_finish(
+        pca50, result, event=event, reply_message=True,
+        qq_buttons=_PC_SHORTCUTS,
+    )
 
 
 @pc_rank50.handle()
@@ -1064,9 +1101,12 @@ async def handle_pc_rank50(
         async with break_billing(event.user_id):
             result = await generate_pc_rank50(qqid)
     except BreakInsufficientError as e:
-        await pc_rank50.finish(str(e), reply_message=True)
+        await plugin_finish(pc_rank50, str(e), event=event, reply_message=True)
         return
     charge = take_break_charge_footer()
     if charge and not isinstance(result, str):
         result = result + MessageSegment.text('\n' + '\n'.join(charge))
-    await pc_rank50.finish(result, reply_message=True)
+    await plugin_finish(
+        pc_rank50, result, event=event, reply_message=True,
+        qq_buttons=_PC_SHORTCUTS,
+    )

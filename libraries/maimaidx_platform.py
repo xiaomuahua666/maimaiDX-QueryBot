@@ -881,11 +881,30 @@ def install_qq_event_compat() -> None:
                     # current_bot before this except runs; restore it so send works.
                     try:
                         with self.ensure_context(bot, event):
+                            error_payload = adapt_reply_payload(
+                                format_command_error(exc), event=event
+                            )
+                            if isinstance(exc, BreakInsufficientError):
+                                keyboard = build_command_keyboard_message(
+                                    (
+                                        ('签到领 BREAK', '签到'),
+                                        ('今日舞萌', '今日舞萌'),
+                                        ('我的卡密', '我的卡密'),
+                                        ('BREAK 帮助', 'AWMC帮助'),
+                                    ),
+                                    event=event,
+                                )
+                                if keyboard is not None:
+                                    from nonebot.adapters.qq.message import (
+                                        Message as QQMessage,
+                                    )
+
+                                    error_payload = QQMessage(
+                                        list(error_payload) + list(keyboard)[-1:]
+                                    )
                             await bot.send(
                                 event,
-                                adapt_reply_payload(
-                                    format_command_error(exc), event=event
-                                ),
+                                error_payload,
                             )
                     except Exception as send_exc:
                         log.warning(
@@ -2681,6 +2700,92 @@ def build_markdown_message(content: str, *, event=None) -> Any:
     return QQMessage([QQSeg.markdown(text)])
 
 
+def build_command_keyboard(
+    buttons: Iterable[tuple[str, str]],
+    *,
+    event=None,
+    columns: int = 3,
+    id_prefix: str = 'maimaidx-command',
+) -> Any | None:
+    """Build an official-QQ keyboard whose buttons send normal commands.
+
+    Command buttons use ``type=2`` and ``enter=True`` so tapping one sends its
+    data back through the ordinary matcher pipeline. Other adapters return
+    ``None`` and keep their existing message format unchanged.
+    """
+    if not use_qq_mode(event):
+        return None
+    from nonebot.adapters.qq.models import (
+        Action,
+        Button,
+        InlineKeyboard,
+        InlineKeyboardRow,
+        MessageKeyboard,
+        Permission,
+        RenderData,
+    )
+
+    normalized: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    width = max(1, min(5, int(columns or 4)))
+    max_buttons = width * 5
+    for label, command in buttons:
+        item = (str(label).strip(), str(command).strip())
+        if not item[0] or not item[1] or item in seen:
+            continue
+        seen.add(item)
+        normalized.append(item)
+        if len(normalized) >= max_buttons:
+            break
+    if not normalized:
+        return None
+    qq_buttons = [
+        Button(
+            id=f'{id_prefix}-{index}',
+            render_data=RenderData(label=label, style=1),
+            action=Action(
+                type=2,
+                permission=Permission(type=2),
+                data=command,
+                enter=True,
+                reply=False,
+            ),
+        )
+        for index, (label, command) in enumerate(normalized, 1)
+    ]
+    rows = [
+        InlineKeyboardRow(buttons=qq_buttons[start:start + width])
+        for start in range(0, len(qq_buttons), width)
+    ]
+    return MessageKeyboard(content=InlineKeyboard(rows=rows))
+
+
+def build_command_keyboard_message(
+    buttons: Iterable[tuple[str, str]],
+    *,
+    event=None,
+    title: str = '🎛️ 快捷操作',
+    columns: int = 3,
+    id_prefix: str = 'maimaidx-command',
+) -> Any | None:
+    """Build the small follow-up message used to display command buttons."""
+    keyboard = build_command_keyboard(
+        buttons,
+        event=event,
+        columns=columns,
+        id_prefix=id_prefix,
+    )
+    if keyboard is None:
+        return None
+    from nonebot.adapters.qq.message import Message as QQMessage
+    from nonebot.adapters.qq.message import MessageSegment as QQSeg
+
+    return QQMessage([
+        QQSeg.markdown(str(title or '🎛️ 快捷操作')),
+        QQSeg.keyboard(keyboard),
+    ])
+
+
 async def finish_reply(matcher, payload: Any, *, reply: bool = True, event=None) -> None:
     """统一 finish：官方 QQ 自动转换消息段。"""
     await plugin_finish(matcher, payload, event=event, reply_message=reply)
@@ -2771,13 +2876,37 @@ async def plugin_send(
     event=None,
     reply_message: bool = True,
     mention_sender: Optional[bool] = None,
+    publish_qq_image: bool = False,
+    qq_buttons: Optional[Iterable[tuple[str, str]]] = None,
 ) -> Any:
     if mention_sender is None:
         mention_sender = event is not None and get_event_group_id(event) is not None
     if mention_sender:
         message = ensure_sender_mention(message, event)
     reply = resolve_reply_message(event, reply_message=reply_message)
-    payload = adapt_reply_payload(message, event=event)
+    payload = adapt_reply_payload(
+        message, event=event, publish_qq_image=publish_qq_image,
+    )
+    keyboard_message = build_command_keyboard_message(
+        qq_buttons or (), event=event,
+    )
+    if keyboard_message is not None:
+        try:
+            payload_parts = list(payload)
+        except TypeError:
+            payload_parts = []
+        if payload_parts and not any(
+            getattr(segment, 'type', '') in {
+                'image', 'file_image', 'record', 'file_audio', 'video',
+                'file_video', 'audio',
+            }
+            for segment in payload_parts
+        ):
+            from nonebot.adapters.qq.message import Message as QQMessage
+
+            payload = QQMessage(
+                payload_parts + list(keyboard_message)[-1:]
+            )
     return await matcher.send(payload, reply_message=reply)
 
 
@@ -2790,6 +2919,7 @@ async def plugin_finish(
     reply_message: bool = True,
     mention_sender: Optional[bool] = None,
     publish_qq_image: bool = False,
+    qq_buttons: Optional[Iterable[tuple[str, str]]] = None,
 ) -> None:
     if mention_sender is None:
         mention_sender = (
@@ -2803,15 +2933,61 @@ async def plugin_finish(
     if message is None:
         await matcher.finish(reply_message=reply)
         return
-    await matcher.finish(
-        adapt_reply_payload(
-            message,
-            footer=footer,
-            event=event,
-            publish_qq_image=publish_qq_image,
-        ),
-        reply_message=reply,
+    payload = adapt_reply_payload(
+        message,
+        footer=footer,
+        event=event,
+        publish_qq_image=publish_qq_image,
     )
+    button_items = list(qq_buttons or ())
+    # BREAK-insufficient replies should always offer an immediate recovery
+    # path, including handlers that have no command-specific keyboard yet.
+    message_text = str(message or '')
+    if 'BREAK 不足' in message_text or 'BREAK不足' in message_text:
+        recovery_buttons = [
+            ('签到领 BREAK', '签到'),
+            ('今日舞萌', '今日舞萌'),
+            ('我的卡密', '我的卡密'),
+            ('BREAK 帮助', 'AWMC帮助'),
+        ]
+        seen_commands = {command for _label, command in recovery_buttons}
+        button_items = recovery_buttons + [
+            item for item in button_items if item[1] not in seen_commands
+        ]
+    keyboard_message = build_command_keyboard_message(
+        button_items, event=event,
+    )
+    if keyboard_message is not None:
+        # Pure text/Markdown can share one official-QQ message with a native
+        # keyboard. Only media payloads need the existing two-message split.
+        try:
+            payload_parts = list(payload)
+        except TypeError:
+            payload_parts = []
+        media_types = {
+            'image', 'file_image', 'record', 'file_audio', 'video',
+            'file_video', 'audio',
+        }
+        if payload_parts and not any(
+            getattr(segment, 'type', '') in media_types
+            for segment in payload_parts
+        ):
+            from nonebot.adapters.qq.message import Message as QQMessage
+
+            # The payload already contains the result text/Markdown.  Append
+            # only the keyboard segment so an official QQ message never ends
+            # up with two competing Markdown segments.
+            keyboard_parts = list(keyboard_message)
+            combined = QQMessage(payload_parts + keyboard_parts[-1:])
+            await matcher.finish(combined, reply_message=reply)
+            return
+        # Attachments and keyboards use different QQ msg_type values. Send the
+        # result first, then finish with the compact keyboard follow-up so an
+        # image can never be discarded in favour of the buttons.
+        await matcher.send(payload, reply_message=reply)
+        await matcher.finish(keyboard_message, reply_message=False)
+        return
+    await matcher.finish(payload, reply_message=reply)
 
 
 def extract_sent_message_id(result: Any) -> str:

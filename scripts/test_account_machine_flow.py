@@ -55,6 +55,9 @@ account = load_functions(
         "re": re,
         "json": json,
         "redact": lambda value: value,
+        "find_sw_api_error": lambda _exc: None,
+        "format_sw_api_quota_error": lambda error: str(error),
+        "SwApiError": type("SwApiError", (Exception,), {}),
     },
 )
 

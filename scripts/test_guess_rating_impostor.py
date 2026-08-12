@@ -161,6 +161,9 @@ def main() -> None:
 
     modes = GuessScoreManager.GUESS_MODES
     assert GuessScoreManager.MODE_IMPOSTOR in modes
+    assert GuessScoreManager.MODE_20Q in modes
+    # Render every registered mode, including 20q. A mode added to the score
+    # manager without a chart colour used to crash here with KeyError.
     stats_image = draw_personal_guess_stats({
         "uid": "1",
         "name": "render-test",

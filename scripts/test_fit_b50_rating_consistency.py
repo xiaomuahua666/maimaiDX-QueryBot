@@ -54,7 +54,7 @@ def _extract_funcs(source: str, names: list[str]) -> dict:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if node.name in wanted:
                 found_funcs[node.name] = node
-            elif "fit_b50" in node.name.lower():
+            elif node.name.startswith("_build_fit_b50"):
                 helpers.append(node)
         elif isinstance(node, ast.Assign):
             for tgt in node.targets:
@@ -72,7 +72,7 @@ def _extract_funcs(source: str, names: list[str]) -> dict:
     missing = wanted - set(found_funcs)
     if missing:
         raise RuntimeError(f"未在源码中找到函数: {missing}")
-    module_src = "from typing import Tuple, Union, List\n\n"
+    module_src = "from typing import List, Optional, Tuple, Union\n\n"
     # 先放辅助函数（_build_* 会被 const_assigns 调用，需先定义）
     for h in helpers:
         module_src += ast.unparse(h) + "\n\n"
