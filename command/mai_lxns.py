@@ -29,7 +29,7 @@ from ..libraries.maimaidx_lxns_client import (
     user_get_player,
 )
 from ..libraries.maimaidx_lxns_db import lxns_db
-from ..libraries.maimaidx_platform import resolve_score_qqid
+from ..libraries.maimaidx_platform import plugin_finish, resolve_score_qqid
 from ..libraries.maimaidx_pending_session import finish_pending, session_key, track_event
 
 # ─────────────────────────── helpers ───────────────────────────
@@ -201,12 +201,17 @@ async def _lxbind_got(matcher: Matcher, event: MessageEvent, code_msg: Message =
         else '\n⚠️ 本次授权缺少 write_player，无法上传成绩；请联系管理员检查 OAuth 应用权限。'
     )
     finish_pending(pending_key)
-    await lxbind.finish(
+    from .mai_account import _account_flow_shortcuts
+
+    await plugin_finish(
+        lxbind,
         f'落雪绑定成功！\n'
         f'昵称：{nickname}\n'
         f'{fc_msg}\n'
         f'Rating：{rating}{write_note}',
+        event=event,
         reply_message=True,
+        qq_buttons=_account_flow_shortcuts(event),
     )
 
 
@@ -340,4 +345,14 @@ async def _lxb50(event: MessageEvent):
         sections.append([warning])
     sections.append([timing_text(total)])
     footer = footer_join_sections(sections)
-    await lxb50.finish(result + MessageSegment.text(footer), reply_message=True)
+    await plugin_finish(
+        lxb50,
+        result + MessageSegment.text(footer),
+        event=event,
+        reply_message=True,
+        qq_buttons=(
+            ('标准 B50', 'b50'), ('自动上传 B50', 'maiua'),
+            ('刷新 B50', '刷新b50'), ('PC50', 'pc50'),
+            ('我的 PC', '我的pc数'), ('数据源', '数据源'),
+        ),
+    )

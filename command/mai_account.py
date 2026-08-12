@@ -119,7 +119,36 @@ _ACCOUNT_SHORTCUTS = (
     ('上传水鱼', 'maiu'),
     ('上传落雪', 'maiul'),
     ('账号帮助', 'mai账号'),
+    ('PC50', 'pc50'),
+    ('我的 PC', '我的pc数'),
+    ('更新 PC', '更新pc数'),
 )
+
+def _account_flow_shortcuts(event: MessageEvent) -> tuple[tuple[str, str], ...]:
+    """Expose missing bindings once, then replace them with useful actions."""
+    key = _user_key(event)
+    binding = account_db.get(key)
+    has_account = bool(binding and binding.qrcode)
+    has_fish = bool(binding and binding.fish_token)
+    has_lxns = bool(
+        (binding and binding.lxns_token) or _has_lxns_oauth(event)
+    )
+    buttons: list[tuple[str, str]] = []
+    if not has_account:
+        buttons.append(('绑定舞萌', 'mai绑定'))
+    if not has_fish:
+        buttons.append(('绑定水鱼', 'mai绑定水鱼'))
+    if not has_lxns:
+        buttons.append(('绑定落雪', 'lxbind'))
+    if has_account and has_fish and has_lxns:
+        buttons.append(('自动上传 B50', 'maiua'))
+    buttons.extend([
+        ('标准 B50', 'b50'),
+        ('刷新 B50', '刷新b50'), ('PC50', 'pc50'),
+        ('我的 PC', '我的pc数'), ('更新 PC', '更新pc数'),
+        ('MyMai', 'mymai'),
+    ])
+    return tuple(buttons)
 # Help remains available before qbind so users can discover the binding flow.
 setattr(account_help, '_maimaidx_qbind_exempt', True)
 # 涉及账号状态、外部上传或机台会话的命令按用户串行执行。
@@ -1900,12 +1929,16 @@ async def _(
         if claimed_keys else ""
     )
     finish_pending(pending_key)
-    await account_bind.finish(
+    await plugin_finish(
+        account_bind,
         recall_notice
         + f"{action}：{label}\nRating：{rating}{claim_note}{pc_note}\n"
         + upload_note
         + (f"\n\n{first_notice}" if first_notice else "")
-        + f"\nRef_ID: {ref}"
+        + f"\nRef_ID: {ref}",
+        event=event,
+        reply_message=True,
+        qq_buttons=_account_flow_shortcuts(event),
     )
 
 
@@ -1948,7 +1981,12 @@ async def _(
             text = await _render_account_status(event, binding, preview)
         except BreakInsufficientError as exc:
             ref = _log(key, "status", "error", "insufficient_break")
-            await account_status.finish(f"{exc}\nRef_ID: {ref}", reply_message=True)
+            await plugin_finish(
+                account_status,
+                f"{exc}\nRef_ID: {ref}",
+                event=event,
+                reply_message=True,
+            )
         except Exception as exc:
             if is_sw_api_quota_error(exc):
                 ref = _log(key, "status", "error", _exception_detail(exc))
@@ -1971,7 +2009,7 @@ async def _(
                 text + f"\n{_charge_text(charge, int(key))}\nRef_ID: {ref}",
                 event=event,
                 reply_message=True,
-                qq_buttons=_ACCOUNT_SHORTCUTS,
+                qq_buttons=_account_flow_shortcuts(event),
             )
     track_event(session_key("account_status", event), event)
     await account_status.send(_status_qrcode_prompt(cache_label), reply_message=True)
@@ -2000,7 +2038,7 @@ async def _(
             text + f"\nRef_ID: {ref}",
             event=event,
             reply_message=True,
-            qq_buttons=_ACCOUNT_SHORTCUTS,
+            qq_buttons=_account_flow_shortcuts(event),
         )
 
     recall_notice = ""
@@ -2045,8 +2083,11 @@ async def _(
     except BreakInsufficientError as exc:
         ref = _log(key, "status", "error", "insufficient_break")
         finish_pending(pending_key)
-        await account_status.finish(
-            recall_notice + f"{exc}\nRef_ID: {ref}", reply_message=True
+        await plugin_finish(
+            account_status,
+            recall_notice + f"{exc}\nRef_ID: {ref}",
+            event=event,
+            reply_message=True,
         )
     except Exception as exc:
         if is_sw_api_quota_error(exc):
@@ -2070,7 +2111,7 @@ async def _(
         recall_notice + text + f"\n{_charge_text(charge, int(key))}\nRef_ID: {ref}",
         event=event,
         reply_message=True,
-        qq_buttons=_ACCOUNT_SHORTCUTS,
+        qq_buttons=_account_flow_shortcuts(event),
     )
 
 
@@ -2168,9 +2209,12 @@ async def _(
 
     ref = _save_upload_token(event, token, "fish")
     finish_pending(pending_key)
-    await fish_bind.finish(
+    await plugin_finish(
+        fish_bind,
         f"✅ 水鱼 Token 已绑定。\nToken：{_mask(token, 8, 4)}\nRef_ID: {ref}",
+        event=event,
         reply_message=True,
+        qq_buttons=_account_flow_shortcuts(event),
     )
 
 
@@ -2186,7 +2230,12 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
     if len(token) < 8:
         await lx_upload_bind.finish("落雪导入 Token 格式过短，请检查后重试。")
     ref = _save_upload_token(event, token, "lxns")
-    await lx_upload_bind.finish(f"落雪 Token 已绑定。\nRef_ID: {ref}")
+    await plugin_finish(
+        lx_upload_bind,
+        f"落雪 Token 已绑定。\nRef_ID: {ref}",
+        event=event,
+        qq_buttons=_account_flow_shortcuts(event),
+    )
 
 
 async def _clear_token(matcher, event: MessageEvent, kind: str):
@@ -2898,7 +2947,13 @@ async def _(
             timing_key, time.perf_counter() - started_at
         )
     if not _upload_retryable(result):
-        await matcher.finish(recall_notice + result, reply_message=False)
+        await plugin_finish(
+            matcher,
+            recall_notice + result,
+            event=event,
+            reply_message=False,
+            qq_buttons=_account_flow_shortcuts(event),
+        )
     attempt = 1 if raw else 0
     matcher.state["upload_qrcode_retry"] = attempt
     track_event(session_key("upload_qrcode", event), event)
@@ -2956,7 +3011,13 @@ async def _(
         result = "上传失败：二维码格式无效"
     if not _upload_retryable(result):
         finish_pending(pending_key)
-        await matcher.finish(recall_notice + result, reply_message=False)
+        await plugin_finish(
+            matcher,
+            recall_notice + result,
+            event=event,
+            reply_message=False,
+            qq_buttons=_account_flow_shortcuts(event),
+        )
     attempt = int(matcher.state.get("upload_qrcode_retry", 0)) + 1
     matcher.state["upload_qrcode_retry"] = attempt
     if attempt >= 3:
@@ -3289,7 +3350,7 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
         text,
         event=event,
         reply_message=True,
-        qq_buttons=_ACCOUNT_SHORTCUTS,
+        qq_buttons=_account_flow_shortcuts(event),
     )
 
 
@@ -3324,7 +3385,7 @@ async def _(event: MessageEvent):
         text,
         event=event,
         reply_message=True,
-        qq_buttons=_ACCOUNT_SHORTCUTS,
+        qq_buttons=_account_flow_shortcuts(event),
     )
 
 
@@ -3636,7 +3697,7 @@ async def _(event: MessageEvent):
         text,
         event=event,
         reply_message=True,
-        qq_buttons=_ACCOUNT_SHORTCUTS,
+        qq_buttons=_account_flow_shortcuts(event),
     )
 
 
@@ -3666,7 +3727,7 @@ async def _(event: MessageEvent):
         text,
         event=event,
         reply_message=True,
-        qq_buttons=_ACCOUNT_SHORTCUTS,
+        qq_buttons=_account_flow_shortcuts(event),
     )
 
 
@@ -3696,7 +3757,7 @@ async def _(event: MessageEvent):
         text,
         event=event,
         reply_message=True,
-        qq_buttons=_ACCOUNT_SHORTCUTS,
+        qq_buttons=_account_flow_shortcuts(event),
     )
 
 
@@ -4171,7 +4232,7 @@ async def _(event: MessageEvent):
         account_region,
         format_user_region_block(result),
         event=event,
-        qq_buttons=_ACCOUNT_SHORTCUTS,
+        qq_buttons=_account_flow_shortcuts(event),
     )
 
 

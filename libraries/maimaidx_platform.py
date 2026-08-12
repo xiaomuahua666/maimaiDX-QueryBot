@@ -881,11 +881,30 @@ def install_qq_event_compat() -> None:
                     # current_bot before this except runs; restore it so send works.
                     try:
                         with self.ensure_context(bot, event):
+                            error_payload = adapt_reply_payload(
+                                format_command_error(exc), event=event
+                            )
+                            if isinstance(exc, BreakInsufficientError):
+                                keyboard = build_command_keyboard_message(
+                                    (
+                                        ('签到领 BREAK', '签到'),
+                                        ('今日舞萌', '今日舞萌'),
+                                        ('我的卡密', '我的卡密'),
+                                        ('BREAK 帮助', 'AWMC帮助'),
+                                    ),
+                                    event=event,
+                                )
+                                if keyboard is not None:
+                                    from nonebot.adapters.qq.message import (
+                                        Message as QQMessage,
+                                    )
+
+                                    error_payload = QQMessage(
+                                        list(error_payload) + list(keyboard)[-1:]
+                                    )
                             await bot.send(
                                 event,
-                                adapt_reply_payload(
-                                    format_command_error(exc), event=event
-                                ),
+                                error_payload,
                             )
                     except Exception as send_exc:
                         log.warning(
@@ -2858,6 +2877,7 @@ async def plugin_send(
     reply_message: bool = True,
     mention_sender: Optional[bool] = None,
     publish_qq_image: bool = False,
+    qq_buttons: Optional[Iterable[tuple[str, str]]] = None,
 ) -> Any:
     if mention_sender is None:
         mention_sender = event is not None and get_event_group_id(event) is not None
@@ -2867,6 +2887,26 @@ async def plugin_send(
     payload = adapt_reply_payload(
         message, event=event, publish_qq_image=publish_qq_image,
     )
+    keyboard_message = build_command_keyboard_message(
+        qq_buttons or (), event=event,
+    )
+    if keyboard_message is not None:
+        try:
+            payload_parts = list(payload)
+        except TypeError:
+            payload_parts = []
+        if payload_parts and not any(
+            getattr(segment, 'type', '') in {
+                'image', 'file_image', 'record', 'file_audio', 'video',
+                'file_video', 'audio',
+            }
+            for segment in payload_parts
+        ):
+            from nonebot.adapters.qq.message import Message as QQMessage
+
+            payload = QQMessage(
+                payload_parts + list(keyboard_message)[-1:]
+            )
     return await matcher.send(payload, reply_message=reply)
 
 
@@ -2899,8 +2939,23 @@ async def plugin_finish(
         event=event,
         publish_qq_image=publish_qq_image,
     )
+    button_items = list(qq_buttons or ())
+    # BREAK-insufficient replies should always offer an immediate recovery
+    # path, including handlers that have no command-specific keyboard yet.
+    message_text = str(message or '')
+    if 'BREAK 不足' in message_text or 'BREAK不足' in message_text:
+        recovery_buttons = [
+            ('签到领 BREAK', '签到'),
+            ('今日舞萌', '今日舞萌'),
+            ('我的卡密', '我的卡密'),
+            ('BREAK 帮助', 'AWMC帮助'),
+        ]
+        seen_commands = {command for _label, command in recovery_buttons}
+        button_items = recovery_buttons + [
+            item for item in button_items if item[1] not in seen_commands
+        ]
     keyboard_message = build_command_keyboard_message(
-        qq_buttons or (), event=event,
+        button_items, event=event,
     )
     if keyboard_message is not None:
         # Pure text/Markdown can share one official-QQ message with a native

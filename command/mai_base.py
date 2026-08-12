@@ -55,6 +55,18 @@ _TODAY_SHORTCUTS = (
     ('猜歌', '猜歌'), ('帮助', 'help'),
 )
 
+_SONG_RECOMMEND_SHORTCUTS = (
+    ('再推荐一首', '今天mai什么'), ('吃分推荐', '吃分推荐'),
+    ('查歌', '查歌'), ('随机 13+', '随个13+'),
+    ('今日舞萌', '今日舞萌'), ('标准 B50', 'b50'),
+)
+
+_RANKING_SHORTCUTS = (
+    ('我的排名', '我的排名'), ('Rating 排行', '查看排名'),
+    ('群 Rating 榜', '群聊rating排行榜'), ('标准 B50', 'b50'),
+    ('含金量', '含金量'), ('帮助', 'help'),
+)
+
 
 def _qq_help_message(event: MessageEvent, section: str = ''):
     """Build one qbind-first or popular-command official QQ help message."""
@@ -217,7 +229,8 @@ async def _(event: MessageEvent, match = RegexMatched()):
     try:
         await finish_timed(
             mai_what, _gen(), billing_qqid=billing_user_id(event),
-            feature_charge='search', event=event
+            feature_charge='search', event=event,
+            qq_buttons=_SONG_RECOMMEND_SHORTCUTS,
         )
     except QBindRequiredError as exc:
         await mai_what.finish(str(exc), reply_message=True)
@@ -254,6 +267,7 @@ async def _(event: MessageEvent, match = RegexMatched()):
         billing_qqid=billing_user_id(event),
         feature_charge='search',
         event=event,
+        qq_buttons=_SONG_RECOMMEND_SHORTCUTS,
     )
 
 
@@ -269,7 +283,12 @@ async def _(event: MessageEvent, message: Message = CommandArg()):
     else:
         name = args.lower()
     
-    await finish_timed(rating_ranking, rating_ranking_data(name, page))
+    await finish_timed(
+        rating_ranking,
+        rating_ranking_data(name, page),
+        event=event,
+        qq_buttons=_RANKING_SHORTCUTS,
+    )
 
 
 @my_rating_ranking.handle()
@@ -283,7 +302,13 @@ async def _(event: MessageEvent):
         for num, rank in enumerate(rank_data):
             if rank.username == user.username:
                 result = f'您的Rating为「{rank.ra}」，排名第「{num + 1}」名'
-                await my_rating_ranking.finish(result, reply_message=True)
+                await plugin_finish(
+                    my_rating_ranking,
+                    result,
+                    event=event,
+                    reply_message=True,
+                    qq_buttons=_RANKING_SHORTCUTS,
+                )
     except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
         await my_rating_ranking.finish(str(e), reply_message=True)
 

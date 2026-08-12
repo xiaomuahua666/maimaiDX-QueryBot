@@ -174,7 +174,7 @@ async def _require_break_agreement(matcher, event: MessageEvent) -> None:
 
 
 @awmc_help.handle()
-async def _():
+async def _(event: MessageEvent):
     text = (
         '【AWMC BREAK 系统】\n'
         '· AWMC签到 — 每日签到获取 BREAK（基础 1~2，连签额外奖励第 5 天起封顶 3）\n'
@@ -205,7 +205,10 @@ async def _():
         '· 开启数据存储 +50%（发送「开启存储数据」；需保持开启跨天，频繁开关不重复发）\n'
         '· 连续签到额外奖励（第 5 天起封顶 3，群倍数不放大连签奖励）'
     )
-    await awmc_help.finish(text, reply_message=True)
+    await plugin_finish(
+        awmc_help, text, event=event, reply_message=True,
+        qq_buttons=_AWMC_SHORTCUTS,
+    )
 
 
 def _format_break_economy_period(label: str, stats: dict) -> str:
@@ -220,7 +223,7 @@ def _format_break_economy_period(label: str, stats: dict) -> str:
 
 
 @break_economy.handle()
-async def _():
+async def _(event: MessageEvent):
     periods = (
         ('今日', break_db.economy_totals(1)),
         ('近 7 天累计', break_db.economy_totals(7)),
@@ -232,7 +235,10 @@ async def _():
         '',
     ]
     lines.extend(_format_break_economy_period(label, stats) for label, stats in periods)
-    await break_economy.finish('\n'.join(lines), reply_message=True)
+    await plugin_finish(
+        break_economy, '\n'.join(lines), event=event, reply_message=True,
+        qq_buttons=_AWMC_SHORTCUTS,
+    )
 
 
 @break_transfer.handle()
@@ -254,9 +260,12 @@ async def _(
     except Exception as exc:
         await break_transfer.finish(f'转账失败：{exc}', reply_message=True)
     fee_text = f'（手续费 {result.fee}）' if result.fee else ''
-    await break_transfer.finish(
+    await plugin_finish(
+        break_transfer,
         f'转账成功：{result.amount} BREAK {fee_text}\n当前余额：{result.sender_balance}',
+        event=event,
         reply_message=True,
+        qq_buttons=_AWMC_SHORTCUTS,
     )
 
 
@@ -264,7 +273,10 @@ async def _(
 async def _(event: MessageEvent, message: Message = CommandArg()):
     raw = message.extract_plain_text().strip() or '1'
     if raw.lower() in {'帮助', '说明', 'help', '?'}:
-        await break_lottery.finish(LOTTERY_HELP, reply_message=True)
+        await plugin_finish(
+            break_lottery, LOTTERY_HELP, event=event, reply_message=True,
+            qq_buttons=_AWMC_SHORTCUTS,
+        )
     await _require_break_agreement(break_lottery, event)
     if not raw.isdigit() or not 1 <= int(raw) <= 10:
         await break_lottery.finish('用法：BREAK抽奖 [1-10]', reply_message=True)
@@ -272,10 +284,13 @@ async def _(event: MessageEvent, message: Message = CommandArg()):
         result = break_db.lottery(int(billing_user_id(event)), int(raw))
     except Exception as exc:
         await break_lottery.finish(f'抽奖失败：{exc}', reply_message=True)
-    await break_lottery.finish(
+    await plugin_finish(
+        break_lottery,
         f'抽奖 {result.count} 次\n消耗：{result.cost} BREAK\n'
         f'获得：{result.prize} BREAK\n当前余额：{result.balance}',
+        event=event,
         reply_message=True,
+        qq_buttons=_AWMC_SHORTCUTS,
     )
 
 
@@ -404,10 +419,13 @@ async def _(event: MessageEvent):
     tail = '\n🎉 红包已经被领完啦！' if result.completed else (
         f'\n剩余 {result.remaining_count} 份，共 {result.remaining_amount} BREAK。'
     )
-    await break_red_packet_claim.finish(
+    await plugin_finish(
+        break_red_packet_claim,
         f'🧧 领取成功：{result.amount} BREAK\n'
         f'当前余额：{result.recipient_balance} BREAK{tail}',
+        event=event,
         reply_message=True,
+        qq_buttons=_AWMC_SHORTCUTS,
     )
 
 
@@ -422,13 +440,16 @@ async def _(event: MessageEvent):
     labels = {'active': '领取中', 'completed': '已领完', 'expired': '已过期'}
     claim_lines = [f'· {qqid}：{amount} BREAK' for qqid, amount in status.claims]
     detail = '\n'.join(claim_lines) if claim_lines else '· 暂无人领取'
-    await break_red_packet_status.finish(
+    await plugin_finish(
+        break_red_packet_status,
         f'【红包 {status.packet_id} · {labels.get(status.status, status.status)}】\n'
         f'发送者：{status.sender_qqid}\n'
         f'总额 {status.total_amount} BREAK · {status.total_count} 份\n'
         f'剩余 {status.remaining_amount} BREAK · {status.remaining_count} 份\n'
         f'领取明细：\n{detail}',
+        event=event,
         reply_message=True,
+        qq_buttons=_AWMC_SHORTCUTS,
     )
 
 
@@ -442,10 +463,13 @@ async def _(event: MessageEvent):
         result = break_db.cancel_red_packet(int(billing_user_id(event)), group_id)
     except Exception as exc:
         await break_red_packet_cancel.finish(f'收回失败：{exc}', reply_message=True)
-    await break_red_packet_cancel.finish(
+    await plugin_finish(
+        break_red_packet_cancel,
         f'🧧 红包 {result.packet_id} 已收回，'
         f'剩余 {result.refund} BREAK 已退回发送者。',
+        event=event,
         reply_message=True,
+        qq_buttons=_AWMC_SHORTCUTS,
     )
 
 

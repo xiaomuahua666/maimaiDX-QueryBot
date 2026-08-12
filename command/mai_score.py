@@ -214,6 +214,9 @@ _B50_SHORTCUTS = (
     ('含水量', '含水量'),
     ('B50 地板', 'b50地板'),
     ('刷新 B50', '刷新b50'),
+    ('自动上传 B50', 'maiua'),
+    ('PC50', 'pc50'),
+    ('我的 PC', '我的pc数'),
 )
 _CONTENT_SHORTCUTS = (
     ('含金量', '含金量'),
@@ -492,7 +495,7 @@ async def _refresh_b50(
                 force_refresh=True,
             )
     except BreakInsufficientError as e:
-        await refresh_b50.finish(str(e), reply_message=True)
+        await plugin_finish(refresh_b50, str(e), event=event, reply_message=True)
         return
     except LxnsDataError as e:
         await refresh_b50.finish(str(e), reply_message=True)
@@ -1604,7 +1607,9 @@ async def _plate_count_stats(event: MessageEvent, user_id: Optional[int] = Depen
         async with break_billing(event.user_id):
             records = await fetch_dev_records_as_score_records(qqid)
     except BreakInsufficientError as e:
-        await plate_count_stats.finish(str(e), reply_message=True)
+        await plugin_finish(
+            plate_count_stats, str(e), event=event, reply_message=True,
+        )
         return
     except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
         await plate_count_stats.finish(str(e), reply_message=True)
@@ -1758,7 +1763,7 @@ async def _(
             billing_qqid=event.user_id,
         )
     except BreakInsufficientError as e:
-        await legacy_b50.finish(str(e), reply_message=True)
+        await plugin_finish(legacy_b50, str(e), event=event, reply_message=True)
         return
     if isinstance(result, str):
         await legacy_b50.finish(result, reply_message=True)
@@ -1818,7 +1823,7 @@ async def _(
             billing_qqid=event.user_id,
         )
     except BreakInsufficientError as e:
-        await legacy_b35.finish(str(e), reply_message=True)
+        await plugin_finish(legacy_b35, str(e), event=event, reply_message=True)
         return
     if isinstance(result, str):
         await legacy_b35.finish(result, reply_message=True)
@@ -1854,7 +1859,7 @@ async def _(event: MessageEvent, user_id: Optional[int] = Depends(get_at_qq)):
             billing_qqid=event.user_id,
         )
     except BreakInsufficientError as e:
-        await dx2025_b50.finish(str(e), reply_message=True)
+        await plugin_finish(dx2025_b50, str(e), event=event, reply_message=True)
         return
     if isinstance(result, str):
         await dx2025_b50.finish(result, reply_message=True)

@@ -183,6 +183,26 @@ assert [segment.type for segment in qq_text_matcher.calls[0][1]] == [
 ]
 assert '普通结果' in qq_text_matcher.calls[0][1][0].data['markdown'].content
 
+# Insufficient BREAK always gets immediate recovery actions, even when the
+# originating command did not define its own contextual keyboard.
+break_matcher = FakeMatcher()
+asyncio.run(
+    plugin_finish(
+        break_matcher,
+        '❌ BREAK 不足（需要 5，当前 0）',
+        event=qq_event,
+    )
+)
+break_parts = list(break_matcher.calls[0][1])
+assert [segment.type for segment in break_parts] == ['markdown', 'keyboard']
+break_keyboard = break_parts[1].data['keyboard'].model_dump(exclude_none=True)
+break_commands = {
+    button['action']['data']
+    for row in break_keyboard['content']['rows']
+    for button in row['buttons']
+}
+assert {'签到', '今日舞萌', '我的卡密', 'AWMC帮助'} <= break_commands
+
 onebot_matcher = FakeMatcher()
 asyncio.run(
     plugin_finish(

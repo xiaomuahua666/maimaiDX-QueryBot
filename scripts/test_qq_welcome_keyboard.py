@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import os
-import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -21,14 +20,26 @@ from nonebot_plugin_maimaidx.command.mai_qq_bind import (  # noqa: E402
     _build_welcome_keyboard,
     _oauth_success_payload,
 )
-from nonebot_plugin_maimaidx.command.mai_base import mai_today, mai_what  # noqa: E402
-from nonebot_plugin_maimaidx.command.mai_b50_analysis import (  # noqa: E402
-    b50_analysis_cmd,
+from nonebot_plugin_maimaidx.libraries.maimaidx_account_db import (  # noqa: E402
+    account_db,
+)
+from nonebot_plugin_maimaidx.libraries.maimaidx_lxns_db import (  # noqa: E402
+    lxns_db,
+)
+from nonebot_plugin_maimaidx.command.mai_account import (  # noqa: E402
+    account_bind,
+    fish_bind,
+    upload_all,
 )
 from nonebot_plugin_maimaidx.command.mai_break import awmc_checkin  # noqa: E402
+from nonebot_plugin_maimaidx.command.mai_lxns import lxbind  # noqa: E402
+from nonebot_plugin_maimaidx.command.mai_playcount import (  # noqa: E402
+    my_pc,
+    pc50,
+    update_pc,
+)
 from nonebot_plugin_maimaidx.command.mai_score import (  # noqa: E402
-    today_gain_recommend,
-    weekly_report,
+    best50,
 )
 from nonebot_plugin_maimaidx.libraries.maimaidx_break import break_db  # noqa: E402
 from nonebot_plugin_maimaidx.libraries.maimaidx_db import (  # noqa: E402
@@ -38,7 +49,7 @@ from nonebot_plugin_maimaidx.libraries.maimaidx_db import (  # noqa: E402
 
 keyboard = _build_welcome_keyboard().model_dump(exclude_none=True)
 buttons = [button for row in keyboard['content']['rows'] for button in row['buttons']]
-assert len(keyboard['content']['rows']) == 3
+assert len(keyboard['content']['rows']) <= 5
 assert all(len(row['buttons']) <= 3 for row in keyboard['content']['rows'])
 
 commands = {
@@ -47,24 +58,60 @@ commands = {
     if button['action']['type'] == 2
 }
 assert commands == {
+    '绑定舞萌': 'mai绑定',
+    '绑定水鱼': 'mai绑定水鱼',
+    '绑定落雪': 'lxbind',
+    '标准 B50': 'b50',
+    'PC50': 'pc50',
+    '我的 PC': '我的pc数',
+    '更新 PC': '更新pc数',
+    'MyMai': 'mymai',
     '签到': '签到',
-    '今日舞萌': '今日舞萌',
-    'B50 锐评': '锐评一下',
-    '吃分推荐': '吃分推荐',
-    '推分推荐': 'mai什么推分',
-    '周报': '周报',
 }
+
+# Once all three account layers are bound, onboarding buttons disappear and
+# the same slots become the actual upload/B50/PC next steps.
+state_event = SimpleNamespace(
+    user_id=246813579,
+    get_user_id=lambda: '246813579',
+)
+original_account_get = account_db.get
+original_lxns_get = lxns_db.get_user
+try:
+    account_db.get = lambda _key: SimpleNamespace(
+        qrcode='SGWCMAID=bound', fish_token='fish', lxns_token=''
+    )
+    lxns_db.get_user = lambda _qqid: {'access_token': 'lxns'}
+    ready_keyboard = _build_welcome_keyboard(state_event).model_dump(
+        exclude_none=True
+    )
+finally:
+    account_db.get = original_account_get
+    lxns_db.get_user = original_lxns_get
+ready_commands = {
+    button['render_data']['label']: button['action']['data']
+    for row in ready_keyboard['content']['rows']
+    for button in row['buttons']
+    if button['action']['type'] == 2
+}
+assert not {'绑定舞萌', '绑定水鱼', '绑定落雪'} & set(ready_commands)
+assert ready_commands['自动上传 B50'] == 'maiua'
+assert ready_commands['标准 B50'] == 'b50'
+assert ready_commands['PC50'] == 'pc50'
 # The target matchers are registered in QQ mode; type=2 + enter=True sends
 # these command texts back as ordinary user messages through the same router.
 assert all(
     matcher is not None
     for matcher in (
         awmc_checkin,
-        mai_today,
-        b50_analysis_cmd,
-        today_gain_recommend,
-        weekly_report,
-        mai_what,
+        account_bind,
+        fish_bind,
+        lxbind,
+        upload_all,
+        best50,
+        pc50,
+        my_pc,
+        update_pc,
     )
 )
 for button in buttons:
@@ -74,7 +121,6 @@ for button in buttons:
         assert action['enter'] is True
         assert action['reply'] is False
 
-assert re.fullmatch(r'.*mai.*什么(.+)?', commands['推分推荐'])
 help_button = next(button for button in buttons if button['id'] == 'welcome-help-link')
 assert help_button['action'] == {
     'type': 0,

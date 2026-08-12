@@ -216,7 +216,7 @@ def _oauth_success_payload(
     )
     if reward_awarded:
         lines.append('🎁 首次绑定奖励：**+3 BREAK**')
-    keyboard = _build_welcome_keyboard()
+    keyboard = _build_welcome_keyboard(event)
     return QQMessage(
         [
             QQSeg.markdown('\n'.join(lines)),
@@ -493,16 +493,43 @@ async def _(event: MessageEvent):
     await plugin_finish(group_member_list, '\n'.join(lines), event=event)
 
 
-def _build_welcome_keyboard() -> MessageKeyboard:
-    """绑定成功后显示的快捷按钮。"""
-    action_buttons = [
+def _build_welcome_keyboard(event: Optional[MessageEvent] = None) -> MessageKeyboard:
+    """论坛绑定完成后的下一步账号流程。"""
+    binding = None
+    has_lxns = False
+    try:
+        from ..libraries.maimaidx_account_db import account_db
+        from ..libraries.maimaidx_lxns_db import lxns_db
+        from ..libraries.maimaidx_platform import resolve_score_qqid
+
+        qqid = resolve_score_qqid(event) if event is not None else None
+        if qqid is not None:
+            binding = account_db.get(str(qqid))
+            lxns_row = lxns_db.get_user(int(qqid))
+            has_lxns = bool(
+                (binding and binding.lxns_token)
+                or (lxns_row and lxns_row.get('access_token'))
+            )
+    except Exception:
+        pass
+    action_buttons = []
+    has_account = bool(binding and binding.qrcode)
+    if not has_account:
+        action_buttons.append(('绑定舞萌', 'mai绑定'))
+    if not (binding and binding.fish_token):
+        action_buttons.append(('绑定水鱼', 'mai绑定水鱼'))
+    if not has_lxns:
+        action_buttons.append(('绑定落雪', 'lxbind'))
+    if has_account and binding.fish_token and has_lxns:
+        action_buttons.append(('自动上传 B50', 'maiua'))
+    action_buttons.extend([
+        ('标准 B50', 'b50'),
+        ('PC50', 'pc50'),
+        ('我的 PC', '我的pc数'),
+        ('更新 PC', '更新pc数'),
+        ('MyMai', 'mymai'),
         ('签到', '签到'),
-        ('今日舞萌', '今日舞萌'),
-        ('B50 锐评', '锐评一下'),
-        ('吃分推荐', '吃分推荐'),
-        ('推分推荐', 'mai什么推分'),
-        ('周报', '周报'),
-    ]
+    ])
     buttons = [
         Button(
             id=f'welcome-action-{idx}',

@@ -42,6 +42,7 @@ from ..libraries.maimaidx_platform import (
     build_image_message,
     build_markdown_link_message,
     deliver_forward_messages,
+    plugin_finish,
     resolve_score_qqid,
     use_qq_mode,
 )
@@ -306,7 +307,9 @@ async def _send_song_info_then_pmyx_forward(
             _gen(), billing_qqid=billing_user_id(event), feature_charge='search'
         )
     except BreakInsufficientError as e:
-        await matcher.finish(str(e), reply_message=reply)
+        await plugin_finish(
+            matcher, str(e), event=event, reply_message=reply,
+        )
         return
     except QBindRequiredError as e:
         await matcher.finish(str(e), reply_message=reply)

@@ -22,7 +22,10 @@ assert "_send_oauth_start" in qq_bind
 assert "_oauth_success_payload" in qq_bind
 assert "_build_welcome_keyboard" in qq_bind
 assert "claim_once_reward" in qq_bind
-assert "'mai什么推分'" in qq_bind
+assert "'绑定水鱼', 'mai绑定水鱼'" in qq_bind
+assert "'绑定落雪', 'lxbind'" in qq_bind
+assert "'自动上传 B50', 'maiua'" in qq_bind
+assert "'PC50', 'pc50'" in qq_bind
 assert "settle_feature_if_uncharged" in (
     ROOT / "command" / "mai_score.py"
 ).read_text(encoding="utf-8")
