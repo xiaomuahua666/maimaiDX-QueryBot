@@ -28,8 +28,15 @@ plate_table_pfm         = on_regex(r'^([真超檄橙暁晓桃櫻樱紫菫堇白�
 rise_score              = on_regex(r'^我要在?([0-9]+\+?)?[上加\+]([0-9]+)?分\s?(.+)?')
 plate_process           = on_regex(r'^([真超檄橙暁晓桃櫻樱紫菫堇白雪輝辉舞霸熊華华爽煌星宙祭祝双宴镜彩丸圆])([極极将舞神者]舞?)进度\s?(.+)?')
 level_process           = on_regex(r'^([0-9]+\+?)\s?([abcdsfxp\+]+)\s?([\u4e00-\u9fa5]+)?\s?进度\s?([0-9]+)?(.+)?', re.IGNORECASE)
-# 等级牌子进度：13将 / 14+极进度 / 13舞舞 等（等价于 13sss进度、13fc进度、13fdx进度）
-level_plate_progress    = on_regex(r'^([0-9]+\+?)(舞舞|将|極|极|神|者)(?:进度)?(?:\s+(已完成|未完成|未开始|未游玩))?(?:\s+(\d+))?\s*(.*)?$')
+# 等级牌子进度：13将 / 14+极进度 / 10将完成表 等
+# （等价于 13sss进度、13fc进度、13fdx进度）。用户名参数必须以空白
+# 分隔，避免把“完成表”这类指令后缀误当成查分器用户名。
+LEVEL_PLATE_PROGRESS_PATTERN = (
+    r'^([0-9]+\+?)(舞舞|将|極|极|神|者)(?:进度|完成表)?'
+    r'(?:\s+(已完成|未完成|未开始|未游玩))?'
+    r'(?:\s+(\d+))?(?:\s+(.+))?$'
+)
+level_plate_progress    = on_regex(LEVEL_PLATE_PROGRESS_PATTERN)
 level_achievement_list  = on_regex(r'^([0-9]+\.?[0-9]?\+?)\s?分数列表\s?([0-9]+)?\s?(.+)?')
 
 
