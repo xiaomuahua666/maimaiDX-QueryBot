@@ -216,7 +216,7 @@ print('multi-object question rule-bypass tests passed')
 
 def _make_mock_llm(response_map: dict, default: str = '无法回答'):
     """response_map: {问题文本(归一化): '是'|'否'|'无法回答'}"""
-    async def _mock(music, text, config):
+    async def _mock(music, text, config, **kwargs):
         key = text.strip().lower().replace(' ', '')
         resp = response_map.get(key, default)
         if resp == '是':

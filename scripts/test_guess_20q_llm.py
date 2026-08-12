@@ -94,7 +94,7 @@ def _make_data() -> Guess20QData:
 # 而非先判断肯定句再反转。
 def _make_mock_llm(response_map: dict, default: str = '无法回答'):
     """response_map: {问题文本(归一化小写去空格): 回答}"""
-    async def _mock(music, text, config):
+    async def _mock(music, text, config, **kwargs):
         key = text.strip().lower().replace(' ', '')
         resp = response_map.get(key, default)
         if resp == '是':
@@ -178,7 +178,7 @@ print('  ✓ 通过')
 print('测试 4: LLM 调用失败 → unknown 不消耗次数')
 data = _make_data()
 before = data.question_count
-async def _fail_llm(music, text, config):
+async def _fail_llm(music, text, config, **kwargs):
     return None  # 模拟调用失败/超时
 r = _run(data, '任意问题吗', _fail_llm)
 assert r['kind'] == 'unknown', f'LLM 失败应走 unknown: {r}'
@@ -249,7 +249,7 @@ print('测试 9: await 期间游戏被重置')
 data = _make_data()
 before = data.question_count
 
-async def _slow_llm(music, text, config):
+async def _slow_llm(music, text, config, **kwargs):
     # 模拟 LLM 调用耗时，期间游戏被重置
     await asyncio.sleep(0.05)
     return _YES, 'mock'
@@ -263,7 +263,7 @@ class _Cfg:
     b50_llm_key = 'fake'
 
 # 包装 mock：LLM 返回前把游戏结束掉，模拟超时/重置竞态
-async def _mock_with_reset(music, text, config):
+async def _mock_with_reset(music, text, config, **kwargs):
     await asyncio.sleep(0.01)
     # LLM 还没返回，游戏被超时任务结束了
     data.end = True
@@ -292,7 +292,7 @@ data.max_questions = 1  # 只允许 1 次提问
 # 先用掉这次提问（但不走 LLM，走规则）
 data.question_count = 1  # 已用完
 
-async def _mock_check(music, text, config):
+async def _mock_check(music, text, config, **kwargs):
     await asyncio.sleep(0.01)
     return _YES
 
@@ -320,7 +320,7 @@ print('测试 11: prompt 注入防御（代码层）')
 data = _make_data()
 
 # 模拟 LLM 被注入后输出曲名/特征（而非 是/否/无法回答）
-async def _injected_llm(music, text, config):
+async def _injected_llm(music, text, config, **kwargs):
     # LLM 被诱导输出了 profile 内容或曲名
     return None  # 不以 是/否 开头 → _llm_classify 返回 None
 
@@ -348,7 +348,7 @@ mod2._llm_semaphore = None
 concurrent = 0
 max_concurrent = 0
 
-async def _counting_llm(music, text, config):
+async def _counting_llm(music, text, config, **kwargs):
     global concurrent, max_concurrent
     concurrent += 1
     max_concurrent = max(max_concurrent, concurrent)
@@ -365,7 +365,7 @@ class _Cfg2:
 orig2 = mod2._llm_classify
 orig_cfg2 = mod2._get_config
 # 直接 patch 内部：让 _llm_classify 走信号量 + 计数
-async def _patched_llm(music, text, config):
+async def _patched_llm(music, text, config, **kwargs):
     async with mod2._get_llm_semaphore():
         ans, _r = await _counting_llm(music, text, config)
         return ans, _r
