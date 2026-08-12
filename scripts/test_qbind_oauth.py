@@ -20,6 +20,12 @@ assert "授权后把授权链接直接发给我哟" in qq_bind
 assert "recall_message" in qq_bind
 assert "_send_oauth_start" in qq_bind
 assert "_oauth_success_payload" in qq_bind
+assert "_build_welcome_keyboard" in qq_bind
+assert "claim_once_reward" in qq_bind
+assert "'mai什么推分'" in qq_bind
+assert "settle_feature_if_uncharged" in (
+    ROOT / "command" / "mai_score.py"
+).read_text(encoding="utf-8")
 assert "build_markdown_message" in qq_bind
 assert "foreign_recall_notice" in qq_bind
 assert "deliver_forward_messages" not in qq_bind

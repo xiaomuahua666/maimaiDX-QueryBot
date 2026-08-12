@@ -1244,7 +1244,7 @@ async def _disable_data_storage(event: MessageEvent):
 async def _store_data_now(event: MessageEvent):
     """立即存储数据：手动触发成绩存储"""
     qqid = resolve_score_qqid(event)
-    
+
     # 检查是否已开启存储
     if not data_storage.is_enabled(qqid):
         await store_data_now.finish(
@@ -1253,7 +1253,7 @@ async def _store_data_now(event: MessageEvent):
             reply_message=True
         )
         return
-    
+
     if not bool(getattr(maiconfig, 'maimaidx_compact_messages', True)):
         await store_data_now.send('正在获取并存储你的成绩数据，请稍候...', reply_message=True)
     
@@ -1471,8 +1471,25 @@ async def _today_gain_recommend(event: MessageEvent):
             reply_message=True,
         )
         return
-    await _finish_score(today_gain_recommend, generate_today_gain_recommendation_image(qqid), qqid,
-        billing_qqid=event.user_id,
+    result = await generate_today_gain_recommendation_image(qqid)
+    if isinstance(result, str):
+        await today_gain_recommend.finish(result, reply_message=True)
+        return
+
+    async def _image_coro():
+        from ..libraries.maimaidx_break import settle_feature_if_uncharged
+
+        settle_feature_if_uncharged(
+            billing_user_id(event), 'today_gain_recommend'
+        )
+        return result
+
+    await _finish_score(
+        today_gain_recommend,
+        _image_coro(),
+        qqid,
+        billing_qqid=billing_user_id(event),
+        billing_event=event,
     )
 
 

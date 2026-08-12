@@ -2465,6 +2465,72 @@ class BreakDatabase:
                 awarded=True,
             )
 
+    def claim_once_reward(
+        self,
+        qqid: int,
+        reward_key: str,
+        amount: int,
+        *,
+        reason: str,
+        meta: Optional[dict] = None,
+    ) -> DailyRewardResult:
+        """永久幂等奖励；同一用户和 reward_key 只发放一次。"""
+        key = str(reward_key).strip()[:64]
+        if not key:
+            raise ValueError('reward_key 不能为空')
+        value = max(0, int(amount))
+        self._ensure_user(qqid)
+        with self._lock:
+            try:
+                now = time.time()
+                ledger_reason = f'once_reward:{key}'
+                # A no-op update locks this user's row until commit on MySQL;
+                # together with the process RLock it prevents concurrent OAuth
+                # completions from both passing the ledger check.
+                self._conn.execute(
+                    'UPDATE break_users SET updated_at = updated_at WHERE qqid = ?',
+                    (qqid,),
+                )
+                existing = self._conn.execute(
+                    """SELECT delta FROM break_log
+                       WHERE qqid = ? AND reason = ? LIMIT 1""",
+                    (qqid, ledger_reason),
+                ).fetchone()
+                if existing:
+                    self._conn.commit()
+                    return DailyRewardResult(
+                        reward_key=key,
+                        amount=max(0, int(existing['delta'])),
+                        balance=self.get_balance(qqid),
+                        awarded=False,
+                    )
+
+                self._ensure_daily(qqid)
+                self._conn.execute(
+                    """UPDATE break_users
+                       SET balance = balance + ?, updated_at = ? WHERE qqid = ?""",
+                    (value, now, qqid),
+                )
+                self._conn.execute(
+                    """UPDATE break_daily_usage
+                       SET break_gained = break_gained + ?
+                       WHERE qqid = ? AND date = ?""",
+                    (value, qqid, self._today()),
+                )
+                log_meta = dict(meta or {})
+                log_meta.update({'reward_key': key, 'reason': reason})
+                self._append_log(qqid, value, ledger_reason, meta=log_meta)
+                self._conn.commit()
+                return DailyRewardResult(
+                    reward_key=key,
+                    amount=value,
+                    balance=self.get_balance(qqid),
+                    awarded=True,
+                )
+            except Exception:
+                self._conn.rollback()
+                raise
+
     def _checkin_base_range(self) -> tuple[int, int]:
         lo = _parse_config_int(self.get_config('checkin_base_min', DEFAULT_CONFIG['checkin_base_min']), 1)
         hi = _parse_config_int(self.get_config('checkin_base_max', DEFAULT_CONFIG['checkin_base_max']), 2)
@@ -3084,12 +3150,13 @@ def format_break_insufficient_message(
     checked = break_db.is_checked_in_today(qqid) if qqid else False
     lines = [f'❌ BREAK 不足（需要 {required}，当前 {current}）']
     if checked:
-        lines.append('今日已签到，请明天再试。')
+        lines.append('今日已签到，也可发「今日舞萌」攒 BREAK~')
     else:
-        lines.append('发送「AWMC签到」获取 BREAK；每日首次查分免费哦~')
+        lines.append('发送「签到」或「今日舞萌」获取 BREAK；每日首次查分免费哦~')
     store_url = (getattr(maiconfig, 'maimaidx_store_url', '') or '').strip()
     if store_url:
         lines.append(f'🛒 也可前往卡密商店购买：{store_url}')
+    lines.append('来二群（993795066）玩小游戏赚BREAK喵呜~')
     return '\n'.join(lines)
 
 

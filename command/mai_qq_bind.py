@@ -9,10 +9,22 @@ from typing import Optional
 from nonebot import on_command, on_message
 from nonebot.adapters import Bot
 from nonebot.adapters.onebot.v11 import Message, MessageEvent
+from nonebot.adapters.qq.message import Message as QQMessage
+from nonebot.adapters.qq.message import MessageSegment as QQSeg
+from nonebot.adapters.qq.models import (
+    Action,
+    Button,
+    InlineKeyboard,
+    InlineKeyboardRow,
+    MessageKeyboard,
+    Permission,
+    RenderData,
+)
 from nonebot.exception import FinishedException
 from nonebot.params import CommandArg
 from nonebot.rule import Rule
 
+from ..libraries.maimaidx_break import break_db
 from ..libraries.maimaidx_bot_admin import PLUGIN_ADMIN_ONLY, is_plugin_admin
 from ..libraries.maimaidx_forum_auth import (
     ForumOAuthError,
@@ -152,7 +164,7 @@ def _normalize_oauth_paste(raw: str) -> str:
     return value
 
 
-def _oauth_success_text(profile: dict) -> str:
+def _oauth_success_text(profile: dict, *, reward_awarded: bool = False) -> str:
     qq = profile.get('legacy_qq') or ''
     lines = [
         f"论坛 OAuth 绑定成功：{profile.get('username') or profile.get('xf_user_id')}",
@@ -160,6 +172,8 @@ def _oauth_success_text(profile: dict) -> str:
         f'查分 QQ：{qq}',
         '现在可以直接使用签到、查分、B50 等账号功能。',
     ]
+    if reward_awarded:
+        lines.append('首次绑定奖励：已发放 3 BREAK。')
     return '\n'.join(lines)
 
 
@@ -176,10 +190,13 @@ def _oauth_success_payload(
     event: MessageEvent,
     *,
     prefix: str = '',
+    reward_awarded: bool = False,
 ):
     """Render the OAuth receipt as native QQ Markdown when available."""
     if not use_qq_mode(event):
-        return prefix + _oauth_success_text(profile)
+        return prefix + _oauth_success_text(
+            profile, reward_awarded=reward_awarded
+        )
 
     name = _escape_markdown_value(profile.get('username') or profile.get('xf_user_id'))
     email = _escape_markdown_value(profile.get('email'))
@@ -197,7 +214,17 @@ def _oauth_success_payload(
             '现在可以直接使用签到、查分、B50 等账号功能。',
         ]
     )
-    return build_markdown_message('\n'.join(lines), event=event)
+    if reward_awarded:
+        lines.append('要开始了哟～首次绑定奖励已发放 **3 BREAK** 喵！')
+    keyboard = _build_welcome_keyboard()
+    return QQMessage(
+        [
+            QQSeg.markdown('\n'.join(lines)),
+            QQSeg.keyboard(keyboard),
+        ]
+    )
+
+
 
 
 def _track_oauth_message(platform_id: str, *message_ids: object) -> None:
@@ -254,6 +281,16 @@ async def _complete_oauth_paste(
 
     try:
         profile = await complete_forum_login(pid, payload)
+        legacy_qq = profile.get('legacy_qq')
+        reward_awarded = False
+        if legacy_qq:
+            reward_awarded = break_db.claim_once_reward(
+                int(legacy_qq),
+                'forum_bind_welcome',
+                3,
+                reason='forum_bind_welcome',
+                meta={'platform_id': pid},
+            ).awarded
     except ForumOAuthError as exc:
         warn = '' if user_recalled else f'{_RECALL_USER_WARN(event)}\n'
         await plugin_finish(matcher, warn + str(exc), event=event)
@@ -273,7 +310,12 @@ async def _complete_oauth_paste(
     prefix = ('\n'.join(warnings) + '\n') if warnings else ''
     await plugin_finish(
         matcher,
-        _oauth_success_payload(profile, event, prefix=prefix),
+        _oauth_success_payload(
+            profile,
+            event,
+            prefix=prefix,
+            reward_awarded=reward_awarded,
+        ),
         event=event,
     )
 
@@ -448,3 +490,45 @@ async def _(event: MessageEvent):
         lines.append(f"{r['member_id']} | {r['member_role']} | 最近 {ts} | ×{r['seen_count']}")
     lines.append('\n说明：官方 QQ 公域群无法一次性拉取全员，只能积累事件中的 openid。')
     await plugin_finish(group_member_list, '\n'.join(lines), event=event)
+
+
+def _build_welcome_keyboard() -> MessageKeyboard:
+    """绑定成功后显示的快捷按钮。"""
+    action_buttons = [
+        ('签到', '签到'),
+        ('今日舞萌', '今日舞萌'),
+        ('锐评一下', '锐评一下'),
+        ('吃分推荐', '吃分推荐'),
+        ('我要上分', 'mai什么推分'),
+        ('周报（需开启数据储存）', '周报'),
+    ]
+    buttons = [
+        Button(
+            id=f'welcome-action-{idx}',
+            render_data=RenderData(label=label, visited_label=label, style=1),
+            action=Action(
+                type=2,
+                permission=Permission(type=2),
+                data=cmd,
+                enter=True,
+                reply=False,
+            ),
+        )
+        for idx, (label, cmd) in enumerate(action_buttons, 1)
+    ]
+    buttons.append(
+        Button(
+            id='welcome-help-link',
+            render_data=RenderData(label='帮助', visited_label='帮助', style=1),
+            action=Action(
+                type=0,
+                permission=Permission(type=2),
+                data='https://wiki.awmc.team/guide/bot/intro',
+            ),
+        )
+    )
+    rows = [
+        InlineKeyboardRow(buttons=buttons[start : start + 5])
+        for start in range(0, len(buttons), 5)
+    ]
+    return MessageKeyboard(content=InlineKeyboard(rows=rows))
