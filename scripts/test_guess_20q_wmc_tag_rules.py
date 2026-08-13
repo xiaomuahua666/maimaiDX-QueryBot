@@ -2,14 +2,17 @@
 
 不依赖任何网络/API：直接用 mock 的 wmc_tags 字典喂给 classify_question，
 验证「涉及标签的是非题」已由确定性规则层拦截并据标签回 是/否/无法回答，
-不再交给 LLM 判断「这算不算标签题」。
+不再交给 LLM 判断「这算不算标签题」；并验证含「大」等词的标签题不会被
+定数层误判成「定数偏高」。
 
 覆盖：
-1. 各标签命中 → 是
+1. 各真实标签命中 → 是（星星谱/体力谱/键盘谱/错位/交互/扫键/跳拍/触摸/转圈/
+   大位移/爆发/散打/定拍/反手/诈称谱/水谱/正常谱）
 2. 标签不存在 → 否
 3. 难度选择（默认紫谱 / 指定颜色 / 最高）
 4. 无 WMC 数据或该难度标签缺失 → 放行给 LLM（不消耗次数）
 5. 物量题（星星多吗）不被标签规则误伤
+6. 「大位移」等含「大」的标签题绝不会被 _q_ds 误判为「定数偏高」
 """
 
 import sys
@@ -29,7 +32,7 @@ music_stub.mai = types.SimpleNamespace()
 music_stub.guess = types.SimpleNamespace()
 sys.modules['libraries.maimaidx_music'] = music_stub
 
-from libraries.maimaidx_guess_20q import classify_question  # noqa: E402
+from libraries.maimaidx_guess_20q import classify_question, _q_ds, _q_wmc_tag  # noqa: E402
 from libraries.maimaidx_model import BasicInfo, Chart, Music  # noqa: E402
 
 
@@ -66,7 +69,9 @@ def _wmc(diff_tags: dict) -> dict:
     return {3: diff_tags}
 
 
-# 紫谱标签：星星谱 / 体力谱（评价）；交互 / 错位（配置）；纵连 / 扫键（模式）；难度=正常谱
+# 紫谱标签（依据真实 API 数据构造）：
+# 难度分类=正常谱；评价=星星谱/体力谱；雷达=交互/错位/触摸/跳拍/大位移；
+# 模式=扫键/爆发/散打/定拍/反手/转圈
 _WMC_MASTER = {
     'difficultyClassification': {'label': '正常谱', 'estimatedLevel': 14.6, 'deviation': 0.0},
     'evaluationTags': [
@@ -76,14 +81,25 @@ _WMC_MASTER = {
     'radarTags': [
         {'label': '交互', 'score': 0.74},
         {'label': '错位', 'score': 0.63},
+        {'label': '触摸', 'score': 0.69},
+        {'label': '跳拍', 'score': 0.77},
+        {'label': '大位移', 'score': 0.55},
+        {'label': '纵连', 'score': 0.60},
+        {'label': '一笔画', 'score': 0.50},
     ],
     'patterns': [
-        {'label': '纵连', 'severity': 'high', 'count': 3},
         {'label': '扫键', 'severity': 'mid', 'count': 2},
+        {'label': '爆发', 'severity': 'high', 'count': 6},
+        {'label': '散打', 'severity': 'mid', 'count': 4},
+        {'label': '定拍', 'severity': 'low', 'count': 1},
+        {'label': '反手', 'severity': 'mid', 'count': 3},
+        {'label': '转圈', 'severity': 'low', 'count': 1},
+        {'label': '绝赞段', 'severity': 'high', 'count': 3},
+        {'label': '拆弹', 'severity': 'mid', 'count': 2},
     ],
 }
 
-# 红谱标签：键盘谱（评价）；跳拍（配置）；一笔画（模式）；难度=诈称谱
+# 红谱标签：难度分类=诈称谱；评价=键盘谱；雷达=跳拍；模式=触摸组
 _WMC_EXPERT = {
     'difficultyClassification': {'label': '诈称谱', 'estimatedLevel': 14.0, 'deviation': -0.5},
     'evaluationTags': [
@@ -93,7 +109,7 @@ _WMC_EXPERT = {
         {'label': '跳拍', 'score': 0.70},
     ],
     'patterns': [
-        {'label': '一笔画', 'severity': 'low', 'count': 1},
+        {'label': '触摸组', 'severity': 'low', 'count': 18},
     ],
 }
 
@@ -119,16 +135,39 @@ print('═══ WMC 标签确定性规则层测试 ═══')
 print('【1】标签命中 → 是')
 ans, consumed, reason = classify_question(_m, '是星星歌吗', _wmc(_WMC_MASTER))
 _check('星星歌(命中)', (ans, consumed), ('是喵 ✅', True))
+_check('星星歌-reason含标签维度', '大位移' not in reason and '标签' in reason, True)
 ans, consumed, _ = classify_question(_m, '体力谱吗', _wmc(_WMC_MASTER))
 _check('体力谱(命中)', (ans, consumed), ('是喵 ✅', True))
 ans, consumed, _ = classify_question(_m, '有错位吗', _wmc(_WMC_MASTER))
 _check('错位(配置标签命中)', (ans, consumed), ('是喵 ✅', True))
 ans, consumed, _ = classify_question(_m, '交互谱吗', _wmc(_WMC_MASTER))
 _check('交互(配置标签命中)', (ans, consumed), ('是喵 ✅', True))
-ans, consumed, _ = classify_question(_m, '纵连吗', _wmc(_WMC_MASTER))
-_check('纵连(模式标签命中)', (ans, consumed), ('是喵 ✅', True))
 ans, consumed, _ = classify_question(_m, '扫键谱吗', _wmc(_WMC_MASTER))
 _check('扫键(模式标签命中)', (ans, consumed), ('是喵 ✅', True))
+ans, consumed, _ = classify_question(_m, '触摸吗', _wmc(_WMC_MASTER))
+_check('触摸(雷达标签命中)', (ans, consumed), ('是喵 ✅', True))
+ans, consumed, _ = classify_question(_m, '转圈吗', _wmc(_WMC_MASTER))
+_check('转圈(模式标签命中)', (ans, consumed), ('是喵 ✅', True))
+# 本次修复重点：大位移/爆发/散打/定拍/反手（真实 API 标签）
+ans, consumed, _ = classify_question(_m, '是大位移吗', _wmc(_WMC_MASTER))
+_check('大位移(真实标签命中)', (ans, consumed), ('是喵 ✅', True))
+ans, consumed, _ = classify_question(_m, '是爆发谱吗', _wmc(_WMC_MASTER))
+_check('爆发(真实标签命中)', (ans, consumed), ('是喵 ✅', True))
+ans, consumed, _ = classify_question(_m, '散打吗', _wmc(_WMC_MASTER))
+_check('散打(真实标签命中)', (ans, consumed), ('是喵 ✅', True))
+ans, consumed, _ = classify_question(_m, '定拍吗', _wmc(_WMC_MASTER))
+_check('定拍(真实标签命中)', (ans, consumed), ('是喵 ✅', True))
+ans, consumed, _ = classify_question(_m, '反手谱吗', _wmc(_WMC_MASTER))
+_check('反手(真实标签命中)', (ans, consumed), ('是喵 ✅', True))
+# 本次补回/新增的标签：纵连/一笔画/绝赞段/拆弹
+ans, consumed, _ = classify_question(_m, '纵连吗', _wmc(_WMC_MASTER))
+_check('纵连(真实标签命中)', (ans, consumed), ('是喵 ✅', True))
+ans, consumed, _ = classify_question(_m, '一笔画吗', _wmc(_WMC_MASTER))
+_check('一笔画(真实标签命中)', (ans, consumed), ('是喵 ✅', True))
+ans, consumed, _ = classify_question(_m, '绝赞段吗', _wmc(_WMC_MASTER))
+_check('绝赞段(真实标签命中)', (ans, consumed), ('是喵 ✅', True))
+ans, consumed, _ = classify_question(_m, '拆弹吗', _wmc(_WMC_MASTER))
+_check('拆弹(真实标签命中)', (ans, consumed), ('是喵 ✅', True))
 
 # ── 2. 标签不存在 → 否 ──
 print('【2】标签不存在 → 否')
@@ -136,26 +175,20 @@ ans, consumed, _ = classify_question(_m, '键盘歌吗', _wmc(_WMC_MASTER))
 _check('键盘歌(紫谱无→否)', (ans, consumed), ('不是喵 ❌', True))
 ans, consumed, _ = classify_question(_m, '底力谱吗', _wmc(_WMC_MASTER))
 _check('底力谱(无→否)', (ans, consumed), ('不是喵 ❌', True))
-ans, consumed, _ = classify_question(_m, '转圈吗', _wmc(_WMC_MASTER))
-_check('转圈(无→否)', (ans, consumed), ('不是喵 ❌', True))
-ans, consumed, _ = classify_question(_m, '一笔画吗', _wmc(_WMC_MASTER))
-_check('一笔画(无→否)', (ans, consumed), ('不是喵 ❌', True))
-ans, consumed, _ = classify_question(_m, '跳拍吗', _wmc(_WMC_MASTER))
-_check('跳拍(无→否)', (ans, consumed), ('不是喵 ❌', True))
-ans, consumed, _ = classify_question(_m, '同押吗', _wmc(_WMC_MASTER))
-_check('同押(无→否)', (ans, consumed), ('不是喵 ❌', True))
 ans, consumed, _ = classify_question(_m, '高物量吗', _wmc(_WMC_MASTER))
 _check('高物量(无→否)', (ans, consumed), ('不是喵 ❌', True))
 ans, consumed, _ = classify_question(_m, '诈称谱吗', _wmc(_WMC_MASTER))
 _check('诈称谱(难度=正常谱→否)', (ans, consumed), ('不是喵 ❌', True))
 ans, consumed, _ = classify_question(_m, '水谱吗', _wmc(_WMC_MASTER))
 _check('水谱(难度=正常谱→否)', (ans, consumed), ('不是喵 ❌', True))
+# 已移出词表（未实采确认）的标签 → 不再由规则层判定，放行 LLM
 ans, consumed, _ = classify_question(_m, '认知系吗', _wmc(_WMC_MASTER))
-_check('认知系(无→否)', (ans, consumed), ('不是喵 ❌', True))
+_check('认知系(已移出词表→放行)', consumed, False)
+ans, consumed, _ = classify_question(_m, '同押吗', _wmc(_WMC_MASTER))
+_check('同押(已移出词表→放行)', consumed, False)
 
 # ── 3. 难度选择 ──
 print('【3】难度选择（默认紫谱 / 指定颜色）')
-# 红谱有键盘谱/跳拍/一笔画/诈称谱，紫谱没有
 wmc_both = {2: _WMC_EXPERT, 3: _WMC_MASTER}
 ans, consumed, _ = classify_question(_m, '键盘歌吗', wmc_both)
 _check('键盘歌(默认紫谱无→否)', (ans, consumed), ('不是喵 ❌', True))
@@ -166,8 +199,8 @@ _check('红谱诈称谱(难度分类命中)', (ans, consumed), ('是喵 ✅', Tr
 ans, consumed, _ = classify_question(_m, '紫谱是星星歌吗', wmc_both)
 _check('紫谱星星歌(命中)', (ans, consumed), ('是喵 ✅', True))
 # 最高：ds 最高是紫谱(14.6) → 看紫谱
-ans, consumed, _ = classify_question(_m, '最高是星星歌吗', wmc_both)
-_check('最高=紫谱星星歌(命中)', (ans, consumed), ('是喵 ✅', True))
+ans, consumed, _ = classify_question(_m, '最高是大位移吗', wmc_both)
+_check('最高=紫谱大位移(命中)', (ans, consumed), ('是喵 ✅', True))
 
 # ── 4. 无数据 / 该难度缺失 → 放行给 LLM（不消耗次数） ──
 print('【4】无 WMC 数据 / 该难度缺失 → 放行 LLM（不消耗次数）')
@@ -187,12 +220,28 @@ _check('「星星多吗」→ 不命中标签规则(交LLM)', consumed, False)
 ans, consumed, _ = classify_question(_m, 'slide有几个', _wmc(_WMC_MASTER))
 _check('「slide有几个」→ 不命中标签规则', consumed, False)
 
-# ── 6. 否定词问法仍正确（如「不是星星歌吗」）──
-print('【6】否定问法语义正确')
-# 注：否定反转在 process_message 层(_apply_negation)处理，classify_question 返回原始是/否；
-# 这里只验证标签层正确判定「是星星歌」，反转由上层完成。
-ans, consumed, _ = classify_question(_m, '是星星歌吗', _wmc(_WMC_MASTER))
-_check('星星歌原始判定=是(供上层反转)', ans, '是喵 ✅')
+# ── 6. 「大位移」等含「大」的词绝不被 _q_ds 误判为「定数偏高」──
+print('【6】含「大」的标签题不得被定数层误判')
+# 6a) _q_ds 直接对「是大位移吗」必须放行（护栏），绝不能回「定数偏高」
+qds = _q_ds(_m, '是大位移吗')
+_check('_q_ds(是大位移吗) 放行(不误判定数)', qds, None)
+qds = _q_ds(_m, '大位移谱吗')
+_check('_q_ds(大位移谱吗) 放行', qds, None)
+# 6b) 有数据时：整条链路回「是」，理由必须是「大位移（WMC标签）」而非「定数偏高」
+ans, consumed, reason = classify_question(_m, '是大位移吗', _wmc(_WMC_MASTER))
+_check('是大位移吗 → 是', ans, '是喵 ✅')
+_check('是大位移吗 → 理由不出现「定数」', '定数' not in reason, True)
+_check('是大位移吗 → 理由含「大位移」', '大位移' in reason, True)
+# 6c) 无数据时：也绝不能回「定数偏高」的假「是」，应放行给 LLM
+ans, consumed, reason = classify_question(_m, '是大位移吗', None)
+_check('是大位移吗(无数据) → 不消耗次数', consumed, False)
+_check('是大位移吗(无数据) → 理由非「定数偏高」', '定数' not in reason, True)
+# 6d) 「高物量」含「高」，同样是定数层宽松关键词，不得误判
+check_qds_gao = _q_ds(_m, '高物量吗')
+_check('_q_ds(高物量吗) 放行(不误判定数)', check_qds_gao, None)
+ans, consumed, reason = classify_question(_m, '高物量吗', _wmc(_WMC_MASTER))
+_check('高物量吗(紫谱无→否)', ans, '不是喵 ❌')
+_check('高物量吗 → 理由不出现「定数」', '定数' not in reason, True)
 
 print(f'\n结果：通过 {_passed} 项，失败 {_failed} 项')
 sys.exit(1 if _failed else 0)

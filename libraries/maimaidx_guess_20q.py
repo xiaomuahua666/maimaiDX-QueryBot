@@ -258,6 +258,19 @@ class Guess20QManager:
         if data.wmc_tags_cache is None:
             data.wmc_tags_cache = await _fetch_wmc_tags_for_music(data.music, _get_config()) or {}
 
+        # 主观题闸门：好听吗/难吗/燃吗/适合新手吗… 这类 bot 无法用是/否判断，
+        # 统一回「没听懂」，不消耗次数、不走规则、不调 LLM（省配额）。
+        # 只有主观题才允许回没听懂；客观题一律走规则/LLM，无数据则回「无已知数据比对」。
+        if _is_subjective_question(_norm(question_text)):
+            log.info(f'[Guess20Q] 主观题，直接回没听懂 question={question_text!r}')
+            return {
+                'kind': 'unknown',
+                'answer': _SUBJECTIVE_HINT,
+                'remaining': data.remaining(),
+                'used': data.question_count,
+                'last': data.question_count >= data.max_questions,
+            }
+
         answer, consumed, reason = classify_question(data.music, question_text, data.wmc_tags_cache)
 
         def _respond(answer_text: str, reason_text: str) -> dict:
@@ -312,9 +325,10 @@ class Guess20QManager:
             return {'kind': 'idle'}
         if llm_result is not None:
             llm_answer, llm_reason = llm_result
-            if llm_answer == _CANNOT_ANSWER:
-                # LLM 无法回答（无数据/主观题/猜曲名等），不消耗次数，
-                # 但把 understand 原因展示给玩家，而非笼统的"没听懂"。
+            if llm_answer == _LLM_ERROR:
+                # LLM 兜底调用失败（额度/限流/超时/网络等）：明确告知 LLM 出错，
+                # 绝不回「没听懂」（那会让玩家误以为是自己问法问题），也不消耗次数。
+                log.warning(f'[Guess20Q] LLM 兜底调用失败，回 LLM 出错提示 question={question_text!r}')
                 return {
                     'kind': 'unknown',
                     'answer': llm_reason,
@@ -322,9 +336,23 @@ class Guess20QManager:
                     'used': data.question_count,
                     'last': data.question_count >= data.max_questions,
                 }
+            if llm_answer == _CANNOT_ANSWER:
+                # LLM 无法回答：区分主观题与客观无数据。
+                # 只有主观题才回「没听懂」；其余（无数据/猜曲名/信息题）回「无已知数据比对」。
+                if _is_subjective_question(_norm(question_text)):
+                    answer_text = _SUBJECTIVE_HINT
+                else:
+                    answer_text = llm_reason
+                return {
+                    'kind': 'unknown',
+                    'answer': answer_text,
+                    'remaining': data.remaining(),
+                    'used': data.question_count,
+                    'last': data.question_count >= data.max_questions,
+                }
             return _respond(llm_answer, llm_reason)
 
-        # 无法识别为问题（问问题阶段）
+        # 无法识别为问题（问问题阶段；LLM 未启用/未配置 key 时也走这里）
         return {'kind': 'unknown', 'answer': answer}
 
 
@@ -334,9 +362,37 @@ _YES = '是喵 ✅'
 _NO = '不是喵 ❌'
 _CANNOT_ANSWER = '无法回答喵 🤔'
 
+# LLM 兜底调用失败（额度/限流/超时/网络等）的统一标记与提示，
+# 必须和「主观题没听懂」「客观无数据」区分开。
+_LLM_ERROR = 'LLM_ERROR'
+_LLM_ERROR_HINT = 'LLM 出错啦，稍后重试喵 🔧'
+
+# 纯主观题（好听吗/难吗/燃吗/适合新手吗…）统一回「没听懂」，
+# 与「客观无数据」(无已知数据比对) 严格区分——只有主观题才允许回没听懂。
+_SUBJECTIVE_HINT = '唔…Milk 没听懂这个问题喵 🤔（这题太主观啦，没法用是/否判断）'
+
+# 主观题触发词：均为明显主观判断，bot 无法用是/否回答，也不该去查数据。
+# 注意避免使用裸「难/高/低」等会误伤客观题（如「难度高吗」应由定数规则回答）。
+_SUBJECTIVE_KW = (
+    '好听', '难听', '好不好听', '燃吗', '燃不', '带感', '爽吗', '爽不', '上头',
+    '喜欢吗', '喜欢不', '喜欢', '讨厌', '爱不爱', '中意', '值不值', '值得练', '推荐吗',
+    '神曲', '牛不牛', '牛吗', '厉不厉害', '厉害吗', '适合新手', '新手友好',
+    '主观', '觉得', '感觉', '体验', '好不好玩', '难不难', '难吗', '简单吗',
+    '简单不', '上手难', '带不带感', '爽不爽',
+)
+
 
 def _yn(flag: bool) -> str:
     return _YES if flag else _NO
+
+
+def _is_subjective_question(norm: str) -> bool:
+    """判断是否为纯主观题（好听/难/燃/适合新手…）。
+
+    这类题 bot 无法用是/否回答，只能回「没听懂」，绝不该回「无数据」或去查数据。
+    关键词均为明显主观判断；裸「难/高/低」不收录，避免误伤「难度高吗」等客观题。
+    """
+    return any(k in norm for k in _SUBJECTIVE_KW)
 
 
 # 判定结果：(是/否文本, 给玩家看的判定依据)。reason 只描述「Milk 把题意理解成
@@ -797,6 +853,10 @@ def _q_ds(music: Music, text: str) -> Optional[str]:
     )
     _DS_CORE_KW = ('定数', 'ds', '等级', '等級', '难度', '難度', '级别', '級別', '档', '檔')
     if any(k in text for k in _NOTE_DIM_KW) and not any(k in text for k in _DS_CORE_KW):
+        return None
+    # WMC 谱面标签俗称（星星谱/体力谱/大位移/错位/触摸…）归标签层或 LLM 处理，
+    # 不放行给定数层——否则「大位移」里的「大」会被下方高度关键词当成「定数偏大」误抢。
+    if _text_has_wmc_tag_trigger(text):
         return None
     has_ds_kw = any(k in text for k in _DS_KEYWORDS)
     diff_idx = _resolve_diff_index(text)
@@ -1675,16 +1735,23 @@ def _canonicalize_understand(understand: str, question: str, music: 'Music') -> 
 # 命中玩家俗称后，直接拿已经拉好的该曲目 WMC 标签做匹配，回 是/否，
 # 不再交给 LLM 判断「这算不算标签题」（省去 LLM 属不属于标签的步骤）。
 #
-# 词表覆盖 v.wmc.pub 谱面分析的全部标签类别：
-#  · 评价标签(evaluationTags)：星星谱/体力谱/键盘谱/底力谱/高物量/…
-#  · 配置标签(radarTags)与模式标签(patterns)：交互/纵连/转圈/错位/扫键/一笔画/跳拍/同押/…
+# 词表覆盖 v.wmc.pub 谱面分析的全部标签类别（均经真实 API 数据确认，不猜测）：
+#  · 评价标签(evaluationTags)：星星谱/体力谱/键盘谱/底力谱/高物量
+#  · 配置标签(radarTags)与模式标签(patterns)：交互/纵连/转圈/错位/扫键/一笔画/跳拍/
+#    触摸/爆发/大位移/散打/定拍/反手/绝赞段/拆弹/…
 #  · 难度分类(difficultyClassification)：正常谱/水/诈称谱/虚高谱
 # label 匹配用「子串包含」且大小写不敏感，兼容中文/英文/日文写法
 # （如 slide / スライド）。词表应由 scripts/sample_wmc_tags.py 对照真实 API 数据校验补全。
 #
 # 每条：(标签中文名, 玩家俗称触发词, ((字段, 子串), …))
 #  字段 ∈ {'eval', 'radar', 'pattern', 'diff'}
+# WMC 谱面标签词表（玩家俗称 → 真实 WMC 标签）。
+# 仅收录经真实 API 数据确认的标签（v.wmc.pub/charts/{key}/tags 的
+# evaluationTags / radarTags / patterns / difficultyClassification 的 label）。
+# 完整词表待随机抽曲 API 普查后补全（见 scripts/sample_wmc_tags.py）。
+# 注意：不要凭空猜测标签名，未实采确认的一律不放入此表。
 _WMC_TAG_VOCAB: List[Tuple[str, Tuple[str, ...], Tuple[Tuple[str, str], ...]]] = [
+    # 评价标签（evaluationTags）
     ('星星谱', ('星星歌', '星星谱', '星歌', '星谱', 'star'),
      (('eval', '星星'), ('radar', '星星'), ('pattern', '星星'),
       ('eval', 'slide'), ('radar', 'slide'), ('pattern', 'slide'),
@@ -1693,34 +1760,37 @@ _WMC_TAG_VOCAB: List[Tuple[str, Tuple[str, ...], Tuple[Tuple[str, str], ...]]] =
     ('底力谱', ('底力谱', '底力歌', '底力'), (('eval', '底力'),)),
     ('键盘谱', ('键盘谱', '键盘歌', '键盘'), (('eval', '键盘'),)),
     ('高物量', ('高物量',), (('eval', '高物量'),)),
+    # 难度分类标签（difficultyClassification）
     ('诈称谱', ('诈称谱', '炸称谱', '诈称', '炸称', '虚高谱', '虚高'),
      (('diff', '诈称'), ('diff', '虚高'))),
     ('水谱', ('水谱', '水图', '好水', '很水', '太水', '谱水'), (('diff', '水'),)),
+    ('正常谱', ('正常谱',), (('diff', '正常'),)),
+    # 雷达/模式标签（radarTags + patterns）
     ('错位', ('错位', '错位谱'), (('radar', '错位'), ('pattern', '错位'))),
     ('交互', ('交互', '交互谱'), (('radar', '交互'), ('pattern', '交互'))),
-    ('纵连', ('纵连', '纵连谱'), (('radar', '纵连'), ('pattern', '纵连'))),
-    ('转圈', ('转圈', '转圈谱'), (('radar', '转圈'), ('pattern', '转圈'))),
     ('扫键', ('扫键', '扫键谱'), (('radar', '扫键'), ('pattern', '扫键'))),
-    ('一笔画', ('一笔画',), (('radar', '一笔画'), ('pattern', '一笔画'))),
     ('跳拍', ('跳拍',), (('radar', '跳拍'), ('pattern', '跳拍'))),
-    ('同押', ('同押', '和押'), (('radar', '同押'), ('pattern', '同押'))),
-    # 以下为 WMC 常见的扩展标签（触发词加「系/谱」等限定降低误命中）；
-    # 若真实数据里不存在对应 label，匹配自然失效，不会误判。
-    ('认知系', ('认知系', '认知谱', '读谱系'),
-     (('radar', '认知'), ('pattern', '认知'), ('eval', '认知'))),
-    ('视觉系', ('视觉系', '视觉谱'),
-     (('radar', '视觉'), ('pattern', '视觉'), ('eval', '视觉'))),
-    ('地力系', ('地力系', '地力谱'),
-     (('radar', '地力'), ('pattern', '地力'), ('eval', '地力'))),
-    ('配置系', ('配置系', '配置谱'),
-     (('radar', '配置'), ('pattern', '配置'), ('eval', '配置'))),
-    ('复杂', ('复杂谱',),
-     (('radar', '复杂'), ('pattern', '复杂'), ('eval', '复杂'))),
-    ('反逻辑', ('反逻辑谱',),
-     (('radar', '反逻辑'), ('pattern', '反逻辑'), ('eval', '反逻辑'))),
-    ('醉', ('醉谱', '醉酒'),
-     (('radar', '醉'), ('pattern', '醉'), ('eval', '醉'))),
+    ('纵连', ('纵连', '纵连谱'), (('radar', '纵连'), ('pattern', '纵连'), ('eval', '纵连'))),
+    ('一笔画', ('一笔画',), (('radar', '一笔画'), ('pattern', '一笔画'), ('eval', '一笔画'))),
+    ('触摸', ('触摸', '触摸谱'), (('radar', '触摸'), ('pattern', '触摸'), ('eval', '触摸'))),
+    ('转圈', ('转圈', '转圈谱'), (('radar', '转圈'), ('pattern', '转圈'))),
+    ('大位移', ('大位移', '大位移谱'), (('radar', '大位移'), ('pattern', '大位移'), ('eval', '大位移'))),
+    ('爆发', ('爆发', '爆发谱'), (('radar', '爆发'), ('pattern', '爆发'), ('eval', '爆发'))),
+    ('散打', ('散打', '散打谱'), (('radar', '散打'), ('pattern', '散打'), ('eval', '散打'))),
+    ('定拍', ('定拍', '定拍谱'), (('radar', '定拍'), ('pattern', '定拍'), ('eval', '定拍'))),
+    ('反手', ('反手', '反手谱'), (('radar', '反手'), ('pattern', '反手'), ('eval', '反手'))),
+    ('绝赞段', ('绝赞段', '绝赞谱'), (('radar', '绝赞段'), ('pattern', '绝赞段'), ('eval', '绝赞段'))),
+    ('拆弹', ('拆弹', '拆弹谱'), (('radar', '拆弹'), ('pattern', '拆弹'), ('eval', '拆弹'))),
+    # 复合模式标签（patterns，玩家极少直接问，仅作匹配兜底）
+    ('错位星星', ('错位星星',), (('pattern', '错位星星'),)),
+    ('触摸组', ('触摸组',), (('pattern', '触摸组'),)),
+    ('触摸拆分', ('触摸拆分',), (('pattern', '触摸拆分'),)),
 ]
+
+
+def _text_has_wmc_tag_trigger(text: str) -> bool:
+    """问题是否含某个 WMC 标签俗称（供 _q_ds 放行，避免被「大」等宽松定数关键词误抢）。"""
+    return any(trig in text for _, triggers, _ in _WMC_TAG_VOCAB for trig in triggers)
 
 
 def _wmc_tag_label_present(tags_dict: Optional[dict], matchers) -> bool:
@@ -2115,9 +2185,9 @@ _GUESS_20Q_LLM_SYSTEM = """\
    禁止凭自己的记忆/训练数据补充或修正。判断标准只有一个：曲目特征里能否找到
    这道题的正确答案。
    - 能在曲目特征里找到客观答案的是非题 → 据实回答「是」或「否」
-   - 找不到客观答案时回「无法回答」，但必须区分原因，在 understand 里写明：
-     · 主观题（听不懂）：「这歌好听吗」「好听吗」「难吗」「燃吗」「适合新手吗」
-       -> understand 写「无已知数据比对，尝试换种问法」
+   - 找不到客观答案时回「无法回答」，understand 写「无已知数据比对，尝试换种问法」。
+     注意：只有「主观题」bot 会单独回「没听懂」（好听吗/难吗/燃吗/适合新手吗…），
+     这类由代码层直接拦截，不进 LLM；其余客观无数据题一律回「无已知数据比对，尝试换种问法」：
      · 人身属性题（无数据）：谱师或艺术家本人的性别/国籍/产出量/知名度/是否活着/写过几首等
        -> understand 写「无已知数据比对，尝试换种问法」
      · 曲目特征里没有的客观字段（无数据）：如发行销量、获奖情况、玩家投票排名、谱面时长等
@@ -2527,7 +2597,9 @@ async def _llm_classify(
                 f'[Guess20Q] LLM 兜底调用失败 elapsed={elapsed:.2f}s '
                 f'question={text!r} error={type(e).__name__}: {e}'
             )
-            return None
+            # 调用失败（限流/额度/超时/网络/网关错误等）统一标记 _LLM_ERROR，
+            # 上层据此回「LLM出错，稍后重试」，绝不与「没听懂」混淆。
+            return _LLM_ERROR, _LLM_ERROR_HINT
 
 
 def _is_choice_question(text: str) -> bool:

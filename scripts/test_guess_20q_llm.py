@@ -186,11 +186,13 @@ assert data.question_count == before, f'调用失败不应消耗次数: {data.qu
 print('  ✓ 通过')
 
 # ── 测试 5：LLM 命中消耗次数 ──
+# 注意：主观题（好听吗/难吗/燃吗/适合新手吗…）现由代码层直接回「没听懂」，
+# 不再进 LLM（见 _is_subjective_question 闸门），故这里用客观题验证「LLM 命中消耗次数」。
 print('测试 5: LLM 命中消耗次数')
 data = _make_data()
 before = data.question_count
-mock = _make_mock_llm({'适合新手吗': '是'})
-r = _run(data, '适合新手吗', mock)
+mock = _make_mock_llm({'这歌有间奏吗': '是'})
+r = _run(data, '这歌有间奏吗', mock)
 assert r['kind'] == 'question'
 assert data.question_count == before + 1, f'LLM 命中应消耗次数: {data.question_count}'
 print('  ✓ 通过')
@@ -209,7 +211,8 @@ assert '直接问答案' in _GUESS_20Q_LLM_SYSTEM, '提示词应说明直接问�
 assert '禁止联网搜索' in _GUESS_20Q_LLM_SYSTEM, '提示词应禁止联网搜索'
 assert '禁止调用外部知识' in _GUESS_20Q_LLM_SYSTEM, '提示词应禁止调用外部知识'
 assert '曲目特征里能否找到' in _GUESS_20Q_LLM_SYSTEM, '提示词应说明判断标准是特征里能否找到答案'
-assert '这歌好听吗' in _GUESS_20Q_LLM_SYSTEM, '提示词应举例主观是非题回无法回答'
+assert '好听吗' in _GUESS_20Q_LLM_SYSTEM, '提示词应举例主观是非题（好听吗/难吗…）'
+assert '没听懂' in _GUESS_20Q_LLM_SYSTEM, '提示词应说明主观题 bot 回「没听懂」'
 assert '主观题' in _GUESS_20Q_LLM_SYSTEM, '提示词应说明主观题处理方式'
 print('  ✓ 提示词包含所有关键约束')
 
