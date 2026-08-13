@@ -210,7 +210,7 @@ assert '禁止联网搜索' in _GUESS_20Q_LLM_SYSTEM, '提示词应禁止联网�
 assert '禁止调用外部知识' in _GUESS_20Q_LLM_SYSTEM, '提示词应禁止调用外部知识'
 assert '曲目特征里能否找到' in _GUESS_20Q_LLM_SYSTEM, '提示词应说明判断标准是特征里能否找到答案'
 assert '这歌好听吗' in _GUESS_20Q_LLM_SYSTEM, '提示词应举例主观是非题回无法回答'
-assert '即使形式上是是否题也不准答' in _GUESS_20Q_LLM_SYSTEM, '提示词应说明主观是否题不准答'
+assert '主观题' in _GUESS_20Q_LLM_SYSTEM, '提示词应说明主观题处理方式'
 print('  ✓ 提示词包含所有关键约束')
 
 # ── 测试 7：_build_music_profile 直接给出标题（供 LLM 判断字符题），但不泄漏曲 id ──

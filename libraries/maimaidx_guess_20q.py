@@ -253,7 +253,12 @@ class Guess20QManager:
         if not had_prefix:
             return {'kind': 'idle'}
 
-        answer, consumed, reason = classify_question(data.music, question_text)
+        # 提前懒加载 WMC 谱面标签（整局只拉一次，缓存在 data 上），
+        # 供确定性标签规则层(_q_wmc_tag)与下方 LLM 兜底共用，避免重复请求。
+        if data.wmc_tags_cache is None:
+            data.wmc_tags_cache = await _fetch_wmc_tags_for_music(data.music, _get_config()) or {}
+
+        answer, consumed, reason = classify_question(data.music, question_text, data.wmc_tags_cache)
 
         def _respond(answer_text: str, reason_text: str) -> dict:
             """记录 QA 并构造回复。QA 里只存纯是/否，回复里附上判定依据。"""
@@ -294,10 +299,7 @@ class Guess20QManager:
         # 注意：LLM 看到完整问题（含「不是/无」等否定词），已按语义直接判断，
         # 这里不再做 _apply_negation 反转，否则会双重反转。
         log.info(f'[Guess20Q] 规则未命中，尝试 LLM 兜底 question={question_text!r}')
-        # 懒加载 WMC 谱面标签（整局只拉一次，缓存在 data 上），供 LLM 判断
-        # 「是不是诈称谱/星星歌/体力谱」等谱面配置类问题。
-        if data.wmc_tags_cache is None:
-            data.wmc_tags_cache = await _fetch_wmc_tags_for_music(data.music, _get_config()) or {}
+        # WMC 谱面标签已在上方问问题入口处整局预拉取并缓存（data.wmc_tags_cache），此处直接复用。
         llm_result = await _llm_classify(
             data.music, question_text, _get_config(),
             wmc_tags=data.wmc_tags_cache,
@@ -310,6 +312,16 @@ class Guess20QManager:
             return {'kind': 'idle'}
         if llm_result is not None:
             llm_answer, llm_reason = llm_result
+            if llm_answer == _CANNOT_ANSWER:
+                # LLM 无法回答（无数据/主观题/猜曲名等），不消耗次数，
+                # 但把 understand 原因展示给玩家，而非笼统的"没听懂"。
+                return {
+                    'kind': 'unknown',
+                    'answer': llm_reason,
+                    'remaining': data.remaining(),
+                    'used': data.question_count,
+                    'last': data.question_count >= data.max_questions,
+                }
             return _respond(llm_answer, llm_reason)
 
         # 无法识别为问题（问问题阶段）
@@ -320,6 +332,7 @@ class Guess20QManager:
 
 _YES = '是喵 ✅'
 _NO = '不是喵 ❌'
+_CANNOT_ANSWER = '无法回答喵 🤔'
 
 
 def _yn(flag: bool) -> str:
@@ -1657,8 +1670,122 @@ def _canonicalize_understand(understand: str, question: str, music: 'Music') -> 
 
 # 纯数值/字段比对的 handler。分类/版本/版本顺序已纳入规则匹配
 # （错字容错+发售顺序表），命中即直接回答；谱师/艺术家是非题、标题语种等
+# ───────────────────── WMC 谱面标签词表（俗称 → 标签） ─────────────────────
+# 把「涉及谱面标签的是非题」从 LLM 兜底层提前到确定性规则层：
+# 命中玩家俗称后，直接拿已经拉好的该曲目 WMC 标签做匹配，回 是/否，
+# 不再交给 LLM 判断「这算不算标签题」（省去 LLM 属不属于标签的步骤）。
+#
+# 词表覆盖 v.wmc.pub 谱面分析的全部标签类别：
+#  · 评价标签(evaluationTags)：星星谱/体力谱/键盘谱/底力谱/高物量/…
+#  · 配置标签(radarTags)与模式标签(patterns)：交互/纵连/转圈/错位/扫键/一笔画/跳拍/同押/…
+#  · 难度分类(difficultyClassification)：正常谱/水/诈称谱/虚高谱
+# label 匹配用「子串包含」且大小写不敏感，兼容中文/英文/日文写法
+# （如 slide / スライド）。词表应由 scripts/sample_wmc_tags.py 对照真实 API 数据校验补全。
+#
+# 每条：(标签中文名, 玩家俗称触发词, ((字段, 子串), …))
+#  字段 ∈ {'eval', 'radar', 'pattern', 'diff'}
+_WMC_TAG_VOCAB: List[Tuple[str, Tuple[str, ...], Tuple[Tuple[str, str], ...]]] = [
+    ('星星谱', ('星星歌', '星星谱', '星歌', '星谱', 'star'),
+     (('eval', '星星'), ('radar', '星星'), ('pattern', '星星'),
+      ('eval', 'slide'), ('radar', 'slide'), ('pattern', 'slide'),
+      ('eval', 'スライド'), ('radar', 'スライド'), ('pattern', 'スライド'))),
+    ('体力谱', ('体力谱', '体力歌', '体力'), (('eval', '体力'),)),
+    ('底力谱', ('底力谱', '底力歌', '底力'), (('eval', '底力'),)),
+    ('键盘谱', ('键盘谱', '键盘歌', '键盘'), (('eval', '键盘'),)),
+    ('高物量', ('高物量',), (('eval', '高物量'),)),
+    ('诈称谱', ('诈称谱', '炸称谱', '诈称', '炸称', '虚高谱', '虚高'),
+     (('diff', '诈称'), ('diff', '虚高'))),
+    ('水谱', ('水谱', '水图', '好水', '很水', '太水', '谱水'), (('diff', '水'),)),
+    ('错位', ('错位', '错位谱'), (('radar', '错位'), ('pattern', '错位'))),
+    ('交互', ('交互', '交互谱'), (('radar', '交互'), ('pattern', '交互'))),
+    ('纵连', ('纵连', '纵连谱'), (('radar', '纵连'), ('pattern', '纵连'))),
+    ('转圈', ('转圈', '转圈谱'), (('radar', '转圈'), ('pattern', '转圈'))),
+    ('扫键', ('扫键', '扫键谱'), (('radar', '扫键'), ('pattern', '扫键'))),
+    ('一笔画', ('一笔画',), (('radar', '一笔画'), ('pattern', '一笔画'))),
+    ('跳拍', ('跳拍',), (('radar', '跳拍'), ('pattern', '跳拍'))),
+    ('同押', ('同押', '和押'), (('radar', '同押'), ('pattern', '同押'))),
+    # 以下为 WMC 常见的扩展标签（触发词加「系/谱」等限定降低误命中）；
+    # 若真实数据里不存在对应 label，匹配自然失效，不会误判。
+    ('认知系', ('认知系', '认知谱', '读谱系'),
+     (('radar', '认知'), ('pattern', '认知'), ('eval', '认知'))),
+    ('视觉系', ('视觉系', '视觉谱'),
+     (('radar', '视觉'), ('pattern', '视觉'), ('eval', '视觉'))),
+    ('地力系', ('地力系', '地力谱'),
+     (('radar', '地力'), ('pattern', '地力'), ('eval', '地力'))),
+    ('配置系', ('配置系', '配置谱'),
+     (('radar', '配置'), ('pattern', '配置'), ('eval', '配置'))),
+    ('复杂', ('复杂谱',),
+     (('radar', '复杂'), ('pattern', '复杂'), ('eval', '复杂'))),
+    ('反逻辑', ('反逻辑谱',),
+     (('radar', '反逻辑'), ('pattern', '反逻辑'), ('eval', '反逻辑'))),
+    ('醉', ('醉谱', '醉酒'),
+     (('radar', '醉'), ('pattern', '醉'), ('eval', '醉'))),
+]
+
+
+def _wmc_tag_label_present(tags_dict: Optional[dict], matchers) -> bool:
+    """在单个难度的 WMC 标签字典里查找是否含 matchers 指定的标签（子串匹配）。"""
+    if not tags_dict:
+        return False
+    pools = {
+        'eval': [t.get('label', '') for t in (tags_dict.get('evaluationTags') or [])],
+        'radar': [t.get('label', '') for t in (tags_dict.get('radarTags') or [])],
+        'pattern': [t.get('label', '') for t in (tags_dict.get('patterns') or [])],
+        'diff': [(tags_dict.get('difficultyClassification') or {}).get('label', '')],
+    }
+    for fld, sub in matchers:
+        for lab in pools.get(fld, []):
+            if sub and sub.lower() in (lab or '').lower():
+                return True
+    return False
+
+
+def _wmc_tag_diff_index(text: str, ds_list) -> int:
+    """返回要检查的难度索引：'最高'→定数最高难度；否则玩家指定颜色；否则默认紫谱(MASTER=3)。"""
+    if '最高' in text and ds_list:
+        return int(max(range(len(ds_list)), key=lambda i: ds_list[i]))
+    idx = _resolve_diff_index(text)
+    if idx is not None:
+        return idx
+    return 3  # 默认紫谱 MASTER
+
+
+def _q_wmc_tag(music, text: str, wmc_tags: Optional[Dict[int, Optional[dict]]] = None):
+    """谱面标签题（星星谱/体力谱/键盘谱/错位/交互/诈称谱/水谱…）的确定性判定。
+
+    命中玩家俗称 → 在该曲目已拉取的 WMC 标签里查找对应标签，直接回 是/否；
+    不交 LLM 判断「这算不算标签题」。无 WMC 数据或该难度标签缺失时返回 None，
+    放行给 LLM 兜底（LLM 同样据 per-song 标签判，无数据则回无法回答）。
+    """
+    # 1) 识别是哪一个标签题
+    matched = None
+    for name, triggers, matchers in _WMC_TAG_VOCAB:
+        if any(trig in text for trig in triggers):
+            matched = (name, matchers)
+            break
+    if matched is None:
+        return None
+    name, matchers = matched
+    # 2) 没有 WMC 数据（API 未配置/整局未拉到）→ 交给 LLM 兜底
+    if not wmc_tags:
+        return None
+    # 3) 解析难度（默认紫谱；玩家指定颜色/最高则用对应难度）
+    ds_list = getattr(music, 'ds', None) or []
+    diff_idx = _wmc_tag_diff_index(text, ds_list)
+    tags_dict = wmc_tags.get(diff_idx)
+    # 该难度标签缺失 → 无可用数据，放行给 LLM（避免误判/误消耗次数）
+    if tags_dict is None:
+        return None
+    # 4) 标签命中 → 是；否则 → 否
+    diff_cn = _DIFF_CN[diff_idx] if diff_idx < len(_DIFF_CN) else '该难度'
+    hit = _wmc_tag_label_present(tags_dict, matchers)
+    reason = f'判定维度：{diff_cn}是否为{name}（WMC标签）'
+    return (_YES if hit else _NO, reason)
+
+
 # 需语义理解的维度（别名/罗马音/笔名）一律移交 LLM 兜底判断（_llm_classify）。
 _QUESTION_HANDLERS: Tuple[QuestionHandler, ...] = (
+    _q_wmc_tag,
     _q_white_chart,
     _q_song_type,
     _q_bpm,
@@ -1956,19 +2083,22 @@ _GUESS_20Q_LLM_SYSTEM = """\
 - answer：命中特征填「是」，不命中填「否」，属于信息题/猜曲名/无法判断填「无法回答」
 - understand：例如「判断分类是否为术曲」「判断BPM是否大于180」「判断版本是否在雪代及以后」，
   让玩家能核对你有没有理解错题意；绝不能写出曲目实际的分类/BPM/版本等数值。
-- 【understand 命名规范——必须用官方/规范概念，不许回显玩家的俗称或别名】
-  涉及人名（谱师/艺术家）时，understand 里一律写曲目特征里的「官方名」，不要照抄玩家
-  输入的别名/译名/罗马音。玩家用别名提问是为了让你做等价判断，但你给玩家看的判定维度
-  必须用官方真名，方便玩家准确核对。
-  例：玩家问「艺术家是匹诺曹吗」、曲目艺术家字段是「ピノキオピー（别名：ピノキオP、匹诺曹P…）」
-      → answer=是（匹诺曹命中别名），understand 写「判断艺术家是否为 ピノキオピー」
-      （绝不能写成「判断艺术家是否为匹诺曹」）。
-  例：玩家问「谱师是泸溪河吗」、曲目谱师字段是「Luxizhel（别名：泸溪河…）」
-      → answer=是，understand 写「判断谱师是否为 Luxizhel」（不要写泸溪河）。
-  同理，术语也必须用规范说法：问「星星歌吗」understand 写「判断紫谱是否为 SLIDE 较多的谱面（星星歌）」，
-  问「绝赞多于20吗」写「判断紫谱 BREAK（绝赞）物量是否 > 20」——把俗称映射到规范术语。
-  注意：understand 用官方名只是为了规范显示，不等于把答案（真名）泄露给玩家用于猜曲——
-  玩家本来就能通过是非题逐步确认，且官方名/术语对核对题意是必要的。
+- 【understand 命名规范--必须用官方/规范概念，不许回显玩家的俗称或别名，也不许泄露曲目实际值】
+  涉及人名（谱师/艺术家）时，understand 里写的是「玩家问的那个名字对应的官方写法」，
+  不是曲目特征里的真实谱师/艺术家名。即：把玩家用的别名翻译成它的官方名，而不是写出当前曲目的谱师。
+  例：玩家问「艺术家是匹诺曹吗」-> understand 写「判断艺术家是否为 ピノキオピー」
+      （匹诺曹是 ピノキオピー 的别名，用官方名替代玩家输入的别名，不要写当前曲目的真实艺术家）
+  例：玩家问「谱师是泸溪河吗」-> understand 写「判断谱师是否为 Luxizhel」
+      （泸溪河是 Luxizhel 的别名，用官方名替代，不要写当前曲目的真实谱师）
+  例：玩家问「谱师是沙发太吗」-> understand 写「判断谱师是否为 サファ太」
+      （沙发太是 サファ太 的别名，写 サファ太，绝不能写成当前曲目的实际谱师名）
+  反例：玩家问「谱师是沙发太吗」，当前曲目实际谱师是「小鳥遊さん×アミノハバキリ」
+        -> understand 绝不能写「判断谱师是否为 小鳥遊さん×アミノハバキリ」--这等于泄露答案！
+        正确写法：understand 写「判断谱师是否为 サファ太」（只翻译玩家问的名字，不管实际谱师是谁）
+  如果玩家问的名字不在别名清单里（LLM 不认识），understand 直接写玩家原话即可。
+  同理，术语也必须用规范说法：问「星星歌吗」understand 写「判断紫谱是否为星星谱（WMC标签）」，
+  问「绝赞多于20吗」写「判断紫谱 BREAK（绝赞）物量是否 > 20」--把俗称映射到规范术语。
+  核心原则：understand 只描述「玩家问了什么题」，绝不透露「当前曲目的答案是什么」。
 
 【判断规则】
 1. 玩家问的是非题，根据下方曲目特征判断：
@@ -1985,13 +2115,21 @@ _GUESS_20Q_LLM_SYSTEM = """\
    禁止凭自己的记忆/训练数据补充或修正。判断标准只有一个：曲目特征里能否找到
    这道题的正确答案。
    - 能在曲目特征里找到客观答案的是非题 → 据实回答「是」或「否」
-   - 找不到客观答案的一律回「无法回答」（视为听不懂），即使形式上是是否题也不准答：
-     · 主观题：「这歌好听吗」「好听吗」「难吗」「燃吗」「适合新手吗」（好听/难/燃/适合
-       都没有客观标准，曲目特征里没有这个字段，无法判断对错）
-     · 属性题：谱师或艺术家本人的性别/国籍/产出量/知名度/是否活着/写过几首等
-       （曲目特征只给谱师名字，不含这些人身属性）
-     · 曲目特征里没有的客观字段：如发行销量、获奖情况、玩家投票排名、谱面时长等
-   - 问题与曲目特征无关、信息不足、或语序无法理解 → 回「无法回答」
+   - 找不到客观答案时回「无法回答」，但必须区分原因，在 understand 里写明：
+     · 主观题（听不懂）：「这歌好听吗」「好听吗」「难吗」「燃吗」「适合新手吗」
+       -> understand 写「无已知数据比对，尝试换种问法」
+     · 人身属性题（无数据）：谱师或艺术家本人的性别/国籍/产出量/知名度/是否活着/写过几首等
+       -> understand 写「无已知数据比对，尝试换种问法」
+     · 曲目特征里没有的客观字段（无数据）：如发行销量、获奖情况、玩家投票排名、谱面时长等
+       -> understand 写「无已知数据比对，尝试换种问法」
+   - 谱师/艺术家名字是非题：曲目特征里已给出谱师名单（含别名）和艺术家名（含别名），
+     这类题永远有数据可判，绝不许回「听不懂」或「无此数据」。
+     能匹配到名字 -> 回「是」或「否」；名字不在别名清单里 -> 回「无法回答」，
+     understand 写「无已知数据比对，尝试换种问法」。
+   - 谱面配置标签题（错位/交互/键盘谱等）：如果曲目特征里有 WMC 标签数据，
+     必须据标签回答是/否；如果 WMC 数据缺失，回「无法回答」，
+     understand 写「无已知数据比对，尝试换种问法」。
+   - 问题与曲目特征无关或语序无法理解 -> 回「无法回答」，understand 写「无已知数据比对，尝试换种问法」
    注意：answer 字段只能是「是」「否」「无法回答」三选一，禁止解释、禁止复述特征、禁止给信息性回答。
 6. 曲目特征里的具体数据（定数/谱师/版本/BPM/分类/标题）是权威事实，
    必须严格据此判断，禁止凭自己记忆补充或修正。
@@ -2118,7 +2256,7 @@ _GUESS_20Q_LLM_SYSTEM = """\
     曲目特征里的「谱面详情」给出了每难度的 定数、TAP/HOLD/SLIDE/TOUCH/BREAK 物量及总数、
     拟合定数（水鱼基于全服成绩回归的实际难度）、全服游玩次数、平均达成率、标准差；
     「谱面难度分析」（若有，来自 v.wmc.pub）给出了每难度的 难度分类（正常谱/水/诈称谱）、
-    评价标签（体力谱/底力谱/星星谱/键盘谱/高物量）、配置标签（交互/纵连/转圈/转圈等）、
+    评价标签（体力谱/底力谱/星星谱/键盘谱/高物量）、配置标签（交互/纵连/转圈/错位/扫键/一笔画/跳拍等）、
     谱面模式（标签+严重度+出现次数）。
     玩家未指定难度颜色时，一律默认看紫谱（MASTER，即「谱面详情」里标「紫谱」的那一行）。
     玩家指定了颜色（绿/黄/红/紫/白）则看对应那一行；指定「最高」则看所有难度里定数最高的。
@@ -2129,12 +2267,11 @@ _GUESS_20Q_LLM_SYSTEM = """\
     · TOUCH = 触摸点音符（不是星星）
     · BREAK = 绝赞音符
     判定标准（严格按曲目特征里的数值，不要凭记忆）：
-    · 「星星歌」：指 SLIDE 音符多的谱面（舞萌里 SLIDE 滑动音符俗称「星星」，不是 TOUCH）。
-      【优先看 WMC 标签】若 WMC 评价标签含「星星谱」或配置/模式标签含「星星/スライド/slide」
-      相关字样，直接回「是」；标签明确不含星星相关且 SLIDE 占比很低时可回「否」。
-      无 WMC 标签时再看物量：紫谱 SLIDE 数 ≥ 总物量的 15% 或绝对值 ≥ 100 时回「是」；
-      SLIDE 数 < 总物量的 8% 且绝对值 < 50 时回「否」；中间地带结合标签判断，无标签时回「无法回答」。
-      绝对不能用 TOUCH 音符数判定星星歌——TOUCH 是触摸点，和星星是两回事。
+    · 「星星歌」：指以 SLIDE（星星）音符为主要配置的谱面（舞萌里 SLIDE 滑动音符俗称「星星」，不是 TOUCH）。
+      【只看 WMC 标签，禁止用物量判断】若 WMC 评价标签含「星星谱」或配置/模式标签含
+      「星星/スライド/slide」相关字样，回「是」；WMC 标签存在但不含任何星星相关字样，回「否」。
+      没有 WMC 标签数据时，回「无法回答」--绝对不能看 SLIDE 物量/占比自行推断。
+      绝对不能用 TOUCH 音符数判定星星歌--TOUCH 是触摸点，和星星是两回事。
     · 「炸称谱」「诈称谱」「虚高谱」：指实际比标定定数简单的谱。
       看 WMC 难度分类：label 为「诈称谱」或「虚高谱」→ 回「是」；label 为「水」也算偏简单但不是诈称，
       玩家明确问「诈称/炸称/虚高」时只有 label 命中才回「是」，否则回「否」。
@@ -2153,11 +2290,23 @@ _GUESS_20Q_LLM_SYSTEM = """\
       「绝赞少于 5 个吗」）：直接读谱面详情里对应音符的数值与玩家给的数字比较，据实回答是/否。
       TAP=拍子、HOLD=长条、SLIDE=星星、TOUCH=触摸点、BREAK=绝赞，不要张冠李戴；
       绝对不能把音符数量题当成定数/定级题来判断（数字 40、100 等是音符个数，不是定数）。
-    · 「体力谱」：WMC 评价标签含「体力谱」回「是」，否则回「否」。
-    · 「键盘谱」：WMC 评价标签含「键盘谱」回「是」。
-    · 「底力谱」：WMC 评价标签含「底力谱」回「是」。
-    这类问题是客观事实题（有数据支撑），不是主观题，必须据数据回答是/否，不要回「无法回答」。
-    understand 写清判定维度，例如「判断紫谱 SLIDE（星星）音符是否较多（星星歌）」「判断紫谱是否为诈称谱」
+    · 「体力谱」「体力歌」：WMC 评价标签含「体力谱」回「是」，否则回「否」。
+    · 「键盘谱」「键盘歌」：WMC 评价标签含「键盘谱」回「是」，否则回「否」。
+    · 「底力谱」「底力歌」：WMC 评价标签含「底力谱」回「是」，否则回「否」。
+    · 「错位」「错位谱」：WMC 配置标签（radarTags）或模式标签（patterns）含「错位」回「是」，
+      否则回「否」。无 WMC 数据时回「无法回答」。
+    · 「交互」「交互谱」：WMC 配置标签或模式标签含「交互」回「是」，否则回「否」。
+    · 「纵连」「纵连谱」：WMC 配置标签或模式标签含「纵连」回「是」，否则回「否」。
+    · 「转圈」「转圈谱」：WMC 配置标签或模式标签含「转圈」回「是」，否则回「否」。
+    · 「扫键」「扫键谱」：WMC 配置标签或模式标签含「扫键」回「是」，否则回「否」。
+    · 「一笔画」：WMC 配置标签或模式标签含「一笔画」回「是」，否则回「否」。
+    · 「跳拍」：WMC 配置标签或模式标签含「跳拍」回「是」，否则回「否」。
+    · 其他配置标签类问题（玩家问的词出现在 WMC 配置标签或模式标签里）：命中回「是」，不命中回「否」，
+      无 WMC 数据回「无法回答」。不要回「曲目特征中无此信息」--配置标签就是这些信息的来源。
+    这些都是客观事实题（有数据支撑），不是主观题，必须据数据回答是/否，不要回「无法回答」。
+    注意：「配置标签」在曲目特征里显示为「配置=交互、转圈…」，「模式标签」显示为「模式=错位[重]×3…」，
+    两者都要检查。
+    understand 写清判定维度，例如「判断紫谱是否为星星谱（WMC标签）」「判断紫谱是否为诈称谱」
     「判断紫谱拟合定数是否低于原定数」，但不得透露具体数值或标签命中情况。
 
 【安全约束】
@@ -2360,15 +2509,18 @@ async def _llm_classify(
             # 保证 bot 给玩家看的判定维度只用官方/规范概念（不依赖 LLM 自觉）。
             understand = _canonicalize_understand(understand, text, music)
             reason = f'AI 理解：{understand}' if understand else 'AI 兜底判断（规则未命中）'
-            result = (answer, reason) if answer is not None else None
-            _llm_cache_set(cache_key, result)
-            if answer is None:
-                log.info(
-                    f'[Guess20Q] LLM 判定为无法回答 question={text!r} '
-                    f'understand={understand!r}'
-                )
-                return None
-            return answer, reason
+            if answer is not None:
+                result = (answer, reason)
+                _llm_cache_set(cache_key, result)
+                return answer, reason
+            # 无法回答时仍把 understand 返回给调用方展示原因
+            log.info(
+                f'[Guess20Q] LLM 判定为无法回答 question={text!r} '
+                f'understand={understand!r}'
+            )
+            cannot_reason = '无已知数据比对，尝试换种问法'
+            _llm_cache_set(cache_key, None)
+            return _CANNOT_ANSWER, cannot_reason
         except Exception as e:
             elapsed = time.time() - t0
             log.warning(
@@ -2405,11 +2557,13 @@ def _is_choice_question(text: str) -> bool:
     return False
 
 
-def classify_question(music: Music, text: str) -> Tuple[str, bool, str]:
+def classify_question(music: Music, text: str, wmc_tags: Optional[Dict[int, Optional[dict]]] = None) -> Tuple[str, bool, str]:
     """返回 (回答文本, 是否消耗一次提问, 判定依据)。
 
     判定依据只描述 Milk 把题意理解成什么维度的判定，供玩家确认没有被误解；
     未命中时依据为空字符串。
+    wmc_tags：已拉取的该曲目 WMC 谱面标签 {level_index: tags_dict}，供 _q_wmc_tag 等
+    确定性标签规则层使用（无则传 None，标签题放行给 LLM 兜底）。
     """
     norm = _norm(text)
     # 多对象问句（「X或Y」「X还是Y」「X、Y、Z 之一」）不走规则层（规则层只匹配第一个对象会漏判），
@@ -2419,7 +2573,11 @@ def classify_question(music: Music, text: str) -> Tuple[str, bool, str]:
         return _UNKNOWN_HINT, False, ""
     for handler in _QUESTION_HANDLERS:
         try:
-            result = handler(music, norm)
+            try:
+                result = handler(music, norm, wmc_tags)
+            except TypeError:
+                # 兼容旧签名 handler(music, norm)
+                result = handler(music, norm)
         except Exception as e:
             log.warning(f'[Guess20Q] 题目判定异常 {handler.__name__}: {e}')
             continue
