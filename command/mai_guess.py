@@ -136,10 +136,10 @@ def _has_guess_sync_pending(event) -> bool:
 GROUP_MESSAGE = Rule(_is_group_message)
 
 _GUESS_SHORTCUTS = (
-    ('再来猜歌', '猜歌'),
-    ('再猜封面', '猜封面'),
-    ('再猜曲子', '猜曲子'),
-    ('再猜谱面', '猜谱面'),
+    ('猜歌', '猜歌'),
+    ('猜曲绘', '猜封面'),
+    ('猜曲子', '猜曲子'),
+    ('猜谱面', '猜谱面'),
     ('猜 Rating', '猜rating'),
     ('B50 找内鬼', '找内鬼'),
     ('极限二选一', '极限二选一'),

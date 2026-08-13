@@ -70,7 +70,6 @@ DEFAULT_CONFIG: Dict[str, str] = {
     'awmc_status_cost': '2',
     'awmc_music_upsert_cost': '75',
     'awmc_music_delete_cost': '50',
-    'awmc_ticket_clear_cost': '10',
     'awmc_item_upsert_cost': '100',
     'ticket_unused_penalty': '20',
     'transfer_fee': '0',

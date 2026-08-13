@@ -126,12 +126,12 @@ assert 'account_music_upsert = on_command(' in source and '"mai改成绩", alias
 assert 'account_music_delete = on_command(' in source and '"mai删成绩", aliases=' in source
 assert 'break_db.get_config, "awmc_music_upsert_cost", "75"' in source
 assert 'break_db.get_config, "awmc_music_delete_cost", "50"' in source
-assert 'account_ticket_clear = on_command("mai清票"' in source
 assert 'account_item_upsert = on_command("mai改道具"' in source
-for alias in ('"改成绩"', '"改分"', '"删成绩"', '"删分"', '"清票"', '"改道具"'):
+for alias in ('"改成绩"', '"改分"', '"删成绩"', '"删分"', '"改道具"'):
     assert alias in source
-assert 'break_db.get_config, "awmc_ticket_clear_cost", "10"' in source
 assert 'break_db.get_config, "awmc_item_upsert_cost", "100"' in source
+assert 'on_command("mai清票"' not in source
+assert 'awmc_ticket_clear' not in source
 assert "我已知晓风险" in source
 assert source.count("已取消道具修改，本次不扣 BREAK") >= 4
 assert "未经实际账号测试" in source
@@ -150,8 +150,9 @@ assert write_block.index("await sw_api.delete_music(") < write_block.index(
 client_source = (ROOT / "libraries" / "maimaidx_sw_api.py").read_text(encoding="utf-8")
 assert 'self._api_path("music/upsert")' in client_source
 assert 'self._api_path("music/delete")' in client_source
-assert 'self._api_path("ticket/clear")' in client_source
 assert 'self._api_path("item/upsert")' in client_source
+assert 'self._api_path("ticket/clear")' not in client_source
+assert "def clear_tickets(" not in client_source
 item_upsert_block = client_source[
     client_source.index("    async def upsert_item("):
     client_source.index("    async def get_user_region(")
@@ -165,13 +166,12 @@ assert "MilK" in (ROOT / "command" / "mai_account.py").read_text(encoding="utf-8
 assert "提交后请主人检查" in (ROOT / "command" / "mai_account.py").read_text(encoding="utf-8")
 assert "0 分的乐曲记录" in (ROOT / "command" / "mai_account.py").read_text(encoding="utf-8")
 assert "Rating 可能会短暂显示异常" in (ROOT / "command" / "mai_account.py").read_text(encoding="utf-8")
-assert "上机游玩清除票券" in (ROOT / "command" / "mai_account.py").read_text(encoding="utf-8")
-assert "mai清票（或清票）" in (ROOT / "command" / "mai_account.py").read_text(encoding="utf-8")
+assert "请先上机游玩清除票券" in (ROOT / "command" / "mai_account.py").read_text(encoding="utf-8")
 
 break_source = (ROOT / "libraries" / "maimaidx_break.py").read_text(encoding="utf-8")
 assert "'awmc_music_upsert_cost': '75'" in break_source
 assert "'awmc_music_delete_cost': '50'" in break_source
-assert "'awmc_ticket_clear_cost': '10'" in break_source
 assert "'awmc_item_upsert_cost': '100'" in break_source
+assert "awmc_ticket_clear_cost" not in break_source
 
 print("awmc music edit tests: ok")

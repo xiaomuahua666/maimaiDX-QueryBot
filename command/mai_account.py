@@ -102,7 +102,6 @@ account_music_upsert = on_command(
 account_music_delete = on_command(
     "mai删成绩", aliases={"删除成绩", "删成绩", "删分"}
 )
-account_ticket_clear = on_command("mai清票", aliases={"清空票券", "清票"})
 account_item_upsert = on_command("mai改道具", aliases={"修改道具", "改道具"})
 account_opt = on_command("mai查询opt", aliases={"查询opt"})
 
@@ -173,7 +172,6 @@ for _serial_account_matcher in (
     account_gate_status,
     account_music_upsert,
     account_music_delete,
-    account_ticket_clear,
     account_item_upsert,
     account_opt,
 ):
@@ -186,6 +184,9 @@ _TICKET_QRCODE_RETRY_SECONDS = 180
 _TICKET_TIMING_KEY = "ticket:processing_seconds"
 _LEGACY_TICKET_TIMING_KEY = "ticket_queue:seconds_per_request"
 _TICKET_AUTO_RETRIES = 2
+_TICKET_IRREVERSIBLE_NOTICE = (
+    "⚠️ 发票不可逆：票券一经发放必须上机使用，不可以屯票。"
+)
 # AWMC 发票接口是全局机台资源；即使不同用户同时发起，也必须逐张提交。
 _ticket_queue_lock = asyncio.Lock()
 _ticket_queue_waiting = 0
@@ -916,7 +917,7 @@ _ITEM_UPSERT_SUCCESS_NOTE = (
 )
 _COLLECTION_UPSERT_TICKET_WARNING = (
     "⚠️ 如果账号内还有票券，收藏品可能实际不会生效，但本次道具修改仍会扣费。\n"
-    "若确认未成功：1. 上机游玩清除票券；2. 使用 mai清票（或清票）；3. 再次重试。"
+    "若确认未成功：请先上机游玩清除票券，再次重试。"
 )
 
 
@@ -1716,10 +1717,6 @@ async def _service_cost(service: str, *, multiple: int = 1) -> int:
         return max(0, int(await asyncio.to_thread(
             break_db.get_config, "awmc_music_delete_cost", "50"
         )))
-    if service == "awmc_ticket_clear":
-        return max(0, int(await asyncio.to_thread(
-            break_db.get_config, "awmc_ticket_clear_cost", "10"
-        )))
     if service == "awmc_item_upsert":
         return max(0, int(await asyncio.to_thread(
             break_db.get_config, "awmc_item_upsert_cost", "100"
@@ -1773,7 +1770,6 @@ def _charge_text(result, qqid: Optional[int] = None) -> str:
         "awmc_gate_status": "门状态查询",
         "awmc_music_upsert": "成绩编辑",
         "awmc_music_delete": "成绩删除",
-        "awmc_ticket_clear": "清空票券",
         "awmc_item_upsert": "道具修改",
     }
     label = labels.get(result.service, result.service)
@@ -1811,13 +1807,12 @@ async def _(event: MessageEvent):
             ("ticket_status_cost", "1"), ("awmc_read_cost", "5"),
             ("awmc_status_cost", "2"), ("awmc_music_upsert_cost", "75"),
             ("awmc_music_delete_cost", "50"),
-            ("awmc_ticket_clear_cost", "10"),
             ("awmc_item_upsert_cost", "100"),
         )
     ))
     (
         fish_cost, lx_cost, all_cost, ticket_unit, ticket_status_cost,
-        read_cost, status_cost, edit_cost, delete_cost, clear_cost, item_cost,
+        read_cost, status_cost, edit_cost, delete_cost, item_cost,
     ) = values
     ticket_multipliers = "/".join(map(str, _allowed_ticket_multipliers()))
     await plugin_finish(
@@ -1836,13 +1831,13 @@ async def _(event: MessageEvent):
         "mai门状态 / 查门：查询 Kaleidx Gate\n"
         "mai改成绩 / 改分 [歌曲 难度 达成率 DX分 FC FS]：交互或一步编辑成绩\n"
         "mai删成绩 / 删分 [歌曲 难度]：交互或一步删除成绩\n"
-        "mai清票 / 清票：确认后清空 Charge；mai改道具 / 改道具：高风险道具修改\n"
+        "mai改道具 / 改道具：高风险道具修改\n"
         f"当前上传价格：水鱼 {fish_cost} / 落雪 {lx_cost} / 同时 {all_cost} BREAK\n"
         f"发票价格：倍率 × {ticket_unit} BREAK（当前支持：{ticket_multipliers}）\n"
         f"AWMC 只读新功能：每次成功查询 {read_cost} BREAK，失败不扣费\n"
         f"账号状态查询（mymai）：每次成功查询 {status_cost} BREAK，失败不扣费\n"
         f"成绩编辑 {edit_cost} BREAK / 条；成绩删除 {delete_cost} BREAK / 条，失败不扣费\n"
-        f"清票 {clear_cost} BREAK / 次；道具修改 {item_cost} BREAK / 次（未经测试，风险自负）\n"
+        f"道具修改 {item_cost} BREAK / 次（未经测试，风险自负）\n"
         "已有 2/3/5 倍票未使用时重复发票，将拦截并扣除 20 BREAK。\n"
         "成绩上传每日首次成功免费；发票每次按价扣费，失败不扣费；"
         "明确失败会自动重试 2 次。\n"
@@ -3102,6 +3097,8 @@ async def _execute_ticket_now(
     cost = await _service_cost("ticket", multiple=multiple)
     await _ensure_service_affordable(int(key), "ticket", cost)
     credential = qrcode_override or binding.qrcode
+    if notify is not None:
+        await notify(_TICKET_IRREVERSIBLE_NOTICE)
     async with machine_session():
         try:
             binding, _ = await _read_verified_preview(
@@ -3535,10 +3532,9 @@ async def continue_pending_account_retry(
                 level=int(payload.get("level")),
                 score=payload.get("score"),
             )
-        if operation in {"awmc_ticket_clear", "awmc_item_upsert"}:
-            return await _run_account_dangerous_write(
+        if operation == "awmc_item_upsert":
+            return await _run_item_upsert(
                 event,
-                service=operation,
                 item_kind=payload.get("item_kind"),
                 item_id=payload.get("item_id"),
                 operation=str(payload.get("operation") or ""),
@@ -3638,14 +3634,14 @@ async def _finish_music_write_error(matcher, event: MessageEvent, service: str, 
     )
 
 
-async def _run_account_dangerous_write(
+async def _run_item_upsert(
     event: MessageEvent,
     *,
-    service: str,
     item_kind: Optional[int] = None,
     item_id: Optional[int] = None,
     operation: str = "",
 ) -> str:
+    service = "awmc_item_upsert"
     key, binding, error = _binding_or_error(event)
     if error or binding is None:
         if error and "二维码缓存" in error:
@@ -3655,41 +3651,32 @@ async def _run_account_dangerous_write(
                 "operation": operation,
             }
             remember_pending_account_retry(key, service, payload)
-            label = "清票" if service == "awmc_ticket_clear" else "道具修改"
             raise QrcodeRefreshRequiredError(
-                _pending_qrcode_prompt("已过期，需刷新", label)
+                _pending_qrcode_prompt("已过期，需刷新", "道具修改")
             )
         raise RuntimeError(error or "账号未绑定")
     cost = await _service_cost(service)
     await _ensure_service_affordable(int(key), service, cost)
     try:
         async with machine_session():
-            if service == "awmc_ticket_clear":
-                await sw_api.clear_tickets(binding.qrcode)
-                meta = {"operation": "clear"}
-                result_text = "✅ 已清空账号内的 Charge 票券"
-            elif service == "awmc_item_upsert":
-                if item_kind is None or item_id is None:
-                    raise RuntimeError("缺少道具参数")
-                await sw_api.upsert_item(
-                    binding.qrcode, item_kind, item_id, operation
-                )
-                meta = {
-                    "item_kind": item_kind,
-                    "item_id": item_id,
-                    "operation": operation,
-                }
-                action = "添加" if operation == "add" else "删除"
-                label = _ITEM_KIND_LABELS.get(item_kind, f"未知类型 {item_kind}")
-                result_text = f"✅ 已提交{action}道具：{label} · itemId={item_id}"
-                result_text += f"\n{_ITEM_UPSERT_SUCCESS_NOTE}"
-                if item_kind == 4:
-                    result_text += f"\n{_COLLECTION_UPSERT_TICKET_WARNING}"
-            else:
-                raise RuntimeError(f"不支持的账号写入服务：{service}")
+            if item_kind is None or item_id is None:
+                raise RuntimeError("缺少道具参数")
+            await sw_api.upsert_item(
+                binding.qrcode, item_kind, item_id, operation
+            )
+            meta = {
+                "item_kind": item_kind,
+                "item_id": item_id,
+                "operation": operation,
+            }
+            action = "添加" if operation == "add" else "删除"
+            label = _ITEM_KIND_LABELS.get(item_kind, f"未知类型 {item_kind}")
+            result_text = f"✅ 已提交{action}道具：{label} · itemId={item_id}"
+            result_text += f"\n{_ITEM_UPSERT_SUCCESS_NOTE}"
+            if item_kind == 4:
+                result_text += f"\n{_COLLECTION_UPSERT_TICKET_WARNING}"
     except Exception as exc:
         if _is_sgid_expired_error(exc):
-            label = "道具修改" if service == "awmc_item_upsert" else "清票"
             _raise_sgid_refresh_required(
                 key,
                 service,
@@ -3698,7 +3685,7 @@ async def _run_account_dangerous_write(
                     "item_id": item_id,
                     "operation": operation,
                 },
-                label,
+                "道具修改",
             )
         raise
     charge = await _settle_service_success(int(key), service, cost, meta=meta)
@@ -4049,48 +4036,6 @@ async def _(matcher: Matcher, event: MessageEvent, message: Message = Arg("delet
     await account_music_delete.finish(text, reply_message=True)
 
 
-@account_ticket_clear.handle()
-async def _(matcher: Matcher, event: MessageEvent, args: Message = CommandArg()):
-    await _require_agreement(account_ticket_clear, event)
-    try:
-        key, binding, error = _binding_for_write_preflight(event)
-        if error or binding is None:
-            raise RuntimeError(error or "账号未绑定")
-        await _ensure_service_affordable(
-            int(key), "awmc_ticket_clear", await _service_cost("awmc_ticket_clear")
-        )
-    except Exception as exc:
-        await _finish_music_write_error(
-            account_ticket_clear, event, "awmc_ticket_clear", exc
-        )
-    raw = _arg_text(args)
-    if raw:
-        matcher.set_arg("ticket_clear_confirm", Message(raw))
-    else:
-        await matcher.send(
-            "⚠️ 清票会清空账号内的 Charge 票券，成功后消耗 10 BREAK。",
-            reply_message=True,
-        )
-
-
-@account_ticket_clear.got(
-    "ticket_clear_confirm",
-    prompt="确认继续请发送“确认清票”；发送其他内容取消：",
-)
-async def _(event: MessageEvent, message: Message = Arg("ticket_clear_confirm")):
-    if _arg_text(message) != "确认清票":
-        await account_ticket_clear.finish("已取消清票，本次不扣 BREAK。")
-    try:
-        text = await _run_account_dangerous_write(
-            event, service="awmc_ticket_clear"
-        )
-    except Exception as exc:
-        await _finish_music_write_error(
-            account_ticket_clear, event, "awmc_ticket_clear", exc
-        )
-    await account_ticket_clear.finish(text, reply_message=True)
-
-
 @account_item_upsert.handle()
 async def _(matcher: Matcher, event: MessageEvent, args: Message = CommandArg()):
     await _require_agreement(account_item_upsert, event)
@@ -4224,9 +4169,8 @@ async def _(matcher: Matcher, event: MessageEvent, message: Message = Arg("item_
         reply_message=True,
     )
     try:
-        text = await _run_account_dangerous_write(
+        text = await _run_item_upsert(
             event,
-            service="awmc_item_upsert",
             item_kind=matcher.state["item_kind_value"],
             item_id=matcher.state["item_id_value"],
             operation=matcher.state["item_operation_value"],

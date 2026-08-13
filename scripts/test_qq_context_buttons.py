@@ -84,8 +84,10 @@ assert account['发票 ×2'] == 'mai发票 2'
 assert account['修改道具'] == 'mai改道具'
 
 games = command_map(mai_guess._GUESS_SHORTCUTS)
-assert games['再来猜歌'] == '猜歌'
-assert games['再猜封面'] == '猜封面'
+assert games['猜歌'] == '猜歌'
+assert games['猜曲绘'] == '猜封面'
+assert games['猜曲子'] == '猜曲子'
+assert games['猜谱面'] == '猜谱面'
 assert games['B50 找内鬼'] == '找内鬼'
 assert games['极限二选一'] == '极限二选一'
 

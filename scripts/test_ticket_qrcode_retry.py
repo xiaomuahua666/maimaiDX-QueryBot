@@ -54,6 +54,13 @@ account_source = ACCOUNT_PATH.read_text(encoding="utf-8")
 assert "请在 180 秒内重新发送最新 SGWCMAID" in account_source
 assert "continue_ticket_with_qrcode" in account_source
 assert "倍票已受理" not in account_source
+assert "发票不可逆：票券一经发放必须上机使用，不可以屯票" in account_source
+execute_start = account_source.index("async def _execute_ticket_now(")
+execute_end = account_source.index("\n\nasync def _execute_ticket(", execute_start)
+execute_source = account_source[execute_start:execute_end]
+assert execute_source.index("await notify(_TICKET_IRREVERSIBLE_NOTICE)") < execute_source.index(
+    "await _read_verified_preview("
+)
 
 playcount_source = PLAYCOUNT_PATH.read_text(encoding="utf-8")
 pending_pos = playcount_source.index("pending_ticket = take_pending_ticket_retry")
