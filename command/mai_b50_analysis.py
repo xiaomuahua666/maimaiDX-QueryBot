@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 
@@ -86,9 +87,8 @@ async def _deliver_result_or_refund(
             publish_qq_image=True,
         )
     except BaseException as exc:
-        refund_analysis_charge(
-            billing_qq,
-            reserved,
+        await asyncio.to_thread(
+            refund_analysis_charge, billing_qq, reserved,
             reason=f'发送结果:{type(exc).__name__}',
         )
         if not isinstance(exc, Exception):
@@ -220,16 +220,21 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
     context['player']['qq'] = str(legacy_qq)
 
     try:
-        reserved = reserve_analysis_charge(billing_qq)
+        reserved = await asyncio.to_thread(reserve_analysis_charge, billing_qq)
     except BreakInsufficientError as e:
         await plugin_finish(
             matcher, str(e), event=event, mention_sender=use_qq_mode(event)
         )
         return
     try:
-        ensure_image_render_affordable(billing_qq)
+        await asyncio.to_thread(ensure_image_render_affordable, billing_qq)
     except BreakInsufficientError as e:
-        refund_analysis_charge(billing_qq, reserved, reason='render:insufficient')
+        await asyncio.to_thread(
+            refund_analysis_charge,
+            billing_qq,
+            reserved,
+            reason='render:insufficient',
+        )
         await plugin_finish(
             matcher, str(e), event=event, mention_sender=use_qq_mode(event)
         )
@@ -266,9 +271,8 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
             return buffer
         buf = await run_image_cpu(_render_and_encode)
     except BaseException as e:
-        refund_analysis_charge(
-            billing_qq,
-            reserved,
+        await asyncio.to_thread(
+            refund_analysis_charge, billing_qq, reserved,
             reason=f'{failure_stage}:{type(e).__name__}',
         )
         if not isinstance(e, Exception):
@@ -303,17 +307,20 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
 
     # 图片已经送达。按真实 Token 多退少补；余额允许为负数。
     try:
-        render_line = settle_image_render(billing_qq)
-        charged = settle_analysis_charge(
-            billing_qq,
-            cost,
-            reserved=reserved,
-            token_usage=token_usage,
-        )
+        def _settle_result():
+            render = settle_image_render(billing_qq)
+            charge = settle_analysis_charge(
+                billing_qq,
+                cost,
+                reserved=reserved,
+                token_usage=token_usage,
+            )
+            return render, charge, break_db.get_balance(billing_qq)
+
+        render_line, charged, balance = await asyncio.to_thread(_settle_result)
     except Exception as e:
-        refund_analysis_charge(
-            billing_qq,
-            reserved,
+        await asyncio.to_thread(
+            refund_analysis_charge, billing_qq, reserved,
             reason=f'结算异常:{type(e).__name__}',
         )
         log.exception(f'[b50_analysis] 结算失败 qq={billing_qq}: {e}')
@@ -326,7 +333,6 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
         )
         return
 
-    balance = break_db.get_balance(billing_qq)
     query_footer = take_break_charge_footer()
     footer_parts = []
     if query_footer:

@@ -52,6 +52,40 @@ _message_stats_pending: dict[tuple[str, str], tuple[int, float]] = {}
 _message_stats_flush_task: Optional[asyncio.Task] = None
 
 
+def _break_balance(payer: int) -> int:
+    """Read BREAK state away from the event loop.
+
+    SQLite connections use a 5-second busy timeout.  Calling even a tiny read
+    directly from the global matcher preprocessor can therefore pause message
+    dispatch for every adapter while another writer owns the database lock.
+    """
+    return break_db.get_balance(payer)
+
+
+def _apply_busy_surcharge(
+    payer: int, surcharge: int, meta: dict
+) -> dict:
+    """Perform the surcharge transaction in one worker-thread operation."""
+    from ..libraries.maimaidx_card import card_manager
+
+    if is_superuser_exempt(payer) or not break_db.billing_enabled():
+        return {"status": "exempt"}
+    freedom = card_manager.freedom_active(payer)
+    if not break_db.try_consume(
+        payer, surcharge, "busy_request_surcharge", meta=meta
+    ):
+        return {
+            "status": "insufficient",
+            "balance": break_db.get_balance(payer),
+        }
+    return {
+        "status": "charged",
+        "charged": 0 if freedom else surcharge,
+        "balance": break_db.get_balance(payer),
+        "freedom": freedom,
+    }
+
+
 async def _flush_message_stats(*, delay: bool = True) -> None:
     """将普通群消息计数合并为单事务，并在线程中落盘。"""
     global _message_stats_flush_task
@@ -273,7 +307,7 @@ async def _audit_and_ban_preprocessor(
 
     try:
         payer = int(billing_user_id(event))
-        balance = break_db.get_balance(payer)
+        balance = await asyncio.to_thread(_break_balance, payer)
         if balance < 0 and not _debt_exempt(matcher):
             now = time.time()
             debt_key = str(payer)
@@ -327,18 +361,17 @@ async def _audit_and_ban_preprocessor(
             )
             if request_count is not None and request_count > free_requests and surcharge:
                 payer = int(billing_user_id(event))
-                if not is_superuser_exempt(payer) and break_db.billing_enabled():
-                    meta = {
-                        "window_seconds": window,
-                        "free_requests": free_requests,
-                        "request_count": request_count,
-                    }
-                    from ..libraries.maimaidx_card import card_manager
-                    freedom = card_manager.freedom_active(payer)
-                    if not break_db.try_consume(
-                        payer, surcharge, "busy_request_surcharge", meta=meta
-                    ):
-                        balance = break_db.get_balance(payer)
+                meta = {
+                    "window_seconds": window,
+                    "free_requests": free_requests,
+                    "request_count": request_count,
+                }
+                surcharge_result = await asyncio.to_thread(
+                    _apply_busy_surcharge, payer, surcharge, meta
+                )
+                if surcharge_result["status"] != "exempt":
+                    if surcharge_result["status"] == "insufficient":
+                        balance = int(surcharge_result["balance"])
                         await bot.send(
                             event,
                             "当前使用人数较多，本次请求需额外支付 "
@@ -347,12 +380,12 @@ async def _audit_and_ban_preprocessor(
                         )
                         _release_user_operation(state)
                         raise IgnoredException("maimaidx busy surcharge insufficient")
-                    if freedom:
+                    if surcharge_result.get("freedom"):
                         meta = {**meta, "charged": 0, "freedom": True}
                     state["__maimaidx_busy_charge"] = {
                         **meta,
-                        "charged": 0 if freedom else surcharge,
-                        "balance": break_db.get_balance(payer),
+                        "charged": int(surcharge_result["charged"]),
+                        "balance": int(surcharge_result["balance"]),
                     }
     except IgnoredException:
         raise

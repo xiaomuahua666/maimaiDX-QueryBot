@@ -8,6 +8,7 @@ AWMC BREAK 积分：签到、查分扣费、账号统计。
 from __future__ import annotations
 
 import base64
+import asyncio
 import contextvars
 import json
 import math
@@ -3116,9 +3117,10 @@ async def break_billing(qqid: Optional[int]):
     if payer and is_superuser_exempt(payer):
         payer = None
     t1 = _billing_qqid.set(payer)
-    t2 = _charge_session.set(
-        _BreakChargeSession(balance=break_db.get_balance(payer) if payer else 0)
-    )
+    # A locked SQLite database may wait up to busy_timeout (5 seconds).  Keep
+    # that wait off NoneBot's event loop so other messages continue dispatching.
+    balance = await asyncio.to_thread(break_db.get_balance, payer) if payer else 0
+    t2 = _charge_session.set(_BreakChargeSession(balance=balance))
     try:
         yield
     finally:

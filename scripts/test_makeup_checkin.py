@@ -183,7 +183,7 @@ else:
 
 command_source = (ROOT / "command" / "mai_break.py").read_text(encoding="utf-8")
 assert "awmc_makeup_checkin = on_command(" in command_source
-assert "break_db.makeup_yesterday(qqid)" in command_source
+assert "await asyncio.to_thread(break_db.makeup_yesterday, qqid)" in command_source
 assert "setattr(awmc_makeup_checkin, '_maimaidx_busy_surcharge_exempt', True)" in command_source
 
 print("makeup checkin tests: ok")

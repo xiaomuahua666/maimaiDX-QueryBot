@@ -483,7 +483,8 @@ async def _award_guess_points(
     )
     from ..libraries.maimaidx_break import break_db
 
-    reward = break_db.award_guess_points(
+    reward = await asyncio.to_thread(
+        break_db.award_guess_points,
         billing_user_id(event), added, group_id=str(gid),
     )
     if reward.break_added > 0:
@@ -2160,10 +2161,9 @@ async def _(event: MessageEvent, matched=RegexMatched()):
                 mode=guess_score.MODE_RATING,
             )
         if reward.break_points > 0:
-            break_db.add_balance(
-                reward.billing_id,
-                reward.break_points,
-                'rating_guess_settlement',
+            await asyncio.to_thread(
+                break_db.add_balance,
+                reward.billing_id, reward.break_points, 'rating_guess_settlement',
                 meta={
                     'group_id': str(gid),
                     'target_uid': settlement.target_uid,
@@ -2398,10 +2398,9 @@ async def _(event: MessageEvent):
             mode=guess_score.MODE_IMPOSTOR,
         )
         if reward.break_points > 0:
-            break_db.add_balance(
-                reward.billing_id,
-                reward.break_points,
-                'b50_impostor_settlement',
+            await asyncio.to_thread(
+                break_db.add_balance,
+                reward.billing_id, reward.break_points, 'b50_impostor_settlement',
                 meta={
                     'group_id': str(gid),
                     'target_uid': settlement.target_uid,
@@ -2705,10 +2704,9 @@ async def _(event: MessageEvent):
                 elif p.finish_rank == 2:
                     bp = 1
                 if bp > 0:
-                    break_db.add_balance(
-                        p.billing_id,
-                        bp,
-                        'duel_all_clear_bonus',
+                    await asyncio.to_thread(
+                        break_db.add_balance,
+                        p.billing_id, bp, 'duel_all_clear_bonus',
                         meta={
                             'group_id': str(gid),
                             'rank': p.finish_rank,
@@ -2959,7 +2957,8 @@ async def _(event: MessageEvent):
             )
             from ..libraries.maimaidx_break import break_db
 
-            reward = break_db.award_guess_points(
+            reward = await asyncio.to_thread(
+                break_db.award_guess_points,
                 data.winner_billing, added, group_id=str(gid),
             )
             break_part = ''

@@ -157,12 +157,13 @@ async def refresh_token(refresh_token: str) -> Dict[str, Any]:
 
 async def _billable_lxns_fetch(coro):
     """落雪成绩/玩家 API：在 break_billing 上下文中扣费。"""
+    import asyncio
     from .maimaidx_break import ensure_query_affordable, get_billing_qqid, settle_prober_fetch
     from .maimaidx_admin_audit import admin_audit
 
     qqid = get_billing_qqid()
     if qqid:
-        ensure_query_affordable(qqid)
+        await asyncio.to_thread(ensure_query_affordable, qqid)
     started = time.time()
     try:
         result = await coro
@@ -173,7 +174,7 @@ async def _billable_lxns_fetch(coro):
         raise
     admin_audit.add_step('http.lxns', 'success', started_at=started)
     if qqid and result is not None:
-        settle_prober_fetch(qqid)
+        await asyncio.to_thread(settle_prober_fetch, qqid)
     return result
 
 

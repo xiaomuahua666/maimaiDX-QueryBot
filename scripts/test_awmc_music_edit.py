@@ -124,14 +124,14 @@ for cancel_word in ("取消", "cancel", "Q", "退出", "00"):
 source = PATH.read_text(encoding="utf-8")
 assert 'account_music_upsert = on_command(' in source and '"mai改成绩", aliases=' in source
 assert 'account_music_delete = on_command(' in source and '"mai删成绩", aliases=' in source
-assert 'break_db.get_config("awmc_music_upsert_cost", "75")' in source
-assert 'break_db.get_config("awmc_music_delete_cost", "50")' in source
+assert 'break_db.get_config, "awmc_music_upsert_cost", "75"' in source
+assert 'break_db.get_config, "awmc_music_delete_cost", "50"' in source
 assert 'account_ticket_clear = on_command("mai清票"' in source
 assert 'account_item_upsert = on_command("mai改道具"' in source
 for alias in ('"改成绩"', '"改分"', '"删成绩"', '"删分"', '"清票"', '"改道具"'):
     assert alias in source
-assert 'break_db.get_config("awmc_ticket_clear_cost", "10")' in source
-assert 'break_db.get_config("awmc_item_upsert_cost", "100")' in source
+assert 'break_db.get_config, "awmc_ticket_clear_cost", "10"' in source
+assert 'break_db.get_config, "awmc_item_upsert_cost", "100"' in source
 assert "我已知晓风险" in source
 assert source.count("已取消道具修改，本次不扣 BREAK") >= 4
 assert "未经实际账号测试" in source
@@ -141,10 +141,10 @@ write_block = source[
     source.index("async def _finish_music_write_error(")
 ]
 assert write_block.index("await sw_api.upsert_music(") < write_block.index(
-    "charge = break_db.settle_service_success("
+    "charge = await _settle_service_success("
 )
 assert write_block.index("await sw_api.delete_music(") < write_block.index(
-    "charge = break_db.settle_service_success("
+    "charge = await _settle_service_success("
 )
 
 client_source = (ROOT / "libraries" / "maimaidx_sw_api.py").read_text(encoding="utf-8")

@@ -9,7 +9,7 @@ from ..libraries.maimaidx_music_info import *
 from ..libraries.maimaidx_player_score import *
 from ..libraries.maimaidx_error import BreakInsufficientError, UserDisabledQueryError, UserNotExistsError, UserNotFoundError
 from ..libraries.maimaidx_break import take_break_charge_footer
-from ..libraries.maimaidx_timing import attach_timing, finish_timed, run_timed, run_timed_call
+from ..libraries.maimaidx_timing import attach_timing, finish_timed, finish_timed_sync, run_timed
 from ..libraries.maimaidx_update_plate import *
 from ..libraries.maimaidx_platform import (
     billing_user_id,
@@ -94,8 +94,9 @@ async def _(match = RegexMatched()):
                 reply_message=True,
             )
         path = rating_table_path(args)
-        pic, total = run_timed_call(draw_rating, args, path)
-        await rating_table.finish(attach_timing(pic, total), reply_message=True)
+        await finish_timed_sync(
+            rating_table, draw_rating, args, path, reply_message=True,
+        )
     else:
         await rating_table.finish('无法识别的定数', reply_message=True)
 

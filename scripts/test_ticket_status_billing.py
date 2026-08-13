@@ -74,7 +74,10 @@ async def test_ticket_status_success_billing() -> None:
         str(payer), SimpleNamespace(qrcode="SGWCMAID-TEST"), None
     )
     mai_account.machine_session = machine_session
-    mai_account._service_cost = lambda service: 1 if service == "ticket_status" else 0
+    async def service_cost(service: str) -> int:
+        return 1 if service == "ticket_status" else 0
+
+    mai_account._service_cost = service_cost
     maimaidx_break.break_db.ensure_service_affordable = (
         lambda qqid, service, cost: calls.append(f"ensure:{qqid}:{service}:{cost}")
     )
@@ -136,7 +139,10 @@ async def test_ticket_status_failure_does_not_settle() -> None:
         str(payer), SimpleNamespace(qrcode="SGWCMAID-TEST"), None
     )
     mai_account.machine_session = machine_session
-    mai_account._service_cost = lambda _service: 1
+    async def service_cost(_service: str) -> int:
+        return 1
+
+    mai_account._service_cost = service_cost
     maimaidx_break.break_db.ensure_service_affordable = lambda *_args: None
     maimaidx_break.break_db.settle_service_success = settle
     try:
@@ -165,7 +171,7 @@ def test_ticket_status_configuration_and_routes() -> None:
     account_source = (ROOT / "command" / "mai_account.py").read_text(encoding="utf-8")
     break_source = (ROOT / "libraries" / "maimaidx_break.py").read_text(encoding="utf-8")
     assert "'ticket_status_cost': '1'" in break_source
-    assert 'get_config("ticket_status_cost", "1")' in account_source
+    assert 'break_db.get_config, "ticket_status_cost", "1"' in account_source
     assert '"ticket_status": "舞萌票券状态"' in account_source
     assert 'service="ticket_status"' in account_source
     pending_pos = account_source.index('if operation == "ticket_status":')

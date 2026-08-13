@@ -30,8 +30,25 @@ for node in break_tree.body:
 assert default_config is not None
 assert default_config["ticket_cost_per_multiplier"] == "10"
 
-service_cost_node = _top_level_node(ACCOUNT_SOURCE, "_service_cost", ast.FunctionDef)
+service_cost_node = _top_level_node(
+    ACCOUNT_SOURCE, "_service_cost", ast.AsyncFunctionDef
+)
+
+
+class _ImmediateAwaitable:
+    def __init__(self, value):
+        self.value = value
+
+    def __await__(self):
+        if False:
+            yield None
+        return self.value
+
+
 namespace = {
+    "asyncio": SimpleNamespace(
+        to_thread=lambda fn, *args: _ImmediateAwaitable(fn(*args)),
+    ),
     "break_db": SimpleNamespace(
         get_config=lambda key, fallback: "10" if key == "ticket_cost_per_multiplier" else fallback
     )
@@ -41,9 +58,11 @@ exec(
     namespace,
 )
 service_cost = namespace["_service_cost"]
-assert service_cost("ticket", multiple=2) == 20
-assert service_cost("ticket", multiple=3) == 30
-assert service_cost("ticket", multiple=5) == 50
+import asyncio
+
+assert asyncio.run(service_cost("ticket", multiple=2)) == 20
+assert asyncio.run(service_cost("ticket", multiple=3)) == 30
+assert asyncio.run(service_cost("ticket", multiple=5)) == 50
 
 migration_source = ast.get_source_segment(
     BREAK_SOURCE.read_text(encoding="utf-8"),

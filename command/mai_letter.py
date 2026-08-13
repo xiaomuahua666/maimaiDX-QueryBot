@@ -195,10 +195,9 @@ async def _payout_settlement(event: MessageEvent, gid, settlement: LetterSettlem
                 mode=guess_score.MODE_LETTER,
             )
         if reward.break_points > 0:
-            break_db.add_balance(
-                reward.billing_id,
-                reward.break_points,
-                "letter_settlement",
+            await asyncio.to_thread(
+                break_db.add_balance,
+                reward.billing_id, reward.break_points, "letter_settlement",
                 meta={
                     "group_id": str(gid),
                     "elapsed": settlement.elapsed,

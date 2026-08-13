@@ -146,6 +146,12 @@ class Config(BaseModel):
     maimaidx_storage_mysql_table_prefix: str = 'maimaidx_'
     maimaidx_storage_mysql_ssl: bool = False
     maimaidx_storage_mysql_keep_snapshots: int = 3
+    # 在线 BREAK/卡密 MySQL 请求的保护阈值。锁等待过久时让单条指令失败，
+    # 不能拖住整个 Bot 的消息入口。
+    maimaidx_storage_mysql_connect_timeout_seconds: int = 3
+    maimaidx_storage_mysql_read_timeout_seconds: int = 8
+    maimaidx_storage_mysql_write_timeout_seconds: int = 8
+    maimaidx_storage_mysql_lock_wait_timeout_seconds: int = 3
     # 仅在工作集发生变化时制作快照；此值是检测间隔，不再代表全量打包频率。
     maimaidx_storage_sync_interval_seconds: int = 900
     maimaidx_storage_include_user_scores: bool = True

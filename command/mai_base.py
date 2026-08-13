@@ -1,3 +1,5 @@
+import asyncio
+
 from nonebot import on_command, on_regex
 from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message, MessageEvent, PrivateMessageEvent
 from nonebot.exception import IgnoredException
@@ -151,10 +153,9 @@ async def _(event: MessageEvent):
     h = qqhash(billing_user_id(event))
     rp = h % 100
     rounded_rp, luck_break = calculate_luck_break(rp)
-    reward = break_db.claim_daily_reward(
-        billing_user_id(event),
-        'today_luck',
-        luck_break,
+    reward = await asyncio.to_thread(
+        break_db.claim_daily_reward,
+        billing_user_id(event), 'today_luck', luck_break,
         reason='today_luck',
         meta={'luck': rp, 'rounded_luck': rounded_rp},
     )

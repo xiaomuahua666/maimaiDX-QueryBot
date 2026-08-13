@@ -10,6 +10,7 @@
     finish_timed_sync(matcher, fn) — 同步生成（如本地 PIL 绘制）
 """
 
+import asyncio
 import contextvars
 import time
 from typing import Any, Awaitable, Callable, Optional, TypeVar, Union
@@ -121,19 +122,21 @@ async def run_timed(
         )
         billing_qqid = normalize_billing_qqid(billing_qqid)
         if feature_charge:
-            ensure_query_affordable(billing_qqid)
+            await asyncio.to_thread(ensure_query_affordable, billing_qqid)
         if render_charge:
-            ensure_image_render_affordable(billing_qqid)
+            await asyncio.to_thread(ensure_image_render_affordable, billing_qqid)
         async with break_billing(billing_qqid):
             result = await coro
             # 成功出图才扣费；纯文本错误提示不扣
             if not isinstance(result, str) and is_valid_image_result(result):
                 if feature_charge:
                     # 查歌/谱面详情等：本会话尚未因 API/缓存扣过才补功能费
-                    settle_feature_if_uncharged(billing_qqid, feature_charge)
+                    await asyncio.to_thread(
+                        settle_feature_if_uncharged, billing_qqid, feature_charge
+                    )
                 # 生成图片每次都收费（含读缓存），FREEDOM 可免
                 if render_charge:
-                    settle_image_render(billing_qqid)
+                    await asyncio.to_thread(settle_image_render, billing_qqid)
     else:
         result = await coro
     return result, time.perf_counter() - t0
