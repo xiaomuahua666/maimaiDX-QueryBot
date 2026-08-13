@@ -97,7 +97,7 @@ assert analysis['锐评'] == '锐评一下'
 assert analysis['标准 B50'] == 'b50'
 
 today = command_map(mai_base._TODAY_SHORTCUTS)
-assert today['再看运势'] == '今日舞萌'
+assert today['今日运势'] == '今日舞萌'
 assert today['吃分推荐'] == '吃分推荐'
 
 awmc = command_map(mai_break._AWMC_SHORTCUTS)
