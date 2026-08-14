@@ -22,6 +22,10 @@ SRC = (ROOT / "libraries" / "maimaidx_break.py").read_text(encoding="utf-8")
 TREE = ast.parse(SRC)
 
 
+def today_beijing() -> str:
+    return datetime.now(timezone(timedelta(hours=8))).date().isoformat()
+
+
 def _assign_value(name: str):
     for node in TREE.body:
         if isinstance(node, ast.Assign) and any(
@@ -152,7 +156,7 @@ def make_db() -> "BreakDatabase":
 
 
 def game_total(db, uid, today=None):
-    today = today or date.today().isoformat()
+    today = today or today_beijing()
     row = db._conn.execute(
         "SELECT COALESCE(SUM(break_awarded),0) AS t "
         "FROM break_game_daily WHERE qqid=? AND date=?",
@@ -162,7 +166,7 @@ def game_total(db, uid, today=None):
 
 
 def game_awarded(db, uid, game, today=None):
-    today = today or date.today().isoformat()
+    today = today or today_beijing()
     row = db._conn.execute(
         "SELECT COALESCE(break_awarded,0) AS a "
         "FROM break_game_daily WHERE qqid=? AND date=? AND game=?",
@@ -270,7 +274,7 @@ def test_award_guess_points_routes_game_key():
     # guess_points（排行分）仍照常累计，不受上限影响
     row = db._conn.execute(
         "SELECT guess_points FROM break_guess_daily WHERE qqid=? AND date=?",
-        (uid, date.today().isoformat()),
+        (uid, today_beijing()),
     ).fetchone()
     assert int(row["guess_points"]) == 21
 

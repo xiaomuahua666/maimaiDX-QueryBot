@@ -1672,7 +1672,9 @@ class BreakDatabase:
                         'UPDATE break_users SET balance=balance+?, updated_at=? WHERE qqid=?',
                         (refund, current, sender),
                     )
-                    created_date = datetime.fromtimestamp(float(row['created_at'])).date().isoformat()
+                    created_date = datetime.fromtimestamp(
+                        float(row['created_at']), timezone(timedelta(hours=8))
+                    ).date().isoformat()
                     self._conn.execute(
                         """UPDATE break_daily_usage
                             SET break_spent=CASE WHEN break_spent-? < 0 THEN 0 ELSE break_spent-? END
@@ -1942,7 +1944,7 @@ class BreakDatabase:
                         (refund, current, sender),
                     )
                     created_date = datetime.fromtimestamp(
-                        float(packet['created_at'])
+                        float(packet['created_at']), timezone(timedelta(hours=8))
                     ).date().isoformat()
                     self._conn.execute(
                         """UPDATE break_daily_usage

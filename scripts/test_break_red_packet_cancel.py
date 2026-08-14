@@ -18,6 +18,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "libraries" / "maimaidx_break.py"
 
+
+def today_beijing() -> str:
+    return datetime.now(timezone(timedelta(hours=8))).date().isoformat()
+
 # ---- mock 掉 cancel_red_packet 内部延迟 import 的 is_plugin_admin ----
 # 源码里是 `from .maimaidx_bot_admin import is_plugin_admin`，
 # 相对 import 会解析为 nonebot_plugin_maimaidx.libraries.maimaidx_bot_admin。
@@ -214,7 +218,7 @@ def _seed_user(db, qqid, balance):
     db._conn.execute(
         "INSERT INTO break_daily_usage (qqid, date, free_used, query_count, "
         "analysis_count, break_spent, break_gained) VALUES (?, ?, 0, 0, 0, 0, 0)",
-        (qqid, date.today().isoformat()),
+        (qqid, today_beijing()),
     )
     db._conn.commit()
 
@@ -272,7 +276,7 @@ def test_cancel_after_partial_claim_refunds_remaining():
 
     usage = db._conn.execute(
         "SELECT break_spent FROM break_daily_usage WHERE qqid=? AND date=?",
-        (SENDER, date.today().isoformat()),
+        (SENDER, today_beijing()),
     ).fetchone()
     assert int(usage["break_spent"]) == 100 - expected_refund
 

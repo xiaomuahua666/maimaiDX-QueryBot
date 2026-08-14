@@ -90,7 +90,7 @@ db._conn.executescript(
     """
 )
 
-today = date.today().isoformat()
+today = datetime.now(timezone(timedelta(hours=8))).date().isoformat()
 now = time.time()
 db._conn.execute(
     "INSERT INTO break_users VALUES (1, 20, 0, NULL, NULL, NULL, NULL, NULL, ?, ?)",
