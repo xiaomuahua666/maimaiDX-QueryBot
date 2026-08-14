@@ -492,11 +492,18 @@ async def _award_guess_points(
     )
     from ..libraries.maimaidx_break import break_db
 
-    reward = await asyncio.to_thread(
-        break_db.award_guess_points,
-        billing_user_id(event), added, group_id=str(gid),
-        game=_GUESS_GAME_KEY_BY_MODE.get(mode, 'song'),
-    )
+    try:
+        reward = await asyncio.to_thread(
+            break_db.award_guess_points,
+            billing_user_id(event), added, group_id=str(gid),
+            game=_GUESS_GAME_KEY_BY_MODE.get(mode, 'song'),
+        )
+    except Exception as exc:
+        log.exception(
+            f'[Guess] BREAK 奖励结算失败，保留积分与答对回复 '
+            f'gid={gid} mode={mode}: {type(exc).__name__}: {exc}'
+        )
+        return settlement
     if reward.break_added > 0:
         double_tag = ''
         if reward.doubled:

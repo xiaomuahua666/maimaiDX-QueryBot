@@ -677,6 +677,18 @@ class BreakDatabase:
         """
         lines = []
         primary_keys = []
+        for definition in col_defs.strip().split('\n'):
+            pk_match = re.match(
+                r'\s*PRIMARY\s+KEY\s*\(([^)]+)\)',
+                definition,
+                re.IGNORECASE,
+            )
+            if pk_match:
+                primary_keys.extend(
+                    column.strip().strip('`"')
+                    for column in pk_match.group(1).split(',')
+                )
+        primary_key_set = set(primary_keys)
         for line in col_defs.strip().split('\n'):
             line = line.strip().rstrip(',')
             if not line:
@@ -690,14 +702,6 @@ class BreakDatabase:
                 continue
             # 表级 PRIMARY KEY 行
             if upper.startswith('PRIMARY KEY'):
-                pk_match = re.match(
-                    r'PRIMARY\s+KEY\s*\(([^)]+)\)',
-                    line,
-                    re.IGNORECASE,
-                )
-                if pk_match:
-                    pk_cols = [c.strip() for c in pk_match.group(1).split(',')]
-                    primary_keys.extend(pk_cols)
                 continue
             # 解析列名和类型
             parts = line.split(None, 1)
@@ -726,8 +730,12 @@ class BreakDatabase:
                         extra += f' DEFAULT {m.group(1)}'
                 lines.append(f'`{col_name}` BIGINT{extra}')
             # TEXT PRIMARY KEY（列级）
-            elif 'TEXT' in upper_type and 'PRIMARY KEY' in upper_type:
-                primary_keys.append(col_name)
+            elif (
+                'TEXT' in upper_type
+                and ('PRIMARY KEY' in upper_type or col_name in primary_key_set)
+            ):
+                if 'PRIMARY KEY' in upper_type:
+                    primary_keys.append(col_name)
                 lines.append(f'`{col_name}` VARCHAR(191) NOT NULL')
             # 普通 TEXT 列（可能允许 NULL）
             elif 'TEXT' in upper_type:
