@@ -2132,7 +2132,7 @@ async def _(event: MessageEvent, matched=RegexMatched()):
         if data and data.end:
             break
         remaining -= 1
-        if remaining in (30, 10, 5):
+        if remaining in (30, 10):
             await _guess_notify(
                 guess_rating_start, event,
                 f'⏳ 还剩 {remaining}秒！',
@@ -2376,7 +2376,7 @@ async def _(event: MessageEvent):
         if current is not data or current.end:
             return
         remaining -= 1
-        if remaining in (30, 10, 5):
+        if remaining in (30, 10):
             await _guess_notify(
                 guess_impostor_start, event, f'⏳ 找内鬼还剩 {remaining}秒！',
             )
@@ -2624,7 +2624,7 @@ async def _(event: MessageEvent):
                     return
                 await asyncio.sleep(1)
                 remaining -= 1
-                if remaining in (10, 5) and remaining > 0:
+                if remaining in (10,) and remaining > 0:
                     await _guess_notify(
                         guess_duel_start, event,
                         f'⏳ 第 {r_idx} 轮还剩 {remaining} 秒',
