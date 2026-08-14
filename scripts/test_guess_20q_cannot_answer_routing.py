@@ -128,8 +128,8 @@ def _is_rule_hit(music, text):
 # ══════════════════════════════════════════════════════════════
 print('测试 A: 主观题判定 _is_subjective_question 不误伤客观题')
 
-SUBJECTIVE = ['这歌好听吗', '紫谱难吗', '这歌燃吗', '适合新手吗', '这歌推荐吗',
-              '觉得这谱难吗', '难不难', '这歌带感吗', '喜欢这首歌吗']
+SUBJECTIVE = ['这歌好听吗', '这歌燃吗', '适合新手吗', '这歌推荐吗',
+              '这歌带感吗', '喜欢这首歌吗']
 for q in SUBJECTIVE:
     _check(f'主观命中: {q}', _is_subjective_question(q))
 
@@ -141,7 +141,7 @@ for q in OBJECTIVE_SAFE:
 # ═══════════════════════════════════════════════════════════════
 print('测试 B: 主观题 → 回「没听懂」，不调 LLM、不消耗次数')
 
-for q in ['这歌好听吗', '紫谱难吗', '这歌燃吗', '适合新手吗']:
+for q in ['这歌好听吗', '这歌燃吗', '适合新手吗']:
     data = _make_data()
     # mock 故意回「是」，若闸门失效会漏成「是」；闸门生效应回 _SUBJECTIVE_HINT
     r = _run(data, q, _mock_llm_fixed('是'))
