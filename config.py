@@ -210,8 +210,9 @@ class Config(BaseModel):
     # 锐评涉及多个外部服务，必须有硬超时，避免 Matcher 永久停在“处理中”。
     b50_reaction_timeout_seconds: float = 2.0
     b50_fetch_timeout_seconds: float = 45.0
-    b50_llm_timeout_seconds: float = 90.0
+    b50_llm_timeout_seconds: float = 180.0
     b50_llm_max_retries: int = 0
+    b50_llm_max_tokens: int = 4096
     b50_send_timeout_seconds: float = 30.0
     b50_assets_path: str = ''
 

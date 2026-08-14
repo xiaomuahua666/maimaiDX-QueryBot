@@ -868,7 +868,7 @@ async def generate_analysis(
     client = AsyncOpenAI(
         api_key=config.b50_llm_key,
         base_url=config.b50_llm_url.rstrip("/"),
-        timeout=max(1.0, float(getattr(config, "b50_llm_timeout_seconds", 90.0))),
+        timeout=max(1.0, float(getattr(config, "b50_llm_timeout_seconds", 180.0))),
         max_retries=max(0, int(getattr(config, "b50_llm_max_retries", 0))),
     )
     resp = await client.chat.completions.create(
@@ -881,7 +881,7 @@ async def generate_analysis(
             },
         ],
         temperature=0.35,
-        max_tokens=8000,
+        max_tokens=max(512, int(getattr(config, "b50_llm_max_tokens", 4096))),
     )
     token_usage = _response_token_usage(resp)
     content = (resp.choices[0].message.content or "").strip()

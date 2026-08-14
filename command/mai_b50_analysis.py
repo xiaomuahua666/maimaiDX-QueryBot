@@ -303,7 +303,7 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
         analysis_text, token_usage = await _run_timed_stage(
             generate_analysis(context, maiconfig, style),
             stage='模型分析',
-            timeout=_timeout_seconds('b50_llm_timeout_seconds', 90.0) + 5.0,
+            timeout=_timeout_seconds('b50_llm_timeout_seconds', 180.0) + 5.0,
             qq=billing_qq,
         )
         try:
