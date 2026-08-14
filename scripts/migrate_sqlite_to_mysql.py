@@ -167,6 +167,7 @@ def migrate_break_db(mysql_conn):
         'break_config',
         'break_log',
         'break_guess_daily',
+        'break_game_daily',
         'break_service_daily',
         'break_daily_reward',
         'break_red_packet',

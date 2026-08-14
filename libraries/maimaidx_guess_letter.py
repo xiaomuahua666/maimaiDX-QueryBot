@@ -279,6 +279,7 @@ class LetterPlayerReward:
     score: int
     break_points: int
     detail: str
+    break_capped: bool = False
 
 
 @dataclass

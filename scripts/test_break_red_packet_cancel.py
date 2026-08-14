@@ -11,7 +11,7 @@ import sqlite3
 import sys
 import time
 import types as _types
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -124,6 +124,8 @@ ast.fix_missing_locations(test_class)
 namespace: dict = {
     "date": date,
     "datetime": datetime,
+    "timedelta": timedelta,
+    "timezone": timezone,
     "time": time,
     "uuid": __import__("uuid"),
     "json": __import__("json"),

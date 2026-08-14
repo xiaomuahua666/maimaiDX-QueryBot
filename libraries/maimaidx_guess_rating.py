@@ -75,6 +75,7 @@ class RatingGuessReward:
     diff: int
     score: int
     break_points: int
+    break_capped: bool = False
 
 
 @dataclass
@@ -459,6 +460,11 @@ def format_reward_text(rewards: List[RatingGuessReward], actual: int) -> str:
     for r in rewards:
         medal = {1: '🥇', 2: '🥈', 3: '🥉'}.get(r.rank, '▫️')
         diff_text = f'差值{r.diff}'
-        bp_text = f' +{r.break_points}BREAK' if r.break_points > 0 else ''
+        if r.break_points > 0:
+            bp_text = f' +{r.break_points}BREAK'
+        elif r.break_capped:
+            bp_text = ' +0 BREAK'
+        else:
+            bp_text = ''
         lines.append(f'{medal} #{r.rank} {r.name}  {diff_text}  +{r.score}分{bp_text}')
     return '\n'.join(lines)

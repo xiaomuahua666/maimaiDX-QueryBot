@@ -17,7 +17,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from threading import RLock
 from typing import Any, Dict, List, Optional
@@ -60,6 +60,10 @@ DEFAULT_CONFIG: Dict[str, str] = {
     'storage_bonus_cooldown_days': '7',
     # 猜对每次固定奖励，不设每日上限，避免被分数倍率放大。
     'guess_break_per_correct': '1',
+    # 小游戏每日 BREAK 上限：全局总闸（0=不限制）+ 每游戏节流阀（0=该游戏不限制）。
+    # game_key ∈ song/cover/tune/chart/rating/impostor/duel/twentyq/letter。
+    'guess_daily_break_global_cap': '40',
+    'guess_daily_caps': 'song:20,cover:20,tune:20,chart:20,rating:15,impostor:15,duel:10,twentyq:20,letter:15',
     # 上传/发票仅在外部操作成功后结算；上传每日首次免费，发票每次扣费。
     'upload_fish_cost': '2',
     'upload_lx_cost': '2',
@@ -168,6 +172,14 @@ CREATE TABLE IF NOT EXISTS break_guess_daily (
     break_awarded   INTEGER NOT NULL DEFAULT 0,
     last_at         REAL NOT NULL,
     PRIMARY KEY (qqid, date)
+);
+CREATE TABLE IF NOT EXISTS break_game_daily (
+    qqid            INTEGER NOT NULL,
+    date            TEXT NOT NULL,
+    game            TEXT NOT NULL,
+    break_awarded   INTEGER NOT NULL DEFAULT 0,
+    last_at         REAL NOT NULL,
+    PRIMARY KEY (qqid, date, game)
 );
 CREATE TABLE IF NOT EXISTS break_service_daily (
     qqid          INTEGER NOT NULL,
@@ -312,6 +324,19 @@ class GuessBreakReward:
     balance: int
     doubled: bool = False
     double_remaining: float = 0.0
+    capped: bool = False
+
+
+@dataclass
+class GameBreakAward:
+    """小游戏 BREAK 发放结果（双层上限口返回）。"""
+    game: str
+    requested: int
+    awarded: int
+    capped: bool
+    doubled: bool = False
+    double_remaining: float = 0.0
+    balance: int = 0
 
 
 @dataclass
@@ -1076,7 +1101,8 @@ class BreakDatabase:
             self._conn.commit()
 
     def _today(self) -> str:
-        return date.today().isoformat()
+        # 每日重置边界统一为 UTC+8（北京时间）零点，不依赖服务器本地时区。
+        return (datetime.now(timezone(timedelta(hours=8))).date()).isoformat()
 
     def _ensure_daily(self, qqid: int) -> None:
         self._conn.execute(
@@ -2056,8 +2082,13 @@ class BreakDatabase:
         points: int,
         *,
         group_id: Optional[str] = None,
+        game: str = '',
     ) -> GuessBreakReward:
-        """每次猜对固定发 BREAK；分数仅作排行统计，不放大奖励。"""
+        """每次猜对固定发 BREAK；分数仅作排行统计，不放大奖励。
+
+        game 为小游戏 game_key（song/cover/tune/chart/twentyq），用于双层上限统计。
+        BREAK 发放统一走 award_game_break（含双倍卡翻倍/豁免）。
+        """
         points = max(0, int(points))
         reward = max(0, _parse_config_int(
             self.get_config('guess_break_per_correct', '1'), 1
@@ -2080,48 +2111,21 @@ class BreakDatabase:
                 (points, now, qqid, today),
             )
             row = self._conn.execute(
-                """SELECT guess_points, break_awarded FROM break_guess_daily
+                """SELECT guess_points FROM break_guess_daily
                    WHERE qqid = ? AND date = ?""",
                 (qqid, today),
             ).fetchone()
             daily_points = int(row['guess_points'])
-            already = int(row['break_awarded'])
-            doubled = False
-            double_remaining = 0.0
-            if reward:
-                from .maimaidx_card import card_manager
-                active, remaining, _expires = card_manager.double_break_info(qqid)
-                if active:
-                    doubled = True
-                    double_remaining = remaining
-                    reward *= 2
-            if reward:
-                self._conn.execute(
-                    """UPDATE break_guess_daily SET break_awarded = break_awarded + ?
-                       WHERE qqid = ? AND date = ?""",
-                    (reward, qqid, today),
-                )
-                self._conn.execute(
-                    """UPDATE break_users SET balance = balance + ?, updated_at = ?
-                       WHERE qqid = ?""",
-                    (reward, now, qqid),
-                )
-                self._conn.execute(
-                    """UPDATE break_daily_usage SET break_gained = break_gained + ?
-                       WHERE qqid = ? AND date = ?""",
-                    (reward, qqid, today),
-                )
-                self._append_log(
-                    qqid, reward, 'guess_reward',
-                    meta={
-                        'points_added': points,
-                        'daily_points': daily_points,
-                        'daily_break': already + reward,
-                        'daily_cap': 0,
-                        'group_id': group_id,
-                        'double_break_card': doubled,
-                    },
-                )
+            # BREAK 发放走统一双层上限口（含双倍卡翻倍/豁免）。
+            # 此处已持有 self._lock，调用锁内实现避免重入死锁。
+            award = self._award_game_break_locked(
+                qqid, game or '', reward, 'guess_reward',
+                meta={
+                    'points_added': points,
+                    'daily_points': daily_points,
+                    'group_id': group_id,
+                },
+            )
             self._conn.commit()
             balance_row = self._conn.execute(
                 'SELECT balance FROM break_users WHERE qqid = ?', (qqid,)
@@ -2129,13 +2133,161 @@ class BreakDatabase:
         return GuessBreakReward(
             points_added=points,
             daily_points=daily_points,
-            break_added=reward,
-            daily_break=already + reward,
+            break_added=award.awarded,
+            daily_break=award.awarded,
             daily_cap=0,
             points_per_break=0,
             balance=int(balance_row['balance']) if balance_row else 0,
-            doubled=doubled,
-            double_remaining=double_remaining,
+            doubled=award.doubled,
+            double_remaining=award.double_remaining,
+            capped=award.capped,
+        )
+
+    # ---- 小游戏每日 BREAK 双层上限 ----
+
+    def get_global_game_cap(self) -> int:
+        """每日小游戏 BREAK 全局总上限（0 = 不限制）。"""
+        return _parse_config_int(self.get_config('guess_daily_break_global_cap', '0'), 0)
+
+    def get_game_cap(self, game: str) -> int:
+        """某游戏每日 BREAK 上限（0 = 不限制）。game_key 不存在时返回 0。"""
+        caps = self._parse_game_caps()
+        return caps.get((game or '').strip(), 0)
+
+    def _parse_game_caps(self) -> Dict[str, int]:
+        raw = self.get_config('guess_daily_caps', '') or ''
+        caps: Dict[str, int] = {}
+        for part in raw.split(','):
+            part = part.strip()
+            if not part or ':' not in part:
+                continue
+            key, _, val = part.partition(':')
+            caps[key.strip()] = _parse_config_int(val.strip(), 0)
+        return caps
+
+    def award_game_break(
+        self,
+        qqid: int,
+        game: str,
+        amount: int,
+        reason: str,
+        *,
+        meta: Optional[dict] = None,
+    ) -> GameBreakAward:
+        """小游戏 BREAK 统一发放口：双层上限（每游戏 + 全局）+ 双倍卡豁免。
+
+        用于 猜Rating / B50找内鬼 / 极限二选一 / 来信 四类结算。
+        双倍卡（CARD_TYPE_DOUBLE）生效时先翻倍再全额发放、豁免所有上限；
+        FREEDOM 卡与此无关（它只免「触发指令扣费」，不影响赚 BREAK 的上限）。
+        否则按 min(amount, 每游戏剩余空间, 全局剩余空间) 发放。
+        """
+        self._ensure_user(qqid)
+        self._ensure_daily(qqid)
+        with self._lock:
+            return self._award_game_break_locked(qqid, game, amount, reason, meta=meta)
+
+    def _award_game_break_locked(
+        self,
+        qqid: int,
+        game: str,
+        amount: int,
+        reason: str,
+        *,
+        meta: Optional[dict] = None,
+    ) -> GameBreakAward:
+        """award_game_break 的锁内实现；调用方须已持有 self._lock。"""
+        amount = max(0, int(amount))
+        game = (game or '').strip()
+        today = self._today()
+        now = time.time()
+        doubled = False
+        double_remaining = 0.0
+        if amount and game:
+            from .maimaidx_card import card_manager
+            active, remaining, _exp = card_manager.double_break_info(qqid)
+            if active:
+                doubled = True
+                double_remaining = remaining
+                amount *= 2  # 双倍卡：先翻倍，再豁免上限
+        if not amount:
+            return GameBreakAward(
+                game=game, requested=0, awarded=0, capped=False,
+                doubled=doubled, double_remaining=double_remaining,
+                balance=self.get_balance(qqid),
+            )
+        if doubled:
+            actual = amount
+            capped = False
+        else:
+            global_cap = self.get_global_game_cap()
+            per_cap = self.get_game_cap(game)
+            if global_cap <= 0 and per_cap <= 0:
+                actual = amount
+                capped = False
+            else:
+                row = self._conn.execute(
+                    'SELECT COALESCE(SUM(break_awarded),0) AS t '
+                    'FROM break_game_daily WHERE qqid=? AND date=?',
+                    (qqid, today),
+                ).fetchone()
+                total_awarded = int(row['t']) if row else 0
+                game_awarded = 0
+                if per_cap > 0:
+                    grow = self._conn.execute(
+                        'SELECT COALESCE(break_awarded,0) AS a '
+                        'FROM break_game_daily WHERE qqid=? AND date=? AND game=?',
+                        (qqid, today, game),
+                    ).fetchone()
+                    game_awarded = int(grow['a']) if grow else 0
+                global_room = amount if global_cap <= 0 else max(0, global_cap - total_awarded)
+                game_room = amount if per_cap <= 0 else max(0, per_cap - game_awarded)
+                actual = max(0, min(amount, global_room, game_room))
+                capped = actual < amount
+        if actual <= 0:
+            detail = dict(meta or {})
+            detail.update({
+                'game': game, 'requested': amount, 'capped': True,
+                'double_break_card': doubled,
+                'global_cap': self.get_global_game_cap(),
+                'game_cap': self.get_game_cap(game) if game else 0,
+                'hit_cap': True,
+            })
+            self._append_log(qqid, 0, reason, meta=detail)
+            return GameBreakAward(
+                game=game, requested=amount, awarded=0, capped=True,
+                doubled=doubled, double_remaining=double_remaining,
+                balance=self.get_balance(qqid),
+            )
+        self._conn.execute(
+            'UPDATE break_users SET balance=balance+?, updated_at=? WHERE qqid=?',
+            (actual, now, qqid),
+        )
+        self._conn.execute(
+            'UPDATE break_daily_usage SET break_gained=break_gained+? WHERE qqid=? AND date=?',
+            (actual, qqid, today),
+        )
+        self._conn.execute(
+            'INSERT OR IGNORE INTO break_game_daily '
+            '(qqid,date,game,break_awarded,last_at) VALUES (?,?,?,0,?)',
+            (qqid, today, game, now),
+        )
+        self._conn.execute(
+            'UPDATE break_game_daily SET break_awarded=break_awarded+?, last_at=? '
+            'WHERE qqid=? AND date=? AND game=?',
+            (actual, now, qqid, today, game),
+        )
+        detail = dict(meta or {})
+        detail.update({
+            'game': game, 'requested': amount, 'capped': capped,
+            'double_break_card': doubled,
+            'global_cap': self.get_global_game_cap(),
+            'game_cap': self.get_game_cap(game) if game else 0,
+        })
+        self._append_log(qqid, actual, reason, meta=detail)
+        return GameBreakAward(
+            game=game, requested=amount, awarded=actual, capped=capped,
+            doubled=doubled, double_remaining=double_remaining,
+            balance=self.get_balance(qqid),
         )
 
     def admin_set_balance(self, qqid: int, balance: int) -> int:

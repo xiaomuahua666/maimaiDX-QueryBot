@@ -2,7 +2,7 @@
 """AWMC 查分/分析累计在旧 MySQL 风格脏数据上的回归测试。"""
 
 import ast
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 import json
 from pathlib import Path
 import sqlite3
@@ -53,6 +53,9 @@ test_class = ast.ClassDef(
 ast.fix_missing_locations(test_class)
 namespace = {
     "date": date,
+    "datetime": datetime,
+    "timedelta": timedelta,
+    "timezone": timezone,
     "json": json,
     "time": time,
     "RLock": RLock,

@@ -195,9 +195,9 @@ async def _payout_settlement(event: MessageEvent, gid, settlement: LetterSettlem
                 mode=guess_score.MODE_LETTER,
             )
         if reward.break_points > 0:
-            await asyncio.to_thread(
-                break_db.add_balance,
-                reward.billing_id, reward.break_points, "letter_settlement",
+            award = await asyncio.to_thread(
+                break_db.award_game_break,
+                reward.billing_id, "letter", reward.break_points, "letter_settlement",
                 meta={
                     "group_id": str(gid),
                     "elapsed": settlement.elapsed,
@@ -205,6 +205,9 @@ async def _payout_settlement(event: MessageEvent, gid, settlement: LetterSettlem
                     "weight": reward.weight,
                 },
             )
+            # 写回实际到账额：结算图/分成图按真实发放显示；封顶时记 capped。
+            reward.break_points = award.awarded
+            reward.break_capped = award.capped
 
 
 async def _send_board(matcher, event: MessageEvent, board, *, text: str = "") -> None:

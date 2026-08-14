@@ -37,6 +37,7 @@ class ImpostorReward:
     rank: int
     score: int
     break_points: int
+    break_capped: bool = False
 
 
 @dataclass
@@ -259,7 +260,12 @@ def format_impostor_rewards(rewards: List[ImpostorReward]) -> str:
     lines: List[str] = []
     for reward in rewards:
         medal = {1: '🥇', 2: '🥈', 3: '🥉'}.get(reward.rank, '▫️')
-        bp = f' +{reward.break_points}BREAK' if reward.break_points else ''
+        if reward.break_points > 0:
+            bp = f' +{reward.break_points}BREAK'
+        elif reward.break_capped:
+            bp = ' +0 BREAK'
+        else:
+            bp = ''
         lines.append(
             f'{medal} #{reward.rank} {reward.name}  +{reward.score}分{bp}'
         )

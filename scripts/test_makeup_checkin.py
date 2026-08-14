@@ -7,7 +7,7 @@ import sys
 import time
 import types
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from threading import RLock
 from typing import Optional
@@ -102,6 +102,9 @@ db_namespace.update({
     "sqlite3": sqlite3,
     "time": time,
     "date": date,
+    "datetime": datetime,
+    "timedelta": timedelta,
+    "timezone": timezone,
     "json": json,
     "DB_DIR": Path("."),
     "DB_PATH": Path(":memory:"),

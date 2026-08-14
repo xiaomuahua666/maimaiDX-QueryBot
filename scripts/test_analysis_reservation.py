@@ -4,7 +4,7 @@ import ast
 import json
 import sqlite3
 import time
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from threading import RLock
 from typing import Optional
@@ -53,6 +53,9 @@ namespace = {
     "Optional": Optional,
     "RLock": RLock,
     "date": date,
+    "datetime": datetime,
+    "timedelta": timedelta,
+    "timezone": timezone,
     "json": json,
     "time": time,
 }
