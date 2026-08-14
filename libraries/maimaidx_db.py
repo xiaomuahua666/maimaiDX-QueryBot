@@ -27,6 +27,7 @@ from .maimaidx_sqlite import configure_sqlite_connection
 _TABLE_NAMES = (
     'break_users', 'break_daily_usage', 'break_group_checkin',
     'break_config', 'break_log', 'break_guess_daily',
+    'break_game_daily',
     'break_service_daily', 'break_daily_reward', 'break_red_packet',
     'break_red_packet_claim', 'break_makeup_checkin', 'break_gamble_pool',
     'break_gamble_pool_payout',
