@@ -13,6 +13,7 @@ import contextvars
 import json
 import math
 import random
+import re
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -601,14 +602,156 @@ class BreakDatabase:
             return
         self._initialized = True
         self._conn = create_unified_connection()
-        # 建表：仅 SQLite 模式执行；MySQL 已由迁移脚本创建
+        # 建表：SQLite 模式直接执行建表脚本；MySQL 模式自动补建缺失表
         if self._conn._backend == 'sqlite':
             self._conn.executescript(_CREATE_SQL)
+        else:
+            self._ensure_mysql_tables()
         self._ensure_config_primary_key_mysql()
         self._repair_break_usage_schema_mysql()
         self._seed_config()
         self._prune_unbound_hash_users()
         self._prune_empty_users()
+
+    def _ensure_mysql_tables(self) -> None:
+        """MySQL 模式下自动补建缺失的表，避免依赖手动迁移脚本。
+
+        SQLite 模式通过 ``executescript(_CREATE_SQL)`` 一次性建表，
+        但 MySQL 模式的 ``executescript`` 是空操作（表理应由迁移脚本创建）。
+        如果迁移脚本未跑或新表是在后续版本引入的，这里按需补建，
+        确保表结构始终与代码一致。
+        """
+        prefix = getattr(self._conn, '_prefix', '') or ''
+        raw = self._conn._conn
+        # _CREATE_SQL 中每条 CREATE TABLE IF NOT EXISTS 的定义
+        # 解析出表名和完整 DDL，对 MySQL 逐条检查并补建
+        for match in re.finditer(
+            r'CREATE TABLE IF NOT EXISTS (\w+) \((.*?)\);',
+            _CREATE_SQL,
+            re.DOTALL,
+        ):
+            table_name = match.group(1)
+            col_defs = match.group(2)
+            prefixed = f'{prefix}{table_name}'
+            try:
+                with raw.cursor() as cur:
+                    cur.execute(
+                        "SELECT COUNT(*) AS cnt FROM information_schema.tables "
+                        "WHERE table_schema = DATABASE() AND table_name = %s",
+                        (prefixed,),
+                    )
+                    row = cur.fetchone()
+                    if row and int(row.get('cnt', 0) or 0) > 0:
+                        continue
+                    # 表不存在，转换 SQLite DDL 为 MySQL 兼容格式并建表
+                    mysql_ddl = self._sqlite_ddl_to_mysql(table_name, col_defs)
+                    create_sql = (
+                        f'CREATE TABLE `{prefixed}` ({mysql_ddl}) '
+                        f'ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 '
+                        f'COLLATE=utf8mb4_unicode_ci'
+                    )
+                    cur.execute(create_sql)
+                raw.commit()
+                log.info(f'[BREAK] MySQL 自动建表: {prefixed}')
+            except Exception as exc:
+                try:
+                    raw.rollback()
+                except Exception:
+                    pass
+                log.warning(
+                    f'[BREAK] MySQL 自动建表 {prefixed} 失败（已忽略）：'
+                    f'{type(exc).__name__}: {exc}'
+                )
+
+    @staticmethod
+    def _sqlite_ddl_to_mysql(table_name: str, col_defs: str) -> str:
+        """将 SQLite 建表列定义转换为 MySQL 兼容格式。
+
+        处理以下 SQLite DDL 特性：
+        - 列级 PRIMARY KEY（``INTEGER PRIMARY KEY`` / ``TEXT PRIMARY KEY``）
+        - ``INTEGER PRIMARY KEY AUTOINCREMENT`` -> ``BIGINT AUTO_INCREMENT PRIMARY KEY``
+        - 表级 ``PRIMARY KEY (col1, col2)`` 作为独立行
+        - ``FOREIGN KEY`` 约束跳过（前缀表名导致引用失效，且不依赖 FK 约束保证正确性）
+        - ``CREATE INDEX`` 行跳过（索引在表外独立创建）
+        - INTEGER -> BIGINT, TEXT -> TEXT/VARCHAR(255), REAL -> DOUBLE
+        """
+        lines = []
+        primary_keys = []
+        for line in col_defs.strip().split('\n'):
+            line = line.strip().rstrip(',')
+            if not line:
+                continue
+            upper = line.upper()
+            # 跳过 CREATE INDEX 行
+            if upper.startswith('CREATE INDEX'):
+                continue
+            # 跳过 FOREIGN KEY 约束（前缀表名导致引用失效）
+            if upper.startswith('FOREIGN KEY'):
+                continue
+            # 表级 PRIMARY KEY 行
+            if upper.startswith('PRIMARY KEY'):
+                pk_match = re.match(
+                    r'PRIMARY\s+KEY\s*\(([^)]+)\)',
+                    line,
+                    re.IGNORECASE,
+                )
+                if pk_match:
+                    pk_cols = [c.strip() for c in pk_match.group(1).split(',')]
+                    primary_keys.extend(pk_cols)
+                continue
+            # 解析列名和类型
+            parts = line.split(None, 1)
+            if len(parts) < 2:
+                continue
+            col_name = parts[0]
+            col_type_raw = parts[1]
+            upper_type = col_type_raw.upper()
+            # INTEGER PRIMARY KEY AUTOINCREMENT
+            if 'INTEGER' in upper_type and 'AUTOINCREMENT' in upper_type:
+                lines.append(
+                    f'`{col_name}` BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY'
+                )
+            # INTEGER PRIMARY KEY（列级）
+            elif 'INTEGER' in upper_type and 'PRIMARY KEY' in upper_type:
+                primary_keys.append(col_name)
+                lines.append(f'`{col_name}` BIGINT NOT NULL')
+            # 普通 INTEGER 列
+            elif 'INTEGER' in upper_type:
+                extra = ''
+                if 'NOT NULL' in upper_type:
+                    extra += ' NOT NULL'
+                if 'DEFAULT' in upper_type:
+                    m = re.search(r'DEFAULT\s+(\S+)', col_type_raw, re.IGNORECASE)
+                    if m:
+                        extra += f' DEFAULT {m.group(1)}'
+                lines.append(f'`{col_name}` BIGINT{extra}')
+            # TEXT PRIMARY KEY（列级）
+            elif 'TEXT' in upper_type and 'PRIMARY KEY' in upper_type:
+                primary_keys.append(col_name)
+                lines.append(f'`{col_name}` VARCHAR(191) NOT NULL')
+            # 普通 TEXT 列（可能允许 NULL）
+            elif 'TEXT' in upper_type:
+                extra = ''
+                if 'NOT NULL' in upper_type:
+                    extra += ' NOT NULL'
+                lines.append(f'`{col_name}` TEXT{extra}')
+            # REAL / FLOAT -> DOUBLE
+            elif 'REAL' in upper_type or 'FLOAT' in upper_type:
+                extra = ''
+                if 'NOT NULL' in upper_type:
+                    extra += ' NOT NULL'
+                lines.append(f'`{col_name}` DOUBLE{extra}')
+            # 其他类型原样保留
+            else:
+                lines.append(f'`{col_name}` {col_type_raw}')
+        # 如果有主键（表级或列级收集的），追加 PRIMARY KEY 子句
+        # 但如果列级 AUTO_INCREMENT 已包含 PRIMARY KEY，则不重复
+        has_autoinc_pk = any('AUTO_INCREMENT PRIMARY KEY' in l for l in lines)
+        if primary_keys and not has_autoinc_pk:
+            lines.append(
+                f'PRIMARY KEY ({", ".join(f"`{k}`" for k in primary_keys)})'
+            )
+        return ',\n    '.join(lines)
 
     def _ensure_config_primary_key_mysql(self) -> None:
         """修复 MySQL 旧库 break_config 缺少主键导致的重复行问题。
@@ -812,6 +955,7 @@ class BreakDatabase:
                 'DELETE FROM break_makeup_checkin WHERE qqid = ?',
                 'DELETE FROM break_log WHERE qqid = ?',
                 'DELETE FROM break_guess_daily WHERE qqid = ?',
+                'DELETE FROM break_game_daily WHERE qqid = ?',
                 'DELETE FROM break_service_daily WHERE qqid = ?',
                 'DELETE FROM break_daily_reward WHERE qqid = ?',
                 'DELETE FROM break_red_packet_claim '
