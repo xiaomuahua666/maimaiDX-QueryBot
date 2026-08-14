@@ -212,7 +212,7 @@ class Config(BaseModel):
     b50_fetch_timeout_seconds: float = 45.0
     b50_llm_timeout_seconds: float = 180.0
     b50_llm_max_retries: int = 0
-    b50_llm_max_tokens: int = 4096
+    b50_llm_max_tokens: int = 2048
     b50_send_timeout_seconds: float = 30.0
     b50_assets_path: str = ''
 

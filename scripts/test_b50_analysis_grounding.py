@@ -60,6 +60,11 @@ selected = llm._select_push_recommendations(
 )
 assert [row["title"] for row in selected] == ["真实推分曲"]
 
+# 即使调用方传入更大 limit，程序兜底也只能输出 3 首。
+many_candidates = [candidate(str(2000 + index), f"候选曲{index}", 99.0) for index in range(5)]
+assert len(llm._select_push_recommendations(many_candidates, {}, "", limit=99)) == 3
+assert len(llm._merge_push_recommendations([], many_candidates)) == 3
+
 # 模型只能选真实候选和改理由，不能用自己的完整字段注入虚构曲目，
 # 也不能覆盖后端给出的达成率、定数和收益。
 merged = llm._merge_push_recommendations(
@@ -101,7 +106,14 @@ source = (ROOT / "libraries" / "b50_analysis" / "llm.py").read_text(
 assert "【最高优先级：事实闭集】" in llm._SYSTEM
 assert "达到 100.5% 后，该谱 rating 已封顶" in llm._SYSTEM
 assert "只能从“推分候选池”原样选择曲名" in llm._SYSTEM
+assert "普通版严格控制在 450-650 个汉字" in llm._SYSTEM
+assert "短版时严格控制在 250-350 个汉字" in llm._SYSTEM
+assert "至少使用 6 对" in llm._SYSTEM
+assert "push_recommendations 最多 3 首" in llm._SYSTEM
+assert "reason 控制在 12-20 个汉字" in llm._SYSTEM
+assert "不得继续扩写" in llm._SYSTEM
 assert '{"role": "system", "content": system}' in source
 assert "temperature=0.35" in source
+assert 'getattr(config, "b50_llm_max_tokens", 2048)' in source
 
 print("b50 analysis grounding tests: ok")
