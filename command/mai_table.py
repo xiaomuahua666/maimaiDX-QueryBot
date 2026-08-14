@@ -33,9 +33,9 @@ level_process           = on_regex(r'^([0-9]+\+?)\s?([abcdsfxp\+]+)\s?([\u4e00-\
 # （等价于 13sss进度、13fc进度、13fdx进度）。用户名参数必须以空白
 # 分隔，避免把“完成表”这类指令后缀误当成查分器用户名。
 LEVEL_PLATE_PROGRESS_PATTERN = (
-    r'^([0-9]+\+?)(舞舞|将|極|极|神|者)(?:进度|完成表)?'
+    r'^\s*([0-9]+\+?)(舞舞|将|極|极|神|者)(?:进度|完成表)?'
     r'(?:\s+(已完成|未完成|未开始|未游玩))?'
-    r'(?:\s+(\d+))?(?:\s+(.+))?$'
+    r'(?:\s+(\d+))?(?:\s+(\S(?:.*\S)?))?\s*$'
 )
 level_plate_progress    = on_regex(LEVEL_PLATE_PROGRESS_PATTERN)
 level_achievement_list  = on_regex(r'^([0-9]+\.?[0-9]?\+?)\s?分数列表\s?([0-9]+)?\s?(.+)?')
