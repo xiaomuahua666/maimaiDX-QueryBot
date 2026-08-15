@@ -992,7 +992,7 @@ def _q_song_type(music: Music, text: str) -> Optional[str]:
     # 难度颜色（绿/黄/红/紫/白谱）交给 _q_ds 处理，不在这里误判为谱面类型。
     if any(k in t for k in ('dx谱', 'dx谱面', 'dx谱', 'dx譜面')):
         return _r(music.type == 'DX', '判定维度：谱面类型是否为 DX 谱面')
-    if any(k in t for k in ('标准谱', '標準譜', 'sd谱', 'sd譜', '标准谱面', '標準譜面')):
+    if any(k in t for k in ('标准谱', '標準譜', '标谱', '標譜', 'sd谱', 'sd譜', '标准谱面', '標準譜面')):
         return _r(music.type == 'SD', '判定维度：谱面类型是否为标准(SD)谱面')
     return None
 
