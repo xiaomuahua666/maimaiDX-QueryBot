@@ -2744,13 +2744,19 @@ async def _(event: MessageEvent):
             if p.final_score <= 0:
                 continue
             added = p.final_score
-            await guess_score.award_fixed_points(
-                gid,
-                p.uid,
-                p.name,
-                added,
-                mode=guess_score.MODE_DUEL,
-            )
+            try:
+                await guess_score.award_fixed_points(
+                    gid,
+                    p.uid,
+                    p.name,
+                    added,
+                    mode=guess_score.MODE_DUEL,
+                )
+            except Exception as exc:
+                log.exception(
+                    f'[GuessDuel] 积分结算失败，继续后续玩家 '
+                    f'gid={gid} uid={p.uid}: {type(exc).__name__}: {exc}'
+                )
             if p.uid in survivors_uids and p.finish_rank >= 1:
                 bp = 0
                 if p.finish_rank == 1:
@@ -2758,18 +2764,24 @@ async def _(event: MessageEvent):
                 elif p.finish_rank == 2:
                     bp = 1
                 if bp > 0:
-                    award = await asyncio.to_thread(
-                        break_db.award_game_break,
-                        p.billing_id, 'duel', bp, 'duel_all_clear_bonus',
-                        meta={
-                            'group_id': str(gid),
-                            'rank': p.finish_rank,
-                            'rounds': len(data.rounds),
-                        },
-                    )
-                    actual_bp[p.uid] = award.awarded
-                    if award.capped:
-                        capped_uids.add(p.uid)
+                    try:
+                        award = await asyncio.to_thread(
+                            break_db.award_game_break,
+                            p.billing_id, 'duel', bp, 'duel_all_clear_bonus',
+                            meta={
+                                'group_id': str(gid),
+                                'rank': p.finish_rank,
+                                'rounds': len(data.rounds),
+                            },
+                        )
+                        actual_bp[p.uid] = award.awarded
+                        if award.capped:
+                            capped_uids.add(p.uid)
+                    except Exception as exc:
+                        log.exception(
+                            f'[GuessDuel] BREAK 结算失败，继续后续玩家 '
+                            f'gid={gid} uid={p.uid}: {type(exc).__name__}: {exc}'
+                        )
 
         # 结算文案
         result_lines = [
@@ -3020,13 +3032,21 @@ async def _(event: MessageEvent):
             )
             from ..libraries.maimaidx_break import break_db
 
-            reward = await asyncio.to_thread(
-                break_db.award_guess_points,
-                data.winner_billing, added, group_id=str(gid),
-                game='twentyq',
-            )
+            try:
+                reward = await asyncio.to_thread(
+                    break_db.award_guess_points,
+                    data.winner_billing, added, group_id=str(gid),
+                    game='twentyq',
+                )
+            except Exception as exc:
+                # 积分已入账；BREAK 失败不吞掉揭晓消息，只是不带 BREAK 行。
+                log.exception(
+                    f'[Guess20Q] BREAK 结算失败，保留积分与揭晓消息 '
+                    f'gid={gid} uid={uid}: {type(exc).__name__}: {exc}'
+                )
+                reward = None
             break_part = ''
-            if reward.break_added > 0:
+            if reward is not None and reward.break_added > 0:
                 double_tag = ''
                 if reward.doubled:
                     from ..libraries.maimaidx_card import format_duration
@@ -3037,7 +3057,7 @@ async def _(event: MessageEvent):
                     f'\n💳 猜对奖励 +{reward.break_added} BREAK'
                     f'（余额 {reward.balance}）{double_tag}'
                 )
-            elif reward.capped:
+            elif reward is not None and reward.capped:
                 break_part = '\n💳 猜对奖励 +0 BREAK'
             log.info(
                 f'[Guess20Q] 猜对结束 gid={gid} answer={data.music.title} '

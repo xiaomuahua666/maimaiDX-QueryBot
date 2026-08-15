@@ -1622,35 +1622,51 @@ class BreakDatabase:
             raise ValueError('转账数量必须大于 0，且不能转给自己')
         fee = max(0, _parse_config_int(self.get_config('transfer_fee', '0'), 0))
         with self._lock:
-            sender_balance = self.get_balance(sender)
-            total = amount + fee
-            if sender_balance < total:
-                raise BreakInsufficientError(total, sender_balance, qqid=sender)
-            self._ensure_user(sender)
-            self._ensure_user(recipient)
-            self._ensure_daily(sender)
-            self._ensure_daily(recipient)
-            now = time.time()
-            self._conn.execute(
-                'UPDATE break_users SET balance=balance-?, updated_at=? WHERE qqid=?',
-                (total, now, sender),
-            )
-            self._conn.execute(
-                'UPDATE break_users SET balance=balance+?, updated_at=? WHERE qqid=?',
-                (amount, now, recipient),
-            )
-            self._conn.execute(
-                'UPDATE break_daily_usage SET break_spent=break_spent+? WHERE qqid=? AND date=?',
-                (total, sender, self._today()),
-            )
-            self._conn.execute(
-                'UPDATE break_daily_usage SET break_gained=break_gained+? WHERE qqid=? AND date=?',
-                (amount, recipient, self._today()),
-            )
-            self._append_log(sender, -total, 'transfer_out', meta={'to': recipient, 'amount': amount, 'fee': fee})
-            self._append_log(recipient, amount, 'transfer_in', meta={'from': sender, 'amount': amount})
-            self._conn.commit()
-            return TransferResult(sender_balance-total, self.get_balance(recipient), amount, fee)
+            try:
+                return self._transfer_locked(sender, recipient, amount, fee)
+            except Exception:
+                # MySQL(autocommit=False) 下 SQL 链中途异常必须回滚，否则
+                # 未提交事务持有 break_users 行锁直到超时，后续转账/发奖
+                # 碰到同一用户即报 1205 锁等待；SQLite 同理释放库锁。
+                try:
+                    self._conn.rollback()
+                except Exception:
+                    pass
+                raise
+
+    def _transfer_locked(
+        self, sender: int, recipient: int, amount: int, fee: int
+    ) -> TransferResult:
+        """transfer 的锁内实现；调用方须已持有 self._lock。"""
+        sender_balance = self.get_balance(sender)
+        total = amount + fee
+        if sender_balance < total:
+            raise BreakInsufficientError(total, sender_balance, qqid=sender)
+        self._ensure_user(sender)
+        self._ensure_user(recipient)
+        self._ensure_daily(sender)
+        self._ensure_daily(recipient)
+        now = time.time()
+        self._conn.execute(
+            'UPDATE break_users SET balance=balance-?, updated_at=? WHERE qqid=?',
+            (total, now, sender),
+        )
+        self._conn.execute(
+            'UPDATE break_users SET balance=balance+?, updated_at=? WHERE qqid=?',
+            (amount, now, recipient),
+        )
+        self._conn.execute(
+            'UPDATE break_daily_usage SET break_spent=break_spent+? WHERE qqid=? AND date=?',
+            (total, sender, self._today()),
+        )
+        self._conn.execute(
+            'UPDATE break_daily_usage SET break_gained=break_gained+? WHERE qqid=? AND date=?',
+            (amount, recipient, self._today()),
+        )
+        self._append_log(sender, -total, 'transfer_out', meta={'to': recipient, 'amount': amount, 'fee': fee})
+        self._append_log(recipient, amount, 'transfer_in', meta={'from': sender, 'amount': amount})
+        self._conn.commit()
+        return TransferResult(sender_balance-total, self.get_balance(recipient), amount, fee)
 
     def expire_red_packets(self, now: Optional[float] = None) -> List[RedPacketRefundResult]:
         """关闭已过期红包并将未领取余额原路退回。"""
@@ -2338,7 +2354,21 @@ class BreakDatabase:
         self._ensure_user(qqid)
         self._ensure_daily(qqid)
         with self._lock:
-            return self._award_game_break_locked(qqid, game, amount, reason, meta=meta)
+            try:
+                award = self._award_game_break_locked(qqid, game, amount, reason, meta=meta)
+                # 显式提交，避免未提交事务长期持有行锁（MySQL）或库锁（SQLite），
+                # 或被后续其它操作的 commit 顺带提交。
+                self._conn.commit()
+                return award
+            except Exception:
+                # 同 transfer：SQL 链中途异常必须回滚，避免未提交事务
+                # 持有 break_users / break_game_daily 行锁直到超时（1205），
+                # 或被后续 _ensure_user 的 commit 顺带提交造成半截入账。
+                try:
+                    self._conn.rollback()
+                except Exception:
+                    pass
+                raise
 
     def _award_game_break_locked(
         self,
