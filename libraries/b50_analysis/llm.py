@@ -5,6 +5,7 @@ import re
 
 from typing import Any
 
+from loguru import logger as log
 from openai import AsyncOpenAI
 
 _FORBIDDEN_OUTPUT_PATTERNS = [
@@ -485,6 +486,47 @@ def _cleanup_response(raw_text: str) -> str:
     return json.dumps(cleaned, ensure_ascii=False)
 
 
+def _validated_analysis_payload(raw_content: str) -> dict[str, Any]:
+    content = str(raw_content or "").strip()
+    if not content:
+        raise ValueError("模型未返回锐评正文，请稍后重试")
+
+    cleaned_content = _cleanup_response(content)
+    try:
+        cleaned = json.loads(cleaned_content)
+    except json.JSONDecodeError:
+        cleaned = {
+            "title": "B50锐评",
+            "overall_roast": cleaned_content,
+            "impression_roast": "",
+            "push_recommendations": [],
+        }
+
+    if not isinstance(cleaned, dict):
+        raise ValueError("模型返回的锐评格式无效，请稍后重试")
+    if not str(cleaned.get("overall_roast") or "").strip():
+        raise ValueError("模型返回的锐评正文为空，请稍后重试")
+    return cleaned
+
+
+def _reasoning_effort(config: Any) -> str:
+    value = str(getattr(config, "b50_llm_reasoning_effort", "low") or "").strip().lower()
+    return value if value in {"none", "minimal", "low", "medium", "high"} else "low"
+
+
+def _finish_reason(response: Any) -> str:
+    choices = response.get("choices") if isinstance(response, dict) else getattr(response, "choices", None)
+    if not choices:
+        return ""
+    choice = choices[0]
+    value = choice.get("finish_reason") if isinstance(choice, dict) else getattr(choice, "finish_reason", None)
+    return str(value or "").strip().lower()
+
+
+def _message_field(message: Any, name: str) -> Any:
+    return message.get(name) if isinstance(message, dict) else getattr(message, name, None)
+
+
 def _fmt(context: dict) -> str:
     player = context.get("player") or {}
     summary = context.get("summary") or {}
@@ -807,29 +849,27 @@ async def generate_analysis(
             },
         ],
         temperature=0.35,
-        max_tokens=max(512, int(getattr(config, "b50_llm_max_tokens", 2048))),
+        max_tokens=max(512, int(getattr(config, "b50_llm_max_tokens", 6144))),
+        reasoning_effort=_reasoning_effort(config),
     )
     token_usage = _response_token_usage(resp)
-    content = (resp.choices[0].message.content or "").strip()
-    
-    try:
-        cleaned_content = _cleanup_response(content)
-        try:
-            cleaned = json.loads(cleaned_content)
-        except json.JSONDecodeError:
-            cleaned = {
-                "title": "B50锐评",
-                "overall_roast": cleaned_content,
-                "impression_roast": "",
-                "push_recommendations": [],
-            }
-    except Exception:
-        cleaned = {
-            "title": "B50锐评",
-            "overall_roast": content[:2000] if content else "分析生成失败",
-            "impression_roast": "",
-            "push_recommendations": [],
-        }
+    choice = resp.choices[0]
+    content = str(_message_field(choice.message, "content") or "").strip()
+    finish_reason = _finish_reason(resp)
+    reasoning_content = str(
+        _message_field(choice.message, "reasoning_content") or ""
+    )
+    if finish_reason in {"length", "max_tokens"} or not content:
+        log.warning(
+            "[b50_analysis] LLM 响应不完整 "
+            f"model={config.b50_llm_model} finish_reason={finish_reason or 'unknown'} "
+            f"content_chars={len(content)} reasoning_chars={len(reasoning_content)} "
+            f"output_tokens={token_usage.get('output_tokens', 0)}"
+        )
+    if finish_reason in {"length", "max_tokens"}:
+        raise ValueError("模型锐评输出被截断，请稍后重试")
+
+    cleaned = _validated_analysis_payload(content)
     fallback_push = _select_push_recommendations(
         context.get("push_candidates") or [],
         context.get("config_focus") or {},

@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -65,6 +67,45 @@ many_candidates = [candidate(str(2000 + index), f"候选曲{index}", 99.0) for i
 assert len(llm._select_push_recommendations(many_candidates, {}, "", limit=99)) == 3
 assert len(llm._merge_push_recommendations([], many_candidates)) == 3
 
+# 空响应或合法 JSON 中缺失正文都必须中止，不能继续渲染空白锐评图。
+for invalid_response in (
+    "",
+    '{"title":"B50锐评","overall_roast":"","impression_roast":"",'
+    '"push_recommendations":[]}',
+    '{"title":"B50锐评","push_recommendations":[]}',
+):
+    try:
+        llm._validated_analysis_payload(invalid_response)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("空锐评正文必须被拒绝")
+
+plain_payload = llm._validated_analysis_payload("这是一段可正常渲染的锐评正文")
+assert plain_payload["overall_roast"] == "这是一段可正常渲染的锐评正文"
+json_payload = llm._validated_analysis_payload(
+    json.dumps(
+        {
+            "title": "舞萌锐评测试",
+            "overall_roast": "正文存在",
+            "impression_roast": "总结存在",
+            "push_recommendations": [],
+        },
+        ensure_ascii=False,
+    )
+)
+assert json_payload["overall_roast"] == "正文存在"
+assert llm._reasoning_effort(SimpleNamespace()) == "low"
+assert llm._reasoning_effort(
+    SimpleNamespace(b50_llm_reasoning_effort="HIGH")
+) == "high"
+assert llm._reasoning_effort(
+    SimpleNamespace(b50_llm_reasoning_effort="unsupported")
+) == "low"
+assert llm._finish_reason(
+    SimpleNamespace(choices=[SimpleNamespace(finish_reason="length")])
+) == "length"
+
 # 模型只能选真实候选和改理由，不能用自己的完整字段注入虚构曲目，
 # 也不能覆盖后端给出的达成率、定数和收益。
 merged = llm._merge_push_recommendations(
@@ -114,6 +155,7 @@ assert "reason 控制在 12-20 个汉字" in llm._SYSTEM
 assert "不得继续扩写" in llm._SYSTEM
 assert '{"role": "system", "content": system}' in source
 assert "temperature=0.35" in source
-assert 'getattr(config, "b50_llm_max_tokens", 2048)' in source
+assert 'getattr(config, "b50_llm_max_tokens", 6144)' in source
+assert "reasoning_effort=_reasoning_effort(config)" in source
 
 print("b50 analysis grounding tests: ok")

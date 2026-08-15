@@ -992,7 +992,7 @@ def _q_song_type(music: Music, text: str) -> Optional[str]:
     # 难度颜色（绿/黄/红/紫/白谱）交给 _q_ds 处理，不在这里误判为谱面类型。
     if any(k in t for k in ('dx谱', 'dx谱面', 'dx谱', 'dx譜面')):
         return _r(music.type == 'DX', '判定维度：谱面类型是否为 DX 谱面')
-    if any(k in t for k in ('标准谱', '標準譜', 'sd谱', 'sd譜', '标准谱面', '標準譜面')):
+    if any(k in t for k in ('标准谱', '標準譜', '标谱', '標譜', 'sd谱', 'sd譜', '标准谱面', '標準譜面')):
         return _r(music.type == 'SD', '判定维度：谱面类型是否为标准(SD)谱面')
     return None
 
@@ -1725,6 +1725,35 @@ def _canonicalize_understand(understand: str, question: str, music: 'Music') -> 
     return out
 
 
+_CHARTER_QUESTION_KW = (
+    '谱师', '譜師', '铺师', '鋪師', '普师', '谱面作者', '譜面作者',
+    '写谱人', '寫譜人', '作谱者', '作譜者', '制谱人', '製譜人',
+    'chart作者', '编谱', '編譜',
+)
+
+
+def _clarify_charter_diff_understand(understand: str, question: str) -> str:
+    """让谱师题的玩家提示明确包含所判定的谱面难度。
+
+    玩家未指定颜色时按紫谱判定，并在提示中显式标注“默认”，避免只显示
+    “判断谱师是否为 X”而让玩家误以为涵盖全部难度。
+    """
+    if not understand or not any(k in question for k in _CHARTER_QUESTION_KW):
+        return understand
+    explicit_idx = _resolve_diff_index(question)
+    diff_idx = explicit_idx if explicit_idx is not None else 3
+    diff_cn = _DIFF_CN[diff_idx] if diff_idx < len(_DIFF_CN) else '该难度'
+    qualifier = diff_cn if explicit_idx is not None else f'{diff_cn}（默认）'
+    if diff_cn in understand:
+        if explicit_idx is None and '默认' not in understand:
+            return understand.replace(diff_cn, qualifier, 1)
+        return understand
+    for term in ('谱师', '譜師', '铺师', '鋪師', '普师', '谱面作者', '譜面作者'):
+        if term in understand:
+            return understand.replace(term, f'{qualifier}谱师', 1)
+    return f'判断{qualifier}谱师：{understand}'
+
+
 # 注意：本玩法只回答「是/否」是非题，不直接给出谱师/曲师/BPM 数值/版本/分类
 # 等客观信息（那样等于开户籍）。玩家想问这些，请用猜测形式：「谱师是X吗」「BPM 大于180吗」。
 
@@ -1909,11 +1938,13 @@ def _version_cn(version: str) -> str:
     return version or '未知'
 
 
-def _build_music_profile(music: Music, wmc_tags: Optional[Dict[int, dict]] = None) -> str:
+def _build_music_profile(music: Music, wmc_tags: Optional[Dict[int, dict]] = None, text: Optional[str] = None) -> str:
     """生成曲目特征描述（不含曲名/曲 id，避免泄漏答案）。
 
     LLM 据此判断玩家是非题是否匹配，无需知道具体曲名。
     wmc_tags 为 v.wmc.pub 谱面标签（{level_index: tags_dict}），存在时追加到末尾。
+    text 为玩家原始问题：若指明难度颜色（如「红谱谱师」），谱师段只取该难度的谱师，
+    而非默认紫谱(MASTER)/白谱。
     """
     bi = music.basic_info
     bpm = bi.bpm or 0
@@ -1947,8 +1978,29 @@ def _build_music_profile(music: Music, wmc_tags: Optional[Dict[int, dict]] = Non
     # 别名作为权威数据一并给出，LLM 据此判断玩家说的名字（含中文俗称/罗马音/马甲）
     # 是否为同一人；清单里没有的名字一律回「无法回答」，不靠记忆/搜索补全。
     # 字段名标注「谱面作者/写谱人」等别名，避免 LLM 把谱师题误判到「艺术家」字段。
-    charters = _get_master_charters(music)
-    charter_desc = _format_charters_for_llm(charters)
+    # 玩家若指明难度颜色（如「红谱谱师」），则只给该难度的谱师；
+    # 未指明颜色时严格只取紫谱（MASTER），不混入白谱谱师。
+    diff_idx = _resolve_diff_index(text) if text else None
+    target_diff_idx = diff_idx if diff_idx is not None else 3
+    _charts = getattr(music, 'charts', None) or []
+    if target_diff_idx < len(_charts):
+        _ch = (getattr(_charts[target_diff_idx], 'charter', None) or '').strip()
+        diff_label = _DIFF_CN[target_diff_idx]
+        if diff_idx is None:
+            diff_label += '谱师（MASTER，默认）'
+        else:
+            diff_label += '谱师'
+        if _ch and _ch != '-':
+            charter_desc = f'{diff_label}：{_charter_with_aliases(_ch)}'
+        else:
+            charter_desc = f'{diff_label}：未知/无署名'
+    else:
+        diff_label = _DIFF_CN[target_diff_idx]
+        if diff_idx is None:
+            diff_label += '谱师（MASTER，默认）'
+        else:
+            diff_label += '谱师'
+        charter_desc = f'{diff_label}：该曲无此难度'
 
     # 标题：直接给出完整标题，供 LLM 判断「标题含 X 吗」等字符存在性题。
     # 不预先分类（中文/英文/日文等），由 LLM 拿玩家问的字符与标题原文直接比对。
@@ -1970,7 +2022,7 @@ def _build_music_profile(music: Music, wmc_tags: Optional[Dict[int, dict]] = Non
         f'版本：{bi.version}（{_version_cn(bi.version)}）\n'
         f'谱面类型：{type_desc}\n'
         f'定数：{ds_desc}\n'
-        f'谱师（即谱面作者/写谱人/作谱者，指制作谱面的人）：{charter_desc}\n'
+        f'谱师（即谱面作者/写谱人/作谱者，指制作谱面的人；未指定颜色时默认紫谱）：{charter_desc}\n'
         f'标题：{title}\n'
         f'艺术家（即曲作者/曲师/演唱者，指原曲的创作者）：{_artist_with_aliases(bi.artist)}\n'
         f'{charts_block}{wmc_block}'
@@ -2160,9 +2212,9 @@ _GUESS_20Q_LLM_SYSTEM = """\
   不是曲目特征里的真实谱师/艺术家名。即：把玩家用的别名翻译成它的官方名，而不是写出当前曲目的谱师。
   例：玩家问「艺术家是匹诺曹吗」-> understand 写「判断艺术家是否为 ピノキオピー」
       （匹诺曹是 ピノキオピー 的别名，用官方名替代玩家输入的别名，不要写当前曲目的真实艺术家）
-  例：玩家问「谱师是泸溪河吗」-> understand 写「判断谱师是否为 Luxizhel」
+  例：玩家问「谱师是泸溪河吗」-> understand 写「判断紫谱谱师是否为 Luxizhel」
       （泸溪河是 Luxizhel 的别名，用官方名替代，不要写当前曲目的真实谱师）
-  例：玩家问「谱师是沙发太吗」-> understand 写「判断谱师是否为 サファ太」
+  例：玩家问「谱师是沙发太吗」-> understand 写「判断紫谱谱师是否为 サファ太」
       （沙发太是 サファ太 的别名，写 サファ太，绝不能写成当前曲目的实际谱师名）
   反例：玩家问「谱师是沙发太吗」，当前曲目实际谱师是「小鳥遊さん×アミノハバキリ」
         -> understand 绝不能写「判断谱师是否为 小鳥遊さん×アミノハバキリ」--这等于泄露答案！
@@ -2233,7 +2285,7 @@ _GUESS_20Q_LLM_SYSTEM = """\
    （唯一例外是「谱师是不是 X」的名字/别名题，按规则 12 依据曲目特征给出的别名清单判定。）
 10. 「谱师」与「艺术家」是两个不同字段，玩家用各种俗称提问时必须先按下表映射到正确字段，
     再与曲目特征比对，绝对不能把谱师题当成艺术家题（反之亦然）：
-    - 谱师字段（制作谱面的人，即 charts 里 MASTER/Re:MASTER 难度的 charter）：
+    - 谱师字段（制作谱面的人）：未指定颜色时只看 MASTER（紫谱）；明确指定颜色时看对应难度谱师。
       谱师 / 谱面作者 / 写谱人 / 作谱者 / 谱面制作 / 谱面写的人 / 制谱人 / chart作者 / 编谱
     - 艺术家字段（原曲的曲作者/演唱者，即 basic_info.artist）：
       艺术家 / 曲作者 / 曲师 / 作曲 / 作曲家 / 原曲作者 / 音乐作者 / 歌手 / 演唱者 / artist
@@ -2289,6 +2341,10 @@ _GUESS_20Q_LLM_SYSTEM = """\
           遇到 (B) → 回「无法回答」，不要凭训练记忆猜，不要联网搜索，也不要武断回否。
       简言之：同一个名字的不同语种/拼写写法可以认；需要"额外知道这个人还有别的身份"
       才认得出来的，一律无法回答。
+    - 谱师数据缺失的处理：若曲目特征里谱师字段显示「未知」或「未知/无署名」，说明该难度的
+      charter 数据为空或仅占位符 '-'（即谱面数据根本没给谱师名）。此时任何「谱师是不是 X」
+      「谱师叫什么」「谱师是哈皮吗」之类的名字题一律回「无法回答」，不得猜测、不得武断回否、
+      不得编造名字；玩家问「这曲有没有谱师署名」可回「数据未收录该难度谱师署名」。
     - 版本俗称同样容忍错字：「双代」打成「霜代」、「宴代」打成「燕代」等，按发音/形近理解。
     - ASCII 版本名（milk/buddies/splash/universe/festival/prism/circle/finale/murasaki/dx）
       也容忍拼写错误：字母顺序颠倒（milk→muilk/mlik）、漏字（buddies→budies）、
@@ -2433,7 +2489,7 @@ _llm_cache: "OrderedDict[Tuple[str, str], Tuple[float, Optional[Tuple[str, str]]
 
 def _llm_cache_key(music: Music, text: str, wmc_tags: Optional[Dict[int, dict]] = None) -> Tuple[str, str]:
     import hashlib
-    profile = _build_music_profile(music, wmc_tags=wmc_tags)
+    profile = _build_music_profile(music, wmc_tags=wmc_tags, text=text)
     fp = hashlib.sha1(profile.encode('utf-8')).hexdigest()
     return fp, _norm(text)
 
@@ -2544,7 +2600,7 @@ async def _llm_classify(
         f'url={getattr(config, "b50_llm_url", "?")} question={text!r}'
     )
 
-    profile = _build_music_profile(music, wmc_tags=wmc_tags)
+    profile = _build_music_profile(music, wmc_tags=wmc_tags, text=text)
     system = _GUESS_20Q_LLM_SYSTEM.format(music_profile=profile)
 
     async with _get_llm_semaphore():
@@ -2561,11 +2617,16 @@ async def _llm_classify(
                     {'role': 'user', 'content': text},
                 ],
                 temperature=0,
-                max_tokens=120,
+                max_tokens=800,
                 timeout=15,
             )
             elapsed = time.time() - t0
-            content = (resp.choices[0].message.content or '').strip()
+            msg = resp.choices[0].message
+            content = (getattr(msg, 'content', '') or '').strip()
+            # 思维链/推理模型（如 deepseek 思考模型）可能把输出全塞进 reasoning_content，
+            # 而 content 为空（max_tokens 太小还会把最终答案截断）。兜底：content 为空时回退取 reasoning_content。
+            if not content:
+                content = (getattr(msg, 'reasoning_content', '') or '').strip()
             # token 用量（兼容 OpenAI 及部分网关）
             usage = getattr(resp, 'usage', None)
             in_tok = getattr(usage, 'prompt_tokens', 0) or 0
@@ -2580,6 +2641,7 @@ async def _llm_classify(
             # 代码兜底：把 understand 里回显的玩家别名替换为官方真名，
             # 保证 bot 给玩家看的判定维度只用官方/规范概念（不依赖 LLM 自觉）。
             understand = _canonicalize_understand(understand, text, music)
+            understand = _clarify_charter_diff_understand(understand, text)
             reason = f'AI 理解：{understand}' if understand else 'AI 兜底判断（规则未命中）'
             if answer is not None:
                 result = (answer, reason)
