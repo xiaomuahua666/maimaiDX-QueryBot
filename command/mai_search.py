@@ -337,9 +337,11 @@ async def _send_song_info_then_pmyx_forward(
         all_nodes.append(_build_nested_forward_node(event.self_id, "谱面标签", tag_nodes))
     if wmc_tag_nodes:
         all_nodes.append(_build_nested_forward_node(event.self_id, "难度分析", wmc_tag_nodes))
-    chart_img = draw_multiver_chart(music.id)
+    # pyecharts/Pillow rendering is synchronous and may take seconds on a cold
+    # cache; never let it stall message intake for the whole bot.
+    chart_img = await asyncio.to_thread(draw_multiver_chart, music.id)
     if chart_img:
-        b64 = image_to_base64(chart_img)
+        b64 = await asyncio.to_thread(image_to_base64, chart_img)
         if qq_mode:
             # ``draw_multiver_chart`` returns a PIL image.  Convert it to a
             # real QQ local attachment instead of passing the object through

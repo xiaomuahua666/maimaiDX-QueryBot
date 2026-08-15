@@ -284,13 +284,13 @@ async def _complete_oauth_paste(
         legacy_qq = profile.get('legacy_qq')
         reward_awarded = False
         if legacy_qq:
-            reward_awarded = break_db.claim_once_reward(
-                int(legacy_qq),
-                'forum_bind_welcome',
-                3,
+            reward_result = await asyncio.to_thread(
+                break_db.claim_once_reward,
+                int(legacy_qq), 'forum_bind_welcome', 3,
                 reason='forum_bind_welcome',
                 meta={'platform_id': pid},
-            ).awarded
+            )
+            reward_awarded = reward_result.awarded
     except ForumOAuthError as exc:
         warn = '' if user_recalled else f'{_RECALL_USER_WARN(event)}\n'
         await plugin_finish(matcher, warn + str(exc), event=event)

@@ -130,9 +130,9 @@ key, binding, error = cache_namespace["_binding_or_error"](object())
 assert key == "123" and binding is None
 assert "请直接发送最新 SGWCMAID" in error
 assert 'service="awmc_gate_status"' in account_source
-assert 'break_db.get_config("awmc_read_cost", "5")' in account_source
+assert 'break_db.get_config, "awmc_read_cost", "5"' in account_source
 assert account_source.index("result = await fetch(binding.qrcode)") < account_source.index(
-    "charge = break_db.settle_service_success(",
+    "charge = await _settle_service_success(",
     account_source.index("async def _run_paid_awmc_read("),
 )
 

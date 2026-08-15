@@ -256,135 +256,78 @@ assert '定级' in classify_question(_g_nico, '紫谱定数是14吗')[2]
 
 print('genre rule tests passed')
 
-# ── 谱师（charter）规则匹配 ──
-# charter=サファ太 → 沙发太=是（别名），翠楼屋=否
+# ── 谱师（charter）是非题：全部交 LLM 语义判断，规则层不抢答 ──
+# 谱师别名/罗马音/笔名/马甲（如「泸溪河」=Luxizhel、沙发太=サファ太、nyan=ニャイン）
+# 是语义题，正则别名表维护不全会误判，统一由 LLM 据公开常识判断。
+# 因此 classify_question（只跑规则层、不调 LLM）对所有谱师题都应返回 consumed=False。
 _g_sf = _make_genre_music('maimai', charter='サファ太')
-_a, _c, _r = classify_question(_g_sf, '谱师是沙发太吗')
-assert _c and _a == _YES, f'サファ太 问沙发太应回是: {_a}'
-assert 'サファ太' not in _r, f'charter reason不应泄露官方名: {_r}'
-assert '沙发太' in _r, f'charter reason应回显玩家说法: {_r}'
-_a, _, _ = classify_question(_g_sf, '谱师是翠楼屋吗')
-assert _a == _NO, f'サファ太 问翠楼屋应回不是: {_a}'
 
-# 错别字容错：普师事沙发太麻（普→谱、事→是、麻→吗）
-_a, _c, _r = classify_question(_g_sf, '普师事沙发太麻')
-assert _c and _a == _YES, f'错别字「普师事沙发太麻」应回是: {_a}'
+# 谱师名字匹配题（含别名/官方名/错别字/空格）→ 规则不抢答，交 LLM
+for _charter_q in (
+    '谱师是沙发太吗',     # 别名
+    '谱师是翠楼屋吗',     # 不匹配的名字
+    '普师事沙发太麻',     # 错别字（普→谱、事→是、麻→吗）
+    '谱师是サファ太吗',   # 官方名
+    '谱师 是 沙发太 吗',  # 带空格
+):
+    _a_q, _c_q, _ = classify_question(_g_sf, _charter_q)
+    assert _c_q is False, f'谱师题「{_charter_q}」应交 LLM（规则不抢答）: consumed={_c_q}'
 
-# 用官方名也能匹配
-_a, _, _ = classify_question(_g_sf, '谱师是サファ太吗')
-assert _a == _YES, f'用官方名问应回是: {_a}'
-
-# 别名 nyan → ニャイン
+# ニャイン 别名（nyan/九条）同样交 LLM
 _g_ny = _make_genre_music('maimai', charter='ニャイン')
-_a, _, _ = classify_question(_g_ny, '谱师是nyan吗')
-assert _a == _YES, f'ニャイン 问nyan应回是: {_a}'
-_a, _, _ = classify_question(_g_ny, '谱师是九条吗')
-assert _a == _YES, f'ニャイン 问九条应回是: {_a}'
+for _charter_q in ('谱师是nyan吗', '谱师是九条吗'):
+    _, _c_q, _ = classify_question(_g_ny, _charter_q)
+    assert _c_q is False, f'谱师别名题「{_charter_q}」应交 LLM: {_c_q}'
 
-# 空格容忍（_norm 已去空格）
-_a, _, _ = classify_question(_g_sf, '谱师 是 沙发太 吗')
-assert _a == _YES, f'带空格也应匹配: {_a}'
-
-# 谱师信息题 → unknown
+# 谱师信息题 → unknown（不消耗）
 assert classify_question(_g_sf, '谱师是谁')[1] is False, '谱师信息题应走 unknown'
 assert classify_question(_g_sf, '是哪位谱师')[1] is False, '谱师信息题应走 unknown'
-# 数量信息题（几首/多少）→ unknown
 assert classify_question(_g_sf, '谱师写过几首')[1] is False, '数量信息题应走 unknown'
 assert classify_question(_g_sf, '谱师有多少作品')[1] is False, '数量信息题应走 unknown'
-# 无谱师署名
-_g_no = _make_genre_music('maimai', charter='-')
-_a, _c, _ = classify_question(_g_no, '谱师是沙发太吗')
-assert _c and _a == _NO, f'无谱师署名应回不是: {_a}'
 
-# 谱师属性/数量/主观是非题 → 走 LLM（不消耗，consumed=False）
-# 历史 bug：「谱师写过的谱多吗」被 _q_charter 提取出 name='写过的谱多'，
-# 匹配不到谱师后误回「不是喵」，应改为走 LLM 兜底。
+# 谱师属性/数量/主观是非题 → 走 LLM（不消耗）
 for _prop_q in (
-    '谱师写过的谱多吗',     # 数量是非题（用户实际触发 case）
-    '谱师写过的歌少吗',     # 数量是非题
-    '谱师是男的吗',         # 性别
-    '谱师是女的吗',         # 性别
-    '谱师是日本人吗',       # 国籍
-    '谱师是中国人吗',       # 国籍
-    '谱师有名吗',           # 知名度
-    '谱师厉害吗',           # 主观
-    '谱师写过别的谱吗',     # 产出属性
-    '谱师还活着吗',         # 其他属性
+    '谱师写过的谱多吗',
+    '谱师写过的歌少吗',
+    '谱师是男的吗',
+    '谱师是女的吗',
+    '谱师是日本人吗',
+    '谱师是中国人吗',
+    '谱师有名吗',
+    '谱师厉害吗',
+    '谱师写过别的谱吗',
+    '谱师还活着吗',
 ):
     _a_p, _c_p, _ = classify_question(_g_sf, _prop_q)
-    assert _c_p is False, f'属性题「{_prop_q}」应走 LLM 不消耗次数: consumed={_c_p}, ans={_a_p[:30]}'
+    assert _c_p is False, f'属性题「{_prop_q}」应走 LLM 不消耗次数: consumed={_c_p}'
 
-# 正常名字匹配不受影响
-_a, _c, _ = classify_question(_g_sf, '谱师是沙发太吗')
-assert _c and _a == _YES, f'名字匹配仍应命中: {_a}'
-_a, _c, _ = classify_question(_g_sf, '谱师是翠楼屋吗')
-assert _c and _a == _NO, f'名字匹配不中应回不是: {_a}'
+# 谱师题不应抢答定数题（反向：定数题仍由规则命中）
+assert classify_question(_g_sf, '紫谱定数是14吗')[1] is True, '定数题不应被谱师handler影响'
 
-# 不抢答定数题
-assert classify_question(_g_sf, '紫谱定数是14吗')[1] is True, '定数题不应被谱师handler抢答'
-
-# ── 离谱题（谱师/艺术家属性题）规则不命中，交 LLM 兜底 ──
-# _q_charter 对属性题 return None 放行给 LLM；LLM 据提示词规则 5 回「无法回答」不消耗次数。
-# 谱师属性题：规则不命中（consumed=False）
-for q in ('谱师写过的谱多吗', '谱师是男的吗', '谱师是日本人吗', '谱师有名吗'):
-    _, consumed, _ = classify_question(m, q)
-    assert consumed is False, f'谱师属性题 {q!r} 应规则不命中交 LLM: {consumed}'
-# 艺术家属性题：规则不命中（_q_charter 门控含艺术家关键词，但属性题 return None）
+# ── 艺术家属性题：规则不命中，交 LLM 兜底 ──
 for q in ('艺术家是女的吗', '曲师是中国人吗'):
     _, consumed, _ = classify_question(m, q)
     assert consumed is False, f'艺术家属性题 {q!r} 应规则不命中交 LLM: {consumed}'
-# 正常题规则命中（consumed=True）
-assert classify_question(m, '谱师是サファ太吗')[1] is True, '谱师名字匹配题应规则命中'
+# 正常非谱师题规则命中（consumed=True）
 assert classify_question(m, 'BPM大于180吗')[1] is True, 'BPM题应规则命中'
 assert classify_question(m, '紫谱定数是14吗')[1] is True, '定数题应规则命中'
 
-# ── Luxizhel 别名匹配（官方名/罗马音）──
-_g_lx = _make_genre_music('maimai', charter='Luxizhel')
-_a, _c, _ = classify_question(_g_lx, '谱师是luxizhel吗')
-assert _c and _a == _YES, f'Luxizhel 问luxizhel应回是: {_a}'
-_a, _c, _ = classify_question(_g_lx, '谱师是Luxizhel吗')
-assert _c and _a == _YES, f'Luxizhel 问Luxizhel应回是: {_a}'
+# 所有谱师别名场景（Luxizhel/泸溪河、サファ太马甲、合作名 safaTAmago、
+# はっぴー马甲、シチミヘルツ马甲、小鳥遊马甲）一律交 LLM，规则层不抢答
+for _charter, _alias_qs in (
+    ('Luxizhel', ('谱师是luxizhel吗', '谱师是Luxizhel吗', '谱师是泸溪河吗')),
+    ('サファ太', ('谱师是Safata.Hz吗', '谱师是safata.hz吗', '谱师是Safata.GHz吗', '谱师是翠吗')),
+    ('safaTAmago', ('谱师是サファ太吗', '谱师是沙发太吗', '谱师是玉子豆腐吗')),
+    ('はっぴー', ('谱师是緑風 犬三郎吗', '谱师是哈皮吗')),
+    ('シチミヘルツ', ('谱师是7.3Hz吗', '谱师是7.3GHz吗')),
+    ('小鳥遊さん', ('谱师是Phoenix吗', '谱师是小鸟游吗', '谱师是takanashi吗')),
+):
+    _g = _make_genre_music('maimai', charter=_charter)
+    for _q in _alias_qs:
+        _, _c_q, _ = classify_question(_g, _q)
+        assert _c_q is False, f'谱师别名题「{_q}」（charter={_charter}）应交 LLM: {_c_q}'
 
-# ── サファ太马甲 Safata.Hz / Safata.GHz + 俗称 翠 ──
-# 曲目谱师=サファ太，玩家用马甲署名提问应回是（同一个人换皮写谱）
-_g_sf = _make_genre_music('maimai', charter='サファ太')
-for _alias_q in ('谱师是Safata.Hz吗', '谱师是safata.hz吗', '谱师是Safata.GHz吗', '谱师是safatahz吗', '谱师是翠吗'):
-    _a, _c, _ = classify_question(_g_sf, _alias_q)
-    assert _c and _a == _YES, f'サファ太 问「{_alias_q}」应回是: {_a}'
-
-# ── 合作名 safaTAmago = サファ太 + 玉子豆腐（FFT MASTER 署名）──
-# 双向匹配：曲署名是合作名时，问任一参与方都应回是；反之亦然
-_g_co = _make_genre_music('maimai', charter='safaTAmago')
-for _alias_q in ('谱师是サファ太吗', '谱师是沙发太吗', '谱师是玉子豆腐吗'):
-    _a, _c, _ = classify_question(_g_co, _alias_q)
-    assert _c and _a == _YES, f'合作名safaTAmago 问「{_alias_q}」应回是: {_a}'
-# 反向：曲署名是单方，问合作名也回是（该方参与了合作）
-_g_sf2 = _make_genre_music('maimai', charter='サファ太')
-_a, _c, _ = classify_question(_g_sf2, '谱师是safatamago吗')
-assert _c and _a == _YES, f'サファ太 问safatamago应回是: {_a}'
-_g_tk2 = _make_genre_music('maimai', charter='玉子豆腐')
-_a, _c, _ = classify_question(_g_tk2, '谱师是safatamago吗')
-assert _c and _a == _YES, f'玉子豆腐 问safatamago应回是: {_a}'
-
-# ── はっぴー马甲 緑風 犬三郎 / 原田ひろゆき ──
-_g_hp = _make_genre_music('maimai', charter='はっぴー')
-for _alias_q in ('谱师是緑風 犬三郎吗', '谱师是绿风犬三郎吗', '谱师是原田ひろゆき吗', '谱师是哈皮吗'):
-    _a, _c, _ = classify_question(_g_hp, _alias_q)
-    assert _c and _a == _YES, f'はっぴー 问「{_alias_q}」应回是: {_a}'
-
-# ── シチミヘルツ马甲 7.3Hz / 7.3GHz ──
-_g_sc = _make_genre_music('maimai', charter='シチミヘルツ')
-for _alias_q in ('谱师是7.3Hz吗', '谱师是7.3GHz吗', '谱师是7.3吗'):
-    _a, _c, _ = classify_question(_g_sc, _alias_q)
-    assert _c and _a == _YES, f'シチミヘルツ 问「{_alias_q}」应回是: {_a}'
-
-# ── 小鳥遊さん马甲 Phoenix ──
-_g_tk = _make_genre_music('maimai', charter='小鳥遊さん')
-for _alias_q in ('谱师是Phoenix吗', '谱师是phoenix吗', '谱师是小鸟游吗', '谱师是takanashi吗'):
-    _a, _c, _ = classify_question(_g_tk, _alias_q)
-    assert _c and _a == _YES, f'小鳥遊さん 问「{_alias_q}」应回是: {_a}'
-
-print('charter rule tests passed')
+print('charter LLM-delegation tests passed')
 
 # ── 比较词覆盖测试（紫谱=14.6）──
 _cmp_cases = [

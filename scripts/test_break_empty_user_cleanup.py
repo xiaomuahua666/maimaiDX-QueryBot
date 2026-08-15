@@ -2,7 +2,7 @@
 
 import ast
 import sqlite3
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -48,7 +48,13 @@ test_class = ast.ClassDef(
     decorator_list=[],
 )
 ast.fix_missing_locations(test_class)
-namespace = {"date": date, "log": _Log()}
+namespace = {
+    "date": date,
+    "datetime": datetime,
+    "timedelta": timedelta,
+    "timezone": timezone,
+    "log": _Log(),
+}
 exec(
     compile(ast.Module(body=[test_class], type_ignores=[]), str(source_path), "exec"),
     namespace,

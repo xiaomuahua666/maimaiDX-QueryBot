@@ -91,7 +91,7 @@ assert "fish=False," in account_source and "lxns=True," in account_source
 assert "fish=fish," in account_source and "lxns=lxns," in account_source
 assert 'else "upload_awmcnet"' in account_source
 assert 'billing_service = "upload" if (fish or lxns) else "awmcnet_sync"' in account_source
-assert 'cost = _service_cost(operation) if (fish or lxns) else 0' in account_source
+assert 'cost = await _service_cost(operation) if (fish or lxns) else 0' in account_source
 assert '_AWMCNET_SYNCED_LINE = "已同步到 AWMC NET."' in account_source
 assert 'awmcnet=success,lxns=error:' in account_source
 assert '水鱼/落雪失败不回滚已经成功的 AWMC NET 同步' in account_source

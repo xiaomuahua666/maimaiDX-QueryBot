@@ -29,10 +29,12 @@ def groups(command: str):
 
 
 assert groups('10将完成表') == ('10', '将', None, None, None)
+assert groups('  12+将完成表  ') == ('12+', '将', None, None, None)
 assert groups('13将') == ('13', '将', None, None, None)
 assert groups('14+极进度') == ('14+', '极', None, None, None)
 assert groups('13舞舞完成表 未完成 2') == ('13', '舞舞', '未完成', '2', None)
 assert groups('13将进度 玩家名') == ('13', '将', None, None, '玩家名')
+assert groups('13将进度 玩家 名  ') == ('13', '将', None, None, '玩家 名')
 
 # 用户名仍然可用，但必须与指令主体有空白边界。
 assert PATTERN.fullmatch('13将玩家名') is None

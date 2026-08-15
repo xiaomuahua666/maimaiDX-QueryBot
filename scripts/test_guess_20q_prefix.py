@@ -427,16 +427,18 @@ assert _c_b2 and _a_b2 == _YES, f'紫谱14.6 小于50应回是: {_a_b2}'
 _a_b3, _c_b3, _ = classify_question(_m_bpm, '紫谱定数大于100吗')
 assert _c_b3 and _a_b3 == _NO, f'紫谱14.6 大于100应回不是: {_a_b3}'
 
-# ───────────────────── 难度形容词定数问题回归 ─────────────────────
-# 版本题已纳入规则（_q_version），这里验证 _q_ds 仍识别难度形容词是非题。
+# ───────────────────── 定数形容词（高/低）规则回归 ─────────────────────
+# 版本题已纳入规则（_q_version）；数值定数形容词（高/低）仍由规则硬判，
+# 难度形容词（难/简单）已移出规则、交由 LLM 判断。
 
-# 26. 难度形容词定数问题：_q_ds 应识别「紫谱高吗」「紫谱难吗」
+# 26. 数值定数形容词（高/低）仍由规则硬判；难度形容词（难/简单）不再由规则判定，交由 LLM
 assert _q_ds(_m, '紫谱高吗')[0] == _YES, '紫谱14.6>=13.5 应回是'
-assert _q_ds(_m, '紫谱难吗')[0] == _YES, '紫谱14.6>=13.5 应回是'
 assert _q_ds(_m, '紫谱低吗')[0] == _NO, '紫谱14.6>11 应回不是'
-assert _q_ds(_m, '紫谱简单吗')[0] == _NO, '紫谱14.6>11 应回不是'
-assert _q_ds(_mw, '白谱难吗')[0] == _YES, '白谱15>=13.5 应回是'
-assert _q_ds(_mw, '白谱简单吗')[0] == _NO, '白谱15>11 应回不是'
+# 难度形容词：规则不再应答（返回 None），上传 LLM 判断
+assert _q_ds(_m, '紫谱难吗') is None, '「紫谱难吗」难度形容词应交 LLM，规则不硬判'
+assert _q_ds(_m, '紫谱简单吗') is None, '「紫谱简单吗」难度形容词应交 LLM，规则不硬判'
+assert _q_ds(_mw, '白谱难吗') is None, '「白谱难吗」难度形容词应交 LLM，规则不硬判'
+assert _q_ds(_mw, '白谱简单吗') is None, '「白谱简单吗」难度形容词应交 LLM，规则不硬判'
 
 # 27. 版本问题由规则命中：_m version=でらっくす → 是熊代=是，是紫代(murasaki)=不是
 _a_ver, _c_ver, _r_ver = classify_question(_m, '是熊代吗')
@@ -444,11 +446,11 @@ assert _c_ver and _a_ver == _YES, f'でらっくす 问熊代应回是: consumed
 _a_ver2, _c_ver2, _ = classify_question(_m, '是紫代吗')
 assert _c_ver2 and _a_ver2 == _NO, f'でらっくす 问紫代应回不是: {_a_ver2}'
 
-# 28. classify_question 实际路由：「紫谱高吗」走 _q_ds
+# 28. classify_question 实际路由：「紫谱高吗」走 _q_ds（规则命中）；「白谱难吗」规则不命中，交 LLM
 _a_v1, _c_v1, _ = classify_question(_m, '紫谱高吗')
 assert _c_v1 and _a_v1 == _YES, f'紫谱高应回是: {_a_v1}'
 _a_v2, _c_v2, _ = classify_question(_mw, '白谱难吗')
-assert _c_v2 and _a_v2 == _YES, f'白谱难应回是: {_a_v2}'
+assert _c_v2 is False, f'白谱难应不命中规则、交 LLM: consumed={_c_v2}'
 
 # ───────────────────── 谱师信息题/艺术家题移交 LLM 回归 ─────────────────────
 # 谱师信息题（是谁）走 unknown；艺术家题仍移交 LLM。谱师是非题由规则命中。
@@ -550,7 +552,7 @@ assert _q_ds(_m, '紫谱多高') is None, '「紫谱多高」问数值应走 unk
 assert _q_ds(_m, '紫谱多难') is None, '「紫谱多难」问数值应走 unknown'
 assert _q_ds(_m, '紫谱多低') is None, '「紫谱多低」问数值应走 unknown'
 assert _q_ds(_m, '紫谱高吗')[0] == _YES, '「紫谱高吗」是非题应回答'
-assert _q_ds(_m, '紫谱难吗')[0] == _YES, '「紫谱难吗」是非题应回答'
+assert _q_ds(_m, '紫谱难吗') is None, '「紫谱难吗」难度形容词应交 LLM，规则不硬判'
 assert _q_ds(_m, '紫谱低吗')[0] == _NO, '「紫谱低吗」是非题应回答'
 
 # 37. classify_question 实际路由：「多X」走 unknown 不消耗次数

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import json
+import time
 
 from loguru import logger as log
 from nonebot import on_command
@@ -57,6 +59,33 @@ _ANALYSIS_SHORTCUTS = (
 )
 
 
+class AnalysisStageTimeoutError(TimeoutError):
+    pass
+
+
+def _timeout_seconds(name: str, default: float) -> float:
+    try:
+        return max(0.5, float(getattr(maiconfig, name, default) or default))
+    except (TypeError, ValueError):
+        return default
+
+
+async def _run_timed_stage(awaitable, *, stage: str, timeout: float, qq: int):
+    started = time.monotonic()
+    log.info(f'[b50_analysis] {stage}开始 qq={qq} timeout={timeout:.1f}s')
+    try:
+        result = await asyncio.wait_for(awaitable, timeout=timeout)
+    except asyncio.TimeoutError as exc:
+        elapsed = time.monotonic() - started
+        log.warning(f'[b50_analysis] {stage}超时 qq={qq} elapsed={elapsed:.1f}s')
+        raise AnalysisStageTimeoutError(
+            f'{stage}超时（超过 {timeout:g} 秒），请稍后重试'
+        ) from exc
+    elapsed = time.monotonic() - started
+    log.info(f'[b50_analysis] {stage}完成 qq={qq} elapsed={elapsed:.1f}s')
+    return result
+
+
 def get_peer_stats():
     global _peer_stats
     if _peer_stats is None and maiconfig.b50_assets_path:
@@ -78,17 +107,21 @@ async def _deliver_result_or_refund(
 ) -> bool:
     """Only let the caller settle a reservation after the image was sent."""
     try:
-        await plugin_send(
-            matcher,
-            MessageSegment.image(image),
-            event=event,
-            mention_sender=use_qq_mode(event),
-            publish_qq_image=True,
+        await _run_timed_stage(
+            plugin_send(
+                matcher,
+                MessageSegment.image(image),
+                event=event,
+                mention_sender=use_qq_mode(event),
+                publish_qq_image=True,
+            ),
+            stage='图片发送',
+            timeout=_timeout_seconds('b50_send_timeout_seconds', 30.0),
+            qq=billing_qq,
         )
     except BaseException as exc:
-        refund_analysis_charge(
-            billing_qq,
-            reserved,
+        await asyncio.to_thread(
+            refund_analysis_charge, billing_qq, reserved,
             reason=f'发送结果:{type(exc).__name__}',
         )
         if not isinstance(exc, Exception):
@@ -139,17 +172,32 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
     if use_qq_mode(event) or not bool(
         getattr(maiconfig, 'maimaidx_compact_messages', True)
     ):
-        await plugin_send(
-            matcher,
-            pending,
-            event=event,
-            mention_sender=use_qq_mode(event),
-        )
+        try:
+            await asyncio.wait_for(
+                plugin_send(
+                    matcher,
+                    pending,
+                    event=event,
+                    mention_sender=use_qq_mode(event),
+                ),
+                timeout=_timeout_seconds('b50_send_timeout_seconds', 30.0),
+            )
+        except Exception as exc:
+            log.warning(
+                f'[b50_analysis] 处理中提示发送失败 qq={billing_qq}: '
+                f'{type(exc).__name__}: {exc}'
+            )
 
     # The official QQ gateway may not support the OneBot reaction API.  Send
     # the visible acknowledgement first so a slow/failed reaction request can
     # never make a long-running roast look like a silent command.
-    await react_processing(bot, event)
+    try:
+        await asyncio.wait_for(
+            react_processing(bot, event),
+            timeout=_timeout_seconds('b50_reaction_timeout_seconds', 2.0),
+        )
+    except asyncio.TimeoutError:
+        log.warning(f'[b50_analysis] 处理表情超时 qq={billing_qq}，继续执行')
 
     if style:
         mod_result = check_user_input(style)
@@ -164,8 +212,13 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
 
     try:
         legacy_qq = resolve_score_qqid(event)
-        b50_data = await fetch_for_analysis(
-            legacy_qq, assets_path=maiconfig.b50_assets_path
+        b50_data = await _run_timed_stage(
+            fetch_for_analysis(
+                legacy_qq, assets_path=maiconfig.b50_assets_path
+            ),
+            stage='成绩拉取',
+            timeout=_timeout_seconds('b50_fetch_timeout_seconds', 45.0),
+            qq=billing_qq,
         )
     except BreakInsufficientError as e:
         await plugin_finish(
@@ -178,6 +231,11 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
         )
         return
     except ValueError as e:
+        await plugin_finish(
+            matcher, str(e), event=event, mention_sender=use_qq_mode(event)
+        )
+        return
+    except AnalysisStageTimeoutError as e:
         await plugin_finish(
             matcher, str(e), event=event, mention_sender=use_qq_mode(event)
         )
@@ -220,16 +278,21 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
     context['player']['qq'] = str(legacy_qq)
 
     try:
-        reserved = reserve_analysis_charge(billing_qq)
+        reserved = await asyncio.to_thread(reserve_analysis_charge, billing_qq)
     except BreakInsufficientError as e:
         await plugin_finish(
             matcher, str(e), event=event, mention_sender=use_qq_mode(event)
         )
         return
     try:
-        ensure_image_render_affordable(billing_qq)
+        await asyncio.to_thread(ensure_image_render_affordable, billing_qq)
     except BreakInsufficientError as e:
-        refund_analysis_charge(billing_qq, reserved, reason='render:insufficient')
+        await asyncio.to_thread(
+            refund_analysis_charge,
+            billing_qq,
+            reserved,
+            reason='render:insufficient',
+        )
         await plugin_finish(
             matcher, str(e), event=event, mention_sender=use_qq_mode(event)
         )
@@ -237,7 +300,12 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
 
     failure_stage = '分析生成'
     try:
-        analysis_text, token_usage = await generate_analysis(context, maiconfig, style)
+        analysis_text, token_usage = await _run_timed_stage(
+            generate_analysis(context, maiconfig, style),
+            stage='模型分析',
+            timeout=_timeout_seconds('b50_llm_timeout_seconds', 180.0) + 5.0,
+            qq=billing_qq,
+        )
         try:
             _parsed = json.loads(analysis_text)
             for field in ('overall_roast', 'impression_roast', 'title'):
@@ -266,9 +334,8 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
             return buffer
         buf = await run_image_cpu(_render_and_encode)
     except BaseException as e:
-        refund_analysis_charge(
-            billing_qq,
-            reserved,
+        await asyncio.to_thread(
+            refund_analysis_charge, billing_qq, reserved,
             reason=f'{failure_stage}:{type(e).__name__}',
         )
         if not isinstance(e, Exception):
@@ -303,17 +370,20 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
 
     # 图片已经送达。按真实 Token 多退少补；余额允许为负数。
     try:
-        render_line = settle_image_render(billing_qq)
-        charged = settle_analysis_charge(
-            billing_qq,
-            cost,
-            reserved=reserved,
-            token_usage=token_usage,
-        )
+        def _settle_result():
+            render = settle_image_render(billing_qq)
+            charge = settle_analysis_charge(
+                billing_qq,
+                cost,
+                reserved=reserved,
+                token_usage=token_usage,
+            )
+            return render, charge, break_db.get_balance(billing_qq)
+
+        render_line, charged, balance = await asyncio.to_thread(_settle_result)
     except Exception as e:
-        refund_analysis_charge(
-            billing_qq,
-            reserved,
+        await asyncio.to_thread(
+            refund_analysis_charge, billing_qq, reserved,
             reason=f'结算异常:{type(e).__name__}',
         )
         log.exception(f'[b50_analysis] 结算失败 qq={billing_qq}: {e}')
@@ -326,7 +396,6 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
         )
         return
 
-    balance = break_db.get_balance(billing_qq)
     query_footer = take_break_charge_footer()
     footer_parts = []
     if query_footer:

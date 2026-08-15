@@ -1,3 +1,5 @@
+import asyncio
+
 from nonebot import on_command, on_regex
 from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message, MessageEvent, PrivateMessageEvent
 from nonebot.exception import IgnoredException
@@ -50,7 +52,7 @@ _QQ_HELP_POPULAR = (
 )
 
 _TODAY_SHORTCUTS = (
-    ('再看运势', '今日舞萌'), ('标准 B50', 'b50'),
+    ('今日运势', '今日舞萌'), ('标准 B50', 'b50'),
     ('吃分推荐', '吃分推荐'), ('签到', '签到'),
     ('猜歌', '猜歌'), ('帮助', 'help'),
 )
@@ -151,10 +153,9 @@ async def _(event: MessageEvent):
     h = qqhash(billing_user_id(event))
     rp = h % 100
     rounded_rp, luck_break = calculate_luck_break(rp)
-    reward = break_db.claim_daily_reward(
-        billing_user_id(event),
-        'today_luck',
-        luck_break,
+    reward = await asyncio.to_thread(
+        break_db.claim_daily_reward,
+        billing_user_id(event), 'today_luck', luck_break,
         reason='today_luck',
         meta={'luck': rp, 'rounded_luck': rounded_rp},
     )

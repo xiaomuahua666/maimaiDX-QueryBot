@@ -46,31 +46,35 @@ async def fetch_and_store_user_scores(
             log.warning(f"[DataScheduler] 用户 {qqid} 没有成绩数据")
             return False
 
-        snapshot = build_daily_snapshot(
-            qqid,
-            userinfo,
-            records,
-            source=source,
-            target_date=target_date,
-        )
-        if snapshot is None:
-            # 成绩过少时仍尽量落盘（个人开启存储场景）
-            from .maimaidx_share_snapshot import playinfo_to_score_records
-
-            score_records = playinfo_to_score_records(records)
-            if not score_records:
-                return False
-            snapshot = DailySnapshot(
-                date=target_date or datetime.now().strftime("%Y-%m-%d"),
-                qqid=qqid,
-                nickname=userinfo.nickname or userinfo.username or str(qqid),
-                rating=userinfo.rating or 0,
-                records=score_records,
-                record_count=len(score_records),
+        def _build_and_save_snapshot() -> tuple[bool, Optional[DailySnapshot]]:
+            snapshot = build_daily_snapshot(
+                qqid,
+                userinfo,
+                records,
                 source=source,
+                target_date=target_date,
             )
+            if snapshot is None:
+                # 成绩过少时仍尽量落盘（个人开启存储场景）
+                from .maimaidx_share_snapshot import playinfo_to_score_records
 
-        success = data_storage.save_daily_snapshot(snapshot)
+                score_records = playinfo_to_score_records(records)
+                if not score_records:
+                    return False, None
+                snapshot = DailySnapshot(
+                    date=target_date or datetime.now().strftime("%Y-%m-%d"),
+                    qqid=qqid,
+                    nickname=userinfo.nickname or userinfo.username or str(qqid),
+                    rating=userinfo.rating or 0,
+                    records=score_records,
+                    record_count=len(score_records),
+                    source=source,
+                )
+            return data_storage.save_daily_snapshot(snapshot), snapshot
+
+        success, snapshot = await asyncio.to_thread(_build_and_save_snapshot)
+        if snapshot is None:
+            return False
         if success:
             log.info(
                 f"[DataScheduler] 成功存储用户 {qqid} 的 {snapshot.date} 成绩快照，"
@@ -95,29 +99,33 @@ async def daily_storage_task():
     from .maimaidx_player_cache import player_cache_db
     from .maimaidx_share_snapshot import MIN_SHARE_RECORDS, maybe_save_share_snapshot
 
-    enabled_users = set(int(x) for x in data_storage.get_enabled_users())
-    # 近 7 天查过分且有厚 records 的缓存用户
-    since = (datetime.now() - timedelta(days=7)).timestamp()
-    try:
-        recent = player_cache_db.list_recent_full_records(
-            since_ts=since, min_records=MIN_SHARE_RECORDS, limit=2000
-        )
-    except Exception as e:
-        log.warning(f"[DataScheduler] 扫描 player_cache 失败: {e}")
-        recent = []
+    def _scan_local_storage() -> tuple[set[int], int]:
+        """Scan SQLite/JSON snapshots without pausing NoneBot dispatch."""
+        enabled = set(int(x) for x in data_storage.get_enabled_users())
+        since = (datetime.now() - timedelta(days=7)).timestamp()
+        try:
+            recent = player_cache_db.list_recent_full_records(
+                since_ts=since, min_records=MIN_SHARE_RECORDS, limit=2000
+            )
+        except Exception as exc:
+            log.warning(f"[DataScheduler] 扫描 player_cache 失败: {exc}")
+            recent = []
+        opted_out = set(data_share.list_opted_out())
+        shared = 0
+        for item in recent:
+            qqid = int(item["qqid"])
+            if str(qqid) in opted_out:
+                continue
+            if maybe_save_share_snapshot(
+                qqid,
+                item["userinfo"],
+                item["records"],
+                source="share_cache_daily",
+            ):
+                shared += 1
+        return enabled, shared
 
-    share_from_cache = 0
-    for item in recent:
-        qqid = int(item["qqid"])
-        if not data_share.is_sharing_enabled(qqid):
-            continue
-        if maybe_save_share_snapshot(
-            qqid,
-            item["userinfo"],
-            item["records"],
-            source="share_cache_daily",
-        ):
-            share_from_cache += 1
+    enabled_users, share_from_cache = await asyncio.to_thread(_scan_local_storage)
 
     if not enabled_users and share_from_cache == 0:
         log.info("[DataScheduler] 无需存储的用户，跳过")
@@ -159,14 +167,13 @@ async def periodic_storage_check():
     now = datetime.now()
     today = now.strftime("%Y-%m-%d")
     
-    enabled_users = data_storage.get_enabled_users()
-    users_to_store = []
-    
-    for qqid in enabled_users:
-        # 检查今天是否已经存储过
-        existing = data_storage.load_daily_snapshot(qqid, today)
-        if not existing:
-            users_to_store.append(qqid)
+    def _missing_users() -> list[int]:
+        return [
+            qqid for qqid in data_storage.get_enabled_users()
+            if not data_storage.load_daily_snapshot(qqid, today)
+        ]
+
+    users_to_store = await asyncio.to_thread(_missing_users)
     
     if users_to_store:
         log.info(f"[DataScheduler] 发现 {len(users_to_store)} 个用户今天尚未存储成绩，开始补存")
@@ -189,13 +196,13 @@ async def on_startup_storage():
     await asyncio.sleep(30)  # 等待 30 秒，确保 bot 完全启动
     
     yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-    enabled_users = data_storage.get_enabled_users()
-    
-    users_to_store = []
-    for qqid in enabled_users:
-        existing = data_storage.load_daily_snapshot(qqid, yesterday)
-        if not existing:
-            users_to_store.append(qqid)
+    def _missing_users() -> list[int]:
+        return [
+            qqid for qqid in data_storage.get_enabled_users()
+            if not data_storage.load_daily_snapshot(qqid, yesterday)
+        ]
+
+    users_to_store = await asyncio.to_thread(_missing_users)
     
     if users_to_store:
         log.info(f"[DataScheduler] 启动补存：{len(users_to_store)} 个用户昨天未存储")
@@ -226,3 +233,10 @@ async def _(bot):
         return
     _startup_storage_started = True
     asyncio.create_task(on_startup_storage())
+
+
+@driver.on_bot_disconnect
+async def _(bot):
+    """Bot 断连时记录告警，便于排查「突然断联导致消息发不出」。"""
+    bot_id = getattr(bot, 'self_id', '') or getattr(bot, 'bot_id', '') or bot
+    log.warning(f"[DataScheduler] Bot 断连：{bot_id}（发消息将进入重试/暂存流程）")

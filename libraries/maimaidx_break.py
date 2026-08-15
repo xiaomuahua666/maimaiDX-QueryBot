@@ -8,15 +8,17 @@ AWMC BREAK 积分：签到、查分扣费、账号统计。
 from __future__ import annotations
 
 import base64
+import asyncio
 import contextvars
 import json
 import math
 import random
+import re
 import time
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from threading import RLock
 from typing import Any, Dict, List, Optional
@@ -59,6 +61,10 @@ DEFAULT_CONFIG: Dict[str, str] = {
     'storage_bonus_cooldown_days': '7',
     # 猜对每次固定奖励，不设每日上限，避免被分数倍率放大。
     'guess_break_per_correct': '1',
+    # 小游戏每日 BREAK 上限：全局总闸（0=不限制）+ 每游戏节流阀（0=该游戏不限制）。
+    # game_key ∈ song/cover/tune/chart/rating/impostor/duel/twentyq/letter。
+    'guess_daily_break_global_cap': '40',
+    'guess_daily_caps': 'song:20,cover:20,tune:20,chart:20,rating:15,impostor:15,duel:10,twentyq:20,letter:15',
     # 上传/发票仅在外部操作成功后结算；上传每日首次免费，发票每次扣费。
     'upload_fish_cost': '2',
     'upload_lx_cost': '2',
@@ -69,7 +75,6 @@ DEFAULT_CONFIG: Dict[str, str] = {
     'awmc_status_cost': '2',
     'awmc_music_upsert_cost': '75',
     'awmc_music_delete_cost': '50',
-    'awmc_ticket_clear_cost': '10',
     'awmc_item_upsert_cost': '100',
     'ticket_unused_penalty': '20',
     'transfer_fee': '0',
@@ -168,6 +173,14 @@ CREATE TABLE IF NOT EXISTS break_guess_daily (
     break_awarded   INTEGER NOT NULL DEFAULT 0,
     last_at         REAL NOT NULL,
     PRIMARY KEY (qqid, date)
+);
+CREATE TABLE IF NOT EXISTS break_game_daily (
+    qqid            INTEGER NOT NULL,
+    date            TEXT NOT NULL,
+    game            TEXT NOT NULL,
+    break_awarded   INTEGER NOT NULL DEFAULT 0,
+    last_at         REAL NOT NULL,
+    PRIMARY KEY (qqid, date, game)
 );
 CREATE TABLE IF NOT EXISTS break_service_daily (
     qqid          INTEGER NOT NULL,
@@ -312,6 +325,19 @@ class GuessBreakReward:
     balance: int
     doubled: bool = False
     double_remaining: float = 0.0
+    capped: bool = False
+
+
+@dataclass
+class GameBreakAward:
+    """小游戏 BREAK 发放结果（双层上限口返回）。"""
+    game: str
+    requested: int
+    awarded: int
+    capped: bool
+    doubled: bool = False
+    double_remaining: float = 0.0
+    balance: int = 0
 
 
 @dataclass
@@ -576,14 +602,164 @@ class BreakDatabase:
             return
         self._initialized = True
         self._conn = create_unified_connection()
-        # 建表：仅 SQLite 模式执行；MySQL 已由迁移脚本创建
+        # 建表：SQLite 模式直接执行建表脚本；MySQL 模式自动补建缺失表
         if self._conn._backend == 'sqlite':
             self._conn.executescript(_CREATE_SQL)
+        else:
+            self._ensure_mysql_tables()
         self._ensure_config_primary_key_mysql()
         self._repair_break_usage_schema_mysql()
         self._seed_config()
         self._prune_unbound_hash_users()
         self._prune_empty_users()
+
+    def _ensure_mysql_tables(self) -> None:
+        """MySQL 模式下自动补建缺失的表，避免依赖手动迁移脚本。
+
+        SQLite 模式通过 ``executescript(_CREATE_SQL)`` 一次性建表，
+        但 MySQL 模式的 ``executescript`` 是空操作（表理应由迁移脚本创建）。
+        如果迁移脚本未跑或新表是在后续版本引入的，这里按需补建，
+        确保表结构始终与代码一致。
+        """
+        prefix = getattr(self._conn, '_prefix', '') or ''
+        raw = self._conn._conn
+        # _CREATE_SQL 中每条 CREATE TABLE IF NOT EXISTS 的定义
+        # 解析出表名和完整 DDL，对 MySQL 逐条检查并补建
+        for match in re.finditer(
+            r'CREATE TABLE IF NOT EXISTS (\w+) \((.*?)\);',
+            _CREATE_SQL,
+            re.DOTALL,
+        ):
+            table_name = match.group(1)
+            col_defs = match.group(2)
+            prefixed = f'{prefix}{table_name}'
+            try:
+                with raw.cursor() as cur:
+                    cur.execute(
+                        "SELECT COUNT(*) AS cnt FROM information_schema.tables "
+                        "WHERE table_schema = DATABASE() AND table_name = %s",
+                        (prefixed,),
+                    )
+                    row = cur.fetchone()
+                    if row and int(row.get('cnt', 0) or 0) > 0:
+                        continue
+                    # 表不存在，转换 SQLite DDL 为 MySQL 兼容格式并建表
+                    mysql_ddl = self._sqlite_ddl_to_mysql(table_name, col_defs)
+                    create_sql = (
+                        f'CREATE TABLE `{prefixed}` ({mysql_ddl}) '
+                        f'ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 '
+                        f'COLLATE=utf8mb4_unicode_ci'
+                    )
+                    cur.execute(create_sql)
+                raw.commit()
+                log.info(f'[BREAK] MySQL 自动建表: {prefixed}')
+            except Exception as exc:
+                try:
+                    raw.rollback()
+                except Exception:
+                    pass
+                log.warning(
+                    f'[BREAK] MySQL 自动建表 {prefixed} 失败（已忽略）：'
+                    f'{type(exc).__name__}: {exc}'
+                )
+
+    @staticmethod
+    def _sqlite_ddl_to_mysql(table_name: str, col_defs: str) -> str:
+        """将 SQLite 建表列定义转换为 MySQL 兼容格式。
+
+        处理以下 SQLite DDL 特性：
+        - 列级 PRIMARY KEY（``INTEGER PRIMARY KEY`` / ``TEXT PRIMARY KEY``）
+        - ``INTEGER PRIMARY KEY AUTOINCREMENT`` -> ``BIGINT AUTO_INCREMENT PRIMARY KEY``
+        - 表级 ``PRIMARY KEY (col1, col2)`` 作为独立行
+        - ``FOREIGN KEY`` 约束跳过（前缀表名导致引用失效，且不依赖 FK 约束保证正确性）
+        - ``CREATE INDEX`` 行跳过（索引在表外独立创建）
+        - INTEGER -> BIGINT, TEXT -> TEXT/VARCHAR(255), REAL -> DOUBLE
+        """
+        lines = []
+        primary_keys = []
+        for definition in col_defs.strip().split('\n'):
+            pk_match = re.match(
+                r'\s*PRIMARY\s+KEY\s*\(([^)]+)\)',
+                definition,
+                re.IGNORECASE,
+            )
+            if pk_match:
+                primary_keys.extend(
+                    column.strip().strip('`"')
+                    for column in pk_match.group(1).split(',')
+                )
+        primary_key_set = set(primary_keys)
+        for line in col_defs.strip().split('\n'):
+            line = line.strip().rstrip(',')
+            if not line:
+                continue
+            upper = line.upper()
+            # 跳过 CREATE INDEX 行
+            if upper.startswith('CREATE INDEX'):
+                continue
+            # 跳过 FOREIGN KEY 约束（前缀表名导致引用失效）
+            if upper.startswith('FOREIGN KEY'):
+                continue
+            # 表级 PRIMARY KEY 行
+            if upper.startswith('PRIMARY KEY'):
+                continue
+            # 解析列名和类型
+            parts = line.split(None, 1)
+            if len(parts) < 2:
+                continue
+            col_name = parts[0]
+            col_type_raw = parts[1]
+            upper_type = col_type_raw.upper()
+            # INTEGER PRIMARY KEY AUTOINCREMENT
+            if 'INTEGER' in upper_type and 'AUTOINCREMENT' in upper_type:
+                lines.append(
+                    f'`{col_name}` BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY'
+                )
+            # INTEGER PRIMARY KEY（列级）
+            elif 'INTEGER' in upper_type and 'PRIMARY KEY' in upper_type:
+                primary_keys.append(col_name)
+                lines.append(f'`{col_name}` BIGINT NOT NULL')
+            # 普通 INTEGER 列
+            elif 'INTEGER' in upper_type:
+                extra = ''
+                if 'NOT NULL' in upper_type:
+                    extra += ' NOT NULL'
+                if 'DEFAULT' in upper_type:
+                    m = re.search(r'DEFAULT\s+(\S+)', col_type_raw, re.IGNORECASE)
+                    if m:
+                        extra += f' DEFAULT {m.group(1)}'
+                lines.append(f'`{col_name}` BIGINT{extra}')
+            # TEXT PRIMARY KEY（列级）
+            elif (
+                'TEXT' in upper_type
+                and ('PRIMARY KEY' in upper_type or col_name in primary_key_set)
+            ):
+                if 'PRIMARY KEY' in upper_type:
+                    primary_keys.append(col_name)
+                lines.append(f'`{col_name}` VARCHAR(191) NOT NULL')
+            # 普通 TEXT 列（可能允许 NULL）
+            elif 'TEXT' in upper_type:
+                extra = ''
+                if 'NOT NULL' in upper_type:
+                    extra += ' NOT NULL'
+                lines.append(f'`{col_name}` TEXT{extra}')
+            # REAL / FLOAT -> DOUBLE
+            elif 'REAL' in upper_type or 'FLOAT' in upper_type:
+                extra = ''
+                if 'NOT NULL' in upper_type:
+                    extra += ' NOT NULL'
+                lines.append(f'`{col_name}` DOUBLE{extra}')
+            # 其他类型原样保留
+            else:
+                lines.append(f'`{col_name}` {col_type_raw}')
+        # 如果有主键（表级或列级收集的），追加 PRIMARY KEY 子句
+        # 但如果列级 AUTO_INCREMENT 已包含 PRIMARY KEY，则不重复
+        has_autoinc_pk = any('AUTO_INCREMENT PRIMARY KEY' in l for l in lines)
+        if primary_keys and not has_autoinc_pk:
+            lines.append(
+                f'PRIMARY KEY ({", ".join(f"`{k}`" for k in primary_keys)})'
+            )
+        return ',\n    '.join(lines)
 
     def _ensure_config_primary_key_mysql(self) -> None:
         """修复 MySQL 旧库 break_config 缺少主键导致的重复行问题。
@@ -787,6 +963,7 @@ class BreakDatabase:
                 'DELETE FROM break_makeup_checkin WHERE qqid = ?',
                 'DELETE FROM break_log WHERE qqid = ?',
                 'DELETE FROM break_guess_daily WHERE qqid = ?',
+                'DELETE FROM break_game_daily WHERE qqid = ?',
                 'DELETE FROM break_service_daily WHERE qqid = ?',
                 'DELETE FROM break_daily_reward WHERE qqid = ?',
                 'DELETE FROM break_red_packet_claim '
@@ -1076,7 +1253,8 @@ class BreakDatabase:
             self._conn.commit()
 
     def _today(self) -> str:
-        return date.today().isoformat()
+        # 每日重置边界统一为 UTC+8（北京时间）零点，不依赖服务器本地时区。
+        return (datetime.now(timezone(timedelta(hours=8))).date()).isoformat()
 
     def _ensure_daily(self, qqid: int) -> None:
         self._conn.execute(
@@ -1444,35 +1622,51 @@ class BreakDatabase:
             raise ValueError('转账数量必须大于 0，且不能转给自己')
         fee = max(0, _parse_config_int(self.get_config('transfer_fee', '0'), 0))
         with self._lock:
-            sender_balance = self.get_balance(sender)
-            total = amount + fee
-            if sender_balance < total:
-                raise BreakInsufficientError(total, sender_balance, qqid=sender)
-            self._ensure_user(sender)
-            self._ensure_user(recipient)
-            self._ensure_daily(sender)
-            self._ensure_daily(recipient)
-            now = time.time()
-            self._conn.execute(
-                'UPDATE break_users SET balance=balance-?, updated_at=? WHERE qqid=?',
-                (total, now, sender),
-            )
-            self._conn.execute(
-                'UPDATE break_users SET balance=balance+?, updated_at=? WHERE qqid=?',
-                (amount, now, recipient),
-            )
-            self._conn.execute(
-                'UPDATE break_daily_usage SET break_spent=break_spent+? WHERE qqid=? AND date=?',
-                (total, sender, self._today()),
-            )
-            self._conn.execute(
-                'UPDATE break_daily_usage SET break_gained=break_gained+? WHERE qqid=? AND date=?',
-                (amount, recipient, self._today()),
-            )
-            self._append_log(sender, -total, 'transfer_out', meta={'to': recipient, 'amount': amount, 'fee': fee})
-            self._append_log(recipient, amount, 'transfer_in', meta={'from': sender, 'amount': amount})
-            self._conn.commit()
-            return TransferResult(sender_balance-total, self.get_balance(recipient), amount, fee)
+            try:
+                return self._transfer_locked(sender, recipient, amount, fee)
+            except Exception:
+                # MySQL(autocommit=False) 下 SQL 链中途异常必须回滚，否则
+                # 未提交事务持有 break_users 行锁直到超时，后续转账/发奖
+                # 碰到同一用户即报 1205 锁等待；SQLite 同理释放库锁。
+                try:
+                    self._conn.rollback()
+                except Exception:
+                    pass
+                raise
+
+    def _transfer_locked(
+        self, sender: int, recipient: int, amount: int, fee: int
+    ) -> TransferResult:
+        """transfer 的锁内实现；调用方须已持有 self._lock。"""
+        sender_balance = self.get_balance(sender)
+        total = amount + fee
+        if sender_balance < total:
+            raise BreakInsufficientError(total, sender_balance, qqid=sender)
+        self._ensure_user(sender)
+        self._ensure_user(recipient)
+        self._ensure_daily(sender)
+        self._ensure_daily(recipient)
+        now = time.time()
+        self._conn.execute(
+            'UPDATE break_users SET balance=balance-?, updated_at=? WHERE qqid=?',
+            (total, now, sender),
+        )
+        self._conn.execute(
+            'UPDATE break_users SET balance=balance+?, updated_at=? WHERE qqid=?',
+            (amount, now, recipient),
+        )
+        self._conn.execute(
+            'UPDATE break_daily_usage SET break_spent=break_spent+? WHERE qqid=? AND date=?',
+            (total, sender, self._today()),
+        )
+        self._conn.execute(
+            'UPDATE break_daily_usage SET break_gained=break_gained+? WHERE qqid=? AND date=?',
+            (amount, recipient, self._today()),
+        )
+        self._append_log(sender, -total, 'transfer_out', meta={'to': recipient, 'amount': amount, 'fee': fee})
+        self._append_log(recipient, amount, 'transfer_in', meta={'from': sender, 'amount': amount})
+        self._conn.commit()
+        return TransferResult(sender_balance-total, self.get_balance(recipient), amount, fee)
 
     def expire_red_packets(self, now: Optional[float] = None) -> List[RedPacketRefundResult]:
         """关闭已过期红包并将未领取余额原路退回。"""
@@ -1494,7 +1688,9 @@ class BreakDatabase:
                         'UPDATE break_users SET balance=balance+?, updated_at=? WHERE qqid=?',
                         (refund, current, sender),
                     )
-                    created_date = datetime.fromtimestamp(float(row['created_at'])).date().isoformat()
+                    created_date = datetime.fromtimestamp(
+                        float(row['created_at']), timezone(timedelta(hours=8))
+                    ).date().isoformat()
                     self._conn.execute(
                         """UPDATE break_daily_usage
                             SET break_spent=CASE WHEN break_spent-? < 0 THEN 0 ELSE break_spent-? END
@@ -1764,7 +1960,7 @@ class BreakDatabase:
                         (refund, current, sender),
                     )
                     created_date = datetime.fromtimestamp(
-                        float(packet['created_at'])
+                        float(packet['created_at']), timezone(timedelta(hours=8))
                     ).date().isoformat()
                     self._conn.execute(
                         """UPDATE break_daily_usage
@@ -2056,8 +2252,13 @@ class BreakDatabase:
         points: int,
         *,
         group_id: Optional[str] = None,
+        game: str = '',
     ) -> GuessBreakReward:
-        """每次猜对固定发 BREAK；分数仅作排行统计，不放大奖励。"""
+        """每次猜对固定发 BREAK；分数仅作排行统计，不放大奖励。
+
+        game 为小游戏 game_key（song/cover/tune/chart/twentyq），用于双层上限统计。
+        BREAK 发放统一走 award_game_break（含双倍卡翻倍/豁免）。
+        """
         points = max(0, int(points))
         reward = max(0, _parse_config_int(
             self.get_config('guess_break_per_correct', '1'), 1
@@ -2080,48 +2281,21 @@ class BreakDatabase:
                 (points, now, qqid, today),
             )
             row = self._conn.execute(
-                """SELECT guess_points, break_awarded FROM break_guess_daily
+                """SELECT guess_points FROM break_guess_daily
                    WHERE qqid = ? AND date = ?""",
                 (qqid, today),
             ).fetchone()
             daily_points = int(row['guess_points'])
-            already = int(row['break_awarded'])
-            doubled = False
-            double_remaining = 0.0
-            if reward:
-                from .maimaidx_card import card_manager
-                active, remaining, _expires = card_manager.double_break_info(qqid)
-                if active:
-                    doubled = True
-                    double_remaining = remaining
-                    reward *= 2
-            if reward:
-                self._conn.execute(
-                    """UPDATE break_guess_daily SET break_awarded = break_awarded + ?
-                       WHERE qqid = ? AND date = ?""",
-                    (reward, qqid, today),
-                )
-                self._conn.execute(
-                    """UPDATE break_users SET balance = balance + ?, updated_at = ?
-                       WHERE qqid = ?""",
-                    (reward, now, qqid),
-                )
-                self._conn.execute(
-                    """UPDATE break_daily_usage SET break_gained = break_gained + ?
-                       WHERE qqid = ? AND date = ?""",
-                    (reward, qqid, today),
-                )
-                self._append_log(
-                    qqid, reward, 'guess_reward',
-                    meta={
-                        'points_added': points,
-                        'daily_points': daily_points,
-                        'daily_break': already + reward,
-                        'daily_cap': 0,
-                        'group_id': group_id,
-                        'double_break_card': doubled,
-                    },
-                )
+            # BREAK 发放走统一双层上限口（含双倍卡翻倍/豁免）。
+            # 此处已持有 self._lock，调用锁内实现避免重入死锁。
+            award = self._award_game_break_locked(
+                qqid, game or '', reward, 'guess_reward',
+                meta={
+                    'points_added': points,
+                    'daily_points': daily_points,
+                    'group_id': group_id,
+                },
+            )
             self._conn.commit()
             balance_row = self._conn.execute(
                 'SELECT balance FROM break_users WHERE qqid = ?', (qqid,)
@@ -2129,13 +2303,175 @@ class BreakDatabase:
         return GuessBreakReward(
             points_added=points,
             daily_points=daily_points,
-            break_added=reward,
-            daily_break=already + reward,
+            break_added=award.awarded,
+            daily_break=award.awarded,
             daily_cap=0,
             points_per_break=0,
             balance=int(balance_row['balance']) if balance_row else 0,
-            doubled=doubled,
-            double_remaining=double_remaining,
+            doubled=award.doubled,
+            double_remaining=award.double_remaining,
+            capped=award.capped,
+        )
+
+    # ---- 小游戏每日 BREAK 双层上限 ----
+
+    def get_global_game_cap(self) -> int:
+        """每日小游戏 BREAK 全局总上限（0 = 不限制）。"""
+        return _parse_config_int(self.get_config('guess_daily_break_global_cap', '0'), 0)
+
+    def get_game_cap(self, game: str) -> int:
+        """某游戏每日 BREAK 上限（0 = 不限制）。game_key 不存在时返回 0。"""
+        caps = self._parse_game_caps()
+        return caps.get((game or '').strip(), 0)
+
+    def _parse_game_caps(self) -> Dict[str, int]:
+        raw = self.get_config('guess_daily_caps', '') or ''
+        caps: Dict[str, int] = {}
+        for part in raw.split(','):
+            part = part.strip()
+            if not part or ':' not in part:
+                continue
+            key, _, val = part.partition(':')
+            caps[key.strip()] = _parse_config_int(val.strip(), 0)
+        return caps
+
+    def award_game_break(
+        self,
+        qqid: int,
+        game: str,
+        amount: int,
+        reason: str,
+        *,
+        meta: Optional[dict] = None,
+    ) -> GameBreakAward:
+        """小游戏 BREAK 统一发放口：双层上限（每游戏 + 全局）+ 双倍卡豁免。
+
+        用于 猜Rating / B50找内鬼 / 极限二选一 / 来信 四类结算。
+        双倍卡（CARD_TYPE_DOUBLE）生效时先翻倍再全额发放、豁免所有上限；
+        FREEDOM 卡与此无关（它只免「触发指令扣费」，不影响赚 BREAK 的上限）。
+        否则按 min(amount, 每游戏剩余空间, 全局剩余空间) 发放。
+        """
+        self._ensure_user(qqid)
+        self._ensure_daily(qqid)
+        with self._lock:
+            try:
+                award = self._award_game_break_locked(qqid, game, amount, reason, meta=meta)
+                # 显式提交，避免未提交事务长期持有行锁（MySQL）或库锁（SQLite），
+                # 或被后续其它操作的 commit 顺带提交。
+                self._conn.commit()
+                return award
+            except Exception:
+                # 同 transfer：SQL 链中途异常必须回滚，避免未提交事务
+                # 持有 break_users / break_game_daily 行锁直到超时（1205），
+                # 或被后续 _ensure_user 的 commit 顺带提交造成半截入账。
+                try:
+                    self._conn.rollback()
+                except Exception:
+                    pass
+                raise
+
+    def _award_game_break_locked(
+        self,
+        qqid: int,
+        game: str,
+        amount: int,
+        reason: str,
+        *,
+        meta: Optional[dict] = None,
+    ) -> GameBreakAward:
+        """award_game_break 的锁内实现；调用方须已持有 self._lock。"""
+        amount = max(0, int(amount))
+        game = (game or '').strip()
+        today = self._today()
+        now = time.time()
+        doubled = False
+        double_remaining = 0.0
+        if amount and game:
+            from .maimaidx_card import card_manager
+            active, remaining, _exp = card_manager.double_break_info(qqid)
+            if active:
+                doubled = True
+                double_remaining = remaining
+                amount *= 2  # 双倍卡：先翻倍，再豁免上限
+        if not amount:
+            return GameBreakAward(
+                game=game, requested=0, awarded=0, capped=False,
+                doubled=doubled, double_remaining=double_remaining,
+                balance=self.get_balance(qqid),
+            )
+        if doubled:
+            actual = amount
+            capped = False
+        else:
+            global_cap = self.get_global_game_cap()
+            per_cap = self.get_game_cap(game)
+            if global_cap <= 0 and per_cap <= 0:
+                actual = amount
+                capped = False
+            else:
+                row = self._conn.execute(
+                    'SELECT COALESCE(SUM(break_awarded),0) AS t '
+                    'FROM break_game_daily WHERE qqid=? AND date=?',
+                    (qqid, today),
+                ).fetchone()
+                total_awarded = int(row['t']) if row else 0
+                game_awarded = 0
+                if per_cap > 0:
+                    grow = self._conn.execute(
+                        'SELECT COALESCE(break_awarded,0) AS a '
+                        'FROM break_game_daily WHERE qqid=? AND date=? AND game=?',
+                        (qqid, today, game),
+                    ).fetchone()
+                    game_awarded = int(grow['a']) if grow else 0
+                global_room = amount if global_cap <= 0 else max(0, global_cap - total_awarded)
+                game_room = amount if per_cap <= 0 else max(0, per_cap - game_awarded)
+                actual = max(0, min(amount, global_room, game_room))
+                capped = actual < amount
+        if actual <= 0:
+            detail = dict(meta or {})
+            detail.update({
+                'game': game, 'requested': amount, 'capped': True,
+                'double_break_card': doubled,
+                'global_cap': self.get_global_game_cap(),
+                'game_cap': self.get_game_cap(game) if game else 0,
+                'hit_cap': True,
+            })
+            self._append_log(qqid, 0, reason, meta=detail)
+            return GameBreakAward(
+                game=game, requested=amount, awarded=0, capped=True,
+                doubled=doubled, double_remaining=double_remaining,
+                balance=self.get_balance(qqid),
+            )
+        self._conn.execute(
+            'UPDATE break_users SET balance=balance+?, updated_at=? WHERE qqid=?',
+            (actual, now, qqid),
+        )
+        self._conn.execute(
+            'UPDATE break_daily_usage SET break_gained=break_gained+? WHERE qqid=? AND date=?',
+            (actual, qqid, today),
+        )
+        self._conn.execute(
+            'INSERT OR IGNORE INTO break_game_daily '
+            '(qqid,date,game,break_awarded,last_at) VALUES (?,?,?,0,?)',
+            (qqid, today, game, now),
+        )
+        self._conn.execute(
+            'UPDATE break_game_daily SET break_awarded=break_awarded+?, last_at=? '
+            'WHERE qqid=? AND date=? AND game=?',
+            (actual, now, qqid, today, game),
+        )
+        detail = dict(meta or {})
+        detail.update({
+            'game': game, 'requested': amount, 'capped': capped,
+            'double_break_card': doubled,
+            'global_cap': self.get_global_game_cap(),
+            'game_cap': self.get_game_cap(game) if game else 0,
+        })
+        self._append_log(qqid, actual, reason, meta=detail)
+        return GameBreakAward(
+            game=game, requested=amount, awarded=actual, capped=capped,
+            doubled=doubled, double_remaining=double_remaining,
+            balance=self.get_balance(qqid),
         )
 
     def admin_set_balance(self, qqid: int, balance: int) -> int:
@@ -3116,9 +3452,10 @@ async def break_billing(qqid: Optional[int]):
     if payer and is_superuser_exempt(payer):
         payer = None
     t1 = _billing_qqid.set(payer)
-    t2 = _charge_session.set(
-        _BreakChargeSession(balance=break_db.get_balance(payer) if payer else 0)
-    )
+    # A locked SQLite database may wait up to busy_timeout (5 seconds).  Keep
+    # that wait off NoneBot's event loop so other messages continue dispatching.
+    balance = await asyncio.to_thread(break_db.get_balance, payer) if payer else 0
+    t2 = _charge_session.set(_BreakChargeSession(balance=balance))
     try:
         yield
     finally:

@@ -187,25 +187,42 @@ async def _payout_settlement(event: MessageEvent, gid, settlement: LetterSettlem
 
     for reward in settlement.rewards:
         if reward.score > 0:
-            await guess_score.award_fixed_points(
-                gid,
-                reward.uid,
-                reward.name,
-                reward.score,
-                mode=guess_score.MODE_LETTER,
-            )
+            try:
+                await guess_score.award_fixed_points(
+                    gid,
+                    reward.uid,
+                    reward.name,
+                    reward.score,
+                    mode=guess_score.MODE_LETTER,
+                )
+            except Exception as exc:
+                log.exception(
+                    f"[LetterGuess] 积分结算失败，继续后续玩家 "
+                    f"gid={gid} uid={reward.uid}: {type(exc).__name__}: {exc}"
+                )
         if reward.break_points > 0:
-            break_db.add_balance(
-                reward.billing_id,
-                reward.break_points,
-                "letter_settlement",
-                meta={
-                    "group_id": str(gid),
-                    "elapsed": settlement.elapsed,
-                    "stars": settlement.stars,
-                    "weight": reward.weight,
-                },
-            )
+            try:
+                award = await asyncio.to_thread(
+                    break_db.award_game_break,
+                    reward.billing_id, "letter", reward.break_points, "letter_settlement",
+                    meta={
+                        "group_id": str(gid),
+                        "elapsed": settlement.elapsed,
+                        "stars": settlement.stars,
+                        "weight": reward.weight,
+                    },
+                )
+                # 写回实际到账额：结算图/分成图按真实发放显示；封顶时记 capped。
+                reward.break_points = award.awarded
+                reward.break_capped = award.capped
+            except Exception as exc:
+                log.exception(
+                    f"[LetterGuess] BREAK 结算失败，继续后续玩家 "
+                    f"gid={gid} uid={reward.uid}: {type(exc).__name__}: {exc}"
+                )
+                # 发奖失败：实际到账为 0，避免分成图把请求值渲染成「已到账」
+                reward.break_points = 0
+                reward.break_capped = False
 
 
 async def _send_board(matcher, event: MessageEvent, board, *, text: str = "") -> None:

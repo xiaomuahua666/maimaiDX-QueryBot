@@ -9,7 +9,7 @@ from ..libraries.maimaidx_music_info import *
 from ..libraries.maimaidx_player_score import *
 from ..libraries.maimaidx_error import BreakInsufficientError, UserDisabledQueryError, UserNotExistsError, UserNotFoundError
 from ..libraries.maimaidx_break import take_break_charge_footer
-from ..libraries.maimaidx_timing import attach_timing, finish_timed, run_timed, run_timed_call
+from ..libraries.maimaidx_timing import attach_timing, finish_timed, finish_timed_sync, run_timed
 from ..libraries.maimaidx_update_plate import *
 from ..libraries.maimaidx_platform import (
     billing_user_id,
@@ -33,9 +33,9 @@ level_process           = on_regex(r'^([0-9]+\+?)\s?([abcdsfxp\+]+)\s?([\u4e00-\
 # （等价于 13sss进度、13fc进度、13fdx进度）。用户名参数必须以空白
 # 分隔，避免把“完成表”这类指令后缀误当成查分器用户名。
 LEVEL_PLATE_PROGRESS_PATTERN = (
-    r'^([0-9]+\+?)(舞舞|将|極|极|神|者)(?:进度|完成表)?'
+    r'^\s*([0-9]+\+?)(舞舞|将|極|极|神|者)(?:进度|完成表)?'
     r'(?:\s+(已完成|未完成|未开始|未游玩))?'
-    r'(?:\s+(\d+))?(?:\s+(.+))?$'
+    r'(?:\s+(\d+))?(?:\s+(\S(?:.*\S)?))?\s*$'
 )
 level_plate_progress    = on_regex(LEVEL_PLATE_PROGRESS_PATTERN)
 level_achievement_list  = on_regex(r'^([0-9]+\.?[0-9]?\+?)\s?分数列表\s?([0-9]+)?\s?(.+)?')
@@ -94,8 +94,9 @@ async def _(match = RegexMatched()):
                 reply_message=True,
             )
         path = rating_table_path(args)
-        pic, total = run_timed_call(draw_rating, args, path)
-        await rating_table.finish(attach_timing(pic, total), reply_message=True)
+        await finish_timed_sync(
+            rating_table, draw_rating, args, path, reply_message=True,
+        )
     else:
         await rating_table.finish('无法识别的定数', reply_message=True)
 

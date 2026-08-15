@@ -7,6 +7,7 @@ import binascii
 import hashlib
 import os
 import re
+import asyncio
 import secrets
 import time
 from contextvars import ContextVar
@@ -22,6 +23,102 @@ UserId = Union[int, str]
 
 from ..config import log, maiconfig
 from .maimaidx_qq_bind import qq_bind_db
+
+
+# ---------------------------------------------------------------------------
+# 发消息重试：QQ / OneBot 连接抖动或断连时自动重发，避免消息静默丢失。
+#
+# nonebot 的 ``Bot.call_api`` 是所有发消息路径（``matcher.send``、
+# ``send_group_msg``、``send_private_msg``、直接 ``call_api``）的统一出口。
+# WebSocket 抖动 / 断连时它抛 ``NetworkError``（请求并未真正送达服务端），
+# 我们在这一层做指数退避重试，把「短暂断连又恢复」期间丢失的消息救回来。
+#
+# 只对「连接 / 网络类」错误重试，不对 ``ActionFailed``（服务端已拒绝）重试，
+# 避免重复发送。重试次数 / 退避时长可通过 maiconfig 配置，默认 3 次、1~8s。
+# ---------------------------------------------------------------------------
+_SEND_RETRY_TRANSIENT: tuple = ()
+_SEND_RETRY_TRANSIENT_NAMES = {
+    'NetworkError',
+    'BaseNetworkError',
+    'ApiNotAvailable',
+    'ExecNetworkError',
+    'RequestError',
+    'ConnectError',
+    'ConnectTimeout',
+}
+
+
+def _send_retry_count() -> int:
+    return max(0, int(getattr(maiconfig, 'qq_send_retry_count', 3) or 0))
+
+
+def _send_retry_delay(attempt: int) -> float:
+    base = float(getattr(maiconfig, 'qq_send_retry_delay_seconds', 1.0) or 1.0)
+    maximum = float(getattr(maiconfig, 'qq_send_retry_max_delay_seconds', 8.0) or 8.0)
+    delay = base * (2 ** (attempt - 1))
+    return min(maximum, max(0.0, delay))
+
+
+def _is_transient_api_error(exc: BaseException) -> bool:
+    if _SEND_RETRY_TRANSIENT and isinstance(exc, _SEND_RETRY_TRANSIENT):
+        return True
+    return type(exc).__name__ in _SEND_RETRY_TRANSIENT_NAMES
+
+
+def _install_call_api_retry() -> None:
+    try:
+        from nonebot.adapters import Bot as _BaseBot
+    except Exception:
+        return
+    if getattr(_BaseBot.call_api, '_maimaidx_retry', False):
+        return
+    _original_call_api = _BaseBot.call_api
+
+    async def _retry_call_api(self, api: str, **data):
+        attempt = 0
+        max_attempts = _send_retry_count()
+        while True:
+            try:
+                return await _original_call_api(self, api, **data)
+            except Exception as exc:
+                if not _is_transient_api_error(exc):
+                    raise
+                attempt += 1
+                if attempt > max_attempts:
+                    log.warning(
+                        f'[platform] call_api({api}) 重试 {max_attempts} 次仍失败，'
+                        f'放弃发送：{type(exc).__name__}: {exc}'
+                    )
+                    raise
+                delay = _send_retry_delay(attempt)
+                log.warning(
+                    f'[platform] call_api({api}) 第 {attempt} 次失败'
+                    f'({type(exc).__name__})，{delay:.1f}s 后重试'
+                )
+                await asyncio.sleep(delay)
+
+    _retry_call_api._maimaidx_retry = True
+    _BaseBot.call_api = _retry_call_api
+
+
+# 收集可用于 isinstance 判断的网络错误类（不同适配器模块名不同，逐个安全导入）。
+for _mod, _names in (
+    ('nonebot.adapters.onebot.v11.exception', ('NetworkError', 'BaseNetworkError', 'ApiNotAvailable')),
+    ('nonebot.adapters.onebot.v12.exception', ('NetworkError', 'BaseNetworkError', 'ApiNotAvailable')),
+    ('nonebot.adapters.qq.exception', ('NetworkError', 'BaseNetworkError', 'ApiNotAvailable')),
+    ('nonebot.exception', ('NetworkError',)),
+    ('httpx', ('ConnectError', 'ConnectTimeout')),
+):
+    try:
+        _m = __import__(_mod, fromlist=['__name__'])
+    except Exception:
+        continue
+    for _n in _names:
+        _cls = getattr(_m, _n, None)
+        if _cls is not None and _cls not in _SEND_RETRY_TRANSIENT:
+            _SEND_RETRY_TRANSIENT = _SEND_RETRY_TRANSIENT + (_cls,)
+
+_install_call_api_retry()
 
 
 def _segment_user_id(seg: Any) -> str:

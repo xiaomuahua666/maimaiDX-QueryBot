@@ -13,10 +13,10 @@ BREAK_SOURCE = ROOT / "libraries" / "maimaidx_break.py"
 ACCOUNT_SOURCE = ROOT / "command" / "mai_account.py"
 
 
-def _function_node(path: Path, name: str) -> ast.FunctionDef:
+def _function_node(path: Path, name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
     tree = ast.parse(path.read_text(encoding="utf-8"))
     for node in tree.body:
-        if isinstance(node, ast.FunctionDef) and node.name == name:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
             return node
     raise AssertionError(f"{name} not found in {path}")
 
@@ -31,7 +31,20 @@ assert default_config is not None
 assert default_config["awmc_status_cost"] == "2"
 
 service_cost_node = _function_node(ACCOUNT_SOURCE, "_service_cost")
+class _ImmediateAwaitable:
+    def __init__(self, value):
+        self.value = value
+
+    def __await__(self):
+        if False:
+            yield None
+        return self.value
+
+
 namespace = {
+    "asyncio": SimpleNamespace(
+        to_thread=lambda fn, *args: _ImmediateAwaitable(fn(*args)),
+    ),
     "break_db": SimpleNamespace(
         get_config=lambda key, fallback: fallback,
     )
@@ -40,8 +53,10 @@ exec(
     compile(ast.Module(body=[service_cost_node], type_ignores=[]), str(ACCOUNT_SOURCE), "exec"),
     namespace,
 )
+import asyncio
+
 service_cost = namespace["_service_cost"]
-assert service_cost("awmc_status") == 2
+assert asyncio.run(service_cost("awmc_status")) == 2
 
 charge_text_node = _function_node(ACCOUNT_SOURCE, "_charge_text")
 namespace = {}

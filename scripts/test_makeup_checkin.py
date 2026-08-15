@@ -7,7 +7,7 @@ import sys
 import time
 import types
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from threading import RLock
 from typing import Optional
@@ -102,6 +102,9 @@ db_namespace.update({
     "sqlite3": sqlite3,
     "time": time,
     "date": date,
+    "datetime": datetime,
+    "timedelta": timedelta,
+    "timezone": timezone,
     "json": json,
     "DB_DIR": Path("."),
     "DB_PATH": Path(":memory:"),
@@ -183,7 +186,7 @@ else:
 
 command_source = (ROOT / "command" / "mai_break.py").read_text(encoding="utf-8")
 assert "awmc_makeup_checkin = on_command(" in command_source
-assert "break_db.makeup_yesterday(qqid)" in command_source
+assert "await asyncio.to_thread(break_db.makeup_yesterday, qqid)" in command_source
 assert "setattr(awmc_makeup_checkin, '_maimaidx_busy_surcharge_exempt', True)" in command_source
 
 print("makeup checkin tests: ok")

@@ -158,7 +158,7 @@ orig_llm = mod._llm_classify
 llm_calls = []
 
 
-async def _mock_llm(music, text, config):
+async def _mock_llm(music, text, config, **kwargs):
     llm_calls.append(text)
     # 模拟 LLM 按 prompt 容错理解：muilkplus → milk plus → 雪代
     return ('是喵 ✅', '判定维度：版本是否为 milk plus（雪代）')

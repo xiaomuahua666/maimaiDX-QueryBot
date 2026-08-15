@@ -139,10 +139,13 @@ def register_admin_web() -> bool:
 
     async def summary(request: Request):
         authorize(request)
-        data = admin_audit.summary()
-        ticket = account_db.get_ticket_stats(days=7)
+        data, ticket, break_users = await asyncio.gather(
+            asyncio.to_thread(admin_audit.summary),
+            asyncio.to_thread(account_db.get_ticket_stats, days=7),
+            asyncio.to_thread(break_db.count_users),
+        )
         data.update({
-            "break_users": break_db.count_users(),
+            "break_users": break_users,
             "bound_accounts": account_db.count_accounts(),
             "ticket_7d_total": ticket["total"],
             "ticket_7d_success_rate": f'{ticket["success_rate"]}%',
@@ -179,7 +182,10 @@ def register_admin_web() -> bool:
 
     async def users(request: Request, search: str = "", limit: int = 100, offset: int = 0):
         authorize(request)
-        break_rows = {str(r["qqid"]): r for r in break_db.list_users(limit=500, search=search)}
+        raw_break_rows = await asyncio.to_thread(
+            break_db.list_users, limit=500, search=search
+        )
+        break_rows = {str(r["qqid"]): r for r in raw_break_rows}
         account_rows = {r.user_key: r for r in account_db.list_accounts(limit=500, search=search)}
         ids = sorted(set(break_rows) | set(account_rows))
         result = []
@@ -213,11 +219,14 @@ def register_admin_web() -> bool:
             raise HTTPException(status_code=400, detail="用户 ID 与数值必须为整数")
         mode = str(body.get("mode", "add"))
         if mode == "set":
-            balance = break_db.admin_set_balance(qqid, amount)
+            balance = await asyncio.to_thread(
+                break_db.admin_set_balance, qqid, amount
+            )
         elif mode == "add":
             reason = "feishu_admin" if source == "feishu_ops" else "web_admin"
-            balance = break_db.add_balance(
-                qqid, amount, reason, meta={"source": source, "by": actor}
+            balance = await asyncio.to_thread(
+                break_db.add_balance, qqid, amount, reason,
+                meta={"source": source, "by": actor},
             )
         else:
             raise HTTPException(status_code=400, detail="mode 仅支持 add/set")
@@ -312,7 +321,7 @@ def register_admin_web() -> bool:
 
     async def analysis_tokens(request: Request, days: int = 1):
         authorize(request)
-        return break_db.analysis_token_report(days=days)
+        return await asyncio.to_thread(break_db.analysis_token_report, days=days)
 
     async def groups(request: Request):
         authorize(request)
@@ -359,14 +368,15 @@ def register_admin_web() -> bool:
 
     async def economy(request: Request, days: int = 30):
         authorize(request)
-        return break_db.economy_report(days=days)
+        return await asyncio.to_thread(break_db.economy_report, days=days)
 
     async def break_logs(
         request: Request, user_id: str = "", reason: str = "",
         limit: int = 200, offset: int = 0,
     ):
         authorize(request)
-        return break_db.list_break_calls(
+        return await asyncio.to_thread(
+            break_db.list_break_calls,
             limit=limit, offset=offset, user_id=user_id, reason=reason,
         )
 
@@ -376,7 +386,11 @@ def register_admin_web() -> bool:
 
     async def break_config(request: Request):
         authorize(request)
-        return {key: break_db.get_config(key, value) for key, value in DEFAULT_CONFIG.items()}
+        values = await asyncio.gather(*(
+            asyncio.to_thread(break_db.get_config, key, default)
+            for key, default in DEFAULT_CONFIG.items()
+        ))
+        return dict(zip(DEFAULT_CONFIG, values))
 
     async def set_break_config(key: str, request: Request):
         authorize(request)
@@ -407,7 +421,7 @@ def register_admin_web() -> bool:
                 value = str(number)
         except ValueError:
             raise HTTPException(status_code=400, detail="配置值格式或范围不正确")
-        break_db.set_config(key, value)
+        await asyncio.to_thread(break_db.set_config, key, value)
         ref = audit_action("web.set_break_config", key, {"key": key, "value": value})
         return {"ok": True, "key": key, "value": value, "ref_id": ref}
 
@@ -446,7 +460,7 @@ def register_admin_web() -> bool:
     async def cards_stats(request: Request):
         authorize(request)
         from .maimaidx_card import card_manager
-        return card_manager.stats()
+        return await asyncio.to_thread(card_manager.stats)
 
     async def cards_list(request: Request):
         authorize(request)
@@ -455,16 +469,20 @@ def register_admin_web() -> bool:
         status = request.query_params.get("status") or None
         batch_id = request.query_params.get("batch") or None
         limit = int(request.query_params.get("limit", 50))
-        return {"cards": card_manager.list_cards(
+        cards = await asyncio.to_thread(
+            card_manager.list_cards,
             card_type=card_type, status=status, batch_id=batch_id, limit=limit,
-        )}
+        )
+        return {"cards": cards}
 
     async def card_detail(code: str, request: Request):
         authorize(request)
         from .maimaidx_card import card_manager
-        card = card_manager.get_card(code)
+        card = await asyncio.to_thread(card_manager.get_card, code)
         if not card:
-            cards = card_manager.list_cards(batch_id=code, limit=200)
+            cards = await asyncio.to_thread(
+                card_manager.list_cards, batch_id=code, limit=200
+            )
             if cards:
                 return {"batch": code, "cards": cards}
             raise HTTPException(status_code=404, detail="卡密不存在")
@@ -490,7 +508,8 @@ def register_admin_web() -> bool:
             else:
                 value = parse_duration(str(body.get("value", "")))
             note = str(body.get("note") or "")[:200]
-            result = card_manager.create_cards(
+            result = await asyncio.to_thread(
+                card_manager.create_cards,
                 card_type, value, quantity, created_by=actor, note=note,
             )
         except (TypeError, ValueError) as exc:
@@ -509,7 +528,9 @@ def register_admin_web() -> bool:
         body = await request.json()
         actor = str(body.get("actor") or body.get("source") or "webui").strip()
         try:
-            card = card_manager.disable_card(code, actor=actor)
+            card = await asyncio.to_thread(
+                card_manager.disable_card, code, actor=actor
+            )
         except CardError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         ref = audit_action("web.card_disable", code, {"actor": actor})

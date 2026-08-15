@@ -1,3 +1,5 @@
+import asyncio
+
 from typing import Optional, Tuple
 
 from nonebot import get_bots, on_command, require
@@ -224,10 +226,14 @@ def _format_break_economy_period(label: str, stats: dict) -> str:
 
 @break_economy.handle()
 async def _(event: MessageEvent):
+    stats = await asyncio.gather(*(
+        asyncio.to_thread(break_db.economy_totals, days)
+        for days in (1, 7, 30)
+    ))
     periods = (
-        ('今日', break_db.economy_totals(1)),
-        ('近 7 天累计', break_db.economy_totals(7)),
-        ('近 30 天累计', break_db.economy_totals(30)),
+        ('今日', stats[0]),
+        ('近 7 天累计', stats[1]),
+        ('近 30 天累计', stats[2]),
     )
     lines = [
         '【BREAK 全体收支】',
@@ -256,7 +262,9 @@ async def _(
     if target is None or amount <= 0:
         await break_transfer.finish('用法：转账BREAK @用户 数量', reply_message=True)
     try:
-        result = break_db.transfer(int(billing_user_id(event)), target, amount)
+        result = await asyncio.to_thread(
+            break_db.transfer, int(billing_user_id(event)), target, amount
+        )
     except Exception as exc:
         await break_transfer.finish(f'转账失败：{exc}', reply_message=True)
     fee_text = f'（手续费 {result.fee}）' if result.fee else ''
@@ -281,7 +289,9 @@ async def _(event: MessageEvent, message: Message = CommandArg()):
     if not raw.isdigit() or not 1 <= int(raw) <= 10:
         await break_lottery.finish('用法：BREAK抽奖 [1-10]', reply_message=True)
     try:
-        result = break_db.lottery(int(billing_user_id(event)), int(raw))
+        result = await asyncio.to_thread(
+            break_db.lottery, int(billing_user_id(event)), int(raw)
+        )
     except Exception as exc:
         await break_lottery.finish(f'抽奖失败：{exc}', reply_message=True)
     await plugin_finish(
@@ -382,11 +392,10 @@ async def _(
         finish_pending(pending_key)
         await break_red_packet_send.finish('BREAK 红包只能在群聊中发送。')
     try:
-        result = break_db.create_red_packet(
-            int(billing_user_id(event)),
-            group_id,
-            int(matcher.state['red_packet_total_value']),
-            int(raw),
+        result = await asyncio.to_thread(
+            break_db.create_red_packet,
+            int(billing_user_id(event)), group_id,
+            int(matcher.state['red_packet_total_value']), int(raw),
         )
     except Exception as exc:
         finish_pending(pending_key)
@@ -394,7 +403,9 @@ async def _(
     finish_pending(pending_key)
     expire_minutes = max(
         1,
-        int(float(break_db.get_config('red_packet_expire_minutes', '10'))),
+        int(float(await asyncio.to_thread(
+            break_db.get_config, 'red_packet_expire_minutes', '10'
+        ))),
     )
     await break_red_packet_send.finish(
         '🧧 BREAK 手气红包来啦！\n'
@@ -413,7 +424,9 @@ async def _(event: MessageEvent):
     if group_id is None:
         await break_red_packet_claim.finish('BREAK 红包只能在群聊中领取。')
     try:
-        result = break_db.claim_red_packet(int(billing_user_id(event)), group_id)
+        result = await asyncio.to_thread(
+            break_db.claim_red_packet, int(billing_user_id(event)), group_id
+        )
     except Exception as exc:
         await break_red_packet_claim.finish(f'领取失败：{exc}', reply_message=True)
     tail = '\n🎉 红包已经被领完啦！' if result.completed else (
@@ -434,7 +447,7 @@ async def _(event: MessageEvent):
     group_id = _red_packet_group_id(event)
     if group_id is None:
         await break_red_packet_status.finish('红包状态只能在群聊中查看。')
-    status = break_db.get_red_packet_status(group_id)
+    status = await asyncio.to_thread(break_db.get_red_packet_status, group_id)
     if status is None:
         await break_red_packet_status.finish('本群还没有红包记录。', reply_message=True)
     labels = {'active': '领取中', 'completed': '已领完', 'expired': '已过期'}
@@ -460,7 +473,9 @@ async def _(event: MessageEvent):
     if group_id is None:
         await break_red_packet_cancel.finish('BREAK 红包只能在群聊中收回。')
     try:
-        result = break_db.cancel_red_packet(int(billing_user_id(event)), group_id)
+        result = await asyncio.to_thread(
+            break_db.cancel_red_packet, int(billing_user_id(event)), group_id
+        )
     except Exception as exc:
         await break_red_packet_cancel.finish(f'收回失败：{exc}', reply_message=True)
     await plugin_finish(
@@ -477,7 +492,7 @@ async def _(event: MessageEvent):
     'interval', minutes=1, id='break_red_packet_expiry'
 )
 async def _expire_break_red_packets() -> None:
-    refunds = break_db.expire_red_packets()
+    refunds = await asyncio.to_thread(break_db.expire_red_packets)
     if not refunds:
         return
     bots = get_bots()
@@ -612,15 +627,14 @@ async def _(event: MessageEvent):
         await awmc_checkin.finish(str(exc), reply_message=True)
         return
     storage_on, storage_eligible = _storage_status_for_event(event, qqid)
-    result = break_db.checkin(
-        qqid,
-        group_id,
+    result = await asyncio.to_thread(
+        break_db.checkin, qqid, group_id,
         storage_enabled=storage_on,
         storage_bonus_eligible=storage_eligible,
     )
     text = format_checkin_result(result)
     if storage_on and not storage_eligible:
-        text += break_db.format_storage_pending_tip()
+        text += await asyncio.to_thread(break_db.format_storage_pending_tip)
     await plugin_finish(
         awmc_checkin, text, event=event, reply_message=True,
         qq_buttons=_AWMC_SHORTCUTS,
@@ -636,7 +650,7 @@ async def _(event: MessageEvent):
         await awmc_makeup_checkin.finish(str(exc), reply_message=True)
         return
     try:
-        result = break_db.makeup_yesterday(qqid)
+        result = await asyncio.to_thread(break_db.makeup_yesterday, qqid)
     except Exception as exc:
         await awmc_makeup_checkin.finish(f'补签失败：{exc}', reply_message=True)
     await awmc_makeup_checkin.finish(
@@ -726,9 +740,12 @@ async def _(
     if target is None:
         await awmc_admin_view.finish('请 @用户 或提供 QQ 号', reply_message=True)
         return
-    profile = get_account_profile(target)
-    image_seg = render_account_profile_image(
-        profile, title=f'AWMC 账号 {target}', user_name=str(target)
+    profile = await run_image_cpu(get_account_profile, target)
+    image_seg = await run_image_cpu(
+        render_account_profile_image,
+        profile,
+        title=f'AWMC 账号 {target}',
+        user_name=str(target),
     )
     await awmc_admin_view.finish(
         image_seg if image_seg is not None
@@ -779,7 +796,7 @@ async def _(
             reply_message=True,
         )
         return
-    balance = break_db.admin_set_balance(target, amount)
+    balance = await asyncio.to_thread(break_db.admin_set_balance, target, amount)
     await awmc_admin_set.finish(f'已将 {target} 的 BREAK 设为 {balance}', reply_message=True)
 
 
@@ -805,7 +822,10 @@ async def _(
             reply_message=True,
         )
         return
-    balance = break_db.add_balance(target, delta, 'admin_add', meta={'by': event.get_user_id()})
+    balance = await asyncio.to_thread(
+        break_db.add_balance, target, delta, 'admin_add',
+        meta={'by': event.get_user_id()},
+    )
     await awmc_admin_add.finish(
         f'已为 {target} {"增加" if delta >= 0 else "减少"} {abs(delta)} BREAK，当前 {balance}',
         reply_message=True,
@@ -816,19 +836,24 @@ async def _(
 async def _(message: Message = CommandArg()):
     parts = message.extract_plain_text().strip().split(maxsplit=1)
     if len(parts) < 2:
+        values = await asyncio.gather(*(
+            asyncio.to_thread(break_db.get_config, key, default)
+            for key, default in DEFAULT_CONFIG.items()
+        ))
         lines = ['当前 BREAK 配置：'] + [
-            f'  · {k} = {break_db.get_config(k, v)}' for k, v in DEFAULT_CONFIG.items()
+            f'  · {key} = {value}'
+            for key, value in zip(DEFAULT_CONFIG, values)
         ]
         await awmc_admin_config.finish('\n'.join(lines), reply_message=True)
         return
     key, value = parts[0].strip(), parts[1].strip()
-    break_db.set_config(key, value)
+    await asyncio.to_thread(break_db.set_config, key, value)
     await awmc_admin_config.finish(f'已设置 {key} = {value}', reply_message=True)
 
 
 @awmc_admin_billing_off.handle()
 async def _():
-    break_db.set_config('billing_enabled', '0')
+    await asyncio.to_thread(break_db.set_config, 'billing_enabled', '0')
     log.warning('[BREAK] 管理员已全局关闭 BREAK 计费')
     await awmc_admin_billing_off.finish(
         '已全局关闭 BREAK 计费：所有功能不再扣费、余额不足也放行。\n'
@@ -839,7 +864,7 @@ async def _():
 
 @awmc_admin_billing_on.handle()
 async def _():
-    break_db.set_config('billing_enabled', '1')
+    await asyncio.to_thread(break_db.set_config, 'billing_enabled', '1')
     log.warning('[BREAK] 管理员已全局开启 BREAK 计费')
     await awmc_admin_billing_on.finish(
         '已全局开启 BREAK 计费，恢复正常扣费与余额检查。',
@@ -949,7 +974,7 @@ async def _():
 @break_gamble_pool.handle()
 async def _(event: MessageEvent):
     await _require_break_agreement(break_gamble_pool, event)
-    status = break_db.get_gamble_pool_status()
+    status = await asyncio.to_thread(break_db.get_gamble_pool_status)
 
     if status.total_pool == 0:
         await plugin_finish(
@@ -1000,7 +1025,9 @@ async def _(event: MessageEvent):
     qqid = int(billing_user_id(event))
 
     try:
-        reward, balance = break_db.claim_gamble_pool_reward(qqid)
+        reward, balance = await asyncio.to_thread(
+            break_db.claim_gamble_pool_reward, qqid
+        )
     except Exception as exc:
         await break_gamble_claim.finish(f'领取失败：{exc}', reply_message=True)
 
@@ -1018,7 +1045,9 @@ async def _(event: MessageEvent):
 @break_gamble_leaderboard.handle()
 async def _(event: MessageEvent):
     await _require_break_agreement(break_gamble_leaderboard, event)
-    leaderboard = break_db.get_gamble_pool_leaderboard(limit=10)
+    leaderboard = await asyncio.to_thread(
+        break_db.get_gamble_pool_leaderboard, limit=10
+    )
 
     if not leaderboard:
         await plugin_finish(

@@ -94,7 +94,7 @@ def _make_data() -> Guess20QData:
 # 而非先判断肯定句再反转。
 def _make_mock_llm(response_map: dict, default: str = '无法回答'):
     """response_map: {问题文本(归一化小写去空格): 回答}"""
-    async def _mock(music, text, config):
+    async def _mock(music, text, config, **kwargs):
         key = text.strip().lower().replace(' ', '')
         resp = response_map.get(key, default)
         if resp == '是':
@@ -178,7 +178,7 @@ print('  ✓ 通过')
 print('测试 4: LLM 调用失败 → unknown 不消耗次数')
 data = _make_data()
 before = data.question_count
-async def _fail_llm(music, text, config):
+async def _fail_llm(music, text, config, **kwargs):
     return None  # 模拟调用失败/超时
 r = _run(data, '任意问题吗', _fail_llm)
 assert r['kind'] == 'unknown', f'LLM 失败应走 unknown: {r}'
@@ -186,11 +186,13 @@ assert data.question_count == before, f'调用失败不应消耗次数: {data.qu
 print('  ✓ 通过')
 
 # ── 测试 5：LLM 命中消耗次数 ──
+# 注意：主观题（好听吗/难吗/燃吗/适合新手吗…）现由代码层直接回「没听懂」，
+# 不再进 LLM（见 _is_subjective_question 闸门），故这里用客观题验证「LLM 命中消耗次数」。
 print('测试 5: LLM 命中消耗次数')
 data = _make_data()
 before = data.question_count
-mock = _make_mock_llm({'适合新手吗': '是'})
-r = _run(data, '适合新手吗', mock)
+mock = _make_mock_llm({'这歌有间奏吗': '是'})
+r = _run(data, '这歌有间奏吗', mock)
 assert r['kind'] == 'question'
 assert data.question_count == before + 1, f'LLM 命中应消耗次数: {data.question_count}'
 print('  ✓ 通过')
@@ -209,8 +211,9 @@ assert '直接问答案' in _GUESS_20Q_LLM_SYSTEM, '提示词应说明直接问�
 assert '禁止联网搜索' in _GUESS_20Q_LLM_SYSTEM, '提示词应禁止联网搜索'
 assert '禁止调用外部知识' in _GUESS_20Q_LLM_SYSTEM, '提示词应禁止调用外部知识'
 assert '曲目特征里能否找到' in _GUESS_20Q_LLM_SYSTEM, '提示词应说明判断标准是特征里能否找到答案'
-assert '这歌好听吗' in _GUESS_20Q_LLM_SYSTEM, '提示词应举例主观是非题回无法回答'
-assert '即使形式上是是否题也不准答' in _GUESS_20Q_LLM_SYSTEM, '提示词应说明主观是否题不准答'
+assert '好听吗' in _GUESS_20Q_LLM_SYSTEM, '提示词应举例主观是非题（好听吗/难吗…）'
+assert '没听懂' in _GUESS_20Q_LLM_SYSTEM, '提示词应说明主观题 bot 回「没听懂」'
+assert '主观题' in _GUESS_20Q_LLM_SYSTEM, '提示词应说明主观题处理方式'
 print('  ✓ 提示词包含所有关键约束')
 
 # ── 测试 7：_build_music_profile 直接给出标题（供 LLM 判断字符题），但不泄漏曲 id ──
@@ -249,7 +252,7 @@ print('测试 9: await 期间游戏被重置')
 data = _make_data()
 before = data.question_count
 
-async def _slow_llm(music, text, config):
+async def _slow_llm(music, text, config, **kwargs):
     # 模拟 LLM 调用耗时，期间游戏被重置
     await asyncio.sleep(0.05)
     return _YES, 'mock'
@@ -263,7 +266,7 @@ class _Cfg:
     b50_llm_key = 'fake'
 
 # 包装 mock：LLM 返回前把游戏结束掉，模拟超时/重置竞态
-async def _mock_with_reset(music, text, config):
+async def _mock_with_reset(music, text, config, **kwargs):
     await asyncio.sleep(0.01)
     # LLM 还没返回，游戏被超时任务结束了
     data.end = True
@@ -292,7 +295,7 @@ data.max_questions = 1  # 只允许 1 次提问
 # 先用掉这次提问（但不走 LLM，走规则）
 data.question_count = 1  # 已用完
 
-async def _mock_check(music, text, config):
+async def _mock_check(music, text, config, **kwargs):
     await asyncio.sleep(0.01)
     return _YES
 
@@ -320,7 +323,7 @@ print('测试 11: prompt 注入防御（代码层）')
 data = _make_data()
 
 # 模拟 LLM 被注入后输出曲名/特征（而非 是/否/无法回答）
-async def _injected_llm(music, text, config):
+async def _injected_llm(music, text, config, **kwargs):
     # LLM 被诱导输出了 profile 内容或曲名
     return None  # 不以 是/否 开头 → _llm_classify 返回 None
 
@@ -348,7 +351,7 @@ mod2._llm_semaphore = None
 concurrent = 0
 max_concurrent = 0
 
-async def _counting_llm(music, text, config):
+async def _counting_llm(music, text, config, **kwargs):
     global concurrent, max_concurrent
     concurrent += 1
     max_concurrent = max(max_concurrent, concurrent)
@@ -365,7 +368,7 @@ class _Cfg2:
 orig2 = mod2._llm_classify
 orig_cfg2 = mod2._get_config
 # 直接 patch 内部：让 _llm_classify 走信号量 + 计数
-async def _patched_llm(music, text, config):
+async def _patched_llm(music, text, config, **kwargs):
     async with mod2._get_llm_semaphore():
         ans, _r = await _counting_llm(music, text, config)
         return ans, _r

@@ -146,6 +146,12 @@ class Config(BaseModel):
     maimaidx_storage_mysql_table_prefix: str = 'maimaidx_'
     maimaidx_storage_mysql_ssl: bool = False
     maimaidx_storage_mysql_keep_snapshots: int = 3
+    # 在线 BREAK/卡密 MySQL 请求的保护阈值。锁等待过久时让单条指令失败，
+    # 不能拖住整个 Bot 的消息入口。
+    maimaidx_storage_mysql_connect_timeout_seconds: int = 3
+    maimaidx_storage_mysql_read_timeout_seconds: int = 8
+    maimaidx_storage_mysql_write_timeout_seconds: int = 8
+    maimaidx_storage_mysql_lock_wait_timeout_seconds: int = 3
     # 仅在工作集发生变化时制作快照；此值是检测间隔，不再代表全量打包频率。
     maimaidx_storage_sync_interval_seconds: int = 900
     maimaidx_storage_include_user_scores: bool = True
@@ -201,6 +207,13 @@ class Config(BaseModel):
     b50_llm_url: str = 'https://api.openai.com/v1'
     b50_llm_key: str = ''
     b50_llm_model: str = 'gemini-3-flash-preview'
+    # 锐评涉及多个外部服务，必须有硬超时，避免 Matcher 永久停在“处理中”。
+    b50_reaction_timeout_seconds: float = 2.0
+    b50_fetch_timeout_seconds: float = 45.0
+    b50_llm_timeout_seconds: float = 180.0
+    b50_llm_max_retries: int = 0
+    b50_llm_max_tokens: int = 2048
+    b50_send_timeout_seconds: float = 30.0
     b50_assets_path: str = ''
 
     # ---------- 你想我猜（20 问）LLM 兜底 ----------

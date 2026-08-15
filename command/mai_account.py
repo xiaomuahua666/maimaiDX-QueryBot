@@ -102,7 +102,6 @@ account_music_upsert = on_command(
 account_music_delete = on_command(
     "mai删成绩", aliases={"删除成绩", "删成绩", "删分"}
 )
-account_ticket_clear = on_command("mai清票", aliases={"清空票券", "清票"})
 account_item_upsert = on_command("mai改道具", aliases={"修改道具", "改道具"})
 account_opt = on_command("mai查询opt", aliases={"查询opt"})
 
@@ -173,7 +172,6 @@ for _serial_account_matcher in (
     account_gate_status,
     account_music_upsert,
     account_music_delete,
-    account_ticket_clear,
     account_item_upsert,
     account_opt,
 ):
@@ -186,6 +184,9 @@ _TICKET_QRCODE_RETRY_SECONDS = 180
 _TICKET_TIMING_KEY = "ticket:processing_seconds"
 _LEGACY_TICKET_TIMING_KEY = "ticket_queue:seconds_per_request"
 _TICKET_AUTO_RETRIES = 2
+_TICKET_IRREVERSIBLE_NOTICE = (
+    "⚠️ 发票不可逆：票券一经发放必须上机使用，不可以屯票。"
+)
 # AWMC 发票接口是全局机台资源；即使不同用户同时发起，也必须逐张提交。
 _ticket_queue_lock = asyncio.Lock()
 _ticket_queue_waiting = 0
@@ -813,7 +814,10 @@ async def _render_account_status(
         f"二维码缓存：{cache_label}",
     ]
     try:
-        lines.append(f"BREAK 余额：{break_db.get_balance(int(binding.user_key))}")
+        balance = await asyncio.to_thread(
+            break_db.get_balance, int(binding.user_key)
+        )
+        lines.append(f"BREAK 余额：{balance}")
     except ValueError:
         pass
     lines.extend(["", "📊 账号信息" + ("（缓存）" if not preview else "")])
@@ -913,7 +917,7 @@ _ITEM_UPSERT_SUCCESS_NOTE = (
 )
 _COLLECTION_UPSERT_TICKET_WARNING = (
     "⚠️ 如果账号内还有票券，收藏品可能实际不会生效，但本次道具修改仍会扣费。\n"
-    "若确认未成功：1. 上机游玩清除票券；2. 使用 mai清票（或清票）；3. 再次重试。"
+    "若确认未成功：请先上机游玩清除票券，再次重试。"
 )
 
 
@@ -1687,26 +1691,54 @@ def _log(user_key: str, operation: str, status: str, detail: str = "") -> str:
     return ref_id
 
 
-def _service_cost(service: str, *, multiple: int = 1) -> int:
+async def _service_cost(service: str, *, multiple: int = 1) -> int:
     if service == "ticket":
-        unit = int(break_db.get_config("ticket_cost_per_multiplier", "10"))
+        unit = int(await asyncio.to_thread(
+            break_db.get_config, "ticket_cost_per_multiplier", "10"
+        ))
         return max(0, unit) * max(1, multiple)
     if service == "ticket_status":
-        return max(0, int(break_db.get_config("ticket_status_cost", "1")))
+        return max(0, int(await asyncio.to_thread(
+            break_db.get_config, "ticket_status_cost", "1"
+        )))
     if service == "awmc_status":
-        return max(0, int(break_db.get_config("awmc_status_cost", "2")))
+        return max(0, int(await asyncio.to_thread(
+            break_db.get_config, "awmc_status_cost", "2"
+        )))
     if service in {"awmc_preview", "awmc_items", "awmc_gate_status"}:
-        return max(0, int(break_db.get_config("awmc_read_cost", "5")))
+        return max(0, int(await asyncio.to_thread(
+            break_db.get_config, "awmc_read_cost", "5"
+        )))
     if service == "awmc_music_upsert":
-        return max(0, int(break_db.get_config("awmc_music_upsert_cost", "75")))
+        return max(0, int(await asyncio.to_thread(
+            break_db.get_config, "awmc_music_upsert_cost", "75"
+        )))
     if service == "awmc_music_delete":
-        return max(0, int(break_db.get_config("awmc_music_delete_cost", "50")))
-    if service == "awmc_ticket_clear":
-        return max(0, int(break_db.get_config("awmc_ticket_clear_cost", "10")))
+        return max(0, int(await asyncio.to_thread(
+            break_db.get_config, "awmc_music_delete_cost", "50"
+        )))
     if service == "awmc_item_upsert":
-        return max(0, int(break_db.get_config("awmc_item_upsert_cost", "100")))
+        return max(0, int(await asyncio.to_thread(
+            break_db.get_config, "awmc_item_upsert_cost", "100"
+        )))
     defaults = {"upload_fish": "2", "upload_lx": "2", "upload_all": "3"}
-    return max(0, int(break_db.get_config(f"{service}_cost", defaults[service])))
+    return max(0, int(await asyncio.to_thread(
+        break_db.get_config, f"{service}_cost", defaults[service]
+    )))
+
+
+async def _ensure_service_affordable(qqid: int, service: str, cost: int) -> None:
+    await asyncio.to_thread(
+        break_db.ensure_service_affordable, qqid, service, cost
+    )
+
+
+async def _settle_service_success(
+    qqid: int, service: str, cost: int, *, meta: Optional[dict] = None
+):
+    return await asyncio.to_thread(
+        break_db.settle_service_success, qqid, service, cost, meta=meta
+    )
 
 
 def _allowed_ticket_multipliers() -> tuple[int, ...]:
@@ -1738,7 +1770,6 @@ def _charge_text(result, qqid: Optional[int] = None) -> str:
         "awmc_gate_status": "门状态查询",
         "awmc_music_upsert": "成绩编辑",
         "awmc_music_delete": "成绩删除",
-        "awmc_ticket_clear": "清空票券",
         "awmc_item_upsert": "道具修改",
     }
     label = labels.get(result.service, result.service)
@@ -1768,17 +1799,21 @@ async def _require_agreement(matcher, event: MessageEvent) -> None:
 
 @account_help.handle()
 async def _(event: MessageEvent):
-    fish_cost = break_db.get_config("upload_fish_cost", "2")
-    lx_cost = break_db.get_config("upload_lx_cost", "2")
-    all_cost = break_db.get_config("upload_all_cost", "3")
-    ticket_unit = break_db.get_config("ticket_cost_per_multiplier", "10")
-    ticket_status_cost = break_db.get_config("ticket_status_cost", "1")
-    read_cost = break_db.get_config("awmc_read_cost", "5")
-    status_cost = break_db.get_config("awmc_status_cost", "2")
-    edit_cost = break_db.get_config("awmc_music_upsert_cost", "75")
-    delete_cost = break_db.get_config("awmc_music_delete_cost", "50")
-    clear_cost = break_db.get_config("awmc_ticket_clear_cost", "10")
-    item_cost = break_db.get_config("awmc_item_upsert_cost", "100")
+    values = await asyncio.gather(*(
+        asyncio.to_thread(break_db.get_config, key, default)
+        for key, default in (
+            ("upload_fish_cost", "2"), ("upload_lx_cost", "2"),
+            ("upload_all_cost", "3"), ("ticket_cost_per_multiplier", "10"),
+            ("ticket_status_cost", "1"), ("awmc_read_cost", "5"),
+            ("awmc_status_cost", "2"), ("awmc_music_upsert_cost", "75"),
+            ("awmc_music_delete_cost", "50"),
+            ("awmc_item_upsert_cost", "100"),
+        )
+    ))
+    (
+        fish_cost, lx_cost, all_cost, ticket_unit, ticket_status_cost,
+        read_cost, status_cost, edit_cost, delete_cost, item_cost,
+    ) = values
     ticket_multipliers = "/".join(map(str, _allowed_ticket_multipliers()))
     await plugin_finish(
         account_help,
@@ -1796,13 +1831,13 @@ async def _(event: MessageEvent):
         "mai门状态 / 查门：查询 Kaleidx Gate\n"
         "mai改成绩 / 改分 [歌曲 难度 达成率 DX分 FC FS]：交互或一步编辑成绩\n"
         "mai删成绩 / 删分 [歌曲 难度]：交互或一步删除成绩\n"
-        "mai清票 / 清票：确认后清空 Charge；mai改道具 / 改道具：高风险道具修改\n"
+        "mai改道具 / 改道具：高风险道具修改\n"
         f"当前上传价格：水鱼 {fish_cost} / 落雪 {lx_cost} / 同时 {all_cost} BREAK\n"
         f"发票价格：倍率 × {ticket_unit} BREAK（当前支持：{ticket_multipliers}）\n"
         f"AWMC 只读新功能：每次成功查询 {read_cost} BREAK，失败不扣费\n"
         f"账号状态查询（mymai）：每次成功查询 {status_cost} BREAK，失败不扣费\n"
         f"成绩编辑 {edit_cost} BREAK / 条；成绩删除 {delete_cost} BREAK / 条，失败不扣费\n"
-        f"清票 {clear_cost} BREAK / 次；道具修改 {item_cost} BREAK / 次（未经测试，风险自负）\n"
+        f"道具修改 {item_cost} BREAK / 次（未经测试，风险自负）\n"
         "已有 2/3/5 倍票未使用时重复发票，将拦截并扣除 20 BREAK。\n"
         "成绩上传每日首次成功免费；发票每次按价扣费，失败不扣费；"
         "明确失败会自动重试 2 次。\n"
@@ -1972,9 +2007,9 @@ async def _(
 
     cache_valid, cache_label = _sgid_cache_state(binding)
     if cache_valid:
-        cost = _service_cost("awmc_status")
+        cost = await _service_cost("awmc_status")
         try:
-            break_db.ensure_service_affordable(int(key), "awmc_status", cost)
+            await _ensure_service_affordable(int(key), "awmc_status", cost)
             binding, preview = await _read_verified_preview(
                 binding, binding.qrcode, save_qrcode=False
             )
@@ -1997,7 +2032,7 @@ async def _(
             matcher.state["status_cache_error"] = type(exc).__name__
             cache_label = "缓存验证失败，需刷新"
         else:
-            charge = break_db.settle_service_success(
+            charge = await _settle_service_success(
                 int(key), "awmc_status", cost, meta={"operation": "status", "source": "sgid_cache"}
             )
             ref = _log(
@@ -2073,9 +2108,9 @@ async def _(
 
     if not qrcode:
         await retry("未识别到 SGWCMAID 或受支持的官方二维码链接")
-    cost = _service_cost("awmc_status")
+    cost = await _service_cost("awmc_status")
     try:
-        break_db.ensure_service_affordable(int(key), "awmc_status", cost)
+        await _ensure_service_affordable(int(key), "awmc_status", cost)
         binding, preview = await _read_verified_preview(
             binding, qrcode, save_qrcode=True
         )
@@ -2098,7 +2133,7 @@ async def _(
                 reply_message=True,
             )
         await retry(type(exc).__name__)
-    charge = break_db.settle_service_success(
+    charge = await _settle_service_success(
         int(key), "awmc_status", cost, meta={"operation": "status", "source": "user_refresh"}
     )
     ref = _log(
@@ -2310,10 +2345,10 @@ async def _upload(
         if pc_scores:
             operation = "upload_lx"
             billing_service = "upload"
-            cost = _service_cost(operation)
+            cost = await _service_cost(operation)
             awmc_result = None
             try:
-                break_db.ensure_service_affordable(int(key), billing_service, cost)
+                await _ensure_service_affordable(int(key), billing_service, cost)
                 log.info(
                     f"[upload] 落雪 OAuth：使用 PC 缓存 {len(pc_scores)} 条，跳过机台 user={key}"
                 )
@@ -2331,7 +2366,7 @@ async def _upload(
                     event, oauth_token, pc_scores, source="PC缓存"
                 )
                 account_db.mark_uploaded(key)
-                charge = break_db.settle_service_success(
+                charge = await _settle_service_success(
                     int(key), billing_service, cost,
                     meta={"operation": operation, "fish": False, "lxns": True, "source": "pc"},
                 )
@@ -2356,7 +2391,7 @@ async def _upload(
                     # AWMC NET 已先写入成功时，落雪超时只能算外部平台部分失败，
                     # 不能把整次同步错误地回复成"上传失败"。
                     account_db.mark_uploaded(key)
-                    charge = break_db.settle_service_success(
+                    charge = await _settle_service_success(
                         int(key), billing_service, cost,
                         meta={"operation": operation, "fish": False, "lxns": True, "source": "pc", "partial": True},
                     )
@@ -2440,11 +2475,11 @@ async def _upload(
     # AWMC NET 是 Bot 的默认成绩库，单独同步不应占用外部查分器的
     # 每日免费次数，也不收取 BREAK；只有同时上传水鱼/落雪时才计费。
     billing_service = "upload" if (fish or lxns) else "awmcnet_sync"
-    cost = _service_cost(operation) if (fish or lxns) else 0
+    cost = await _service_cost(operation) if (fish or lxns) else 0
     results: list[str] = list(external_warnings)
     awmc_result = None
     try:
-        break_db.ensure_service_affordable(int(key), billing_service, cost)
+        await _ensure_service_affordable(int(key), billing_service, cost)
         try:
             qqid = int(key)
         except ValueError:
@@ -2584,7 +2619,7 @@ async def _upload(
         if awmc_result is None:
             raise RuntimeError('外部平台已处理，但 AWMCNET 同步失败，请稍后重试')
         account_db.mark_uploaded(key)
-        charge = break_db.settle_service_success(
+        charge = await _settle_service_success(
             int(key), billing_service, cost,
             meta={"operation": operation, "fish": fish, "lxns": lxns},
         )
@@ -2600,7 +2635,7 @@ async def _upload(
         if awmc_result is not None:
             # 水鱼/落雪失败不回滚已经成功的 AWMC NET 同步。
             account_db.mark_uploaded(key)
-            charge = break_db.settle_service_success(
+            charge = await _settle_service_success(
                 int(key), billing_service, cost,
                 meta={"operation": operation, "fish": fish, "lxns": lxns, "partial": True},
             )
@@ -3059,9 +3094,11 @@ async def _execute_ticket_now(
     binding = account_db.get(key)
     if binding is None or not (qrcode_override or binding.qrcode):
         raise RuntimeError("尚未绑定舞萌账号，请先使用：mai绑定 SGWCMAID...")
-    cost = _service_cost("ticket", multiple=multiple)
-    break_db.ensure_service_affordable(int(key), "ticket", cost)
+    cost = await _service_cost("ticket", multiple=multiple)
+    await _ensure_service_affordable(int(key), "ticket", cost)
     credential = qrcode_override or binding.qrcode
+    if notify is not None:
+        await notify(_TICKET_IRREVERSIBLE_NOTICE)
     async with machine_session():
         try:
             binding, _ = await _read_verified_preview(
@@ -3147,7 +3184,7 @@ async def _execute_ticket_now(
         execute_attempt,
         notify=notify,
     )
-    charge = break_db.settle_service_success(
+    charge = await _settle_service_success(
         int(key),
         "ticket",
         cost,
@@ -3226,17 +3263,19 @@ async def _execute_ticket(
             _ticket_queue_lock.release()
 
 
-def _ticket_failure_text(key: str, multiple: int, exc: Exception) -> str:
+async def _ticket_failure_text(key: str, multiple: int, exc: Exception) -> str:
     """格式化发票失败；保留原有未使用票券处罚语义。"""
     if isinstance(exc, UnusedTicketPenaltyError):
-        penalty = max(
-            1, int(break_db.get_config("ticket_unused_penalty", "20") or 20)
-        )
+        penalty = max(1, int(await asyncio.to_thread(
+            break_db.get_config, "ticket_unused_penalty", "20"
+        ) or 20))
         meta = {"unused_stocks": exc.stocks, "requested_multiple": multiple}
-        if not break_db.try_consume(
-            int(key), penalty, "ticket_unused_penalty", meta=meta
-        ):
-            balance = break_db.get_balance(int(key))
+        consumed = await asyncio.to_thread(
+            break_db.try_consume,
+            int(key), penalty, "ticket_unused_penalty", meta=meta,
+        )
+        balance = await asyncio.to_thread(break_db.get_balance, int(key))
+        if not consumed:
             ref = _log(
                 key,
                 "ticket_unused_penalty",
@@ -3247,7 +3286,6 @@ def _ticket_failure_text(key: str, multiple: int, exc: Exception) -> str:
                 "检测到账号还有未使用的倍率票，本次发票已拦截。\n"
                 f"处罚需要 {penalty} BREAK，但当前仅有 {balance}。\nRef_ID: {ref}"
             )
-        balance = break_db.get_balance(int(key))
         ref = _log(
             key,
             "ticket_unused_penalty",
@@ -3287,9 +3325,9 @@ async def continue_ticket_with_qrcode(
             suffix = f"请在剩余 {remaining} 秒内重新发送最新二维码。"
         else:
             suffix = "180 秒续发窗口已结束，请重新发送发票命令。"
-        return _ticket_failure_text(key, multiple, exc) + "\n" + suffix
+        return await _ticket_failure_text(key, multiple, exc) + "\n" + suffix
     except Exception as exc:
-        return _ticket_failure_text(key, multiple, exc)
+        return await _ticket_failure_text(key, multiple, exc)
 
 
 @account_ticket.handle()
@@ -3322,12 +3360,12 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
         await plugin_finish(account_ticket, f"票券倍率仅支持：{allowed_text}。", event=event)
     clear_pending_ticket_retry(key)
     try:
-        cost = _service_cost("ticket", multiple=multiple)
-        break_db.ensure_service_affordable(int(key), "ticket", cost)
+        cost = await _service_cost("ticket", multiple=multiple)
+        await _ensure_service_affordable(int(key), "ticket", cost)
     except Exception as exc:
         await plugin_finish(
             account_ticket,
-            _ticket_failure_text(key, multiple, exc),
+            await _ticket_failure_text(key, multiple, exc),
             event=event,
             reply_message=True,
         )
@@ -3339,12 +3377,12 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
     except TicketQrcodeError as exc:
         remember_pending_ticket_retry(key, multiple)
         text = (
-            _ticket_failure_text(key, multiple, exc)
+            await _ticket_failure_text(key, multiple, exc)
             + "\n请在 180 秒内重新发送最新 SGWCMAID、官方链接或二维码图片；"
             "Bot 将直接继续本次发票，不会绑定或上传 B50。"
         )
     except Exception as exc:
-        text = _ticket_failure_text(key, multiple, exc)
+        text = await _ticket_failure_text(key, multiple, exc)
     await plugin_finish(
         account_ticket,
         text,
@@ -3408,8 +3446,8 @@ async def _run_paid_awmc_read(
             }.get(service, "查询")
             raise QrcodeRefreshRequiredError(_pending_qrcode_prompt("已过期，需刷新", label))
         raise RuntimeError(error or "账号未绑定")
-    cost = _service_cost(service)
-    break_db.ensure_service_affordable(int(key), service, cost)
+    cost = await _service_cost(service)
+    await _ensure_service_affordable(int(key), service, cost)
     try:
         async with machine_session():
             result = await fetch(binding.qrcode)
@@ -3424,7 +3462,7 @@ async def _run_paid_awmc_read(
             _raise_sgid_refresh_required(key, service, {}, label)
         raise
     text = formatter(result)
-    charge = break_db.settle_service_success(
+    charge = await _settle_service_success(
         int(key), service, cost, meta={"operation": service}
     )
     ref = _log(key, service, "success", f"charged={charge.charged}")
@@ -3494,10 +3532,9 @@ async def continue_pending_account_retry(
                 level=int(payload.get("level")),
                 score=payload.get("score"),
             )
-        if operation in {"awmc_ticket_clear", "awmc_item_upsert"}:
-            return await _run_account_dangerous_write(
+        if operation == "awmc_item_upsert":
+            return await _run_item_upsert(
                 event,
-                service=operation,
                 item_kind=payload.get("item_kind"),
                 item_id=payload.get("item_id"),
                 operation=str(payload.get("operation") or ""),
@@ -3534,8 +3571,8 @@ async def _run_music_write(
                 _pending_qrcode_prompt("已过期，需刷新", label)
             )
         raise RuntimeError(error or "账号未绑定")
-    cost = _service_cost(service)
-    break_db.ensure_service_affordable(int(key), service, cost)
+    cost = await _service_cost(service)
+    await _ensure_service_affordable(int(key), service, cost)
     try:
         async with machine_session():
             if service == "awmc_music_upsert":
@@ -3563,7 +3600,7 @@ async def _run_music_write(
     except (TypeError, ValueError):
         pass
 
-    charge = break_db.settle_service_success(
+    charge = await _settle_service_success(
         int(key),
         service,
         cost,
@@ -3597,14 +3634,14 @@ async def _finish_music_write_error(matcher, event: MessageEvent, service: str, 
     )
 
 
-async def _run_account_dangerous_write(
+async def _run_item_upsert(
     event: MessageEvent,
     *,
-    service: str,
     item_kind: Optional[int] = None,
     item_id: Optional[int] = None,
     operation: str = "",
 ) -> str:
+    service = "awmc_item_upsert"
     key, binding, error = _binding_or_error(event)
     if error or binding is None:
         if error and "二维码缓存" in error:
@@ -3614,41 +3651,32 @@ async def _run_account_dangerous_write(
                 "operation": operation,
             }
             remember_pending_account_retry(key, service, payload)
-            label = "清票" if service == "awmc_ticket_clear" else "道具修改"
             raise QrcodeRefreshRequiredError(
-                _pending_qrcode_prompt("已过期，需刷新", label)
+                _pending_qrcode_prompt("已过期，需刷新", "道具修改")
             )
         raise RuntimeError(error or "账号未绑定")
-    cost = _service_cost(service)
-    break_db.ensure_service_affordable(int(key), service, cost)
+    cost = await _service_cost(service)
+    await _ensure_service_affordable(int(key), service, cost)
     try:
         async with machine_session():
-            if service == "awmc_ticket_clear":
-                await sw_api.clear_tickets(binding.qrcode)
-                meta = {"operation": "clear"}
-                result_text = "✅ 已清空账号内的 Charge 票券"
-            elif service == "awmc_item_upsert":
-                if item_kind is None or item_id is None:
-                    raise RuntimeError("缺少道具参数")
-                await sw_api.upsert_item(
-                    binding.qrcode, item_kind, item_id, operation
-                )
-                meta = {
-                    "item_kind": item_kind,
-                    "item_id": item_id,
-                    "operation": operation,
-                }
-                action = "添加" if operation == "add" else "删除"
-                label = _ITEM_KIND_LABELS.get(item_kind, f"未知类型 {item_kind}")
-                result_text = f"✅ 已提交{action}道具：{label} · itemId={item_id}"
-                result_text += f"\n{_ITEM_UPSERT_SUCCESS_NOTE}"
-                if item_kind == 4:
-                    result_text += f"\n{_COLLECTION_UPSERT_TICKET_WARNING}"
-            else:
-                raise RuntimeError(f"不支持的账号写入服务：{service}")
+            if item_kind is None or item_id is None:
+                raise RuntimeError("缺少道具参数")
+            await sw_api.upsert_item(
+                binding.qrcode, item_kind, item_id, operation
+            )
+            meta = {
+                "item_kind": item_kind,
+                "item_id": item_id,
+                "operation": operation,
+            }
+            action = "添加" if operation == "add" else "删除"
+            label = _ITEM_KIND_LABELS.get(item_kind, f"未知类型 {item_kind}")
+            result_text = f"✅ 已提交{action}道具：{label} · itemId={item_id}"
+            result_text += f"\n{_ITEM_UPSERT_SUCCESS_NOTE}"
+            if item_kind == 4:
+                result_text += f"\n{_COLLECTION_UPSERT_TICKET_WARNING}"
     except Exception as exc:
         if _is_sgid_expired_error(exc):
-            label = "道具修改" if service == "awmc_item_upsert" else "清票"
             _raise_sgid_refresh_required(
                 key,
                 service,
@@ -3657,10 +3685,10 @@ async def _run_account_dangerous_write(
                     "item_id": item_id,
                     "operation": operation,
                 },
-                label,
+                "道具修改",
             )
         raise
-    charge = break_db.settle_service_success(int(key), service, cost, meta=meta)
+    charge = await _settle_service_success(int(key), service, cost, meta=meta)
     ref = _log(
         key,
         service,
@@ -3770,8 +3798,8 @@ async def _(matcher: Matcher, event: MessageEvent, args: Message = CommandArg())
             key, binding, error = _binding_for_write_preflight(event)
             if error or binding is None:
                 raise RuntimeError(error or "账号未绑定")
-            break_db.ensure_service_affordable(
-                int(key), "awmc_music_upsert", _service_cost("awmc_music_upsert")
+            await _ensure_service_affordable(
+                int(key), "awmc_music_upsert", await _service_cost("awmc_music_upsert")
             )
         except Exception as exc:
             await _finish_music_write_error(
@@ -3912,8 +3940,8 @@ async def _(matcher: Matcher, event: MessageEvent, args: Message = CommandArg())
             key, binding, error = _binding_for_write_preflight(event)
             if error or binding is None:
                 raise RuntimeError(error or "账号未绑定")
-            break_db.ensure_service_affordable(
-                int(key), "awmc_music_delete", _service_cost("awmc_music_delete")
+            await _ensure_service_affordable(
+                int(key), "awmc_music_delete", await _service_cost("awmc_music_delete")
             )
         except Exception as exc:
             await _finish_music_write_error(
@@ -4008,48 +4036,6 @@ async def _(matcher: Matcher, event: MessageEvent, message: Message = Arg("delet
     await account_music_delete.finish(text, reply_message=True)
 
 
-@account_ticket_clear.handle()
-async def _(matcher: Matcher, event: MessageEvent, args: Message = CommandArg()):
-    await _require_agreement(account_ticket_clear, event)
-    try:
-        key, binding, error = _binding_for_write_preflight(event)
-        if error or binding is None:
-            raise RuntimeError(error or "账号未绑定")
-        break_db.ensure_service_affordable(
-            int(key), "awmc_ticket_clear", _service_cost("awmc_ticket_clear")
-        )
-    except Exception as exc:
-        await _finish_music_write_error(
-            account_ticket_clear, event, "awmc_ticket_clear", exc
-        )
-    raw = _arg_text(args)
-    if raw:
-        matcher.set_arg("ticket_clear_confirm", Message(raw))
-    else:
-        await matcher.send(
-            "⚠️ 清票会清空账号内的 Charge 票券，成功后消耗 10 BREAK。",
-            reply_message=True,
-        )
-
-
-@account_ticket_clear.got(
-    "ticket_clear_confirm",
-    prompt="确认继续请发送“确认清票”；发送其他内容取消：",
-)
-async def _(event: MessageEvent, message: Message = Arg("ticket_clear_confirm")):
-    if _arg_text(message) != "确认清票":
-        await account_ticket_clear.finish("已取消清票，本次不扣 BREAK。")
-    try:
-        text = await _run_account_dangerous_write(
-            event, service="awmc_ticket_clear"
-        )
-    except Exception as exc:
-        await _finish_music_write_error(
-            account_ticket_clear, event, "awmc_ticket_clear", exc
-        )
-    await account_ticket_clear.finish(text, reply_message=True)
-
-
 @account_item_upsert.handle()
 async def _(matcher: Matcher, event: MessageEvent, args: Message = CommandArg()):
     await _require_agreement(account_item_upsert, event)
@@ -4057,8 +4043,8 @@ async def _(matcher: Matcher, event: MessageEvent, args: Message = CommandArg())
         key, binding, error = _binding_for_write_preflight(event)
         if error or binding is None:
             raise RuntimeError(error or "账号未绑定")
-        break_db.ensure_service_affordable(
-            int(key), "awmc_item_upsert", _service_cost("awmc_item_upsert")
+        await _ensure_service_affordable(
+            int(key), "awmc_item_upsert", await _service_cost("awmc_item_upsert")
         )
     except Exception as exc:
         await _finish_music_write_error(
@@ -4183,9 +4169,8 @@ async def _(matcher: Matcher, event: MessageEvent, message: Message = Arg("item_
         reply_message=True,
     )
     try:
-        text = await _run_account_dangerous_write(
+        text = await _run_item_upsert(
             event,
-            service="awmc_item_upsert",
             item_kind=matcher.state["item_kind_value"],
             item_id=matcher.state["item_id_value"],
             operation=matcher.state["item_operation_value"],

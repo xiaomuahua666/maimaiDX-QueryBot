@@ -136,10 +136,10 @@ def _has_guess_sync_pending(event) -> bool:
 GROUP_MESSAGE = Rule(_is_group_message)
 
 _GUESS_SHORTCUTS = (
-    ('再来猜歌', '猜歌'),
-    ('再猜封面', '猜封面'),
-    ('再猜曲子', '猜曲子'),
-    ('再猜谱面', '猜谱面'),
+    ('猜歌', '猜歌'),
+    ('猜曲绘', '猜封面'),
+    ('猜曲子', '猜曲子'),
+    ('猜谱面', '猜谱面'),
     ('猜 Rating', '猜rating'),
     ('B50 找内鬼', '找内鬼'),
     ('极限二选一', '极限二选一'),
@@ -430,6 +430,15 @@ def _chart_points_now(data: GuessChartData) -> int:
     )
 
 
+# 基础猜歌四模式 → 双层上限 game_key（与 maimaidx_break 的 guess_daily_caps 对应）
+_GUESS_GAME_KEY_BY_MODE = {
+    guess_score.MODE_PIC: 'cover',
+    guess_score.MODE_AUDIO: 'tune',
+    guess_score.MODE_CHART: 'chart',
+    guess_score.MODE_SONG: 'song',
+}
+
+
 async def _award_guess_points(
     event: MessageEvent,
     gid: GroupId,
@@ -483,9 +492,18 @@ async def _award_guess_points(
     )
     from ..libraries.maimaidx_break import break_db
 
-    reward = break_db.award_guess_points(
-        billing_user_id(event), added, group_id=str(gid),
-    )
+    try:
+        reward = await asyncio.to_thread(
+            break_db.award_guess_points,
+            billing_user_id(event), added, group_id=str(gid),
+            game=_GUESS_GAME_KEY_BY_MODE.get(mode, 'song'),
+        )
+    except Exception as exc:
+        log.exception(
+            f'[Guess] BREAK 奖励结算失败，保留积分与答对回复 '
+            f'gid={gid} mode={mode}: {type(exc).__name__}: {exc}'
+        )
+        return settlement
     if reward.break_added > 0:
         double_tag = ''
         if reward.doubled:
@@ -497,6 +515,8 @@ async def _award_guess_points(
             f'\n💳 猜对奖励 +{reward.break_added} BREAK'
             f'（余额 {reward.balance}）{double_tag}'
         )
+    elif reward.capped:
+        settlement += '\n💳 猜对奖励 +0 BREAK'
     return settlement
 
 
@@ -2131,7 +2151,7 @@ async def _(event: MessageEvent, matched=RegexMatched()):
         if data and data.end:
             break
         remaining -= 1
-        if remaining in (30, 10, 5):
+        if remaining in (30, 10):
             await _guess_notify(
                 guess_rating_start, event,
                 f'⏳ 还剩 {remaining}秒！',
@@ -2146,34 +2166,51 @@ async def _(event: MessageEvent, matched=RegexMatched()):
     if settlement is None:
         reveal_task.cancel()
         return
+    # settle() 已经冻结了本局数据；先释放群状态，避免奖励或渲染异常把游戏卡成 busy。
+    rating_guess.end(gid, expected=data)
 
     # 发放奖励
     from ..libraries.maimaidx_break import break_db
 
     for reward in settlement.rewards:
         if reward.score > 0:
-            await guess_score.award_fixed_points(
-                gid,
-                reward.uid,
-                reward.name,
-                reward.score,
-                mode=guess_score.MODE_RATING,
-            )
+            try:
+                await guess_score.award_fixed_points(
+                    gid,
+                    reward.uid,
+                    reward.name,
+                    reward.score,
+                    mode=guess_score.MODE_RATING,
+                )
+            except Exception as exc:
+                log.exception(
+                    f'[GuessRating] 积分结算失败，继续发送结果 '
+                    f'gid={gid} uid={reward.uid}: {type(exc).__name__}: {exc}'
+                )
         if reward.break_points > 0:
-            break_db.add_balance(
-                reward.billing_id,
-                reward.break_points,
-                'rating_guess_settlement',
-                meta={
-                    'group_id': str(gid),
-                    'target_uid': settlement.target_uid,
-                    'target_name': settlement.target_name,
-                    'target_rating': settlement.target_rating,
-                    'difficulty': difficulty,
-                    'rank': reward.rank,
-                    'diff': reward.diff,
-                },
-            )
+            try:
+                award = await asyncio.to_thread(
+                    break_db.award_game_break,
+                    reward.billing_id, 'rating', reward.break_points,
+                    'rating_guess_settlement',
+                    meta={
+                        'group_id': str(gid),
+                        'target_uid': settlement.target_uid,
+                        'target_name': settlement.target_name,
+                        'target_rating': settlement.target_rating,
+                        'difficulty': difficulty,
+                        'rank': reward.rank,
+                        'diff': reward.diff,
+                    },
+                )
+                # 写回实际到账额，供结算文案/画图按真实发放显示；封顶时记 capped。
+                reward.break_points = award.awarded
+                reward.break_capped = award.capped
+            except Exception as exc:
+                log.exception(
+                    f'[GuessRating] BREAK 结算失败，继续发送结果 '
+                    f'gid={gid} uid={reward.uid}: {type(exc).__name__}: {exc}'
+                )
 
     # 构建结算消息
     result_lines = [
@@ -2199,7 +2236,6 @@ async def _(event: MessageEvent, matched=RegexMatched()):
         log.warning(f'[GuessRating] 发送揭晓图失败 gid={gid}: {e}')
         await _safe_matcher_send(guess_rating_start, event, result_text, gid, fatal=False)
 
-    rating_guess.end(gid, expected=data)
     await _send_guess_shortcuts(guess_rating_start, event, gid)
     await guess_rating_start.finish()
 
@@ -2376,7 +2412,7 @@ async def _(event: MessageEvent):
         if current is not data or current.end:
             return
         remaining -= 1
-        if remaining in (30, 10, 5):
+        if remaining in (30, 10):
             await _guess_notify(
                 guess_impostor_start, event, f'⏳ 找内鬼还剩 {remaining}秒！',
             )
@@ -2386,29 +2422,45 @@ async def _(event: MessageEvent):
     settlement = impostor_guess.settle(gid)
     if settlement is None:
         return
+    # settle() 已经冻结了本局数据；先释放群状态，避免奖励或渲染异常把游戏卡成 busy。
+    impostor_guess.end(gid, expected=data)
 
     from ..libraries.maimaidx_break import break_db
 
     for reward in settlement.rewards:
-        await guess_score.award_fixed_points(
-            gid,
-            reward.uid,
-            reward.name,
-            reward.score,
-            mode=guess_score.MODE_IMPOSTOR,
-        )
-        if reward.break_points > 0:
-            break_db.add_balance(
-                reward.billing_id,
-                reward.break_points,
-                'b50_impostor_settlement',
-                meta={
-                    'group_id': str(gid),
-                    'target_uid': settlement.target_uid,
-                    'answer': settlement.answer,
-                    'rank': reward.rank,
-                },
+        try:
+            await guess_score.award_fixed_points(
+                gid,
+                reward.uid,
+                reward.name,
+                reward.score,
+                mode=guess_score.MODE_IMPOSTOR,
             )
+        except Exception as exc:
+            log.exception(
+                f'[GuessImpostor] 积分结算失败，继续发送结果 '
+                f'gid={gid} uid={reward.uid}: {type(exc).__name__}: {exc}'
+            )
+        if reward.break_points > 0:
+            try:
+                award = await asyncio.to_thread(
+                    break_db.award_game_break,
+                    reward.billing_id, 'impostor', reward.break_points,
+                    'b50_impostor_settlement',
+                    meta={
+                        'group_id': str(gid),
+                        'target_uid': settlement.target_uid,
+                        'answer': settlement.answer,
+                        'rank': reward.rank,
+                    },
+                )
+                reward.break_points = award.awarded
+                reward.break_capped = award.capped
+            except Exception as exc:
+                log.exception(
+                    f'[GuessImpostor] BREAK 结算失败，继续发送结果 '
+                    f'gid={gid} uid={reward.uid}: {type(exc).__name__}: {exc}'
+                )
 
     result_lines = [
         '🎉 B50找内鬼结束！',
@@ -2442,7 +2494,6 @@ async def _(event: MessageEvent):
             guess_impostor_start, event, result_text, gid, fatal=False,
         )
 
-    impostor_guess.end(gid, expected=data)
     await _send_guess_shortcuts(guess_impostor_start, event, gid)
     await guess_impostor_start.finish()
 
@@ -2625,7 +2676,7 @@ async def _(event: MessageEvent):
                     return
                 await asyncio.sleep(1)
                 remaining -= 1
-                if remaining in (10, 5) and remaining > 0:
+                if remaining in (10,) and remaining > 0:
                     await _guess_notify(
                         guess_duel_start, event,
                         f'⏳ 第 {r_idx} 轮还剩 {remaining} 秒',
@@ -2687,17 +2738,25 @@ async def _(event: MessageEvent):
         from ..libraries.maimaidx_break import break_db
 
         survivors_uids = set(settlement.survivors)
+        actual_bp = {}
+        capped_uids = set()
         for p in data.participants.values():
             if p.final_score <= 0:
                 continue
             added = p.final_score
-            await guess_score.award_fixed_points(
-                gid,
-                p.uid,
-                p.name,
-                added,
-                mode=guess_score.MODE_DUEL,
-            )
+            try:
+                await guess_score.award_fixed_points(
+                    gid,
+                    p.uid,
+                    p.name,
+                    added,
+                    mode=guess_score.MODE_DUEL,
+                )
+            except Exception as exc:
+                log.exception(
+                    f'[GuessDuel] 积分结算失败，继续后续玩家 '
+                    f'gid={gid} uid={p.uid}: {type(exc).__name__}: {exc}'
+                )
             if p.uid in survivors_uids and p.finish_rank >= 1:
                 bp = 0
                 if p.finish_rank == 1:
@@ -2705,16 +2764,24 @@ async def _(event: MessageEvent):
                 elif p.finish_rank == 2:
                     bp = 1
                 if bp > 0:
-                    break_db.add_balance(
-                        p.billing_id,
-                        bp,
-                        'duel_all_clear_bonus',
-                        meta={
-                            'group_id': str(gid),
-                            'rank': p.finish_rank,
-                            'rounds': len(data.rounds),
-                        },
-                    )
+                    try:
+                        award = await asyncio.to_thread(
+                            break_db.award_game_break,
+                            p.billing_id, 'duel', bp, 'duel_all_clear_bonus',
+                            meta={
+                                'group_id': str(gid),
+                                'rank': p.finish_rank,
+                                'rounds': len(data.rounds),
+                            },
+                        )
+                        actual_bp[p.uid] = award.awarded
+                        if award.capped:
+                            capped_uids.add(p.uid)
+                    except Exception as exc:
+                        log.exception(
+                            f'[GuessDuel] BREAK 结算失败，继续后续玩家 '
+                            f'gid={gid} uid={p.uid}: {type(exc).__name__}: {exc}'
+                        )
 
         # 结算文案
         result_lines = [
@@ -2729,7 +2796,13 @@ async def _(event: MessageEvent):
             result_lines.append('🏆 全通关排名：')
             for uid, name, rank, score, bp in settlement.rewards:
                 medal = {1: '🥇', 2: '🥈', 3: '🥉'}.get(rank, '▫️')
-                bp_part = f' +{bp}BREAK' if bp else ''
+                actual = actual_bp.get(uid, bp)
+                if actual > 0:
+                    bp_part = f' +{actual}BREAK'
+                elif uid in capped_uids:
+                    bp_part = ' +0 BREAK'
+                else:
+                    bp_part = ''
                 result_lines.append(
                     f'{medal} #{rank} {name}  +{score}分{bp_part}'
                 )
@@ -2959,11 +3032,21 @@ async def _(event: MessageEvent):
             )
             from ..libraries.maimaidx_break import break_db
 
-            reward = break_db.award_guess_points(
-                data.winner_billing, added, group_id=str(gid),
-            )
+            try:
+                reward = await asyncio.to_thread(
+                    break_db.award_guess_points,
+                    data.winner_billing, added, group_id=str(gid),
+                    game='twentyq',
+                )
+            except Exception as exc:
+                # 积分已入账；BREAK 失败不吞掉揭晓消息，只是不带 BREAK 行。
+                log.exception(
+                    f'[Guess20Q] BREAK 结算失败，保留积分与揭晓消息 '
+                    f'gid={gid} uid={uid}: {type(exc).__name__}: {exc}'
+                )
+                reward = None
             break_part = ''
-            if reward.break_added > 0:
+            if reward is not None and reward.break_added > 0:
                 double_tag = ''
                 if reward.doubled:
                     from ..libraries.maimaidx_card import format_duration
@@ -2974,6 +3057,8 @@ async def _(event: MessageEvent):
                     f'\n💳 猜对奖励 +{reward.break_added} BREAK'
                     f'（余额 {reward.balance}）{double_tag}'
                 )
+            elif reward is not None and reward.capped:
+                break_part = '\n💳 猜对奖励 +0 BREAK'
             log.info(
                 f'[Guess20Q] 猜对结束 gid={gid} answer={data.music.title} '
                 f'id={data.music.id} winner={name}({uid}) '

@@ -567,7 +567,8 @@ async def resolve_player_records(
         from .maimaidx_break import settle_cache_hit, get_billing_qqid
         billing_qq = get_billing_qqid()
         if billing_qq:
-            settle_cache_hit(billing_qq)
+            import asyncio
+            await asyncio.to_thread(settle_cache_hit, billing_qq)
         return cached.userinfo, cached.records
     userinfo, records = await fetch_fn()
     save_cached_player(qqid, username, source, userinfo, records)
@@ -601,7 +602,8 @@ async def resolve_player_b50(
         from .maimaidx_break import settle_cache_hit, get_billing_qqid
         billing_qq = get_billing_qqid()
         if billing_qq:
-            settle_cache_hit(billing_qq)
+            import asyncio
+            await asyncio.to_thread(settle_cache_hit, billing_qq)
         return regroup_b50_userinfo(cached.userinfo)
     userinfo = regroup_b50_userinfo(await fetch_b50_fn())
     # 只复用 SQLite 缓存中的近期 records；存档快照数据不能重新盖新时间戳

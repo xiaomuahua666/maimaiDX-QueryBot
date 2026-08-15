@@ -41,6 +41,7 @@ async def run() -> None:
         "send": mai_b50_analysis.plugin_send,
         "finish": mai_b50_analysis.plugin_finish,
         "refund": mai_b50_analysis.refund_analysis_charge,
+        "send_timeout": mai_b50_analysis.maiconfig.b50_send_timeout_seconds,
     }
 
     async def failed_send(*_args, **_kwargs):
@@ -94,6 +95,34 @@ async def run() -> None:
         "mention_sender": False,
         "publish_qq_image": True,
     }]
+
+    notices.clear()
+    refunds.clear()
+
+    async def hung_send(*_args, **_kwargs):
+        await asyncio.sleep(2)
+
+    mai_b50_analysis.plugin_send = hung_send
+    mai_b50_analysis.plugin_finish = finish_notice
+    mai_b50_analysis.refund_analysis_charge = (
+        lambda *args, **kwargs: refunds.append((args, kwargs)) or 10
+    )
+    mai_b50_analysis.maiconfig.b50_send_timeout_seconds = 0.5
+    try:
+        delivered = await mai_b50_analysis._deliver_result_or_refund(
+            matcher, event, io.BytesIO(b"png"), 123456789, reservation,
+        )
+    finally:
+        mai_b50_analysis.plugin_send = originals["send"]
+        mai_b50_analysis.plugin_finish = originals["finish"]
+        mai_b50_analysis.refund_analysis_charge = originals["refund"]
+        mai_b50_analysis.maiconfig.b50_send_timeout_seconds = originals["send_timeout"]
+
+    assert delivered is False
+    assert len(refunds) == 1
+    assert refunds[0][1]["reason"] == "发送结果:AnalysisStageTimeoutError"
+    assert notices and "图片发送超时" in notices[0]
+    assert "预扣已全额退回" in notices[0]
 
 
 asyncio.run(run())

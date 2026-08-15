@@ -1,3 +1,4 @@
+import asyncio
 import json
 import re
 
@@ -352,16 +353,20 @@ async def _finish_score(
             from ..libraries.maimaidx_break import break_db, image_render_cost
             from ..libraries.maimaidx_card import card_manager
 
-            break_db.ensure_service_affordable(payer, service_name, service_cost)
-            if not card_manager.freedom_active(payer):
-                service_due = (
-                    0 if break_db.service_is_free(payer, service_name)
-                    else max(0, int(service_cost))
+            def _preflight():
+                break_db.ensure_service_affordable(
+                    payer, service_name, service_cost
                 )
+                if card_manager.freedom_active(payer):
+                    return
+                service_due = 0 if break_db.service_is_free(
+                    payer, service_name
+                ) else max(0, int(service_cost))
                 required = service_due + max(0, image_render_cost())
                 balance = break_db.get_balance(payer)
                 if balance < required:
                     raise BreakInsufficientError(required, balance, qqid=payer)
+            await asyncio.to_thread(_preflight)
         result, total = await run_timed(
             coro,
             billing_qqid=payer,
@@ -395,8 +400,9 @@ async def _finish_score(
                 replace_break_charge_footer,
             )
 
-            charge_result = break_db.settle_service_success(
-                payer, service_name, service_cost
+            charge_result = await asyncio.to_thread(
+                break_db.settle_service_success,
+                payer, service_name, service_cost,
             )
             if charge_result.freedom:
                 from ..libraries.maimaidx_break import format_freedom_exemption
@@ -407,7 +413,9 @@ async def _finish_score(
                     'annual_report': '年报（含生成图片）',
                     'daily_report': '日报（含生成图片）',
                 }
-                total_saved = break_db.get_freedom_savings_total(payer)
+                total_saved = await asyncio.to_thread(
+                    break_db.get_freedom_savings_total, payer
+                )
                 replace_break_charge_footer([
                     format_freedom_exemption(
                         payer,
@@ -605,9 +613,14 @@ async def _coop_resolve_nicks_and_finish(event, at_qq, cmd, generator):
     if at_qq == qqid:
         await cmd.finish('请@除自己以外的另一位好友。', reply_message=True)
     from ..libraries.maimaidx_break import break_db, charge_session_extra
-    cost = int(break_db.get_config('coop_b50_cost', '2'))
+    cost = int(await asyncio.to_thread(
+        break_db.get_config, 'coop_b50_cost', '2'
+    ))
     if cost > 0:
-        break_db.ensure_service_affordable(billing_user_id(event), 'coop_b50', cost)
+        await asyncio.to_thread(
+            break_db.ensure_service_affordable,
+            billing_user_id(event), 'coop_b50', cost,
+        )
     nick_a = _display_name_from_sender(event.sender) or str(qqid)
     nick_b = nick_a
     if isinstance(event, GroupMessageEvent):
@@ -625,7 +638,9 @@ async def _coop_resolve_nicks_and_finish(event, at_qq, cmd, generator):
         nick_b = str(at_qq)
     from ..libraries.maimaidx_timing import finish_timed
     if cost > 0:
-        charge_session_extra(billing_user_id(event), cost, 'coop_b50')
+        await asyncio.to_thread(
+            charge_session_extra, billing_user_id(event), cost, 'coop_b50'
+        )
     await finish_timed(
         cmd,
         generator(qqid, at_qq, nick_a, nick_b),
@@ -1234,14 +1249,23 @@ async def _enable_data_storage(event: MessageEvent):
             # 今日已签到可补发差额；防刷：7 天内关过/领过则不补，需保持开启跨天再享受
             from ..libraries.maimaidx_break import break_db
 
-            cooldown = break_db._storage_bonus_cooldown_days()
+            cooldown = await asyncio.to_thread(
+                break_db._storage_bonus_cooldown_days
+            )
             ok, reason = data_storage.storage_bonus_eligible_for_retroactive(
                 qqid, cooldown_days=cooldown
             )
             bonus_lines = []
-            if ok and not break_db.has_recent_storage_checkin_bonus(
-                int(billing_user_id(event))
-            ) and not break_db.has_recent_storage_checkin_bonus(int(qqid)):
+            recent_payer, recent_score = await asyncio.gather(
+                asyncio.to_thread(
+                    break_db.has_recent_storage_checkin_bonus,
+                    int(billing_user_id(event)),
+                ),
+                asyncio.to_thread(
+                    break_db.has_recent_storage_checkin_bonus, int(qqid)
+                ),
+            )
+            if ok and not recent_payer and not recent_score:
                 seen: set[int] = set()
                 for candidate in (
                     int(qqid),
@@ -1251,7 +1275,9 @@ async def _enable_data_storage(event: MessageEvent):
                         continue
                     seen.add(candidate)
                     try:
-                        granted = break_db.try_grant_checkin_storage_bonus(candidate)
+                        granted = await asyncio.to_thread(
+                            break_db.try_grant_checkin_storage_bonus, candidate
+                        )
                     except Exception as exc:
                         log.warning(
                             f'[storage] 签到存储加成补发失败 qqid={candidate}: '
@@ -1460,7 +1486,7 @@ async def _weekly_report(event: MessageEvent):
         )
         return
     from ..libraries.maimaidx_break import break_db
-    cost = int(break_db.get_config('weekly_report_cost', '1'))
+    cost = int(await asyncio.to_thread(break_db.get_config, 'weekly_report_cost', '1'))
     await _finish_score(weekly_report, generate_progress_report(qqid, 7), qqid,
         billing_qqid=billing_user_id(event),
         billing_event=event,
@@ -1479,7 +1505,7 @@ async def _monthly_report(event: MessageEvent):
         )
         return
     from ..libraries.maimaidx_break import break_db
-    cost = int(break_db.get_config('monthly_report_cost', '2'))
+    cost = int(await asyncio.to_thread(break_db.get_config, 'monthly_report_cost', '2'))
     await _finish_score(monthly_report, generate_progress_report(qqid, 30), qqid,
         billing_qqid=billing_user_id(event),
         billing_event=event,
@@ -1498,7 +1524,7 @@ async def _annual_report(event: MessageEvent):
         )
         return
     from ..libraries.maimaidx_break import break_db
-    cost = int(break_db.get_config('annual_report_cost', '3'))
+    cost = int(await asyncio.to_thread(break_db.get_config, 'annual_report_cost', '3'))
     await _finish_score(annual_report, generate_progress_report(qqid, 365), qqid,
         billing_qqid=billing_user_id(event),
         billing_event=event,
@@ -1517,7 +1543,7 @@ async def _daily_report(event: MessageEvent):
         )
         return
     from ..libraries.maimaidx_break import break_db
-    cost = int(break_db.get_config('daily_report_cost', '0'))
+    cost = int(await asyncio.to_thread(break_db.get_config, 'daily_report_cost', '0'))
     await _finish_score(daily_report, generate_daily_report(qqid), qqid,
         billing_qqid=billing_user_id(event),
         billing_event=event,
@@ -1543,8 +1569,9 @@ async def _today_gain_recommend(event: MessageEvent):
     async def _image_coro():
         from ..libraries.maimaidx_break import settle_feature_if_uncharged
 
-        settle_feature_if_uncharged(
-            billing_user_id(event), 'today_gain_recommend'
+        await asyncio.to_thread(
+            settle_feature_if_uncharged,
+            billing_user_id(event), 'today_gain_recommend',
         )
         return result
 

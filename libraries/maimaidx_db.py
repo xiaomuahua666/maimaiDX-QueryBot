@@ -16,6 +16,7 @@ import re
 import sqlite3
 import threading
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Optional
 
@@ -26,6 +27,7 @@ from .maimaidx_sqlite import configure_sqlite_connection
 _TABLE_NAMES = (
     'break_users', 'break_daily_usage', 'break_group_checkin',
     'break_config', 'break_log', 'break_guess_daily',
+    'break_game_daily',
     'break_service_daily', 'break_daily_reward', 'break_red_packet',
     'break_red_packet_claim', 'break_makeup_checkin', 'break_gamble_pool',
     'break_gamble_pool_payout',
@@ -144,11 +146,21 @@ def _is_connection_error(exc: Exception) -> bool:
     """判断是否为连接断开类错误。"""
     try:
         import pymysql.err
-        if isinstance(exc, (pymysql.err.InterfaceError, pymysql.err.OperationalError)):
+        if isinstance(exc, pymysql.err.InterfaceError):
             return True
+        if isinstance(exc, pymysql.err.OperationalError):
+            # 1205/1213 是锁等待/死锁，连接仍可用，绝不能通过重连后
+            # 自动重放写语句；否则可能重复扣款。
+            code = exc.args[0] if exc.args else None
+            return code in {2006, 2013, 2014, 2045, 2055}
     except ImportError:
         pass
     return False
+
+
+def _read_only_sql(sql: str) -> bool:
+    head = str(sql or '').lstrip().split(None, 1)[0].upper()
+    return head in {'SELECT', 'SHOW', 'DESCRIBE', 'EXPLAIN'}
 
 
 class UnifiedConnection:
@@ -158,38 +170,81 @@ class UnifiedConnection:
         self._backend = backend
         self._prefix = prefix
         self._kwargs = kwargs
-        self._conn = None
+        self._thread_state = threading.local()
+        self._sqlite_conn = None
         self._last_active = 0.0
-        # 串行化对底层连接的 execute→fetch，避免多线程共用一个 MySQL 连接时游标串结果。
+        # SQLite 仍共享一个本地连接；MySQL 则每个工作线程独享连接，避免
+        # 一次慢网络请求把所有指令串在同一把连接锁后面。
         self._lock = threading.RLock()
         self._connect()
 
+    def __getstate__(self):
+        """Connection wrappers are not transferable across worker contexts."""
+        raise TypeError('UnifiedConnection cannot be copied or pickled')
+
+    @property
+    def _conn(self):
+        if self._backend == 'mysql':
+            conn = getattr(self._thread_state, 'conn', None)
+            if conn is None:
+                conn = self._new_mysql_connection()
+                self._thread_state.conn = conn
+            return conn
+        return self._sqlite_conn
+
+    @_conn.setter
+    def _conn(self, value):
+        if self._backend == 'mysql':
+            self._thread_state.conn = value
+        else:
+            self._sqlite_conn = value
+
+    def _new_mysql_connection(self):
+        import pymysql
+        import pymysql.cursors
+
+        kwargs = self._kwargs
+        conn = pymysql.connect(
+            host=kwargs.get('host', '127.0.0.1'),
+            port=kwargs.get('port', 3306),
+            user=kwargs.get('user', ''),
+            password=kwargs.get('password', ''),
+            database=kwargs.get('database', ''),
+            charset=kwargs.get('charset', 'utf8mb4'),
+            cursorclass=pymysql.cursors.DictCursor,
+            autocommit=False,
+            connect_timeout=max(1, int(kwargs.get('connect_timeout', 3))),
+            read_timeout=max(1, int(kwargs.get('read_timeout', 8))),
+            write_timeout=max(1, int(kwargs.get('write_timeout', 8))),
+            ssl={} if kwargs.get('ssl') else None,
+        )
+        with conn.cursor() as cur:
+            cur.execute("SET SESSION time_zone = '+08:00'")
+            cur.execute(
+                'SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED'
+            )
+            cur.execute(
+                'SET SESSION innodb_lock_wait_timeout = %s',
+                (max(1, int(kwargs.get('lock_wait_timeout', 3))),),
+            )
+        conn.commit()
+        return conn
+
     def _connect(self):
         """建立连接。"""
-        if self._conn is not None:
+        if self._backend == 'mysql':
+            previous = getattr(self._thread_state, 'conn', None)
+        else:
+            previous = self._sqlite_conn
+        if previous is not None:
             try:
-                self._conn.close()
+                previous.close()
             except Exception:
                 pass
-        kwargs = self._kwargs
         if self._backend == 'mysql':
-            import pymysql
-            import pymysql.cursors
-            self._conn = pymysql.connect(
-                host=kwargs.get('host', '127.0.0.1'),
-                port=kwargs.get('port', 3306),
-                user=kwargs.get('user', ''),
-                password=kwargs.get('password', ''),
-                database=kwargs.get('database', ''),
-                charset=kwargs.get('charset', 'utf8mb4'),
-                cursorclass=pymysql.cursors.DictCursor,
-                autocommit=False,
-                connect_timeout=5,
-                read_timeout=10,
-                write_timeout=10,
-                init_command="SET time_zone = '+08:00'",
-            )
+            self._conn = self._new_mysql_connection()
         else:
+            kwargs = self._kwargs
             db_path = kwargs.get('db_path', ':memory:')
             self._conn = sqlite3.connect(db_path, check_same_thread=False)
             self._conn.row_factory = sqlite3.Row
@@ -207,7 +262,8 @@ class UnifiedConnection:
 
     def execute(self, sql: str, params: tuple = ()):
         """返回兼容游标，仅连接断开时自动重连。"""
-        with self._lock:
+        guard = self._lock if self._backend == 'sqlite' else nullcontext()
+        with guard:
             try:
                 cur = self.cursor()
                 cur.execute(sql, params)
@@ -217,7 +273,11 @@ class UnifiedConnection:
                 self._last_active = time.time()
                 return _BufferedCursor(rows, lastrowid, rowcount)
             except Exception as exc:
-                if self._backend == 'mysql' and _is_connection_error(exc):
+                if (
+                    self._backend == 'mysql'
+                    and _is_connection_error(exc)
+                    and _read_only_sql(sql)
+                ):
                     self._connect()
                     cur = self.cursor()
                     cur.execute(sql, params)
@@ -229,7 +289,8 @@ class UnifiedConnection:
                 raise
 
     def executemany(self, sql: str, params_list):
-        with self._lock:
+        guard = self._lock if self._backend == 'sqlite' else nullcontext()
+        with guard:
             cur = self.cursor()
             cur.executemany(sql, params_list)
             self._last_active = time.time()
@@ -244,7 +305,8 @@ class UnifiedConnection:
         return UnifiedCursor(self._conn.cursor(), self._backend, self._prefix)
 
     def commit(self):
-        with self._lock:
+        guard = self._lock if self._backend == 'sqlite' else nullcontext()
+        with guard:
             try:
                 self._conn.commit()
                 self._last_active = time.time()
@@ -254,7 +316,8 @@ class UnifiedConnection:
                 raise
 
     def rollback(self):
-        with self._lock:
+        guard = self._lock if self._backend == 'sqlite' else nullcontext()
+        with guard:
             self._conn.rollback()
 
     @property
@@ -282,6 +345,11 @@ def create_unified_connection() -> UnifiedConnection:
             password=maiconfig.maimaidx_storage_mysql_password,
             database=maiconfig.maimaidx_storage_mysql_database,
             charset=maiconfig.maimaidx_storage_mysql_charset,
+            ssl=maiconfig.maimaidx_storage_mysql_ssl,
+            connect_timeout=maiconfig.maimaidx_storage_mysql_connect_timeout_seconds,
+            read_timeout=maiconfig.maimaidx_storage_mysql_read_timeout_seconds,
+            write_timeout=maiconfig.maimaidx_storage_mysql_write_timeout_seconds,
+            lock_wait_timeout=maiconfig.maimaidx_storage_mysql_lock_wait_timeout_seconds,
         )
     else:
         DB_DIR = Path(__file__).resolve().parent.parent / 'data' / 'break'
