@@ -7,6 +7,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -94,6 +95,16 @@ json_payload = llm._validated_analysis_payload(
     )
 )
 assert json_payload["overall_roast"] == "正文存在"
+assert llm._reasoning_effort(SimpleNamespace()) == "low"
+assert llm._reasoning_effort(
+    SimpleNamespace(b50_llm_reasoning_effort="HIGH")
+) == "high"
+assert llm._reasoning_effort(
+    SimpleNamespace(b50_llm_reasoning_effort="unsupported")
+) == "low"
+assert llm._finish_reason(
+    SimpleNamespace(choices=[SimpleNamespace(finish_reason="length")])
+) == "length"
 
 # 模型只能选真实候选和改理由，不能用自己的完整字段注入虚构曲目，
 # 也不能覆盖后端给出的达成率、定数和收益。
@@ -145,5 +156,6 @@ assert "不得继续扩写" in llm._SYSTEM
 assert '{"role": "system", "content": system}' in source
 assert "temperature=0.35" in source
 assert 'getattr(config, "b50_llm_max_tokens", 6144)' in source
+assert "reasoning_effort=_reasoning_effort(config)" in source
 
 print("b50 analysis grounding tests: ok")

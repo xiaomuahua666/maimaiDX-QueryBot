@@ -213,6 +213,7 @@ class Config(BaseModel):
     b50_llm_timeout_seconds: float = 180.0
     b50_llm_max_retries: int = 0
     b50_llm_max_tokens: int = 6144
+    b50_llm_reasoning_effort: str = 'low'
     b50_send_timeout_seconds: float = 30.0
     b50_assets_path: str = ''
 
