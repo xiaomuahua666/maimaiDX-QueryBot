@@ -233,3 +233,10 @@ async def _(bot):
         return
     _startup_storage_started = True
     asyncio.create_task(on_startup_storage())
+
+
+@driver.on_bot_disconnect
+async def _(bot):
+    """Bot 断连时记录告警，便于排查「突然断联导致消息发不出」。"""
+    bot_id = getattr(bot, 'self_id', '') or getattr(bot, 'bot_id', '') or bot
+    log.warning(f"[DataScheduler] Bot 断连：{bot_id}（发消息将进入重试/暂存流程）")
