@@ -1468,54 +1468,6 @@ class FeishuOpsBot:
             )
         return menu_card(is_admin=True)
 
-    def _is_bot_mentioned(self, message: Any) -> bool:
-        """群消息是否显式 @ 了本机器人。
-
-        仅当 mentions 里出现本机器人自身的 open_id 才视为唤出。
-        （原「@所有人 强制跳过」分支已移除：@所有人 的 open_id 为
-        ``"all"``，本就不会匹配到机器人自身，故不会误触发，也无需
-        单独排除。）
-        """
-        mentions = getattr(message, "mentions", None) or []
-        bot_open_id = getattr(self, "_bot_open_id", "") or ""
-        for mention in mentions:
-            mid = getattr(mention, "id", None)
-            open_id = str(getattr(mid, "open_id", "") or "")
-            if not open_id:
-                continue
-            if bot_open_id and open_id == bot_open_id:
-                return True
-        return False
-
-    def _fetch_bot_open_id(self) -> str:
-        """启动时拉取机器人自身 open_id（bot.info），失败时回退环境变量。"""
-        cached = getattr(self, "_bot_open_id", "")
-        if cached:
-            return cached
-        open_id = os.environ.get("FEISHU_OPS_BOT_OPEN_ID", "").strip()
-        if not open_id:
-            try:
-                import lark_oapi as lark  # noqa: F811
-
-                from lark_oapi.api.bot.v3 import BotInfoRequest
-
-                resp = self.client.request(BotInfoRequest.builder().build())
-                data = getattr(resp, "data", None)
-                # lark_oapi 不同版本里 open_id 可能直接挂在 data 上，
-                # 也可能挂在 data.bot 上，两种都兼容。
-                open_id = str(
-                    getattr(data, "open_id", "")
-                    or getattr(getattr(data, "bot", None), "open_id", "")
-                    or ""
-                )
-                if open_id:
-                    LOG.info("fetched bot open_id: %s", open_id)
-            except Exception as exc:
-                LOG.warning("fetch bot open_id failed: %s", exc)
-                open_id = ""
-        self._bot_open_id = open_id
-        return open_id
-
     def handle_message(self, data: Any) -> None:
         event = data.event
         message = event.message
@@ -1523,9 +1475,6 @@ class FeishuOpsBot:
         chat_id = str(message.chat_id or "")
         open_id = str(sender.open_id or "")
         if message.message_type != "text":
-            return
-        # 群聊里必须显式 @机器人 才响应。
-        if chat_id.startswith("oc_") and not self._is_bot_mentioned(message):
             return
         if not self.config.allowed_chat_ids:
             self._reply_card(message.message_id, bootstrap_card(chat_id, open_id))
@@ -2145,14 +2094,6 @@ def main() -> None:
         event_handler=handler,
         log_level=lark.LogLevel.WARNING,
     )
-    # 启动即解析机器人自身 open_id（bot.info 或 FEISHU_OPS_BOT_OPEN_ID 兜底），
-    # 用于群消息 @机器人 判定；拉取失败仅告警，不影响长连接启动。
-    bot._fetch_bot_open_id()
-    if not getattr(bot, "_bot_open_id", ""):
-        LOG.warning(
-            "bot open_id unavailable; group commands require "
-            "FEISHU_OPS_BOT_OPEN_ID until it can be fetched"
-        )
     try:
         client.start()
     except KeyboardInterrupt:
