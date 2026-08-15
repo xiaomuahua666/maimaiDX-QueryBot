@@ -1469,18 +1469,19 @@ class FeishuOpsBot:
         return menu_card(is_admin=True)
 
     def _is_bot_mentioned(self, message: Any) -> bool:
-        """群消息是否显式 @ 了本机器人（@所有人 不算）。
+        """群消息是否显式 @ 了本机器人。
 
-        飞书 mention 数据里 ``id.open_id == "all"`` 表示 @所有人，
-        其余 open_id 为具体用户/应用。只有 mentions 里出现本机器人
-        自身的 open_id 才视为唤出，避免 @所有人 时机器人跟风回复。
+        仅当 mentions 里出现本机器人自身的 open_id 才视为唤出。
+        （原「@所有人 强制跳过」分支已移除：@所有人 的 open_id 为
+        ``"all"``，本就不会匹配到机器人自身，故不会误触发，也无需
+        单独排除。）
         """
         mentions = getattr(message, "mentions", None) or []
         bot_open_id = getattr(self, "_bot_open_id", "") or ""
         for mention in mentions:
             mid = getattr(mention, "id", None)
             open_id = str(getattr(mid, "open_id", "") or "")
-            if not open_id or open_id == "all":
+            if not open_id:
                 continue
             if bot_open_id and open_id == bot_open_id:
                 return True
@@ -1500,7 +1501,13 @@ class FeishuOpsBot:
 
                 resp = self.client.request(BotInfoRequest.builder().build())
                 data = getattr(resp, "data", None)
-                open_id = str(getattr(getattr(data, "bot", None), "open_id", "") or "")
+                # lark_oapi 不同版本里 open_id 可能直接挂在 data 上，
+                # 也可能挂在 data.bot 上，两种都兼容。
+                open_id = str(
+                    getattr(data, "open_id", "")
+                    or getattr(getattr(data, "bot", None), "open_id", "")
+                    or ""
+                )
                 if open_id:
                     LOG.info("fetched bot open_id: %s", open_id)
             except Exception as exc:
@@ -1517,7 +1524,7 @@ class FeishuOpsBot:
         open_id = str(sender.open_id or "")
         if message.message_type != "text":
             return
-        # 群聊里必须显式 @机器人 才响应；@所有人 不唤出。
+        # 群聊里必须显式 @机器人 才响应。
         if chat_id.startswith("oc_") and not self._is_bot_mentioned(message):
             return
         if not self.config.allowed_chat_ids:
