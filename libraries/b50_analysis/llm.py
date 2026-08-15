@@ -485,6 +485,29 @@ def _cleanup_response(raw_text: str) -> str:
     return json.dumps(cleaned, ensure_ascii=False)
 
 
+def _validated_analysis_payload(raw_content: str) -> dict[str, Any]:
+    content = str(raw_content or "").strip()
+    if not content:
+        raise ValueError("模型未返回锐评正文，请稍后重试")
+
+    cleaned_content = _cleanup_response(content)
+    try:
+        cleaned = json.loads(cleaned_content)
+    except json.JSONDecodeError:
+        cleaned = {
+            "title": "B50锐评",
+            "overall_roast": cleaned_content,
+            "impression_roast": "",
+            "push_recommendations": [],
+        }
+
+    if not isinstance(cleaned, dict):
+        raise ValueError("模型返回的锐评格式无效，请稍后重试")
+    if not str(cleaned.get("overall_roast") or "").strip():
+        raise ValueError("模型返回的锐评正文为空，请稍后重试")
+    return cleaned
+
+
 def _fmt(context: dict) -> str:
     player = context.get("player") or {}
     summary = context.get("summary") or {}
@@ -807,29 +830,12 @@ async def generate_analysis(
             },
         ],
         temperature=0.35,
-        max_tokens=max(512, int(getattr(config, "b50_llm_max_tokens", 2048))),
+        max_tokens=max(512, int(getattr(config, "b50_llm_max_tokens", 6144))),
     )
     token_usage = _response_token_usage(resp)
     content = (resp.choices[0].message.content or "").strip()
-    
-    try:
-        cleaned_content = _cleanup_response(content)
-        try:
-            cleaned = json.loads(cleaned_content)
-        except json.JSONDecodeError:
-            cleaned = {
-                "title": "B50锐评",
-                "overall_roast": cleaned_content,
-                "impression_roast": "",
-                "push_recommendations": [],
-            }
-    except Exception:
-        cleaned = {
-            "title": "B50锐评",
-            "overall_roast": content[:2000] if content else "分析生成失败",
-            "impression_roast": "",
-            "push_recommendations": [],
-        }
+
+    cleaned = _validated_analysis_payload(content)
     fallback_push = _select_push_recommendations(
         context.get("push_candidates") or [],
         context.get("config_focus") or {},
