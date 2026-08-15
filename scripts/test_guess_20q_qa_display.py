@@ -45,6 +45,8 @@ from libraries.maimaidx_guess_20q import (  # noqa: E402
     Guess20QData,
     Guess20QManager,
     _GUESS_20Q_LLM_SYSTEM,
+    _build_music_profile,
+    _clarify_charter_diff_understand,
     _qa_display_info,
     _summarize_qa,
     classify_question,
@@ -127,6 +129,35 @@ e4 = QAEntry(uid='u1', name='A', question='不是慢歌吗', answer='是喵 ✅'
 assert _qa_display_info(e4) == '判断 BPM 是否为慢歌'
 
 print('_qa_display_info unit tests passed')
+
+# 谱师题未指定颜色时，给玩家看的理解提示必须明确默认紫谱。
+assert _clarify_charter_diff_understand(
+    '判断谱师是否为 Luxizhel', '谱师是泸溪河吗'
+) == '判断紫谱（默认）谱师是否为 Luxizhel'
+assert _clarify_charter_diff_understand(
+    '判断紫谱谱师是否为 Luxizhel', '谱师是泸溪河吗'
+) == '判断紫谱（默认）谱师是否为 Luxizhel'
+assert _clarify_charter_diff_understand(
+    '判断谱师是否为 Luxizhel', '白谱谱师是泸溪河吗'
+) == '判断白谱谱师是否为 Luxizhel'
+assert _clarify_charter_diff_understand(
+    '判断艺术家是否为 Luxizhel', '艺术家是泸溪河吗'
+) == '判断艺术家是否为 Luxizhel'
+
+# 曲目特征中的默认谱师必须只取紫谱，不能混入白谱谱师。
+music_with_white = _make_music()
+music_with_white.ds.append(14.9)
+music_with_white.level.append('14+')
+music_with_white.cids.append(5)
+music_with_white.charts[3].charter = '紫谱作者'
+music_with_white.charts.append(Chart(notes=music_with_white.charts[3].notes, charter='白谱作者'))
+profile = _build_music_profile(music_with_white)
+assert '紫谱谱师（MASTER，默认）：紫谱作者' in profile, profile
+assert '白谱作者' not in profile, profile
+white_profile = _build_music_profile(music_with_white, text='白谱谱师是白谱作者吗')
+assert '白谱谱师：白谱作者' in white_profile, white_profile
+assert '紫谱作者' not in white_profile, white_profile
+print('charter difficulty clarification tests passed')
 
 
 # ═══════════════════ 2. _summarize_qa 用 reason 展示 ═══════════════════
