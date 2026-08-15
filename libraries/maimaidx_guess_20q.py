@@ -2561,11 +2561,16 @@ async def _llm_classify(
                     {'role': 'user', 'content': text},
                 ],
                 temperature=0,
-                max_tokens=120,
+                max_tokens=800,
                 timeout=15,
             )
             elapsed = time.time() - t0
-            content = (resp.choices[0].message.content or '').strip()
+            msg = resp.choices[0].message
+            content = (getattr(msg, 'content', '') or '').strip()
+            # 思维链/推理模型（如 deepseek 思考模型）可能把输出全塞进 reasoning_content，
+            # 而 content 为空（max_tokens 太小还会把最终答案截断）。兜底：content 为空时回退取 reasoning_content。
+            if not content:
+                content = (getattr(msg, 'reasoning_content', '') or '').strip()
             # token 用量（兼容 OpenAI 及部分网关）
             usage = getattr(resp, 'usage', None)
             in_tok = getattr(usage, 'prompt_tokens', 0) or 0
