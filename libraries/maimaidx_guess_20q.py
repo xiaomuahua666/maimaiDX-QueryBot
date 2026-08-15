@@ -1909,11 +1909,13 @@ def _version_cn(version: str) -> str:
     return version or '未知'
 
 
-def _build_music_profile(music: Music, wmc_tags: Optional[Dict[int, dict]] = None) -> str:
+def _build_music_profile(music: Music, wmc_tags: Optional[Dict[int, dict]] = None, text: Optional[str] = None) -> str:
     """生成曲目特征描述（不含曲名/曲 id，避免泄漏答案）。
 
     LLM 据此判断玩家是非题是否匹配，无需知道具体曲名。
     wmc_tags 为 v.wmc.pub 谱面标签（{level_index: tags_dict}），存在时追加到末尾。
+    text 为玩家原始问题：若指明难度颜色（如「红谱谱师」），谱师段只取该难度的谱师，
+    而非默认紫谱(MASTER)/白谱。
     """
     bi = music.basic_info
     bpm = bi.bpm or 0
@@ -1947,8 +1949,21 @@ def _build_music_profile(music: Music, wmc_tags: Optional[Dict[int, dict]] = Non
     # 别名作为权威数据一并给出，LLM 据此判断玩家说的名字（含中文俗称/罗马音/马甲）
     # 是否为同一人；清单里没有的名字一律回「无法回答」，不靠记忆/搜索补全。
     # 字段名标注「谱面作者/写谱人」等别名，避免 LLM 把谱师题误判到「艺术家」字段。
-    charters = _get_master_charters(music)
-    charter_desc = _format_charters_for_llm(charters)
+    # 玩家若指明难度颜色（如「红谱谱师」），则只给该难度的谱师；否则默认紫谱(MASTER)/白谱。
+    diff_idx = _resolve_diff_index(text) if text else None
+    if diff_idx is not None:
+        _charts = getattr(music, 'charts', None) or []
+        if diff_idx < len(_charts):
+            _ch = (getattr(_charts[diff_idx], 'charter', None) or '').strip()
+            if _ch and _ch != '-':
+                charter_desc = f'{_DIFF_CN[diff_idx]}谱师：{_charter_with_aliases(_ch)}'
+            else:
+                charter_desc = f'{_DIFF_CN[diff_idx]}谱师：未知/无署名'
+        else:
+            charter_desc = f'{_DIFF_CN[diff_idx]}谱师：该曲无此难度'
+    else:
+        charters = _get_master_charters(music)
+        charter_desc = _format_charters_for_llm(charters)
 
     # 标题：直接给出完整标题，供 LLM 判断「标题含 X 吗」等字符存在性题。
     # 不预先分类（中文/英文/日文等），由 LLM 拿玩家问的字符与标题原文直接比对。
@@ -2289,6 +2304,10 @@ _GUESS_20Q_LLM_SYSTEM = """\
           遇到 (B) → 回「无法回答」，不要凭训练记忆猜，不要联网搜索，也不要武断回否。
       简言之：同一个名字的不同语种/拼写写法可以认；需要"额外知道这个人还有别的身份"
       才认得出来的，一律无法回答。
+    - 谱师数据缺失的处理：若曲目特征里谱师字段显示「未知」或「未知/无署名」，说明该难度的
+      charter 数据为空或仅占位符 '-'（即谱面数据根本没给谱师名）。此时任何「谱师是不是 X」
+      「谱师叫什么」「谱师是哈皮吗」之类的名字题一律回「无法回答」，不得猜测、不得武断回否、
+      不得编造名字；玩家问「这曲有没有谱师署名」可回「数据未收录该难度谱师署名」。
     - 版本俗称同样容忍错字：「双代」打成「霜代」、「宴代」打成「燕代」等，按发音/形近理解。
     - ASCII 版本名（milk/buddies/splash/universe/festival/prism/circle/finale/murasaki/dx）
       也容忍拼写错误：字母顺序颠倒（milk→muilk/mlik）、漏字（buddies→budies）、
@@ -2433,7 +2452,7 @@ _llm_cache: "OrderedDict[Tuple[str, str], Tuple[float, Optional[Tuple[str, str]]
 
 def _llm_cache_key(music: Music, text: str, wmc_tags: Optional[Dict[int, dict]] = None) -> Tuple[str, str]:
     import hashlib
-    profile = _build_music_profile(music, wmc_tags=wmc_tags)
+    profile = _build_music_profile(music, wmc_tags=wmc_tags, text=text)
     fp = hashlib.sha1(profile.encode('utf-8')).hexdigest()
     return fp, _norm(text)
 
@@ -2544,7 +2563,7 @@ async def _llm_classify(
         f'url={getattr(config, "b50_llm_url", "?")} question={text!r}'
     )
 
-    profile = _build_music_profile(music, wmc_tags=wmc_tags)
+    profile = _build_music_profile(music, wmc_tags=wmc_tags, text=text)
     system = _GUESS_20Q_LLM_SYSTEM.format(music_profile=profile)
 
     async with _get_llm_semaphore():
