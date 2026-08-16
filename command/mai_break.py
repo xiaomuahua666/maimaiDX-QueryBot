@@ -24,6 +24,7 @@ from ..libraries.maimaidx_break import (
     render_account_profile_image,
     format_analysis_pricing_help,
     format_checkin_result,
+    format_game_break_caps,
     format_makeup_checkin_result,
     get_account_profile,
     normalize_billing_qqid,
@@ -85,6 +86,9 @@ ticket_stats_admin = on_command(
     '发票统计', aliases={'ticket统计', 'returnCode统计'}, permission=PLUGIN_ADMIN_ONLY
 )
 awmc_help = on_command('AWMC帮助', aliases={'BREAK帮助'})
+break_game_caps = on_command(
+    '上限', aliases={'BREAK上限', 'break上限', '小游戏上限', '每日上限'}
+)
 break_transfer = on_command('转账BREAK', aliases={'BREAK转账'})
 break_lottery = on_command('BREAK抽奖', aliases={'抽奖BREAK'})
 break_red_packet_send = on_command(
@@ -114,12 +118,15 @@ break_gamble_leaderboard = on_command(
 
 # Help is safe to use before account binding; it explains how to send qbind.
 setattr(awmc_help, '_maimaidx_qbind_exempt', True)
+# 上限只是静态规则表，不查账号数据，未绑定也应可查看。
+setattr(break_game_caps, '_maimaidx_qbind_exempt', True)
 
 for _debt_exempt_matcher in (
     awmc_checkin,
     my_awmc,
     break_economy,
     awmc_help,
+    break_game_caps,
     break_red_packet_claim,
     break_red_packet_status,
 ):
@@ -182,7 +189,8 @@ async def _(event: MessageEvent):
         '· AWMC签到 — 每日签到获取 BREAK（基础 1~2，连签额外奖励第 5 天起封顶 3）\n'
         '· AWMC补签 — 补昨天，每月最多 3 次，依次消耗 30/60/90 BREAK\n'
         '· 今日舞萌 — 人品值四舍五入后 ÷20（减半），每日领取一次 BREAK\n'
-        '· 猜歌 — 每次猜对奖励 1 BREAK，无每日上限\n'
+        '· 猜歌 — 每次猜对奖励 1 BREAK\n'
+        '· 上限 — 查看各小游戏每日 BREAK 上限与全局总上限\n'
         '· 转账BREAK @用户 数量 — 转给其他用户\n'
         '· BREAK抽奖 [1-10] — 每次默认消耗 2 BREAK，发送"BREAK抽奖 帮助"看奖池\n'
         # '· 倾家荡产 [模式] — 梭哈全部 BREAK，发送"倾家荡产 帮助"看模式说明\n'
@@ -210,6 +218,18 @@ async def _(event: MessageEvent):
     await plugin_finish(
         awmc_help, text, event=event, reply_message=True,
         qq_buttons=_AWMC_SHORTCUTS,
+    )
+
+
+@break_game_caps.handle()
+async def _(event: MessageEvent):
+    # 发送「上限」即 @发送者并回复小游戏每日 BREAK 上限规则表（静态规则，不查个人用量）。
+    await plugin_finish(
+        break_game_caps,
+        format_game_break_caps(),
+        event=event,
+        reply_message=False,
+        mention_sender=True,
     )
 
 

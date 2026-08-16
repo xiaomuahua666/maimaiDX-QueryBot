@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from threading import RLock
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
@@ -2324,6 +2324,10 @@ class BreakDatabase:
         caps = self._parse_game_caps()
         return caps.get((game or '').strip(), 0)
 
+    def get_all_game_caps(self) -> Dict[str, int]:
+        """全部游戏每日 BREAK 上限（game_key → 上限，0 = 不限制）。"""
+        return self._parse_game_caps()
+
     def _parse_game_caps(self) -> Dict[str, int]:
         raw = self.get_config('guess_daily_caps', '') or ''
         caps: Dict[str, int] = {}
@@ -3672,6 +3676,41 @@ def format_analysis_cost_line(
         f'最低 {minimum * multiplier}、最高 {maximum * multiplier}。'
     )
     return text
+
+
+# 小游戏 game_key → 展示名（顺序即消息中的展示顺序）
+GAME_BREAK_CAP_LABELS: Tuple[Tuple[str, str], ...] = (
+    ('song', '猜歌'),
+    ('cover', '猜曲绘'),
+    ('tune', '猜曲子'),
+    ('chart', '猜铺面'),
+    ('letter', '开字母'),
+    ('rating', '猜Rating'),
+    ('impostor', 'B50找内鬼'),
+    ('duel', '极限二选一'),
+    ('twentyq', '你想我猜'),
+)
+
+
+def format_game_break_caps() -> str:
+    """列出小游戏每日 BREAK 上限规则（各游戏上限 + 全局总上限）。"""
+    global_cap = break_db.get_global_game_cap()
+    caps = break_db.get_all_game_caps()
+    lines = ['🎉 小游戏每日 BREAK 上限']
+    if global_cap > 0:
+        lines.append(f'· 全局总上限：{global_cap} BREAK / 天（所有小游戏合计）')
+    else:
+        lines.append('· 全局总上限：不限制')
+    lines.append('')
+    lines.append('各游戏单独上限（BREAK / 天）：')
+    for key, label in GAME_BREAK_CAP_LABELS:
+        cap = caps.get(key, 0)
+        lines.append(f'· {label}：{cap if cap > 0 else "不限制"}')
+    lines.append('')
+    lines.append('说明：单个游戏达到自身上限后该游戏不再发放；')
+    lines.append('全局总上限用满后所有小游戏均不再发放，次日 0 点重置。')
+    lines.append('双倍BREAK卡生效期间翻倍发放并豁免上述所有上限。')
+    return '\n'.join(lines)
 
 
 def format_analysis_pricing_help() -> str:
