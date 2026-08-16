@@ -597,13 +597,16 @@ def format_settlement_ranking_text(settlement: LetterSettlement) -> str:
     capped = False
     for i, r in enumerate(settlement.rewards, 1):
         detail = f"（{r.detail}）" if r.detail and r.detail != "无贡献" else ""
+        bp_text = f" +{r.break_points}BREAK"
         if r.break_capped:
             capped = True
+            bp_text += " ⚠️"
         lines.append(
-            f"#{i} {r.name}  权重{r.weight} → +{r.score}分 +{r.break_points}BREAK{detail}"
+            f"#{i} {r.name}  权重{r.weight} → +{r.score}分{bp_text}{detail}"
         )
     if capped:
-        lines.append("⚠️ 该游戏达今日上限不发放奖励")
+        lines.append("")
+        lines.append("⚠️ 用户该游戏达今日上限，不再发放奖励")
     return "\n".join(lines)
 
 

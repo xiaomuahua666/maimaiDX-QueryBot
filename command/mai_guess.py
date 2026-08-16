@@ -516,7 +516,7 @@ async def _award_guess_points(
             f'（余额 {reward.balance}）{double_tag}'
         )
     elif reward.capped:
-        settlement += '\n💳 猜对奖励 +0 BREAK\n⚠️ 该游戏达今日上限不发放奖励'
+        settlement += '\n💳 猜对奖励 +0 BREAK ⚠️\n\n⚠️ 用户该游戏达今日上限，不再发放奖励'
     return settlement
 
 
@@ -2800,7 +2800,7 @@ async def _(event: MessageEvent):
                 if actual > 0:
                     bp_part = f' +{actual}BREAK'
                 elif uid in capped_uids:
-                    bp_part = ' +0 BREAK'
+                    bp_part = ' +0 BREAK ⚠️'
                 else:
                     bp_part = ''
                 result_lines.append(
@@ -2810,7 +2810,8 @@ async def _(event: MessageEvent):
             result_lines.append('本局无人全通关 😶')
 
         if capped_uids:
-            result_lines.append('⚠️ 该游戏达今日上限不发放奖励')
+            result_lines.append('')
+            result_lines.append('⚠️ 用户该游戏达今日上限，不再发放奖励')
 
         # 中途淘汰者积分
         eliminated_lines: List[str] = []
@@ -3061,7 +3062,7 @@ async def _(event: MessageEvent):
                     f'（余额 {reward.balance}）{double_tag}'
                 )
             elif reward is not None and reward.capped:
-                break_part = '\n💳 猜对奖励 +0 BREAK\n⚠️ 该游戏达今日上限不发放奖励'
+                break_part = '\n💳 猜对奖励 +0 BREAK ⚠️\n\n⚠️ 用户该游戏达今日上限，不再发放奖励'
             log.info(
                 f'[Guess20Q] 猜对结束 gid={gid} answer={data.music.title} '
                 f'id={data.music.id} winner={name}({uid}) '
