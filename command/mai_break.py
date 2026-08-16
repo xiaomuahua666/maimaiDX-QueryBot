@@ -2,7 +2,7 @@ import asyncio
 
 from typing import Optional, Tuple
 
-from nonebot import get_bots, on_command, require
+from nonebot import get_bots, on_command, on_keyword, require
 from nonebot.adapters.onebot.v11 import (
     Bot,
     GroupMessageEvent,
@@ -86,9 +86,9 @@ ticket_stats_admin = on_command(
     '发票统计', aliases={'ticket统计', 'returnCode统计'}, permission=PLUGIN_ADMIN_ONLY
 )
 awmc_help = on_command('AWMC帮助', aliases={'BREAK帮助'})
-break_game_caps = on_command(
-    '上限', aliases={'BREAK上限', 'break上限', '小游戏上限', '每日上限'}
-)
+# 被动触发：消息任意位置出现「上限」即触发（完全模仿「红门」门攻略/你画我猜的 on_keyword 机制）。
+# priority=99 让它在大多数业务指令之后响应；block=False 避免吞掉其他匹配器。
+break_game_caps = on_keyword({'上限'}, priority=99, block=False)
 break_transfer = on_command('转账BREAK', aliases={'BREAK转账'})
 break_lottery = on_command('BREAK抽奖', aliases={'抽奖BREAK'})
 break_red_packet_send = on_command(
@@ -190,7 +190,7 @@ async def _(event: MessageEvent):
         '· AWMC补签 — 补昨天，每月最多 3 次，依次消耗 30/60/90 BREAK\n'
         '· 今日舞萌 — 人品值四舍五入后 ÷20（减半），每日领取一次 BREAK\n'
         '· 猜歌 — 每次猜对奖励 1 BREAK\n'
-        '· 上限 — 查看各小游戏每日 BREAK 上限与全局总上限\n'
+        '· 上限 — 消息里出现"上限"二字即触发，查看各小游戏每日 BREAK 上限与全局总上限\n'
         '· 转账BREAK @用户 数量 — 转给其他用户\n'
         '· BREAK抽奖 [1-10] — 每次默认消耗 2 BREAK，发送"BREAK抽奖 帮助"看奖池\n'
         # '· 倾家荡产 [模式] — 梭哈全部 BREAK，发送"倾家荡产 帮助"看模式说明\n'
@@ -223,7 +223,8 @@ async def _(event: MessageEvent):
 
 @break_game_caps.handle()
 async def _(event: MessageEvent):
-    # 发送「上限」即 @发送者并回复小游戏每日 BREAK 上限规则表（静态规则，不查个人用量）。
+    # 消息任意位置含「上限」即 @发送者并回复小游戏每日 BREAK 上限规则表（静态规则，不查个人用量）。
+    # 同「红门」门攻略机制：on_keyword 子串命中，priority=99, block=False。
     await plugin_finish(
         break_game_caps,
         format_game_break_caps(),
