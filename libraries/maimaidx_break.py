@@ -4016,6 +4016,7 @@ def format_account_profile_sections(
         'awmc_gate_status': '门状态查询',
         'awmc_music_upsert': '成绩编辑', 'awmc_music_delete': '成绩删除',
         'awmc_item_upsert': '道具修改',
+        'auto_qrcode': '自动通信',
     }
     if profile.account_operation_counts:
         detail = ' / '.join(
@@ -4109,10 +4110,10 @@ def format_account_profile_sections(
             reason = entry.reason
             if reason.startswith('free_window_exempt:'):
                 base = reason.split(':', 1)[1]
-                label = '免费窗口·' + reason_map.get(base, base)
+                label = '免费窗口·' + (reason_map.get(base) or service_labels.get(base, base))
             elif reason.startswith('freedom_exempt:'):
                 base = reason.split(':', 1)[1]
-                label = '免单·' + reason_map.get(base, base)
+                label = '免单·' + (reason_map.get(base) or service_labels.get(base, base))
             elif reason.startswith('service:'):
                 base = reason.split(':', 1)[1]
                 label = service_labels.get(base, base)
@@ -4120,7 +4121,7 @@ def format_account_profile_sections(
                 base = reason.split(':', 1)[1]
                 label = '一次性奖励·' + once_reward_labels.get(base, base)
             else:
-                label = reason_map.get(reason, reason)
+                label = reason_map.get(reason) or service_labels.get(reason, reason)
             recent_lines.append(f'  · {ts}  {sign}{entry.delta}  {label}')
     sections = [overview, today_lines, total_lines, preference_lines]
     if recent_lines:

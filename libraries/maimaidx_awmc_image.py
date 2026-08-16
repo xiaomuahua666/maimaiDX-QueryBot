@@ -173,6 +173,7 @@ def render_awmc_profile(profile: Dict,
         'awmc_gate_status': '门状态',
         'awmc_music_upsert': '成绩编辑', 'awmc_music_delete': '成绩删除',
         'awmc_item_upsert': '道具修改', 'music_edit': '成绩编辑',
+        'auto_qrcode': '自动通信',
     }
     operation_items = _operation_items(op_counts, op_labels)
     ticket_total = int(ticket.get('total') or 0)
@@ -383,10 +384,10 @@ def render_awmc_profile(profile: Dict,
             reason = _g(entry, 'reason', '')
             if reason.startswith('free_window_exempt:'):
                 base = reason.split(':', 1)[1]
-                label = '免费窗口·' + reason_map.get(base, base)
+                label = '免费窗口·' + (reason_map.get(base) or service_labels.get(base, base))
             elif reason.startswith('freedom_exempt:'):
                 base = reason.split(':', 1)[1]
-                label = '免单·' + reason_map.get(base, base)
+                label = '免单·' + (reason_map.get(base) or service_labels.get(base, base))
             elif reason.startswith('service:'):
                 base = reason.split(':', 1)[1]
                 label = service_labels.get(base, base)
@@ -394,7 +395,7 @@ def render_awmc_profile(profile: Dict,
                 base = reason.split(':', 1)[1]
                 label = '一次性奖励·' + once_reward_labels.get(base, base)
             else:
-                label = reason_map.get(reason, reason)
+                label = reason_map.get(reason) or service_labels.get(reason, reason)
             col = _GREEN if delta >= 0 else _RED
             d.text((mx + 22, ly), ts, font=_font_mono(13), fill=_MUTED)
             d.text((mx + 130, ly), label, font=_font_bold(14), fill=_TEXT)
