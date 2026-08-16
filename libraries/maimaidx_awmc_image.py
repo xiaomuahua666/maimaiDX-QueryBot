@@ -162,11 +162,17 @@ def render_awmc_profile(profile: Dict,
     recent_break = list(profile.get('recent_logs') or [])
 
     op_labels = {
-        'bind': '账号绑定', 'unbind': '账号解绑', 'status': '账号状态',
-        'upload': '成绩上传', 'ticket': '发票', 'ticket_status': '发票状态',
+        'bind': '账号绑定', 'claim': '账号认领', 'unbind': '账号解绑',
+        'status': '账号状态', 'upload': '成绩上传',
+        'upload_fish': '上传水鱼', 'upload_lx': '上传落雪',
+        'upload_all': '同时上传', 'upload_awmcnet': 'AWMCNET同步',
+        'ticket': '发票', 'ticket_status': '票券状态',
+        'ticket_unused_penalty': '重复发票惩罚',
         'bind_fish': '绑定水鱼', 'bind_lx': '绑定落雪',
         'awmc_preview': '账号预览', 'awmc_items': '道具查询',
-        'awmc_gate_status': '门状态', 'music_edit': '成绩编辑',
+        'awmc_gate_status': '门状态',
+        'awmc_music_upsert': '成绩编辑', 'awmc_music_delete': '成绩删除',
+        'awmc_item_upsert': '道具修改', 'music_edit': '成绩编辑',
     }
     operation_items = _operation_items(op_counts, op_labels)
     ticket_total = int(ticket.get('total') or 0)
@@ -181,6 +187,32 @@ def render_awmc_profile(profile: Dict,
         'feishu_admin': '人工操作', 'web_admin': 'Web管理',
         'image_render': '图片渲染', 'search': '搜索',
         'gamble_all': '倾家荡产', 'gamble_pool_reward': '抽奖池奖励',
+        'lottery': '抽奖', 'transfer_out': '转账转出', 'transfer_in': '转账收入',
+        'card_redeem': '卡密兑换',
+        'rating_guess_settlement': 'Rating猜歌',
+        'b50_impostor_settlement': '冒牌者结算',
+        'duel_all_clear_bonus': '对决全胜',
+        'letter_settlement': '信件结算',
+        'red_packet_create': '红包创建',
+        'red_packet_claim': '红包领取',
+        'red_packet_refund': '红包退款',
+    }
+    service_labels = {
+        'upload': '成绩上传', 'ticket': '发票',
+        'ticket_status': '票券状态查询',
+        'awmc_status': '账号状态查询',
+        'awmc_preview': '账号预览查询', 'awmc_items': '道具查询',
+        'awmc_gate_status': '门状态查询',
+        'awmc_music_upsert': '成绩编辑', 'awmc_music_delete': '成绩删除',
+        'awmc_item_upsert': '道具修改',
+        'upload_fish': '上传水鱼', 'upload_lx': '上传落雪',
+        'upload_all': '同时上传', 'awmcnet_sync': 'AWMCNET同步',
+        'coop_b50': '合作B50', 'today_gain_recommend': '今日推荐',
+        'weekly_report': '周报', 'monthly_report': '月报',
+        'annual_report': '年报', 'daily_report': '日报',
+    }
+    once_reward_labels = {
+        'forum_bind_welcome': '论坛绑定欢迎',
     }
 
     # ---- 高度估算 ----
@@ -355,6 +387,12 @@ def render_awmc_profile(profile: Dict,
             elif reason.startswith('freedom_exempt:'):
                 base = reason.split(':', 1)[1]
                 label = '免单·' + reason_map.get(base, base)
+            elif reason.startswith('service:'):
+                base = reason.split(':', 1)[1]
+                label = service_labels.get(base, base)
+            elif reason.startswith('once_reward:'):
+                base = reason.split(':', 1)[1]
+                label = '一次性奖励·' + once_reward_labels.get(base, base)
             else:
                 label = reason_map.get(reason, reason)
             col = _GREEN if delta >= 0 else _RED
