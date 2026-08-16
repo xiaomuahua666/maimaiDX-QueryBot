@@ -178,6 +178,9 @@ def render_awmc_profile(profile: Dict,
         'b50_analysis_settlement': '分析b50·结算',
         'busy_request_surcharge': '高负载附加费', 'guess_reward': '猜歌奖励',
         'admin_set': '管理员设置', 'admin_add': '管理员调整',
+        'feishu_admin': '人工操作', 'web_admin': 'Web管理',
+        'image_render': '图片渲染', 'search': '搜索',
+        'gamble_all': '倾家荡产', 'gamble_pool_reward': '抽奖池奖励',
     }
 
     # ---- 高度估算 ----
@@ -346,7 +349,14 @@ def render_awmc_profile(profile: Dict,
             delta = int(_g(entry, 'delta') or 0)
             sign = '+' if delta >= 0 else ''
             reason = _g(entry, 'reason', '')
-            label = reason_map.get(reason, reason)
+            if reason.startswith('free_window_exempt:'):
+                base = reason.split(':', 1)[1]
+                label = '免费窗口·' + reason_map.get(base, base)
+            elif reason.startswith('freedom_exempt:'):
+                base = reason.split(':', 1)[1]
+                label = '免单·' + reason_map.get(base, base)
+            else:
+                label = reason_map.get(reason, reason)
             col = _GREEN if delta >= 0 else _RED
             d.text((mx + 22, ly), ts, font=_font_mono(13), fill=_MUTED)
             d.text((mx + 130, ly), label, font=_font_bold(14), fill=_TEXT)

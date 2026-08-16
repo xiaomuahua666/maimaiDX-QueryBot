@@ -4061,11 +4061,24 @@ def format_account_profile_sections(
             'admin_set': '管理员设置',
             'admin_add': '管理员调整',
             'feishu_admin': '人工操作',
+            'web_admin': 'Web管理',
+            'image_render': '图片渲染',
+            'search': '搜索',
+            'gamble_all': '倾家荡产',
+            'gamble_pool_reward': '抽奖池奖励',
         }
         for entry in profile.recent_logs:
             ts = datetime.fromtimestamp(entry.created_at).strftime('%m-%d %H:%M')
             sign = '+' if entry.delta >= 0 else ''
-            label = reason_map.get(entry.reason, entry.reason)
+            reason = entry.reason
+            if reason.startswith('free_window_exempt:'):
+                base = reason.split(':', 1)[1]
+                label = '免费窗口·' + reason_map.get(base, base)
+            elif reason.startswith('freedom_exempt:'):
+                base = reason.split(':', 1)[1]
+                label = '免单·' + reason_map.get(base, base)
+            else:
+                label = reason_map.get(reason, reason)
             recent_lines.append(f'  · {ts}  {sign}{entry.delta}  {label}')
     sections = [overview, today_lines, total_lines, preference_lines]
     if recent_lines:
