@@ -1,6 +1,6 @@
 """主群与猜歌群之间的猜歌数据同步 / 冲突确认。
 
-- 1072033605：主群（引导去猜歌群）
+- 1072033605, 1048450426：主群（引导去猜歌群）
 - 993795066：猜歌群（正式游玩）
 """
 
@@ -19,12 +19,13 @@ from ..config import guess_sync_prefs_file
 from .maimaidx_platform import GroupId, UserId, resolve_group_legacy_id
 from .tool import writefile
 
+MAIN_GUESS_GROUP_IDS = frozenset({1072033605, 1048450426})
 MAIN_GUESS_GROUP_ID = 1072033605
 PLAY_GUESS_GROUP_ID = 993795066
-SYNC_GROUP_IDS = frozenset({MAIN_GUESS_GROUP_ID, PLAY_GUESS_GROUP_ID})
+SYNC_GROUP_IDS = frozenset({*MAIN_GUESS_GROUP_IDS, PLAY_GUESS_GROUP_ID})
 
 MAIN_GROUP_REDIRECT = (
-    '为了保证用户使用体验，如需游玩猜歌请添加群聊 993795066'
+    '为了保证用户使用体验，如需游玩小游戏请添加群聊 https://qm.qq.com/q/ZIJWblUc4E'
 )
 
 CONFLICT_PROMPT = (
@@ -107,7 +108,7 @@ class GuessSyncManager:
     def is_main_group(self, gid: GroupId) -> bool:
         try:
             mapped = resolve_group_legacy_id(gid)
-            return int(mapped) == MAIN_GUESS_GROUP_ID if mapped is not None else int(gid) == MAIN_GUESS_GROUP_ID
+            return int(mapped) in MAIN_GUESS_GROUP_IDS if mapped is not None else int(gid) in MAIN_GUESS_GROUP_IDS
         except (TypeError, ValueError):
             return False
 
