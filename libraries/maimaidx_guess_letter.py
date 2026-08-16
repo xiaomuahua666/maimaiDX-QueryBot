@@ -594,11 +594,16 @@ def format_settlement_ranking_text(settlement: LetterSettlement) -> str:
     if not settlement.rewards:
         lines.append("本局无人有效贡献，不发奖。")
         return "\n".join(lines)
+    capped = False
     for i, r in enumerate(settlement.rewards, 1):
         detail = f"（{r.detail}）" if r.detail and r.detail != "无贡献" else ""
+        if r.break_capped:
+            capped = True
         lines.append(
             f"#{i} {r.name}  权重{r.weight} → +{r.score}分 +{r.break_points}BREAK{detail}"
         )
+    if capped:
+        lines.append("⚠️ 该游戏达今日上限不发放奖励")
     return "\n".join(lines)
 
 

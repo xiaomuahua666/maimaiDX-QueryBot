@@ -258,15 +258,19 @@ def format_impostor_rewards(rewards: List[ImpostorReward]) -> str:
     if not rewards:
         return '本局无人找出内鬼。'
     lines: List[str] = []
+    capped = False
     for reward in rewards:
         medal = {1: '🥇', 2: '🥈', 3: '🥉'}.get(reward.rank, '▫️')
         if reward.break_points > 0:
             bp = f' +{reward.break_points}BREAK'
         elif reward.break_capped:
             bp = ' +0 BREAK'
+            capped = True
         else:
             bp = ''
         lines.append(
             f'{medal} #{reward.rank} {reward.name}  +{reward.score}分{bp}'
         )
+    if capped:
+        lines.append('⚠️ 该游戏达今日上限不发放奖励')
     return '\n'.join(lines)
