@@ -257,7 +257,17 @@ def _awmc_profile():
         "total_analysis_count": 156, "account_total": 203,
         "account_total_success": 200, "account_total_error": 3,
         "last_query_at": 1754726400, "last_analysis_at": 1754720000,
-        "account_operation_counts": {"bind": 1, "upload": 180, "ticket": 20},
+        "account_operation_counts": {
+            "bind": 1, "upload": 180, "ticket": 20, "ticket_status": 12,
+            "awmc_preview": 9, "awmc_items": 8, "awmc_gate_status": 7,
+            "music_edit": 6, "future_operation_with_long_name": 5,
+        },
+        "account_ticket_stats": {
+            "total": 20, "success": 17, "error": 3,
+            "success_rate": 85.0, "error_rate": 15.0,
+            "return_code_0": 2, "return_code_null": 1,
+            "return_code_0_rate": 10.0,
+        },
         "recent_account_logs": [
             {"created_at": 1754726400, "operation": "upload",
              "status": "success", "ref_id": "ref-001"},

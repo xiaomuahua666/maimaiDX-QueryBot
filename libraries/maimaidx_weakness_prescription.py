@@ -17,7 +17,7 @@ from loguru import logger as log
 from .maimaidx_best_50 import filter_utage_records
 from .maimaidx_error import UserDisabledQueryError, UserNotFoundError, UserNotExistsError
 from .maimaidx_music import mai
-from .maimaidx_music_info import get_b50_tag_stats, get_chart_tags_by_group
+from .maimaidx_music_info import fetch_b50_wmc_tags, get_b50_tag_stats
 from .maimaidx_tag_analysis import CONFIG_TAGS_ORDER
 from .maimaidx_wmc_api import (
     WmcAPI,
@@ -391,30 +391,13 @@ async def generate_weakness_prescription(qqid: int) -> Union[str, MessageSegment
         return str(e)
 
     # 预拉取 v.wmc.pub 标签（B50 谱面）
-    wmc_cache = {}
+    wmc_cache = await fetch_b50_wmc_tags(userinfo)
     api = None
     wmc_key = maiconfig.wmc_api_key
     if wmc_key:
         api = WmcAPI(resolve_wmc_base_url(maiconfig), wmc_key)
-        wmc_items = []
-        for chart_list in (getattr(userinfo.charts, 'sd', None) or [], getattr(userinfo.charts, 'dx', None) or []):
-            if not chart_list:
-                continue
-            for chart in chart_list:
-                sid = getattr(chart, 'song_id', None)
-                li = getattr(chart, 'level_index', 0)
-                if sid is None:
-                    continue
-                music = mai.total_list.by_id(str(sid))
-                if not music:
-                    continue
-                wmc_sid = song_id_for_wmc(music)
-                kind = kind_for_wmc(music)
-                diff_val = diff_value_for_wmc(li)
-                wmc_items.append(((wmc_sid, kind, diff_val), make_chart_key(wmc_sid, kind, diff_val)))
-        wmc_cache = await _fetch_wmc_tag_map(api, wmc_items, radar_threshold=0)
 
-    stats = get_b50_tag_stats(userinfo, wmc_tags_cache=wmc_cache or None)
+    stats = get_b50_tag_stats(userinfo, wmc_tags_cache=wmc_cache)
     if not any(stats.get('配置', {}).values()):
         return (
             '无法生成弱项处方：你的 B50 谱面暂无配置标签数据。\n'
@@ -496,11 +479,7 @@ async def generate_weakness_prescription(qqid: int) -> Union[str, MessageSegment
         kind = kind_for_wmc(music)
         diff_val = diff_value_for_wmc(int(r.level_index))
         tags_data = wmc_cache.get((wmc_sid, kind, diff_val))
-        if tags_data:
-            cfg_tags = _wmc_config_tags(tags_data)
-        else:
-            groups = get_chart_tags_by_group(title, int(r.level_index))
-            cfg_tags = groups.get('配置') or []
+        cfg_tags = _wmc_config_tags(tags_data) if tags_data else []
         matched = [t for t in cfg_tags if t in weak_set]
         if not matched:
             continue

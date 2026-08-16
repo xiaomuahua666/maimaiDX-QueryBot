@@ -20,6 +20,17 @@ from .maimaidx_leaderboard_image import (
 _WIDTH = 1080
 _MX = 40
 
+_OPERATION_COLORS = (
+    (74, 144, 217, 255),
+    (230, 140, 70, 255),
+    (72, 180, 120, 255),
+    (200, 120, 200, 255),
+    (240, 190, 80, 255),
+    (235, 88, 112, 255),
+    (60, 180, 170, 255),
+    (132, 112, 244, 255),
+)
+
 
 def _ts(val) -> str:
     if not val:
@@ -56,6 +67,58 @@ def _kv_row(d, x, y, w, key, value, value_color=_TEXT):
     d.text((x, y), key, font=_font_bold(15), fill=_TEXT_SOFT)
     d.text((x + w, y), str(value), font=_font_bold(15),
            fill=value_color, anchor='rt')
+
+
+def _operation_items(op_counts: Dict[str, int], labels: Dict[str, str]):
+    items = [
+        (str(name), labels.get(str(name), str(name)), max(0, int(count or 0)))
+        for name, count in op_counts.items()
+        if int(count or 0) > 0
+    ]
+    items.sort(key=lambda item: (-item[2], item[0]))
+    if len(items) <= 8:
+        return items
+    other = sum(item[2] for item in items[7:])
+    return items[:7] + [('other', '其他功能', other)]
+
+
+def _draw_operation_distribution(im, d, x, y, w, items):
+    total = sum(item[2] for item in items)
+    cx, cy, radius = x + 142, y + 148, 88
+    bbox = (cx - radius, cy - radius, cx + radius, cy + radius)
+    if total <= 0:
+        d.ellipse(bbox, outline=(225, 230, 242, 255), width=14)
+    else:
+        start = -90.0
+        for index, (_, _, count) in enumerate(items):
+            extent = 360.0 * count / total
+            color = _OPERATION_COLORS[index % len(_OPERATION_COLORS)]
+            if extent >= 359.999:
+                d.ellipse(bbox, fill=color)
+            else:
+                d.pieslice(bbox, start=start, end=start + extent, fill=color)
+            start += extent
+    hole = 50
+    d.ellipse((cx - hole, cy - hole, cx + hole, cy + hole), fill=(255, 255, 255, 255))
+    d.text((cx, cy - 8), str(total), font=_font_mono(24), fill=_TEXT, anchor='mm')
+    d.text((cx, cy + 18), '次调用', font=_font_bold(12), fill=_MUTED, anchor='mm')
+
+    legend_x = x + 280
+    legend_w = w - 304
+    col_w = legend_w // 2
+    for index, (_, label, count) in enumerate(items):
+        row, col = divmod(index, 2)
+        lx = legend_x + col * col_w
+        ly = y + 76 + row * 48
+        color = _OPERATION_COLORS[index % len(_OPERATION_COLORS)]
+        pct = 100.0 * count / total if total else 0.0
+        d.ellipse((lx, ly - 6, lx + 12, ly + 6), fill=color)
+        font = _font_bold(14)
+        text = _truncate(d, label, font, col_w - 118)
+        d.text((lx + 20, ly), text, font=font, fill=_TEXT, anchor='lm')
+        d.text((lx + col_w - 12, ly), f'{count} · {pct:.0f}%',
+               font=_font_mono(13), fill=color, anchor='rm')
+        _bar(im, lx + 20, ly + 14, col_w - 32, 6, count / total if total else 0, color)
 
 
 def render_awmc_profile(profile: Dict,
@@ -100,9 +163,13 @@ def render_awmc_profile(profile: Dict,
 
     op_labels = {
         'bind': '账号绑定', 'unbind': '账号解绑', 'status': '账号状态',
-        'upload': '成绩上传', 'ticket': '发票', 'bind_fish': '绑定水鱼',
-        'bind_lx': '绑定落雪',
+        'upload': '成绩上传', 'ticket': '发票', 'ticket_status': '发票状态',
+        'bind_fish': '绑定水鱼', 'bind_lx': '绑定落雪',
+        'awmc_preview': '账号预览', 'awmc_items': '道具查询',
+        'awmc_gate_status': '门状态', 'music_edit': '成绩编辑',
     }
+    operation_items = _operation_items(op_counts, op_labels)
+    ticket_total = int(ticket.get('total') or 0)
     reason_map = {
         'query': '查分', 'checkin': '签到', 'checkin_makeup': '补签',
         'checkin_storage_bonus': '签到·存储加成', 'today_luck': '今日舞萌',
@@ -128,13 +195,13 @@ def render_awmc_profile(profile: Dict,
     y += pref_h + 16
 
     # 功能分布 / 发票
-    extra_lines = 0
-    if op_counts:
-        extra_lines += 1
-    if ticket:
-        extra_lines += 2
-    if extra_lines:
-        y += 34 + extra_lines * 26 + 16
+    distribution_h = 0
+    if operation_items:
+        distribution_h = 292
+    if ticket_total:
+        distribution_h += 92
+    if distribution_h:
+        y += distribution_h + 16
 
     # 最近记录
     log_lines = min(5, len(recent_acc)) + min(20, len(recent_break))
@@ -228,34 +295,32 @@ def render_awmc_profile(profile: Dict,
     y += pref_h + 16
 
     # ---- 功能分布 / 发票 ----
-    if extra_lines:
-        card_h = 24 + extra_lines * 26 + 16
-        _card(im, (mx, y, mx + inner_w, y + card_h), radius=18,
+    if distribution_h:
+        _card(im, (mx, y, mx + inner_w, y + distribution_h), radius=18,
               fill=(255, 255, 255, 225))
-        ly = y + 18
-        if op_counts:
-            detail = ' / '.join(
-                f'{op_labels.get(name, name)} {count}'
-                for name, count in op_counts.items()
-            )
-            d.text((mx + 22, ly), f'功能分布：{detail}',
-                   font=_font_bold(14), fill=_TEXT_SOFT)
-            ly += 26
-        if ticket:
-            t_total = int(ticket.get('total') or 0)
-            d.text((mx + 22, ly),
-                   f'发票：成功 {int(ticket.get("success") or 0)}'
-                   f'（{ticket.get("success_rate", 0)}%） / '
-                   f'失败 {int(ticket.get("error") or 0)}'
-                   f'（{ticket.get("error_rate", 0)}%）',
-                   font=_font_bold(14), fill=_TEXT_SOFT)
-            ly += 26
-            d.text((mx + 22, ly),
-                   f'发票 returnCode=0：{int(ticket.get("return_code_0") or 0)} 次'
-                   f'（{ticket.get("return_code_0_rate", 0)}%）；'
-                   f'null/未返回 {int(ticket.get("return_code_null") or 0)} 次',
-                   font=_font_bold(14), fill=_TEXT_SOFT)
-        y += card_h + 16
+        if operation_items:
+            _section_title(d, mx + 22, y + 16, '账号功能分布', _ACCENT)
+            _draw_operation_distribution(im, d, mx + 22, y, inner_w - 44, operation_items)
+        if ticket_total:
+            ticket_y = y + (292 if operation_items else 0)
+            if operation_items:
+                d.line((mx + 22, ticket_y, mx + inner_w - 22, ticket_y),
+                       fill=(225, 230, 242, 255), width=2)
+            success = int(ticket.get('success') or 0)
+            error = int(ticket.get('error') or 0)
+            d.text((mx + 22, ticket_y + 18), '发票结果',
+                   font=_font_bold(16), fill=_TEXT)
+            d.text((mx + inner_w - 22, ticket_y + 18),
+                   f'成功 {success}  ·  失败 {error}',
+                   font=_font_bold(14), fill=_TEXT_SOFT, anchor='rt')
+            _bar(im, mx + 22, ticket_y + 48, inner_w - 44, 12,
+                 success / ticket_total, _GREEN, bg=(244, 207, 214, 255), radius=6)
+            d.text((mx + 22, ticket_y + 70),
+                   f'成功率 {ticket.get("success_rate", 0)}%  ·  '
+                   f'returnCode=0 {int(ticket.get("return_code_0") or 0)} 次  ·  '
+                   f'未返回 {int(ticket.get("return_code_null") or 0)} 次',
+                   font=_font_bold(13), fill=_TEXT_SOFT)
+        y += distribution_h + 16
 
     # ---- 最近记录 ----
     if log_lines:

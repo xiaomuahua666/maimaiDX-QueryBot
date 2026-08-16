@@ -49,6 +49,14 @@ from ..libraries.maimaidx_reaction import react_processing
 
 _peer_stats = None
 
+try:
+    _ANALYSIS_MAX_CONCURRENCY = max(
+        1, int(getattr(maiconfig, 'b50_analysis_max_concurrency', 6) or 6)
+    )
+except (TypeError, ValueError):
+    _ANALYSIS_MAX_CONCURRENCY = 6
+_ANALYSIS_SEMAPHORE = asyncio.Semaphore(_ANALYSIS_MAX_CONCURRENCY)
+
 _ANALYSIS_SHORTCUTS = (
     ('锐评', '锐评一下'),
     ('标准 B50', 'b50'),
@@ -144,8 +152,7 @@ b50_analysis_cmd = on_command(
 )
 
 
-@b50_analysis_cmd.handle()
-async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message = CommandArg()):
+async def _handle_impl(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message = CommandArg()):
     style = args.extract_plain_text().strip()
     qq = platform_user_id(event)
     billing_qq = billing_user_id(event)
@@ -188,16 +195,16 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
                 f'{type(exc).__name__}: {exc}'
             )
 
-    # The official QQ gateway may not support the OneBot reaction API.  Send
-    # the visible acknowledgement first so a slow/failed reaction request can
-    # never make a long-running roast look like a silent command.
-    try:
-        await asyncio.wait_for(
-            react_processing(bot, event),
-            timeout=_timeout_seconds('b50_reaction_timeout_seconds', 2.0),
-        )
-    except asyncio.TimeoutError:
-        log.warning(f'[b50_analysis] 处理表情超时 qq={billing_qq}，继续执行')
+    # 官方 QQ 没有 OneBot 的 set_msg_emoji_like；跳过该调用，避免每个锐评
+    # 触发 1+2+4 秒的无效重试。OneBot 仍保留处理中表情。
+    if not use_qq_mode(event):
+        try:
+            await asyncio.wait_for(
+                react_processing(bot, event),
+                timeout=_timeout_seconds('b50_reaction_timeout_seconds', 2.0),
+            )
+        except asyncio.TimeoutError:
+            log.warning(f'[b50_analysis] 处理表情超时 qq={billing_qq}，继续执行')
 
     if style:
         mod_result = check_user_input(style)
@@ -429,3 +436,41 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
         mention_sender=use_qq_mode(event),
         qq_buttons=_ANALYSIS_SHORTCUTS,
     )
+
+
+@b50_analysis_cmd.handle()
+async def _handle(
+    matcher: Matcher,
+    bot: Bot,
+    event: MessageEvent,
+    args: Message = CommandArg(),
+):
+    """Admit only a small number of model/render/send pipelines at once."""
+    try:
+        queue_timeout = max(
+            0.0,
+            float(
+                getattr(
+                    maiconfig,
+                    'b50_analysis_queue_timeout_seconds',
+                    2.0,
+                )
+                or 0.0
+            ),
+        )
+    except (TypeError, ValueError):
+        queue_timeout = 2.0
+    try:
+        await asyncio.wait_for(_ANALYSIS_SEMAPHORE.acquire(), timeout=queue_timeout)
+    except asyncio.TimeoutError:
+        await plugin_finish(
+            matcher,
+            '当前锐评任务较多，为避免卡住已拒绝本次请求，请稍后再试。',
+            event=event,
+            mention_sender=use_qq_mode(event),
+        )
+        return
+    try:
+        await _handle_impl(matcher, bot, event, args)
+    finally:
+        _ANALYSIS_SEMAPHORE.release()

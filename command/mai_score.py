@@ -46,7 +46,7 @@ from ..libraries.maimaidx_score_formatter import (
 from ..libraries.maimaidx_song_resolver import SongResolver
 from ..libraries.maimaidx_music import feature_manager
 from ..config import log, maiconfig
-from ..libraries.maimaidx_music_info import get_b50_tag_stats
+from ..libraries.maimaidx_music_info import fetch_b50_wmc_tags, get_b50_tag_stats
 from ..libraries.maimaidx_music_info import *
 from ..libraries.maimaidx_player_score import *
 from ..libraries.maimaidx_best_50 import (
@@ -98,14 +98,6 @@ from ..libraries.maimaidx_weakness_prescription import generate_weakness_prescri
 from ..libraries.maimaidx_b50_risk import generate_b50_risk_warning
 from ..libraries.maimaidx_head_to_head import generate_head_to_head
 from ..libraries.maimaidx_rating_sandbox import generate_rating_sandbox
-from ..libraries.maimaidx_wmc_api import (
-    WmcAPI,
-    diff_value_for_wmc,
-    kind_for_wmc,
-    make_chart_key,
-    resolve_wmc_base_url,
-    song_id_for_wmc,
-)
 from ..libraries.maimaidx_update_plate import *
 
 best50       = on_command('b50', aliases={'B50'})
@@ -1921,45 +1913,13 @@ async def _(event: MessageEvent, user_id: Optional[int] = Depends(get_at_qq)):
             userinfo = await get_user_b50(qqid=qqid)
         except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
             return str(e)
-        # 预拉取 v.wmc.pub 标签
-        wmc_cache = {}
-        wmc_key = maiconfig.wmc_api_key
-        if wmc_key:
-            api = WmcAPI(resolve_wmc_base_url(maiconfig), wmc_key)
-            wmc_items = []
-            for chart_list in (getattr(userinfo.charts, 'sd', None) or [], getattr(userinfo.charts, 'dx', None) or []):
-                if not chart_list:
-                    continue
-                for chart in chart_list:
-                    sid = getattr(chart, 'song_id', None)
-                    li = getattr(chart, 'level_index', 0)
-                    if sid is None:
-                        continue
-                    music = mai.total_list.by_id(str(sid))
-                    if not music:
-                        continue
-                    wmc_sid = song_id_for_wmc(music)
-                    kind = kind_for_wmc(music)
-                    diff_val = diff_value_for_wmc(li)
-                    wmc_items.append(((wmc_sid, kind, diff_val), make_chart_key(wmc_sid, kind, diff_val)))
-            if wmc_items:
-                sem = asyncio.Semaphore(12)
-
-                async def _fetch(cache_key, chart_key):
-                    async with sem:
-                        try:
-                            return cache_key, await asyncio.wait_for(
-                                api.get_tags(chart_key, radar_threshold=0, feature_threshold=0.3),
-                                timeout=10.0,
-                            )
-                        except Exception:
-                            return cache_key, None
-
-                results = await asyncio.gather(*(_fetch(k, ck) for k, ck in wmc_items))
-                for k, r in results:
-                    if isinstance(r, dict) and isinstance(r.get("tags"), dict):
-                        wmc_cache[k] = r["tags"]
-        stats = get_b50_tag_stats(userinfo, wmc_tags_cache=wmc_cache or None)
+        wmc_cache = await fetch_b50_wmc_tags(userinfo)
+        stats = get_b50_tag_stats(userinfo, wmc_tags_cache=wmc_cache)
+        if not any(stats.get(group) for group in ('配置', '难度', '评价')):
+            return (
+                '无法生成底力分析：v.wmc.pub 暂无你的 B50 谱面标签数据。\n'
+                '请确认已配置 WMC_API_KEY，或稍后等待相关谱面被标签库收录。'
+            )
         im = await run_image_cpu(draw_analysis, stats)
         return await run_image_cpu(lambda: MessageSegment.image(image_to_message_segment(im)))
 

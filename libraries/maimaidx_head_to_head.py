@@ -12,7 +12,7 @@ from ..config import SIYUAN, footer_generated
 from .image import DrawText, draw_centered_design_footer, generate_frosted_card, image_to_base64
 from .maimaidx_best_50 import filter_utage_records
 from .maimaidx_error import UserDisabledQueryError, UserNotFoundError, UserNotExistsError
-from .maimaidx_music_info import get_b50_tag_stats
+from .maimaidx_music_info import fetch_b50_wmc_tags, get_b50_tag_stats
 
 ACCENT = (124, 129, 255, 255)
 TEXT = (45, 50, 95, 255)
@@ -209,8 +209,14 @@ async def generate_head_to_head(
     if not rows:
         return f'{nick_a} 与 {nick_b} 暂无重叠游玩谱面，无法生成对战战绩。'
 
-    stats_a = get_b50_tag_stats(user_a)
-    stats_b = get_b50_tag_stats(user_b)
+    import asyncio
+
+    tags_a, tags_b = await asyncio.gather(
+        fetch_b50_wmc_tags(user_a),
+        fetch_b50_wmc_tags(user_b),
+    )
+    stats_a = get_b50_tag_stats(user_a, tags_a)
+    stats_b = get_b50_tag_stats(user_b, tags_b)
     tag_gap = _tag_compare(stats_a, stats_b)
 
     im = _draw_h2h(

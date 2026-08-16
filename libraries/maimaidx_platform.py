@@ -47,6 +47,43 @@ _SEND_RETRY_TRANSIENT_NAMES = {
     'ConnectTimeout',
 }
 
+# 官方 QQ 的群发接口存在严格的网关并发 / 频率限制。没有上限时，多个
+# B50 图片同时上传会让所有请求一起超时，随后又把过期的 msg_id 重试一遍。
+try:
+    _QQ_SEND_MAX_CONCURRENCY = max(
+        1, int(getattr(maiconfig, 'qq_send_max_concurrency', 8) or 8)
+    )
+except (TypeError, ValueError):
+    _QQ_SEND_MAX_CONCURRENCY = 8
+_QQ_SEND_SEMAPHORE = asyncio.Semaphore(_QQ_SEND_MAX_CONCURRENCY)
+
+
+def _qq_send_queue_timeout() -> float:
+    try:
+        return max(
+            0.0,
+            float(
+                getattr(maiconfig, 'qq_send_queue_timeout_seconds', 5.0)
+                or 0.0
+            ),
+        )
+    except (TypeError, ValueError):
+        return 5.0
+
+
+async def _bounded_qq_send(send_func, *args, **kwargs):
+    try:
+        await asyncio.wait_for(
+            _QQ_SEND_SEMAPHORE.acquire(),
+            timeout=_qq_send_queue_timeout(),
+        )
+    except asyncio.TimeoutError as exc:
+        raise TimeoutError('QQ 出站消息队列繁忙，请稍后重试') from exc
+    try:
+        return await send_func(*args, **kwargs)
+    finally:
+        _QQ_SEND_SEMAPHORE.release()
+
 
 def _send_retry_count() -> int:
     return max(0, int(getattr(maiconfig, 'qq_send_retry_count', 3) or 0))
@@ -705,7 +742,7 @@ def install_qq_event_compat() -> None:
                     message = markdown_message
                 split = _split_qq_media_message(message)
                 if split is None:
-                    return await original_qq_send_to_group(
+                    return await _bounded_qq_send(original_qq_send_to_group,
                         self,
                         group_openid=group_openid,
                         message=message,
@@ -718,7 +755,7 @@ def install_qq_event_compat() -> None:
                 text_message = (
                     _qq_text_message_as_markdown(text_message) or text_message
                 )
-                result = await original_qq_send_to_group(
+                result = await _bounded_qq_send(original_qq_send_to_group,
                     self,
                     group_openid=group_openid,
                     message=text_message,
@@ -736,7 +773,7 @@ def install_qq_event_compat() -> None:
                         # An event id is single-use; follow-up media is an
                         # ordinary active message after the text response.
                         media_event_id = None
-                    result = await original_qq_send_to_group(
+                    result = await _bounded_qq_send(original_qq_send_to_group,
                         self,
                         group_openid=group_openid,
                         message=media_message,
@@ -772,7 +809,7 @@ def install_qq_event_compat() -> None:
                     message = markdown_message
                 split = _split_qq_media_message(message)
                 if split is None:
-                    return await original_qq_send_to_c2c(
+                    return await _bounded_qq_send(original_qq_send_to_c2c,
                         self,
                         openid=openid,
                         message=message,
@@ -785,7 +822,7 @@ def install_qq_event_compat() -> None:
                 text_message = (
                     _qq_text_message_as_markdown(text_message) or text_message
                 )
-                result = await original_qq_send_to_c2c(
+                result = await _bounded_qq_send(original_qq_send_to_c2c,
                     self,
                     openid=openid,
                     message=text_message,
@@ -801,7 +838,7 @@ def install_qq_event_compat() -> None:
                         media_seq = (int(msg_seq) if msg_seq is not None else 0) + index
                     elif event_id is not None:
                         media_event_id = None
-                    result = await original_qq_send_to_c2c(
+                    result = await _bounded_qq_send(original_qq_send_to_c2c,
                         self,
                         openid=openid,
                         message=media_message,

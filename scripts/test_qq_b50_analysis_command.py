@@ -23,5 +23,8 @@ assert "b50_llm_max_tokens" in (ROOT / "libraries" / "b50_analysis" / "llm.py").
 assert "b50_send_timeout_seconds" in source
 assert "asyncio.wait_for(" in source
 assert "_run_timed_stage(" in source
+assert "_ANALYSIS_SEMAPHORE.acquire()" in source
+assert "if not use_qq_mode(event):" in source
+assert "为避免卡住已拒绝本次请求" in source
 
 print("qq b50 analysis command tests: ok")

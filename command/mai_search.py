@@ -20,7 +20,6 @@ from ..libraries.maimaidx_model import AliasStatus
 from ..libraries.maimaidx_guess_letter import letter_guess
 from ..libraries.maimaidx_music import feature_manager, guess, mai, maiApi
 from ..libraries.maimaidx_music_info import (
-    build_tags_forward_nodes,
     draw_music_info,
     fetch_wmc_chart_tags,
 )
@@ -295,7 +294,7 @@ async def _send_song_info_then_pmyx_forward(
     prefix: str = '',
     reply: bool = True,
 ):
-    """歌曲信息直接回复用户，再发一个合并转发（包含谱面印象、谱面标签、谱面预览链接三个子合并转发）。"""
+    """歌曲信息直接回复用户，再发送 WMC 谱面印象、标签和预览信息。"""
     async def _gen():
         pic = await draw_music_info(music, resolve_score_qqid(event))
         return (Message(prefix) + pic) if prefix else pic
@@ -319,7 +318,7 @@ async def _send_song_info_then_pmyx_forward(
     await matcher.send(attach_timing(msg, total, extra=charge_extra), reply_message=reply)
     nickname = _bot_nickname(bot)
     all_nodes = []
-    # 并发拉取三个数据源
+    # 谱面印象与谱面标签均来自 v.wmc.pub。
     import asyncio
     qq_mode = use_qq_mode(event)
     pmyx_task = _build_pmyx_forward_nodes(
@@ -328,15 +327,12 @@ async def _send_song_info_then_pmyx_forward(
         nickname,
         include_write_links=not qq_mode,
     )
-    tag_task = build_tags_forward_nodes(music.id, event.self_id, nickname)
     wmc_task = _build_wmc_tags_forward_nodes(music, event.self_id, nickname)
-    pmyx_nodes, tag_nodes, wmc_tag_nodes = await asyncio.gather(pmyx_task, tag_task, wmc_task)
+    pmyx_nodes, wmc_tag_nodes = await asyncio.gather(pmyx_task, wmc_task)
     if pmyx_nodes:
         all_nodes.append(_build_nested_forward_node(event.self_id, "谱面印象", pmyx_nodes))
-    if tag_nodes:
-        all_nodes.append(_build_nested_forward_node(event.self_id, "谱面标签", tag_nodes))
     if wmc_tag_nodes:
-        all_nodes.append(_build_nested_forward_node(event.self_id, "难度分析", wmc_tag_nodes))
+        all_nodes.append(_build_nested_forward_node(event.self_id, "谱面标签", wmc_tag_nodes))
     # pyecharts/Pillow rendering is synchronous and may take seconds on a cold
     # cache; never let it stall message intake for the whole bot.
     chart_img = await asyncio.to_thread(draw_multiver_chart, music.id)

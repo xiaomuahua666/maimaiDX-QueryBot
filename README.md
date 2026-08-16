@@ -23,7 +23,7 @@
 - **统一账号**：原 maibot 的账号绑定、Token、上传、票券与状态功能已合并，无需单独运行 Koishi Bot
 - **管理审计**：统一 REF_ID 请求链路、敏感信息脱敏、用户封禁与内置管理 WebUI
 - **倍率票 / 道具**：获取倍率票、查询票券、添加收藏品
-- **谱面标签 / 印象**：dxrating 谱面标签、谱面印象 API
+- **谱面标签 / 印象**：v.wmc.pub 谱面标签、难度分析与谱面印象
 - **数据源切换**：水鱼 API 或本地 `dxdata.json`
 - **双 Bot 模式**：保留 OneBot 与腾讯官方 QQ Bot 两种模式；官方 QQ 的加密 openid
   通过论坛 OAuth 或管理员绑定映射到原 QQ 号，群级猜歌数据也可迁移。
@@ -234,14 +234,15 @@ Bot 启动完成曲库初始化后，会自动增量扫描热门池并预制缺�
 如果要继续使用普通 Bot，只需将 `MAIMAIDX_PLATFORM` 改回 `onebot`；普通模式下消息 QQ
 号仍直接作为查分 QQ，不需要 `qbind`。
 
-### 谱面标签（dxrating，可选）
+### 谱面标签与印象（v.wmc.pub，可选）
 
-未配置时谱面详情不显示 dxrating 标签。
+谱面标签、底力分析和弱项处方统一使用 v.wmc.pub；未配置 API Key 时不显示标签，
+也不会回退到本地或 dxrating 标签数据。
 
 ```env
-MAIMAIDX_DXRATING_TOKEN=your_dxrating_token
-# 可选：自定义 combined-tags 接口地址
-# MAIMAIDX_DXRATING_COMBINED_TAGS_URL=https://derrakuma.dxrating.net/functions/v1/combined-tags
+WMC_API_MODE=public
+WMC_API_PUBLIC_URL=https://v.wmc.pub/api/v1
+WMC_API_KEY=your_wmc_api_key
 ```
 
 ### 谱面印象 API（可选）
@@ -249,6 +250,9 @@ MAIMAIDX_DXRATING_TOKEN=your_dxrating_token
 ```env
 PMYX_API_BASE_URL=http://103.45.162.66:37913
 ```
+
+配置 `WMC_API_KEY` 后，谱面印象也优先使用 v.wmc.pub；`PMYX_API_BASE_URL` 仅保留为
+未配置 WMC 时的旧谱面印象兼容路径，不参与谱面标签。
 
 ### 数据源切换（可选）
 
