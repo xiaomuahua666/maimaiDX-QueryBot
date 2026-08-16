@@ -269,11 +269,14 @@ def _paint_settlement_split(
         rank_color = _OK if idx < 3 else _TEXT
         font.draw(112, y + 12, 22, f"#{idx + 1}", rank_color, "lt")
         font.draw(168, y + 12, 22, r.name, _TEXT, "lt")
+        break_line = f"+{r.break_points} BREAK"
+        if r.break_capped:
+            break_line += " ⚠️ 该游戏达今日上限不发放奖励"
         font.draw(
             168,
             y + 40,
             16,
-            f"{r.detail}  ·  权重 {r.weight}  →  +{r.score} 分  +{r.break_points} BREAK",
+            f"{r.detail}  ·  权重 {r.weight}  →  +{r.score} 分  {break_line}",
             _MUTED,
             "lt",
         )
