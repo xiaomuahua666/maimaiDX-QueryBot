@@ -464,12 +464,12 @@ def format_reward_text(rewards: List[RatingGuessReward], actual: int) -> str:
         if r.break_points > 0:
             bp_text = f' +{r.break_points}BREAK'
         elif r.break_capped:
-            bp_text = ' +0 BREAK ⚠️'
+            bp_text = ' +0 BREAK 🎉'
             capped = True
         else:
             bp_text = ''
         lines.append(f'{medal} #{r.rank} {r.name}  {diff_text}  +{r.score}分{bp_text}')
     if capped:
         lines.append('')
-        lines.append('⚠️ 用户该游戏达今日上限，不再发放奖励')
+        lines.append('🎉 用户该游戏达今日上限，不再发放奖励')
     return '\n'.join(lines)

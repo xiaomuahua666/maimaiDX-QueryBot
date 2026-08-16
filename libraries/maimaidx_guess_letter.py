@@ -600,13 +600,13 @@ def format_settlement_ranking_text(settlement: LetterSettlement) -> str:
         bp_text = f" +{r.break_points}BREAK"
         if r.break_capped:
             capped = True
-            bp_text += " ⚠️"
+            bp_text += " 🎉"
         lines.append(
             f"#{i} {r.name}  权重{r.weight} → +{r.score}分{bp_text}{detail}"
         )
     if capped:
         lines.append("")
-        lines.append("⚠️ 用户该游戏达今日上限，不再发放奖励")
+        lines.append("🎉 用户该游戏达今日上限，不再发放奖励")
     return "\n".join(lines)
 
 

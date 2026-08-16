@@ -264,7 +264,7 @@ def format_impostor_rewards(rewards: List[ImpostorReward]) -> str:
         if reward.break_points > 0:
             bp = f' +{reward.break_points}BREAK'
         elif reward.break_capped:
-            bp = ' +0 BREAK ⚠️'
+            bp = ' +0 BREAK 🎉'
             capped = True
         else:
             bp = ''
@@ -273,5 +273,5 @@ def format_impostor_rewards(rewards: List[ImpostorReward]) -> str:
         )
     if capped:
         lines.append('')
-        lines.append('⚠️ 用户该游戏达今日上限，不再发放奖励')
+        lines.append('🎉 用户该游戏达今日上限，不再发放奖励')
     return '\n'.join(lines)
