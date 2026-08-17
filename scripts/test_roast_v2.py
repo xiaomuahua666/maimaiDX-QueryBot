@@ -68,9 +68,12 @@ snapshot = {
             "song_id": "999",
             "title": "Candidate",
             "level": "14+",
-            "ds": 14.3,
+            "level_index": 3,
+            "type": "DX",
+            "pool": "old",
+            "ds": 14.5,
             "achievement": 99.2,
-            "ra": 300,
+            "ra": 250,
         }
     ],
 }
@@ -83,8 +86,43 @@ assert {item.evidence_id for item in pack.evidence} >= {
 report = build_report_fallback(pack, style)
 assert "主人" in report.summary
 assert report.claims and report.claims[0]["evidence_ids"]
+assert report.recommendations[0]["estimated_gain"] == 13
+assert report.recommendations[0]["chart_type"] == "DX"
 image = render_report(pack, report)
 assert image.getvalue().startswith(b"\x89PNG\r\n\x1a\n")
 assert len(image.getvalue()) > 10_000
+
+no_high_snapshot = {
+    "nickname": "NoHigh",
+    "rating": 12000,
+    "b35": [{"song_id": "1", "title": "Low", "level": "14", "ds": 14.0, "achievement": 99.0, "ra": 280}],
+    "b15": [],
+    "all_charts": [],
+}
+no_high_pack = build_evidence_pack(no_high_snapshot)
+assert no_high_pack.metrics["high_count"] == 0
+assert no_high_pack.metrics["high_avg"] is None
+assert next(item for item in no_high_pack.evidence if item.evidence_id == "high_avg").value == "暂无 14+ 样本"
+
+rating_13k_snapshot = {
+    "nickname": "PracticalPlayer",
+    "rating": 13000,
+    "b35": [
+        {"song_id": str(index), "title": f"Base {index}", "level": "13+", "level_index": 3,
+         "ds": 13.2, "achievement": 99.2, "ra": 280 + index, "pool": "old"}
+        for index in range(35)
+    ],
+    "b15": [],
+    "all_charts": [
+        {"song_id": "white", "title": "白潘", "level": "15", "level_index": 3,
+         "ds": 15.0, "achievement": 96.5, "ra": 250, "pool": "old"},
+        {"song_id": "practical", "title": "Practical", "level": "13+", "level_index": 3,
+         "ds": 13.4, "achievement": 99.4, "ra": 280, "pool": "old"},
+    ],
+}
+rating_13k_pack = build_evidence_pack(rating_13k_snapshot)
+assert rating_13k_pack.metrics["recommendation_ds_cap"] < 14.0
+assert all(item.title != "白潘" for item in rating_13k_pack.candidates)
+assert any(item.title == "Practical" for item in rating_13k_pack.candidates)
 
 print("roast v2 tests: ok")

@@ -6,6 +6,7 @@ from weakref import WeakValueDictionary
 from loguru import logger as log
 from nonebot import on_command
 from nonebot.adapters.onebot.v11 import Bot, Message, MessageEvent, MessageSegment
+from nonebot.exception import FinishedException
 from nonebot.matcher import Matcher
 from nonebot.params import CommandArg
 
@@ -266,6 +267,10 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
             mention_sender=use_qq_mode(event),
             qq_buttons=_SHORTCUTS,
         )
+    except FinishedException:
+        # matcher.finish() uses this exception as a normal control-flow signal.
+        # Never turn it into the user-facing "未知错误：FinishedException".
+        raise
     except Exception as exc:
         log.exception(f"[roast_v2] failed: {exc}")
         await plugin_finish(

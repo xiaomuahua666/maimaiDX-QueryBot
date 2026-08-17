@@ -36,6 +36,16 @@ class Candidate:
     estimated_gain: int
     target: str
     reason: str
+    cover_path: str = ""
+    artist: str = ""
+    genre: str = ""
+    level_index: int = 0
+    chart_type: str = "SD"
+    pool: str = "old"
+    target_achievement: float = 100.0
+    current_ra: int = 0
+    target_ra: int = 0
+    priority_score: float = 0.0
 
 
 @dataclass

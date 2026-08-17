@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from openai import AsyncOpenAI, BadRequestError
@@ -17,6 +18,10 @@ def _clean_report(raw: Any, pack: EvidencePack, style: StyleSpec) -> RoastReport
         raise ValueError("模型返回格式无效")
     allowed = {"headline", "summary", "strengths", "weaknesses", "actions", "recommendations", "claims"}
     data = {key: raw.get(key) for key in allowed}
+    all_text = json.dumps(data, ensure_ascii=False)
+    unsupported_high_claim = re.search(r"14\+\s*(?:平均|均值|断层|上限|底力)", all_text)
+    if not pack.metrics.get("high_count") and unsupported_high_claim:
+        raise ValueError("模型引用了不存在的 14+ 样本")
     text_fields = ("headline", "summary")
     for key in text_fields:
         value = str(data.get(key) or "").strip()
@@ -43,7 +48,24 @@ def _clean_report(raw: Any, pack: EvidencePack, style: StyleSpec) -> RoastReport
         if not validate_report_text(str(item.get("reason") or ""))["safe"]:
             continue
         c = known[str(item["song_id"])]
-        recommendations.append({"song_id": c.song_id, "title": c.title, "level": c.level, "target": c.target, "reason": str(item.get("reason") or c.reason)[:100]})
+        recommendations.append({
+            "song_id": c.song_id,
+            "title": c.title,
+            "level": c.level,
+            "target": c.target,
+            "reason": str(item.get("reason") or c.reason)[:100],
+            "cover_path": c.cover_path,
+            "artist": c.artist,
+            "genre": c.genre,
+            "estimated_gain": c.estimated_gain,
+            "level_index": c.level_index,
+            "chart_type": c.chart_type,
+            "pool": c.pool,
+            "target_achievement": c.target_achievement,
+            "current_ra": c.current_ra,
+            "target_ra": c.target_ra,
+            "priority_score": c.priority_score,
+        })
     claims = []
     evidence_ids = {e.evidence_id for e in pack.evidence}
     for item in data.get("claims") if isinstance(data.get("claims"), list) else []:
