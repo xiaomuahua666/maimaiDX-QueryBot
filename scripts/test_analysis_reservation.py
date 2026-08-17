@@ -27,6 +27,8 @@ method_names = {
     "try_reserve_analysis",
     "refund_analysis_reservation",
     "settle_analysis_reservation",
+    "service_is_free",
+    "settle_analysis_daily_free",
 }
 methods = [
     node
@@ -58,6 +60,7 @@ namespace = {
     "timezone": timezone,
     "json": json,
     "time": time,
+    "DAILY_FREE_SERVICES": frozenset({'upload', 'analysis'}),
 }
 exec(compile(ast.Module(body=[test_class], type_ignores=[]), str(source_path), "exec"), namespace)
 
@@ -82,6 +85,12 @@ db._conn.executescript(
     CREATE TABLE break_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT, qqid INTEGER NOT NULL,
         delta INTEGER NOT NULL, reason TEXT NOT NULL, meta TEXT, created_at REAL NOT NULL
+    );
+    CREATE TABLE break_service_daily (
+        qqid INTEGER NOT NULL, date TEXT NOT NULL, service TEXT NOT NULL,
+        success_count INTEGER NOT NULL DEFAULT 0, free_used INTEGER NOT NULL DEFAULT 0,
+        break_spent INTEGER NOT NULL DEFAULT 0, last_at REAL NOT NULL,
+        PRIMARY KEY (qqid, date, service)
     );
     """
 )
@@ -135,6 +144,25 @@ assert db.get_balance(2) == 8
 assert db.refund_analysis_reservation(2, 10, meta={"reason": "retry"}) == 18
 
 db._conn.execute(
+    "INSERT INTO break_users (qqid, balance, created_at, updated_at) VALUES (4, 0, ?, ?)",
+    (now, now),
+)
+db._conn.commit()
+assert db.service_is_free(4, "analysis")
+assert db.settle_analysis_daily_free(4, meta={"pricing": "daily_free"})
+assert not db.service_is_free(4, "analysis")
+assert not db.settle_analysis_daily_free(4, meta={"pricing": "daily_free"})
+daily = db._conn.execute(
+    "SELECT analysis_count FROM break_daily_usage WHERE qqid=4"
+).fetchone()
+service = db._conn.execute(
+    "SELECT success_count, free_used FROM break_service_daily "
+    "WHERE qqid=4 AND service='analysis'"
+).fetchone()
+assert daily["analysis_count"] == 1
+assert (service["success_count"], service["free_used"]) == (1, 1)
+
+db._conn.execute(
     "INSERT INTO break_users (qqid, balance, created_at, updated_at) VALUES (3, 9, ?, ?)",
     (now, now),
 )
@@ -152,6 +180,7 @@ assert [(row["delta"], row["reason"]) for row in logs] == [
     (10, "b50_analysis_refund"),
     (-10, "b50_analysis_precharge"),
     (10, "b50_analysis_refund"),
+    (0, "b50_analysis_daily_free"),
 ]
 
 print("analysis reservation tests: ok")

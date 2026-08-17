@@ -330,6 +330,8 @@ try:
     _reset_free_window()
     u2 = _new_qqid()
     break_db.add_balance(u2, 100, 'test')
+    # 先消耗当天锐评首免，验证关闭免费时段后走正常预扣。
+    assert break_db.settle_analysis_daily_free(u2)
     reservation2 = maimaidx_break.reserve_analysis_charge(u2)
     assert reservation2.amount > 0, f'关闭应预扣: {reservation2}'
     assert reservation2.free_window is False

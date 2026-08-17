@@ -154,7 +154,7 @@ https://bot.example.com/ops/maimai/api/...
 | `analysis_min_cost` | 2 | 倍率应用前的单次锐评最低基础价 |
 | `analysis_max_cost` | 20 | 倍率应用前的单次锐评最高基础价 |
 | `analysis_fallback_cost` | 4 | 模型未返回 Token usage 时的兜底基础价 |
-| `analysis_price_multiplier` | 5 | 锐评基础价倍率；默认最终收费为基础价 ×5 |
+| `analysis_price_multiplier` | 1 | 锐评基础价倍率；每日首次成功锐评免费，之后按基础价 ×1 收费 |
 | `analysis_precharge_cost` | 10 | 调用模型前的预扣额度；成功后多退少补，失败全退 |
 | `guess_break_per_correct` | 1 | 每次猜对奖励 |
 | `upload_fish_cost` | 2 | 上传水鱼价格 |
@@ -169,7 +169,7 @@ https://bot.example.com/ops/maimai/api/...
 | `awmc_item_upsert_cost` | 100 | 高风险道具修改成功价格 |
 | `transfer_fee` | 0 | BREAK 转账手续费 |
 | `lottery_cost` | 2 | BREAK 抽奖每次成本 |
-| `image_render_cost` | 1 | 每次成功生成图片的费用（报告功能费之外另计） |
+| `image_render_cost` | 1 | 每次成功生成图片的费用（锐评每日首免包含图片生成） |
 | `weekly_report_cost` | 1 | 周报功能费 |
 | `monthly_report_cost` | 2 | 月报功能费 |
 | `annual_report_cost` | 3 | 年报功能费 |
@@ -177,7 +177,7 @@ https://bot.example.com/ops/maimai/api/...
 | `coop_b50_cost` | 2 | 合作 B50 功能费 |
 
 还可查看近 30 日产出、消耗、查分量、分析量和活跃用户，以及最近
-BREAK 逐笔流水。每日首次免费的上传也会保留 `delta=0` 记录。
+BREAK 逐笔流水。锐评和上传的每日首免都会保留 `delta=0` 记录。
 
 ### 用户协议
 

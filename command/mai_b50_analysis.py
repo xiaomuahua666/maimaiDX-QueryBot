@@ -4,6 +4,7 @@ import asyncio
 import io
 import json
 import time
+from weakref import WeakValueDictionary
 
 from loguru import logger as log
 from nonebot import on_command
@@ -56,6 +57,7 @@ try:
 except (TypeError, ValueError):
     _ANALYSIS_MAX_CONCURRENCY = 12
 _ANALYSIS_SEMAPHORE = asyncio.Semaphore(_ANALYSIS_MAX_CONCURRENCY)
+_ANALYSIS_USER_LOCKS: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 
 _ANALYSIS_SHORTCUTS = (
     ('锐评', '锐评一下'),
@@ -69,6 +71,25 @@ _ANALYSIS_SHORTCUTS = (
 
 class AnalysisStageTimeoutError(TimeoutError):
     pass
+
+
+def _analysis_user_lock(user_id: str) -> asyncio.Lock:
+    key = str(user_id)
+    lock = _ANALYSIS_USER_LOCKS.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _ANALYSIS_USER_LOCKS[key] = lock
+    return lock
+
+
+def _analysis_failure_note(reserved) -> str:
+    if bool(getattr(reserved, 'daily_free', False)):
+        return '（今日首次免费名额未消耗）'
+    if bool(getattr(reserved, 'freedom', False)):
+        return '（FREEDOM 生效，本次未预扣）'
+    if int(getattr(reserved, 'amount', reserved) or 0) > 0:
+        return '（预扣已全额退回）'
+    return '（本次未扣费）'
 
 
 def _timeout_seconds(name: str, default: float) -> float:
@@ -136,7 +157,7 @@ async def _deliver_result_or_refund(
             raise
         await plugin_finish(
             matcher,
-            f'锐评图片发送失败：{exc}（预扣已全额退回）',
+            f'锐评图片发送失败：{exc}{_analysis_failure_note(reserved)}',
             event=event,
             mention_sender=use_qq_mode(event),
         )
@@ -293,19 +314,20 @@ async def _handle_impl(matcher: Matcher, bot: Bot, event: MessageEvent, args: Me
             matcher, str(e), event=event, mention_sender=use_qq_mode(event)
         )
         return
-    try:
-        await asyncio.to_thread(ensure_image_render_affordable, billing_qq)
-    except BreakInsufficientError as e:
-        await asyncio.to_thread(
-            refund_analysis_charge,
-            billing_qq,
-            reserved,
-            reason='render:insufficient',
-        )
-        await plugin_finish(
-            matcher, str(e), event=event, mention_sender=use_qq_mode(event)
-        )
-        return
+    if not reserved.daily_free:
+        try:
+            await asyncio.to_thread(ensure_image_render_affordable, billing_qq)
+        except BreakInsufficientError as e:
+            await asyncio.to_thread(
+                refund_analysis_charge,
+                billing_qq,
+                reserved,
+                reason='render:insufficient',
+            )
+            await plugin_finish(
+                matcher, str(e), event=event, mention_sender=use_qq_mode(event)
+            )
+            return
 
     failure_stage = '分析生成'
     try:
@@ -349,11 +371,7 @@ async def _handle_impl(matcher: Matcher, bot: Bot, event: MessageEvent, args: Me
         )
         if not isinstance(e, Exception):
             raise
-        failure_note = (
-            '（FREEDOM 生效，本次未预扣）'
-            if reserved.freedom
-            else '（预扣已全额退回）'
-        )
+        failure_note = _analysis_failure_note(reserved)
         await plugin_finish(
             matcher,
             f'{failure_stage}失败：{e}{failure_note}',
@@ -380,7 +398,9 @@ async def _handle_impl(matcher: Matcher, bot: Bot, event: MessageEvent, args: Me
     # 图片已经送达。按真实 Token 多退少补；余额允许为负数。
     try:
         def _settle_result():
-            render = settle_image_render(billing_qq)
+            render = None
+            if not reserved.daily_free:
+                render = settle_image_render(billing_qq)
             charge = settle_analysis_charge(
                 billing_qq,
                 cost,
@@ -411,7 +431,11 @@ async def _handle_impl(matcher: Matcher, bot: Bot, event: MessageEvent, args: Me
         footer_parts.extend(query_footer)
     if render_line:
         footer_parts.append(render_line)
-    if reserved.freedom:
+    if reserved.daily_free:
+        footer_parts.append(
+            f'🎁 今日首次锐评免费（含图片生成） · 余额 {balance} BREAK'
+        )
+    elif reserved.freedom:
         footer_parts.append(
             format_freedom_exemption(
                 billing_qq,
@@ -463,17 +487,18 @@ async def _handle(
         )
     except (TypeError, ValueError):
         queue_timeout = 2.0
-    try:
-        await asyncio.wait_for(_ANALYSIS_SEMAPHORE.acquire(), timeout=queue_timeout)
-    except asyncio.TimeoutError:
-        await plugin_finish(
-            matcher,
-            '当前锐评任务较多，为避免卡住已拒绝本次请求，请稍后再试。',
-            event=event,
-            mention_sender=use_qq_mode(event),
-        )
-        return
-    try:
-        await _handle_impl(matcher, bot, event, args)
-    finally:
-        _ANALYSIS_SEMAPHORE.release()
+    async with _analysis_user_lock(event.get_user_id()):
+        try:
+            await asyncio.wait_for(_ANALYSIS_SEMAPHORE.acquire(), timeout=queue_timeout)
+        except asyncio.TimeoutError:
+            await plugin_finish(
+                matcher,
+                '当前锐评任务较多，为避免卡住已拒绝本次请求，请稍后再试。',
+                event=event,
+                mention_sender=use_qq_mode(event),
+            )
+            return
+        try:
+            await _handle_impl(matcher, bot, event, args)
+        finally:
+            _ANALYSIS_SEMAPHORE.release()

@@ -110,6 +110,47 @@ def test_freedom_settlement_records_exemption() -> None:
     assert kwargs["meta"]["output_tokens"] == 4000
 
 
+def test_daily_first_roast_skips_precharge_and_settles_free() -> None:
+    payer = 123456789
+    reserve_calls: list[tuple] = []
+    settle_calls: list[tuple] = []
+    originals = {
+        "freedom_info": maimaidx_card.card_manager.freedom_info,
+        "service_is_free": maimaidx_break.break_db.service_is_free,
+        "try_reserve": maimaidx_break.break_db.try_reserve_analysis,
+        "settle_free": maimaidx_break.break_db.settle_analysis_daily_free,
+    }
+    maimaidx_card.card_manager.freedom_info = lambda _qqid: (False, 0, 0.0)
+    maimaidx_break.break_db.service_is_free = (
+        lambda _qqid, service: service == "analysis"
+    )
+    maimaidx_break.break_db.try_reserve_analysis = (
+        lambda *_args, **_kwargs: reserve_calls.append((_args, _kwargs)) or True
+    )
+    maimaidx_break.break_db.settle_analysis_daily_free = (
+        lambda *args, **kwargs: settle_calls.append((args, kwargs)) or True
+    )
+    try:
+        reservation = maimaidx_break.reserve_analysis_charge(payer)
+        charged = maimaidx_break.settle_analysis_charge(
+            payer,
+            8,
+            reserved=reservation,
+            token_usage={"input_tokens": 16000, "output_tokens": 4000},
+        )
+    finally:
+        maimaidx_card.card_manager.freedom_info = originals["freedom_info"]
+        maimaidx_break.break_db.service_is_free = originals["service_is_free"]
+        maimaidx_break.break_db.try_reserve_analysis = originals["try_reserve"]
+        maimaidx_break.break_db.settle_analysis_daily_free = originals["settle_free"]
+
+    assert reservation.daily_free
+    assert reservation.amount == 0
+    assert reserve_calls == []
+    assert charged == 0
+    assert len(settle_calls) == 1
+
+
 def test_command_uses_freedom_footer() -> None:
     source = (ROOT / "command" / "mai_b50_analysis.py").read_text(encoding="utf-8")
     assert "if reserved.freedom:" in source
@@ -149,6 +190,7 @@ def test_existing_reservation_refunds_even_if_billing_changes() -> None:
 
 test_freedom_skips_analysis_precharge()
 test_freedom_settlement_records_exemption()
+test_daily_first_roast_skips_precharge_and_settles_free()
 test_command_uses_freedom_footer()
 test_existing_reservation_refunds_even_if_billing_changes()
 print("analysis freedom tests: ok")

@@ -111,7 +111,7 @@ DOUBLE_CHECKIN_GROUP_IDS = {669800745}
 LOTTERY_PRIZES = (0, 1, 2, 5, 10)
 LOTTERY_WEIGHTS = (35, 30, 20, 12, 3)
 # 仅这些业务享受「每日首次成功免费」；发票等不在此列，每次成功均扣费。
-DAILY_FREE_SERVICES = frozenset({'upload'})
+DAILY_FREE_SERVICES = frozenset({'upload', 'analysis'})
 
 _CREATE_SQL = """\
 CREATE TABLE IF NOT EXISTS break_users (
@@ -360,6 +360,7 @@ class AnalysisChargeReservation:
     freedom: bool = False
     freedom_remaining: float = 0.0
     free_window: bool = False
+    daily_free: bool = False
 
 
 @dataclass
@@ -1459,6 +1460,59 @@ class BreakDatabase:
                 'SELECT balance FROM break_users WHERE qqid = ?', (qqid,),
             ).fetchone()
             return int(row['balance']) if row else 0
+
+    def settle_analysis_daily_free(
+        self,
+        qqid: int,
+        *,
+        meta: Optional[dict] = None,
+    ) -> bool:
+        """Consume the daily free roast only after a result was delivered."""
+        today, now = self._today(), time.time()
+        with self._lock:
+            try:
+                row = self._conn.execute(
+                    """SELECT free_used FROM break_service_daily
+                       WHERE qqid=? AND date=? AND service='analysis'""",
+                    (qqid, today),
+                ).fetchone()
+                if row and int(row['free_used']) != 0:
+                    return False
+                self._ensure_user(qqid)
+                self._ensure_daily(qqid)
+                self._conn.execute(
+                    """INSERT OR IGNORE INTO break_service_daily
+                       (qqid, date, service, success_count, free_used, break_spent, last_at)
+                       VALUES (?, ?, 'analysis', 0, 0, 0, ?)""",
+                    (qqid, today, now),
+                )
+                self._conn.execute(
+                    """UPDATE break_service_daily SET success_count=success_count+1,
+                       free_used=1, last_at=?
+                       WHERE qqid=? AND date=? AND service='analysis'""",
+                    (now, qqid, today),
+                )
+                self._conn.execute(
+                    """UPDATE break_users SET
+                       total_analysis_count=total_analysis_count+1,
+                       last_analysis_at=?, updated_at=? WHERE qqid=?""",
+                    (now, now, qqid),
+                )
+                self._conn.execute(
+                    """UPDATE break_daily_usage SET analysis_count=analysis_count+1
+                       WHERE qqid=? AND date=?""",
+                    (qqid, today),
+                )
+                detail = dict(meta or {})
+                detail.update({'daily_free': True, 'cost': 0})
+                self._append_log(
+                    qqid, 0, 'b50_analysis_daily_free', meta=detail,
+                )
+                self._conn.commit()
+                return True
+            except BaseException:
+                self._conn.rollback()
+                raise
 
     def add_balance(
         self,
@@ -3740,17 +3794,18 @@ def format_analysis_pricing_help() -> str:
     )
     precharge = analysis_precharge_cost()
     return (
-        f'· 分析b50 / 锐评一下 — 按实际 Token 计费：每 {input_rate:,} 输入 Token '
+        '· 分析b50 / 锐评一下 — 每日首次成功锐评免费（含图片生成）；'
+        f'之后按实际 Token 计费：每 {input_rate:,} 输入 Token '
         f'+ 每 {output_rate:,} 输出 Token 各计 1 BREAK，合计向上取整；'
         f'基础价 ×{multiplier}，最低 {minimum * multiplier}、最高 {maximum * multiplier} BREAK；'
-        f'usage 缺失时 {fallback_base * multiplier} BREAK。调用前预扣 {precharge} BREAK'
+        f'usage 缺失时 {fallback_base * multiplier} BREAK。后续调用前预扣 {precharge} BREAK'
         '（FREEDOM 生效时不预扣），'
         '成功后按实际用量多退少补，失败全额退回\n'
     )
 
 
 def reserve_analysis_charge(qqid: int) -> AnalysisChargeReservation:
-    """调用模型前预扣固定额度；FREEDOM 生效时仅保存免单快照。"""
+    """Reserve paid usage; the first successful roast each day skips precharge."""
     if is_superuser_exempt(qqid):
         return AnalysisChargeReservation(0)
     if not break_db.billing_enabled():
@@ -3762,6 +3817,8 @@ def reserve_analysis_charge(qqid: int) -> AnalysisChargeReservation:
     freedom, remaining, _expires_at = card_manager.freedom_info(qqid)
     if freedom:
         return AnalysisChargeReservation(0, freedom=True, freedom_remaining=remaining)
+    if break_db.service_is_free(qqid, 'analysis'):
+        return AnalysisChargeReservation(0, daily_free=True)
     reserved = analysis_precharge_cost()
     if not break_db.try_reserve_analysis(
         qqid,
@@ -3922,6 +3979,9 @@ def settle_analysis_charge(
         break_db.record_usage(qqid, 'analysis', break_delta=0)
         break_db.record_free_window_exemption(qqid, 'b50_analysis', cost, meta=meta)
         return 0
+    if bool(getattr(reserved, 'daily_free', False)):
+        if break_db.settle_analysis_daily_free(qqid, meta=meta):
+            return 0
     if reserved_amount > 0:
         balance = break_db.settle_analysis_reservation(
             qqid,
