@@ -4,6 +4,7 @@ from pathlib import Path
 import asyncio
 
 from .config import Config, driver, log, maiconfig, plate_tabledir, rating_table_dir
+from .libraries.maimaidx_divingfish_oauth import oauth_enabled as divingfish_oauth_enabled
 from .libraries.maimaidx_platform import (
     cleanup_qq_public_images,
     install_qq_event_compat,
@@ -54,6 +55,16 @@ async def get_music():
     if maiconfig.maimaidxaliasproxy:
         log.info('正在使用代理服务器访问别名服务器')
     maiApi.load_token_proxy()
+    if divingfish_oauth_enabled():
+        log.info('水鱼查分器已启用 OAuth：用户可发送「绑定水鱼」授权读取本人成绩')
+        if maiApi.tokens:
+            log.warning('已同时配置水鱼开发者 Token；OAuth 优先，旧 Token 仅用于用户名查询过渡')
+    elif maiconfig.divingfish_oauth_enabled:
+        log.warning('已开启水鱼 OAuth，但 CLIENT_ID / CLIENT_SECRET 未完整配置，已回退 Import-Token 模式')
+    elif maiApi.tokens:
+        log.info('水鱼 OAuth 开关关闭，使用 Import-Token 绑定兼容模式')
+    else:
+        log.warning('水鱼 OAuth 开关关闭且未配置开发者 Token；仅保留公开 B50 与 Import-Token 上传功能')
     if maiconfig.maimaidxaliaspush:
         log.opt(colors=True).info('别名推送为「<g>开启</g>」状态')
         asyncio.ensure_future(ws_alias_server())

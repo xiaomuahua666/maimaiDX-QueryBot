@@ -2329,6 +2329,7 @@ async def generate(
     username: Optional[str] = None,
     *,
     force_refresh: bool = False,
+    access_mode: str = 'self',
 ) -> Union[MessageSegment, str]:
     """
     生成b50
@@ -2344,7 +2345,12 @@ async def generate(
         if username:
             qqid = None
         from .maimaidx_datasource import get_user_b50
-        userinfo = await get_user_b50(qqid=qqid, username=username, force_refresh=force_refresh)
+        userinfo = await get_user_b50(
+            qqid=qqid,
+            username=username,
+            force_refresh=force_refresh,
+            access_mode=access_mode,
+        )
 
         # 尝试加载 PC 数据
         play_counts: dict[tuple[int, int], int] = {}

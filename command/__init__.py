@@ -25,3 +25,4 @@ from .mai_rank_course import *
 from .mai_howto import *
 from .mai_gate_guide import *
 from .mai_draw_guess import *
+from .mai_divingfish import *

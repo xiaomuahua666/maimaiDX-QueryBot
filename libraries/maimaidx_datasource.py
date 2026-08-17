@@ -9,12 +9,27 @@
 """
 
 import asyncio
+import httpx
 from typing import List, Optional, Tuple
 
 from ..config import log
 from . import maimaidx_timing as _timing
 from .maimaidx_api_data import maiApi
-from .maimaidx_error import LxnsDataError, MISSING_PLAYER_MESSAGE
+from .maimaidx_divingfish_oauth import (
+    get_access_token as get_divingfish_access_token,
+    oauth_enabled as divingfish_oauth_enabled,
+)
+from .maimaidx_error import (
+    LxnsDataError,
+    MISSING_PLAYER_MESSAGE,
+    TokenDisableError,
+    TokenError,
+    TokenNotFoundError,
+    UnknownError,
+    UserDisabledQueryError,
+    UserNotExistsError,
+    UserNotFoundError,
+)
 from .maimaidx_lxns_client import (
     dev_get_bests,
     dev_get_player_by_qq,
@@ -32,8 +47,23 @@ from .maimaidx_player_cache import (
     resolve_player_records,
     save_cached_player,
 )
+from .maimaidx_score_filter import (
+    filter_anomalous_scores,
+    is_anomalous_perfect_score,
+)
 
 _LEVEL_LABELS = ['Basic', 'Advanced', 'Expert', 'Master', 'Re:Master']
+_SOURCE_FALLBACK_ERRORS = (
+    LxnsDataError,
+    TokenDisableError,
+    TokenError,
+    TokenNotFoundError,
+    UnknownError,
+    UserDisabledQueryError,
+    UserNotExistsError,
+    UserNotFoundError,
+    httpx.HTTPError,
+)
 
 
 def get_user_source(qqid: int) -> str:
@@ -44,10 +74,40 @@ def get_user_source(qqid: int) -> str:
         return 'awmcnet'
 
 
+def _filter_b50_userinfo(userinfo: Optional[UserInfo]) -> Optional[UserInfo]:
+    """Remove known malformed scores and rebuild B35/B15 slots."""
+    if not userinfo or not userinfo.charts:
+        return userinfo
+
+    charts = userinfo.charts
+    sd = filter_anomalous_scores(charts.sd or [])
+    dx = filter_anomalous_scores(charts.dx or [])
+    from .maimaidx_best_50 import regroup_b50_userinfo
+
+    return regroup_b50_userinfo(UserInfo(
+        nickname=userinfo.nickname,
+        plate=userinfo.plate,
+        additional_rating=userinfo.additional_rating,
+        rating=userinfo.rating,
+        username=userinfo.username,
+        charts=Data(sd=sd, dx=dx),
+    ))
+
+
+def _filter_records_result(
+    result: Tuple[UserInfo, List[PlayInfoDev]],
+) -> Tuple[UserInfo, List[PlayInfoDev]]:
+    """Apply the shared score filter to records and any embedded B50."""
+    userinfo, records = result
+    filtered_records = filter_anomalous_scores(records or [])
+    return _filter_b50_userinfo(userinfo) or userinfo, filtered_records
+
+
 def _records_to_userinfo(player: dict, records: List[PlayInfoDev]) -> UserInfo:
     """把 AWMCNET 的统一成绩响应还原为 QueryBot 的 B50 结构。"""
     from .maimaidx_best_50 import regroup_b50_userinfo
 
+    records = filter_anomalous_scores(records)
     return regroup_b50_userinfo(UserInfo(
         nickname=str(player.get('nickname') or 'AWMCNET 用户'),
         rating=int(player.get('rating') or 0),
@@ -57,11 +117,30 @@ def _records_to_userinfo(player: dict, records: List[PlayInfoDev]) -> UserInfo:
     ))
 
 
+def _divingfish_dev_to_userinfo(dev) -> UserInfo:
+    """Rebuild B35/B15 directly from an authorized full-record response."""
+    from .maimaidx_best_50 import regroup_b50_userinfo
+
+    records = filter_anomalous_scores(list(dev.records or []))
+    return regroup_b50_userinfo(UserInfo(
+        nickname=dev.nickname or '水鱼用户',
+        plate=dev.plate,
+        rating=dev.rating or 0,
+        additional_rating=dev.additional_rating or 0,
+        username=dev.username or '',
+        charts=Data(sd=records, dx=[]),
+    ))
+
+
 def _awmcnet_records(player: dict) -> List[PlayInfoDev]:
     records: List[PlayInfoDev] = []
     for raw in player.get('records') or []:
         try:
             if not isinstance(raw, dict):
+                continue
+            # Keep the raw API maximum available: PlayInfoDev intentionally
+            # ignores unknown fields, so validate before model conversion.
+            if is_anomalous_perfect_score(raw):
                 continue
             # Older AWMCNET snapshots may contain only portable score fields.
             # Restore chart metadata from the local library before validating
@@ -93,7 +172,7 @@ def _awmcnet_records(player: dict) -> List[PlayInfoDev]:
             records.append(PlayInfoDev(**item))
         except Exception as exc:
             log.warning(f'[datasource] AWMCNET record ignored: {exc}')
-    return records
+    return filter_anomalous_scores(records)
 
 
 def _merge_upstream_records(results: list) -> Tuple[Optional[UserInfo], List[PlayInfoDev]]:
@@ -103,9 +182,9 @@ def _merge_upstream_records(results: list) -> Tuple[Optional[UserInfo], List[Pla
     for result in results:
         if isinstance(result, Exception):
             continue
-        userinfo, records = result
+        userinfo, records = _filter_records_result(result)
         users.append(userinfo)
-        for record in records:
+        for record in filter_anomalous_scores(records):
             key = (int(record.song_id), int(record.level_index))
             current = best.get(key)
             candidate_rank = (float(record.achievements), int(record.dxScore or 0))
@@ -125,6 +204,7 @@ async def _refresh_awmcnet_from_upstreams(
     qqid: int,
     *,
     force_refresh: bool = False,
+    access_mode: str = 'self',
     base_result: Optional[Tuple[UserInfo, List[PlayInfoDev]]] = None,
 ) -> Tuple[Optional[UserInfo], List[PlayInfoDev]]:
     """并行拉取可用上游并写入 AWMCNET，实现首次查询自动迁移。
@@ -135,9 +215,17 @@ async def _refresh_awmcnet_from_upstreams(
     """
     attempts = await asyncio.gather(
         get_user_records(
-            qqid=qqid, force_source='divingfish', force_refresh=force_refresh
+            qqid=qqid,
+            force_source='divingfish',
+            force_refresh=force_refresh,
+            access_mode=access_mode,
         ),
-        get_user_records(qqid=qqid, force_source='lxns', force_refresh=force_refresh),
+        get_user_records(
+            qqid=qqid,
+            force_source='lxns',
+            force_refresh=force_refresh,
+            access_mode=access_mode,
+        ),
         return_exceptions=True,
     )
     for source, result in zip(('divingfish', 'lxns'), attempts):
@@ -158,7 +246,7 @@ async def _refresh_awmcnet_from_upstreams(
 
 
 async def _get_awmcnet_records(
-    qqid: int, *, force_refresh: bool = False
+    qqid: int, *, force_refresh: bool = False, access_mode: str = 'self'
 ) -> Tuple[UserInfo, List[PlayInfoDev]]:
     from .maimaidx_awmcnet_sync import fetch_awmcnet_player
 
@@ -174,6 +262,7 @@ async def _get_awmcnet_records(
     upstream_user, upstream_records = await _refresh_awmcnet_from_upstreams(
         qqid,
         force_refresh=force_refresh,
+        access_mode=access_mode,
         base_result=current_result,
     )
     if upstream_user and upstream_records:
@@ -362,13 +451,13 @@ def lxns_bests_to_userinfo(bests: dict, nickname: str = '', rating: int = 0) -> 
 
     from .maimaidx_best_50 import regroup_b50_userinfo
 
-    return regroup_b50_userinfo(UserInfo(
+    return _filter_b50_userinfo(regroup_b50_userinfo(UserInfo(
         nickname=nickname or '落雪用户',
         rating=rating,
         additional_rating=0,
         username=nickname or '',
         charts=Data(sd=sd_list, dx=dx_list),
-    ))
+    )))
 
 
 def lxns_scores_to_records(scores: list) -> List[PlayInfoDev]:
@@ -384,7 +473,25 @@ def lxns_scores_to_records(scores: list) -> List[PlayInfoDev]:
 # ─────────────────────────── 落雪取数（OAuth 优先，dev 兜底） ───────────────────────────
 
 
-async def _lxns_get_bests_and_player(qqid: int) -> Tuple[Optional[dict], str, int, bool]:
+async def _require_shared_source_access(qqid: int, source: str) -> None:
+    """Verify that a source may be used for another user's/group's scores."""
+    if source == 'divingfish' and divingfish_oauth_enabled():
+        await get_divingfish_access_token(qqid)
+        return
+    if source == 'lxns':
+        from ..command.mai_lxns import _get_valid_access_token
+
+        if not await _get_valid_access_token(qqid):
+            raise LxnsDataError(
+                '落雪成绩需要目标用户完成 OAuth 授权，暂时无法用于他人查询。'
+            )
+
+
+async def _lxns_get_bests_and_player(
+    qqid: int,
+    *,
+    require_oauth: bool = False,
+) -> Tuple[Optional[dict], str, int, bool]:
     """
     返回 (bests, nickname, rating, via_oauth)。
     via_oauth 标记是否走了 OAuth（决定能否拿全量成绩）。
@@ -393,6 +500,10 @@ async def _lxns_get_bests_and_player(qqid: int) -> Tuple[Optional[dict], str, in
 
     nickname, rating = '', 0
     access_token = await _get_valid_access_token(qqid)
+    if require_oauth and not access_token:
+        raise LxnsDataError(
+            '落雪成绩需要目标用户完成 OAuth 授权，暂时无法用于他人查询。'
+        )
     if access_token:
         try:
             with _timing.measure('fetch'):
@@ -404,6 +515,9 @@ async def _lxns_get_bests_and_player(qqid: int) -> Tuple[Optional[dict], str, in
             return bests, nickname, rating, True
         except Exception as e:
             log.warning(f'[datasource] lxns OAuth bests failed qq={qqid}: {e}')
+
+    if require_oauth:
+        raise LxnsDataError('落雪 OAuth 授权暂时不可用，无法读取目标用户成绩。')
 
     # dev 兜底（按 QQ）
     from ..config import maiconfig
@@ -423,28 +537,20 @@ async def _lxns_get_bests_and_player(qqid: int) -> Tuple[Optional[dict], str, in
 # ─────────────────────────── 统一对外接口 ───────────────────────────
 
 
-async def get_user_b50(
+async def _get_user_b50_from_source(
     qqid: Optional[int] = None,
     username: Optional[str] = None,
     *,
-    force_source: Optional[str] = None,
+    source: str,
     force_refresh: bool = False,
+    access_mode: str = 'self',
 ) -> UserInfo:
-    """
-    获取用户 b50（UserInfo）。根据数据源偏好选择水鱼/落雪。
-    username 查询强制走水鱼（落雪无此接口）。
-
-    Raises:
-        LxnsDataError: 落雪数据获取失败
-        以及水鱼的 UserNotFoundError 等
-    """
-    source = force_source or (get_user_source(qqid) if qqid and not username else 'divingfish')
-    clear_fetch_meta()
-
     if source == 'awmcnet' and qqid and not username:
         async def _fetch_awmcnet_b50():
             userinfo, _ = await _get_awmcnet_records(
-                qqid, force_refresh=force_refresh
+                qqid,
+                force_refresh=force_refresh,
+                access_mode=access_mode,
             )
             return userinfo
 
@@ -454,9 +560,14 @@ async def get_user_b50(
         )
 
     if source == 'lxns' and qqid and not username:
+        if access_mode == 'shared':
+            await _require_shared_source_access(qqid, source)
 
         async def _fetch_lxns_b50():
-            bests, nickname, rating, _ = await _lxns_get_bests_and_player(qqid)
+            bests, nickname, rating, _ = await _lxns_get_bests_and_player(
+                qqid,
+                require_oauth=access_mode == 'shared',
+            )
             if not bests:
                 raise LxnsDataError(
                     '落雪数据获取失败，请先绑定落雪查分器：发送 lxbind\n'
@@ -469,7 +580,15 @@ async def get_user_b50(
         )
         return result
 
+    if source == 'divingfish' and qqid and not username and access_mode == 'shared':
+        await _require_shared_source_access(qqid, source)
+
     async def _fetch_df_b50():
+        if qqid and not username and divingfish_oauth_enabled():
+            # OAuth has no public B50 endpoint; derive B35/B15 from the
+            # authorized full-record response instead.
+            dev = await maiApi.query_user_get_dev(qqid=qqid)
+            return _divingfish_dev_to_userinfo(dev)
         return await maiApi.query_user_b50(qqid=qqid, username=username)
 
     result = await resolve_player_b50(
@@ -478,44 +597,77 @@ async def get_user_b50(
     return result
 
 
-async def get_user_b50_or_fallback(
-    qqid: Optional[int] = None,
-    username: Optional[str] = None,
-) -> UserInfo:
-    """
-    获取用户 b50，落雪失败时自动降级到水鱼（不抛异常）。
-    用于合作 b50 等需要"尽量不要因为一方失败而整体失败"的场景。
-    """
-    try:
-        return await get_user_b50(qqid=qqid, username=username)
-    except LxnsDataError:
-        log.warning(f'[datasource] lxns fallback to divingfish for qq={qqid}')
-        return await maiApi.query_user_b50(qqid=qqid, username=username)
-
-
-async def get_user_records(
+async def get_user_b50(
     qqid: Optional[int] = None,
     username: Optional[str] = None,
     *,
     force_source: Optional[str] = None,
     force_refresh: bool = False,
-) -> Tuple[UserInfo, List[PlayInfoDev]]:
-    """
-    获取用户基础信息 + 全量成绩。根据数据源偏好选择水鱼/落雪。
-    落雪全量成绩需 OAuth 授权。username 查询强制走水鱼。
-
-    Returns:
-        (userinfo, records)
-    Raises:
-        LxnsDataError: 落雪数据获取失败 / 未授权
-        以及水鱼的 UserNotFoundError 等
-    """
-    source = force_source or (get_user_source(qqid) if qqid and not username else 'divingfish')
+    access_mode: str = 'self',
+) -> UserInfo:
+    """按目标用户的数据源偏好获取 B50，外部来源失败时回退 AWMCNET。"""
+    source = force_source or (
+        get_user_source(qqid) if qqid and not username else 'divingfish'
+    )
     clear_fetch_meta()
+    try:
+        result = await _get_user_b50_from_source(
+            qqid,
+            username,
+            source=source,
+            force_refresh=force_refresh,
+            access_mode=access_mode,
+        )
+        return _filter_b50_userinfo(result) or result
+    except _SOURCE_FALLBACK_ERRORS as exc:
+        if force_source or username or not qqid or source == 'awmcnet':
+            raise
+        log.info(
+            f'[datasource] {source} B50 unavailable for qq={qqid}; '
+            f'fallback to AWMCNET: {type(exc).__name__}'
+        )
+        result = await _get_user_b50_from_source(
+            qqid,
+            username,
+            source='awmcnet',
+            force_refresh=False,
+            access_mode=access_mode,
+        )
+        return _filter_b50_userinfo(result) or result
 
+
+async def get_user_b50_or_fallback(
+    qqid: Optional[int] = None,
+    username: Optional[str] = None,
+    *,
+    access_mode: str = 'shared',
+) -> UserInfo:
+    """
+    获取用户 B50。统一入口已按目标用户偏好查询，并在外部来源失败时
+    回退 AWMCNET；保留此函数名兼容合作 B50 等既有调用。
+    """
+    return await get_user_b50(
+        qqid=qqid,
+        username=username,
+        access_mode=access_mode,
+    )
+
+
+async def _get_user_records_from_source(
+    qqid: Optional[int] = None,
+    username: Optional[str] = None,
+    *,
+    source: str,
+    force_refresh: bool = False,
+    access_mode: str = 'self',
+) -> Tuple[UserInfo, List[PlayInfoDev]]:
     if source == 'awmcnet' and qqid and not username:
         async def _fetch_awmcnet_records():
-            return await _get_awmcnet_records(qqid, force_refresh=force_refresh)
+            return await _get_awmcnet_records(
+                qqid,
+                force_refresh=force_refresh,
+                access_mode=access_mode,
+            )
 
         return await resolve_player_records(
             qqid, username, source, _fetch_awmcnet_records,
@@ -523,6 +675,8 @@ async def get_user_records(
         )
 
     if source == 'lxns' and qqid and not username:
+        if access_mode == 'shared':
+            await _require_shared_source_access(qqid, source)
 
         async def _fetch_lxns_records():
             from ..command.mai_lxns import _get_valid_access_token
@@ -559,8 +713,19 @@ async def get_user_records(
     # 水鱼
     if username:
         qqid = None
+    if source == 'divingfish' and qqid and not username and access_mode == 'shared':
+        await _require_shared_source_access(qqid, source)
 
     async def _fetch_df_records():
+        if qqid and not username and divingfish_oauth_enabled():
+            # The authorized records response is sufficient for both the B50
+            # model and the full record list. Do not depend on the public QQ
+            # query endpoint, which may be disabled by the user.
+            dev = await maiApi.query_user_get_dev(qqid=qqid)
+            records = filter_anomalous_scores(list(dev.records or []))
+            userinfo = _divingfish_dev_to_userinfo(dev)
+            save_cached_player(qqid, username, source, userinfo, records)
+            return userinfo, records
         partial = get_cached_player(qqid, username, source, force_refresh=force_refresh)
         if partial and partial.records and partial.userinfo.charts is not None:
             return partial.userinfo, partial.records
@@ -581,3 +746,42 @@ async def get_user_records(
         qqid, username, source, _fetch_df_records, force_refresh=force_refresh
     )
     return result
+
+
+async def get_user_records(
+    qqid: Optional[int] = None,
+    username: Optional[str] = None,
+    *,
+    force_source: Optional[str] = None,
+    force_refresh: bool = False,
+    access_mode: str = 'self',
+) -> Tuple[UserInfo, List[PlayInfoDev]]:
+    """按目标用户的数据源偏好获取全量成绩，必要时回退 AWMCNET。"""
+    source = force_source or (
+        get_user_source(qqid) if qqid and not username else 'divingfish'
+    )
+    clear_fetch_meta()
+    try:
+        result = await _get_user_records_from_source(
+            qqid,
+            username,
+            source=source,
+            force_refresh=force_refresh,
+            access_mode=access_mode,
+        )
+        return _filter_records_result(result)
+    except _SOURCE_FALLBACK_ERRORS as exc:
+        if force_source or username or not qqid or source == 'awmcnet':
+            raise
+        log.info(
+            f'[datasource] {source} records unavailable for qq={qqid}; '
+            f'fallback to AWMCNET: {type(exc).__name__}'
+        )
+        result = await _get_user_records_from_source(
+            qqid,
+            username,
+            source='awmcnet',
+            force_refresh=False,
+            access_mode=access_mode,
+        )
+        return _filter_records_result(result)

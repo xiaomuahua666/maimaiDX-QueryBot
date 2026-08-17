@@ -23,6 +23,12 @@ class Config(BaseModel):
     maimaidxtoken: Optional[str] = None
     maimaidxpath: str
     maimaidxproberproxy: bool = False
+    # 水鱼查分 OAuth 仍处于内测；显式开启且应用凭据完整时才启用。
+    # 默认关闭时所有既有「绑定水鱼」命令仍绑定 Import-Token。
+    divingfish_oauth_enabled: bool = False
+    divingfish_client_id: Optional[str] = None
+    divingfish_client_secret: Optional[str] = None
+    divingfish_auth_url: str = 'https://auth.diving-fish.com'
     maimaidxaliasproxy: bool = False
     maimaidxaliaspush: bool = True
     saveinmem: Optional[bool] = True

@@ -316,13 +316,14 @@ async def get_group_member_ratings(
                         from .maimaidx_awmcnet_sync import fetch_awmcnet_summary
 
                         summary = await fetch_awmcnet_summary(int(uid))
-                        if not summary:
-                            return None
-                        ra = int(summary.get('rating') or 0)
-                        if ra <= 0:
-                            return None
-                        return (int(uid), _display_name(m), ra)
-                    userinfo = await get_user_b50(qqid=int(uid))
+                        if summary:
+                            ra = int(summary.get('rating') or 0)
+                            if ra > 0:
+                                return (int(uid), _display_name(m), ra)
+                    userinfo = await get_user_b50(
+                        qqid=int(uid),
+                        access_mode='shared',
+                    )
                     ra = int(userinfo.rating or 0)
                     if ra <= 0:
                         return None
@@ -536,7 +537,10 @@ async def group_sun_lock_ranking(
                 return None
             async with sem:
                 try:
-                    _ui, recs = await get_user_records(qqid=int(uid))
+                    _ui, recs = await get_user_records(
+                        qqid=int(uid),
+                        access_mode='shared',
+                    )
                     recs = list(recs or [])
                     from .maimaidx_best_50 import filter_utage_records
                     recs = filter_utage_records(recs)
@@ -584,6 +588,19 @@ async def group_sun_lock_ranking(
 _GROUP_SONG_SCORE_CONCURRENCY = 15
 
 
+def _song_score_info(record, level_index: int) -> dict:
+    """Build the renderer payload without dropping the score rank badge."""
+    return {
+        'achievements': record.achievements,
+        'fc': record.fc,
+        'fs': record.fs,
+        'dxScore': getattr(record, 'dxScore', 0),
+        'rate': getattr(record, 'rate', '') or '',
+        'level': record.level,
+        'level_index': getattr(record, 'level_index', level_index),
+    }
+
+
 async def get_group_member_song_scores(
     bot: Bot,
     group_id: int,
@@ -593,7 +610,7 @@ async def get_group_member_song_scores(
     """
     获取群成员列表并并发查询指定歌曲的成绩（绑定查分器且可查的才计入），信号量限流。
     返回: [(user_id, display_name, score_info), ...]，按达成率降序。
-    score_info: {'achievements': float, 'fc': str, 'fs': str, 'dxScore': int, 'level': str, 'level_index': int}
+    score_info: {'achievements': float, 'fc': str, 'fs': str, 'dxScore': int, 'rate': str, 'level': str, 'level_index': int}
 
     Params:
         level_index: 难度索引 0=Basic, 1=Advanced, 2=Expert, 3=Master, 4=Re:Master，默认为 3
@@ -625,7 +642,10 @@ async def get_group_member_song_scores(
             return None
         async with sem:
             try:
-                _userinfo, records = await get_user_records(qqid=int(uid))
+                _userinfo, records = await get_user_records(
+                    qqid=int(uid),
+                    access_mode='shared',
+                )
                 song_records = [
                     r for r in records
                     if str(r.song_id) == str(music_id)
@@ -636,14 +656,7 @@ async def get_group_member_song_scores(
                 best = max(song_records, key=lambda x: x.achievements)
 
                 name = _display_name(m)
-                score_info = {
-                    'achievements': best.achievements,
-                    'fc': best.fc,
-                    'fs': best.fs,
-                    'dxScore': getattr(best, 'dxScore', 0),
-                    'level': best.level,
-                    'level_index': getattr(best, 'level_index', level_index),
-                }
+                score_info = _song_score_info(best, level_index)
                 log.debug(f"[get_group_member_song_scores] 用户 {uid} ({name}) 成绩: {score_info}")
                 return (int(uid), name, score_info)
             except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError, ValueError, TypeError, MusicNotPlayError):
@@ -932,7 +945,10 @@ async def render_group_sun_lock_board(bot, group_id: int, mode: str = 'sun',
                 return None
             async with sem:
                 try:
-                    _ui, recs = await get_user_records(qqid=int(uid))
+                    _ui, recs = await get_user_records(
+                        qqid=int(uid),
+                        access_mode='shared',
+                    )
                     recs = list(recs or [])
                     from .maimaidx_best_50 import filter_utage_records
                     recs = filter_utage_records(recs)

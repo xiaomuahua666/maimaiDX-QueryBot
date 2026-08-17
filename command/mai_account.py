@@ -23,11 +23,17 @@ from ..config import log, maiconfig
 from ..libraries.maimaidx_account_db import AccountBinding, account_db
 from ..libraries.maimaidx_admin_audit import admin_audit, redact
 from ..libraries.maimaidx_break import break_db
+from ..libraries.maimaidx_api_data import maiApi
+from ..libraries.maimaidx_divingfish_oauth import (
+    oauth_enabled as divingfish_oauth_enabled,
+)
 from ..libraries.maimaidx_error import BreakInsufficientError, QBindRequiredError
 from ..libraries.maimaidx_group_rating import build_forward_node
 from ..libraries.maimaidx_lxns_client import (
     LxnsApiError,
     convert_pc_records_to_lxns_scores,
+    convert_pc_records_to_divingfish_scores,
+    convert_sega_music_scores_to_divingfish,
     convert_sega_music_scores,
     user_upload_scores,
 )
@@ -73,8 +79,11 @@ account_bind = on_command("mai绑定", aliases={"绑定舞萌", "舞萌绑定", 
 account_unbind = on_command("mai解绑", aliases={"解绑舞萌", "舞萌解绑"})
 account_status = on_command("mai状态", aliases={"mymai"})
 maimai_live_status = on_command("舞萌状态", aliases={"mais"})
+_fish_bind_aliases = {"绑定水鱼token", "绑定水鱼上传", "maibindfish"}
+if not divingfish_oauth_enabled():
+    _fish_bind_aliases.update({"dfbind", "绑定水鱼", "绑定df"})
 fish_bind = on_command(
-    "mai绑定水鱼", aliases={"dfbind", "绑定水鱼token", "maibindfish"}
+    "mai绑定水鱼", aliases=_fish_bind_aliases
 )
 fish_unbind = on_command("mai解绑水鱼", aliases={"解绑水鱼token"})
 lx_upload_bind = on_command(
@@ -1921,7 +1930,7 @@ async def _(event: MessageEvent):
         "mai绑定 / maibind：绑定或认领舞萌账号\n"
         f"mai状态 / mymai：查看账号详细状态，每次成功查询 {status_cost} BREAK，失败不扣费\n"
         "舞萌状态 / mais：AWMC 全局失败率分类图（空分类省略）+ 实时状态\n"
-        "mai绑定水鱼 [Token] / maibindfish：无参数时交互引导，最多重试 3 次\n"
+        "mai绑定水鱼 [Token] / maibindfish：绑定水鱼上传 Import-Token，无参数时交互引导，最多重试 3 次\n"
         "lxbind：落雪 OAuth（推荐）；maibindlx <导入Token> 为兼容方式\n"
         "发送二维码：始终上传 AWMCNET；已绑定水鱼/落雪时同时同步对应平台\n"
         "maiu / maiul / maiua：AWMCNET + 指定且已绑定的外部平台\n"
@@ -2432,7 +2441,13 @@ async def _upload(
         if not binding.lxns_token:
             requested_lxns = False
     # AWMCNET 永远上传；外部平台仅在用户已绑定时参与，不再阻塞建档。
-    fish = bool(fish and binding.fish_token)
+    # Import-Token users keep the established upload path even when the
+    # experimental OAuth switch is enabled. OAuth write is used only when the
+    # user explicitly requests a waterfish upload without a saved token.
+    fish_oauth = bool(
+        fish and divingfish_oauth_enabled() and not binding.fish_token
+    )
+    fish = bool(fish and (binding.fish_token or fish_oauth))
     lxns = bool(requested_lxns and has_lxns_upload)
 
     # 最优路径：仅落雪 + OAuth + 新鲜 PC 缓存 → 直连个人 API，不占机台锁、不验二维码。
@@ -2639,9 +2654,33 @@ async def _upload(
         if awmc_result is not None:
             results.append(_AWMCNET_SYNCED_LINE)
         if fish:
-            result = await sw_api.update_fish(qrcode, binding.fish_token)
+            if fish_oauth:
+                # OAuth write uses the same user grant as reads. Prefer fresh PC
+                # rows when available; otherwise obtain the machine records once
+                # and send the normalized update_records payload directly.
+                if fresh_pc:
+                    fish_records = convert_pc_records_to_divingfish_scores(pc_records)
+                else:
+                    music_timeout = float(
+                        getattr(maiconfig, 'awmc_user_music_timeout_seconds', 15.0)
+                    )
+                    raw_scores = await asyncio.wait_for(
+                        sw_api.get_user_music(
+                            qrcode,
+                            timeout=music_timeout,
+                            retry_count=0,
+                        ),
+                        timeout=music_timeout + 1.0,
+                    )
+                    fish_records = convert_sega_music_scores_to_divingfish(raw_scores)
+                result = await maiApi.update_records_oauth(qqid, fish_records)
+            else:
+                result = await sw_api.update_fish(qrcode, binding.fish_token)
             result = await _await_upload_success(result, lxns=False)
-            results.append("水鱼：" + _result_text(result))
+            results.append(
+                ('水鱼（OAuth）：' if fish_oauth else '水鱼：')
+                + _result_text(result)
+            )
         if lxns:
             if oauth_token:
                 # 主路径：机台全量成绩 + OAuth 个人 API 直传。
@@ -2848,6 +2887,8 @@ def auto_upload_channels(
     *, fish_token: str = "", lxns_token: str = "", has_lxns_oauth: bool = False
 ) -> tuple[bool, bool]:
     """直接二维码默认按 maiua 处理，但只上传用户实际绑定的渠道。"""
+    # Waterfish OAuth authorization lives upstream and has no local binding
+    # marker, so automatic QR handling must not assume every user is authorized.
     return bool(fish_token), bool(lxns_token or has_lxns_oauth)
 
 

@@ -12,7 +12,15 @@ from . import maimaidx_timing as _timing
 from .maimaidx_admin_audit import admin_audit
 
 # 计入「数据获取」耗时的成绩查询接口
-_FETCH_ENDPOINTS = ('/query/player', '/query/plate', '/dev/player/records', '/dev/player/record')
+_FETCH_ENDPOINTS = (
+    '/query/player',
+    '/query/plate',
+    '/dev/player/records',
+    '/dev/player/record',
+    '/player/records',
+    '/player/record',
+    '/player/plate',
+)
 
 
 class MaimaiAPI:
@@ -105,6 +113,7 @@ class MaimaiAPI:
         *,
         max_retries: int = 2,
         retry_delay: float = 2.0,
+        oauth: bool = False,
         **kwargs
     ) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
         """
@@ -172,7 +181,10 @@ class MaimaiAPI:
                     await asyncio.to_thread(settle_prober_fetch, _bill_qq)
                 return data
             elif res.status_code == 400:
-                error: Dict = res.json()
+                try:
+                    error: Dict = res.json()
+                except (ValueError, TypeError):
+                    error = {}
                 if 'message' in error:
                     if error['message'] == 'no such user':
                         raise UserNotFoundError
@@ -189,6 +201,12 @@ class MaimaiAPI:
                         raise TokenNotFoundError
                 else:
                     raise UserNotFoundError
+            elif res.status_code == 401 and oauth:
+                raise DivingFishAccessTokenExpiredError
+            elif res.status_code == 403 and oauth:
+                raise DivingFishNotAuthorizedError
+            elif res.status_code == 429 and oauth:
+                raise DivingFishTooManyRequestsError
             elif res.status_code == 403:
                 raise UserDisabledQueryError
             else:
@@ -239,6 +257,60 @@ class MaimaiAPI:
     ) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
         """dev 接口（与 _requestmai 共用 token 池）。"""
         return await self._requestmai(method, endpoint, **kwargs)
+
+    async def _requestmai_oauth(
+        self,
+        method: str,
+        endpoint: str,
+        qqid: int,
+        **kwargs,
+    ) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
+        """使用水鱼 OAuth 令牌查询当前用户，只允许按 QQ 查本人。"""
+        from .maimaidx_divingfish_oauth import (
+            get_access_token,
+            invalidate_access_token,
+        )
+
+        for attempt in range(2):
+            access_token = None
+            try:
+                access_token = await get_access_token(qqid)
+                return await self._requestmai_once(
+                    method,
+                    endpoint,
+                    headers={'Authorization': f'Bearer {access_token}'},
+                    oauth=True,
+                    **kwargs,
+                )
+            except DivingFishAccessTokenExpiredError:
+                invalidate_access_token(qqid, access_token)
+                if attempt:
+                    raise DivingFishOAuthError(
+                        '水鱼授权令牌已失效，请重新发送「绑定水鱼」授权。'
+                    )
+        raise DivingFishOAuthError()
+
+    async def update_records_oauth(
+        self,
+        qqid: int,
+        records: List[Dict[str, Any]],
+    ) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
+        """Write the authorized user's scores through waterfish OAuth."""
+        from .maimaidx_divingfish_oauth import oauth_enabled
+
+        if not oauth_enabled():
+            raise DivingFishOAuthError(
+                '水鱼 OAuth 写入功能当前未启用，请使用 Import-Token 上传。'
+            )
+        if not records:
+            raise ValueError('没有可写入的成绩记录')
+        return await self._requestmai_oauth(
+            'POST',
+            '/player/update_records',
+            int(qqid),
+            json=records,
+            max_retries=0,
+        )
 
     async def music_data(self):
         """获取曲目数据"""
@@ -291,7 +363,14 @@ class MaimaiAPI:
             json['username'] = username
         if version:
             json['version'] = version
-        result = await self._requestmai('POST', '/query/plate', json=json)
+        from .maimaidx_divingfish_oauth import oauth_enabled
+
+        if qqid and not username and oauth_enabled():
+            result = await self._requestmai_oauth(
+                'POST', '/player/plate', qqid, json={'version': version or []},
+            )
+        else:
+            result = await self._requestmai('POST', '/query/plate', json=json)
         return [PlayInfoDefault.model_validate(d) for d in result['verlist']]
 
     async def query_user_get_dev(
@@ -309,6 +388,12 @@ class MaimaiAPI:
         Returns:
             `UserInfoDev` 开发者用户信息
         """
+        from .maimaidx_divingfish_oauth import oauth_enabled
+
+        if qqid and not username and oauth_enabled():
+            result = await self._requestmai_oauth('GET', '/player/records', qqid)
+            return UserInfoDev.model_validate(result)
+
         params = {}
         if qqid:
             params['qq'] = qqid
@@ -335,6 +420,24 @@ class MaimaiAPI:
         Returns:
             `List[PlayInfoDev]` 开发者成绩列表
         """
+        from .maimaidx_divingfish_oauth import oauth_enabled
+
+        if qqid and not username and oauth_enabled():
+            requested_ids = music_id if isinstance(music_id, list) else [music_id]
+            result = await self._requestmai_oauth(
+                'POST', '/player/record', qqid,
+                json={'music_id': requested_ids},
+            )
+            if result == {} or result == []:
+                raise MusicNotPlayError
+            if isinstance(result, list):
+                return [PlayInfoDev.model_validate(d) for d in result]
+            return [
+                PlayInfoDev.model_validate(record)
+                for records in result.values()
+                for record in records
+            ]
+
         json = {}
         if qqid:
             json['qq'] = qqid

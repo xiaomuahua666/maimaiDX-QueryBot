@@ -334,6 +334,83 @@ def convert_sega_music_scores(detail_list: List[dict]) -> List[dict]:
     return list(best.values())
 
 
+def _divingfish_song_title(raw_id: int) -> Optional[str]:
+    """Resolve a Sega music id to the title expected by update_records."""
+    try:
+        from .maimaidx_music import mai
+
+        music = mai.total_list.by_id(str(raw_id))
+        return str(music.title) if music else None
+    except Exception:
+        return None
+
+
+def _divingfish_score_payload(
+    *,
+    raw_id: int,
+    level_index: int,
+    achievements: float,
+    dx_score: int,
+    fc: Optional[str],
+    fs: Optional[str],
+) -> Optional[dict]:
+    title = _divingfish_song_title(raw_id)
+    if not title:
+        return None
+    if raw_id > 100000:
+        score_type = 'UTAGE'
+    elif raw_id >= 10000:
+        score_type = 'DX'
+    else:
+        score_type = 'SD'
+    payload = {
+        'title': title,
+        'level_index': level_index,
+        'achievements': achievements,
+        'dxScore': dx_score,
+        'type': score_type,
+    }
+    if fc:
+        payload['fc'] = fc
+    if fs:
+        payload['fs'] = fs
+    return payload
+
+
+def convert_sega_music_scores_to_divingfish(detail_list: List[dict]) -> List[dict]:
+    """Convert arcade ``userMusicDetail`` rows to ``player/update_records`` rows."""
+    combo_map = {0: None, 1: 'fc', 2: 'fcp', 3: 'ap', 4: 'app'}
+    sync_map = {0: None, 1: 'fs', 2: 'fsp', 3: 'fsd', 4: 'fsdp', 5: 'sync'}
+    best: Dict[tuple[int, int], dict] = {}
+    for item in detail_list:
+        try:
+            raw_id = int(item.get('musicId', 0))
+            level_index = int(item.get('level', 0))
+            achievements = float(item.get('achievement', 0)) / 10000.0
+            dx_score = int(item.get('deluxscoreMax', 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if raw_id <= 0 or not 0 <= level_index <= 4 or achievements < 0:
+            continue
+        payload = _divingfish_score_payload(
+            raw_id=raw_id,
+            level_index=level_index,
+            achievements=achievements,
+            dx_score=dx_score,
+            fc=combo_map.get(item.get('comboStatus')),
+            fs=sync_map.get(item.get('syncStatus')),
+        )
+        if payload is None:
+            continue
+        key = (raw_id, level_index)
+        previous = best.get(key)
+        if previous is None or (
+            payload['achievements'], payload['dxScore']
+        ) > (previous['achievements'], previous['dxScore']):
+            best[key] = payload
+    return list(best.values())
+
+
 def convert_pc_records_to_lxns_scores(records: List[Any]) -> List[dict]:
     """把本地 PC 库记录转成落雪 Score（无需再登录机台）。"""
     best: Dict[tuple[int, str, int], dict] = {}
@@ -372,6 +449,38 @@ def convert_pc_records_to_lxns_scores(records: List[Any]) -> List[dict]:
             previous['achievements'], previous['dx_score']
         ):
             best[key] = score
+    return list(best.values())
+
+
+def convert_pc_records_to_divingfish_scores(records: List[Any]) -> List[dict]:
+    """Convert cached PC rows to ``player/update_records`` payloads."""
+    best: Dict[tuple[int, int], dict] = {}
+    for item in records:
+        try:
+            raw_id = int(getattr(item, 'song_id', 0) or 0)
+            level_index = int(getattr(item, 'level_index', -1))
+            achievements = float(getattr(item, 'achievements', 0) or 0)
+            dx_score = int(getattr(item, 'dx_score', 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if raw_id <= 0 or not 0 <= level_index <= 4 or achievements < 0:
+            continue
+        payload = _divingfish_score_payload(
+            raw_id=raw_id,
+            level_index=level_index,
+            achievements=achievements,
+            dx_score=dx_score,
+            fc=getattr(item, 'fc', None),
+            fs=getattr(item, 'fs', None),
+        )
+        if payload is None:
+            continue
+        key = (raw_id, level_index)
+        previous = best.get(key)
+        if previous is None or (
+            payload['achievements'], payload['dxScore']
+        ) > (previous['achievements'], previous['dxScore']):
+            best[key] = payload
     return list(best.values())
 
 

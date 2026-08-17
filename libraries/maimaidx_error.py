@@ -96,6 +96,38 @@ class TokenNotFoundError(Exception):
         return '请先联系水鱼申请开发者token'
 
 
+class DivingFishNotAuthorizedError(UserNotFoundError):
+    """用户尚未授权（或已撤销）本 Bot 读取水鱼成绩。"""
+
+    def __str__(self) -> str:
+        return (
+            '你尚未授权本 Bot 读取你的水鱼成绩，或授权已被撤销。\n'
+            '请发送「绑定水鱼」并按提示完成授权后再试。'
+        )
+
+
+class DivingFishTooManyRequestsError(UserNotFoundError):
+    """水鱼查分接口配额暂时耗尽。"""
+
+    def __str__(self) -> str:
+        return '水鱼查分器请求次数已达上限，请稍后再试。'
+
+
+class DivingFishOAuthError(UserNotFoundError):
+    """水鱼 OAuth 服务暂时不可用。"""
+
+    def __init__(self, message: str = '水鱼账号服务暂时不可用，请稍后再试。'):
+        self.message = message
+        super().__init__(message)
+
+    def __str__(self) -> str:
+        return self.message
+
+
+class DivingFishAccessTokenExpiredError(Exception):
+    """OAuth access token 被上游判定为过期，允许调用方刷新一次。"""
+
+
 class MusicNotPlayError(Exception):
     
     def __str__(self) -> str:

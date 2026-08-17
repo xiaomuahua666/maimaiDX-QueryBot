@@ -518,6 +518,12 @@ def _build_welcome_keyboard(event: Optional[MessageEvent] = None) -> MessageKeyb
         action_buttons.append(('绑定舞萌', 'mai绑定'))
     if not (binding and binding.fish_token):
         action_buttons.append(('绑定水鱼', 'mai绑定水鱼'))
+    try:
+        from ..libraries.maimaidx_divingfish_oauth import oauth_enabled
+        if oauth_enabled():
+            action_buttons.append(('授权水鱼查分', 'dfbind'))
+    except Exception:
+        pass
     if not has_lxns:
         action_buttons.append(('绑定落雪', 'lxbind'))
     if has_account and binding.fish_token and has_lxns:

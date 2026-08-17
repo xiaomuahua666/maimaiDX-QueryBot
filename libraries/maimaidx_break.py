@@ -30,6 +30,8 @@ from .maimaidx_db import create_unified_connection
 from .maimaidx_error import BreakInsufficientError
 
 DEFAULT_CONFIG: Dict[str, str] = {
+    # 水鱼 OAuth 内测总开关：默认关闭；同时作为管理 WebUI 的受管配置项。
+    'divingfish_oauth_enabled': '0',
     # BREAK 计费总开关：1=开启（默认）；0/false/off/关闭=停止所有功能扣费与余额拦截。
     # 关闭后签到 / 转账 / 红包 / 管理员增减仍正常，仅 Bot 不再对功能使用收费。
     'billing_enabled': '1',

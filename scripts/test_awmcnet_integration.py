@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import nonebot
@@ -13,6 +14,8 @@ nonebot.init(maimaidxpath="/tmp/maimaidx-awmcnet-test")
 
 from nonebot_plugin_maimaidx.libraries import maimaidx_awmcnet_sync as awmcnet
 from nonebot_plugin_maimaidx.libraries import maimaidx_datasource as datasource
+from nonebot_plugin_maimaidx.libraries import maimaidx_score_filter as score_filter
+from nonebot_plugin_maimaidx.libraries.maimaidx_model import ChartInfo, Data, UserInfo
 from nonebot_plugin_maimaidx.libraries.maimaidx_account_db import AccountDatabase
 
 
@@ -204,10 +207,92 @@ async def test_force_refresh_keeps_newer_awmcnet_snapshot() -> None:
         awmcnet.sync_awmcnet = original_sync
 
 
+async def test_anomalous_scores_are_filtered_at_datasource_boundaries() -> None:
+    bad_raw = {
+        **RECORD,
+        "achievements": 101.0,
+        "fc": "app",
+        "dxScore": 3000,
+        "dxScoreMax": 3000,
+    }
+    converted = datasource._awmcnet_records({"records": [RECORD, bad_raw]})
+    assert len(converted) == 1
+
+    good = SimpleNamespace(
+        song_id=1, level_index=3, achievements=100.0, dxScore=2000,
+        fc="fc", ra=280,
+    )
+    bad = SimpleNamespace(
+        song_id=2, level_index=3, achievements=101.0, dxScore=3000,
+        dxScoreMax=3000, fc="app", ra=999,
+    )
+    merged_user, merged_records = datasource._merge_upstream_records([
+        (UserInfo(
+            nickname="Tester", rating=100, additional_rating=0,
+            username="tester", charts=None,
+        ), [good, bad]),
+    ])
+    assert merged_user is not None and [row.song_id for row in merged_records] == [1]
+
+    original_get_source = datasource.get_user_source
+    original_fetch = datasource._get_user_records_from_source
+    original_b50_fetch = datasource._get_user_b50_from_source
+    original_predicate = score_filter.is_anomalous_perfect_score
+    calls: list[str] = []
+
+    async def fake_records(*args, source, **kwargs):
+        calls.append(source)
+        if source == "lxns":
+            raise datasource.LxnsDataError("upstream unavailable")
+        return UserInfo(
+            nickname="Tester", rating=100, additional_rating=0,
+            username="tester", charts=None,
+        ), [good, bad]
+
+    def fake_anomaly(record, **kwargs):
+        return getattr(record, "song_id", None) == 2
+
+    chart_good = ChartInfo(
+        song_id=1, title="Good", level_label="Master", level_index=3,
+        achievements=100.0, dxScore=2000, fc="fc", ra=280,
+    )
+    chart_bad = ChartInfo(
+        song_id=2, title="Bad", level_label="Master", level_index=3,
+        achievements=101.0, dxScore=3000, fc="app", ra=999,
+    )
+    b50_user = UserInfo(
+        nickname="Tester", rating=999, additional_rating=0,
+        username="tester",
+        charts=Data(sd=[chart_good, chart_bad], dx=[]),
+    )
+
+    async def fake_b50(*args, **kwargs):
+        return b50_user
+
+    try:
+        datasource.get_user_source = lambda _qqid: "lxns"
+        datasource._get_user_records_from_source = fake_records
+        user, records = await datasource.get_user_records(qqid=12345)
+        assert user.nickname == "Tester" and [row.song_id for row in records] == [1]
+        assert calls == ["lxns", "awmcnet"]
+
+        score_filter.is_anomalous_perfect_score = fake_anomaly
+        datasource._get_user_b50_from_source = fake_b50
+        b50 = await datasource.get_user_b50(qqid=12345, force_source="awmcnet")
+        chart_ids = [row.song_id for row in (b50.charts.sd or []) + (b50.charts.dx or [])]
+        assert chart_ids == [1]
+    finally:
+        datasource.get_user_source = original_get_source
+        datasource._get_user_records_from_source = original_fetch
+        datasource._get_user_b50_from_source = original_b50_fetch
+        score_filter.is_anomalous_perfect_score = original_predicate
+
+
 asyncio.run(test_datasource())
 asyncio.run(test_empty_sync_is_not_reported_as_success())
 asyncio.run(test_sync_retries_uploading_429())
 asyncio.run(test_force_refresh_keeps_newer_awmcnet_snapshot())
+asyncio.run(test_anomalous_scores_are_filtered_at_datasource_boundaries())
 test_first_notice()
 test_trend_text()
 test_sync_payload_dedupes_duplicate_charts_and_strips_token()

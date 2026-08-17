@@ -85,9 +85,29 @@ playwright install --with-deps chromium
 MAIMAIDXPATH=/path/to/static
 ```
 
+### 水鱼查分器 OAuth（内测，默认关闭）
+
+OAuth 当前是显式实验功能。默认情况下，`dfbind`、`绑定水鱼`、`mai绑定水鱼` 等原有命令均继续绑定水鱼 Import-Token，不会切换现有用户流程。
+
+向水鱼申请 OAuth 应用后，可同时配置开关和应用凭据。重启 Bot 后，`dfbind` / `绑定水鱼` / `绑定df` 才会切换为 OAuth；`mai绑定水鱼` / `maibindfish` / `绑定水鱼token` 始终保留为 Import-Token 绑定入口。Bot 不保存用户 access token，授权关系保存在水鱼服务端。
+
+同一个 OAuth 应用申请成绩读写权限即可复用：读取使用用户授权令牌，上传时把机台或 PC 成绩转换后直接提交到 `player/update_records`。当前开关默认关闭，未开启时仍只走 Import-Token 上传。
+
+```env
+DIVINGFISH_OAUTH_ENABLED=true
+DIVINGFISH_CLIENT_ID=your_oauth_client_id
+DIVINGFISH_CLIENT_SECRET=your_oauth_client_secret
+DIVINGFISH_AUTH_URL=https://auth.diving-fish.com
+```
+
+如果使用项目已有的数据库配置表，也可以设置 `break_config` 中的
+`divingfish_oauth_enabled`：值为 `1/true` 开启、`0/false` 关闭。数据库配置优先于
+`DIVINGFISH_OAUTH_ENABLED`，未设置数据库键时才使用 `config.py` 的默认值；修改后重启
+Bot 生效。
+
 ### 查分器 Token（水鱼开发者 Token）
 
-用于 dev 接口、完成表、友人对战、数据存储等。**支持配置多个 Token**，用逗号或空格分隔；请求失败（token 有误 / 被禁用）时自动切换下一个，全部失败才报错。
+OAuth 关闭时继续使用现有 Token 查询路径；OAuth 开启后仍可保留旧 Token，用于按用户名查询等旧接口兼容。**支持配置多个 Token**，用逗号或空格分隔；请求失败（token 有误 / 被禁用）时自动切换下一个，全部失败才报错。
 
 ```env
 # 单个
@@ -413,7 +433,8 @@ BOTNAME=maimai
 
 | 命令 | 说明 |
 |------|------|
-| `dfbind <token>` | 绑定水鱼查分器 |
+| `dfbind [token]` / `绑定水鱼 [token]` | 默认绑定水鱼 Import-Token；管理员开启 OAuth 后，无参数命令切换为 OAuth 授权 |
+| `mai绑定水鱼 [token]` / `maibindfish [token]` | 始终绑定水鱼上传 Import-Token |
 | `lxbind` | 绑定落雪查分器 |
 | `上传水鱼 <二维码>` | 上传 b50 到水鱼 |
 | `上传落雪 <二维码>` | 上传 b50 到落雪 |
@@ -426,7 +447,7 @@ BOTNAME=maimai
 | `mai账号` | 查看账号功能帮助 |
 | `mai绑定` / `maibind` / `mai解绑` | 绑定、认领或解绑舞萌账号 |
 | `mai状态` / `mymai` | 查看详细账号状态；SGID 缓存失效时交互刷新 |
-| `mai绑定水鱼 [token]` / `maibindfish [token]` | 绑定水鱼上传 Token；无参数时提供获取链接并交互等待，最多重试 3 次 |
+| `mai绑定水鱼 [token]` / `maibindfish [token]` | 绑定水鱼上传 Import-Token；无参数时提供获取链接并交互等待，最多重试 3 次 |
 | `lxbind` | 绑定落雪 OAuth，上传无需导入 Token（推荐） |
 | `mai绑定落雪 <导入token>` / `maibindlx <导入token>` | 绑定落雪导入 Token（兼容） |
 | `maiu` / `导` | 仅上传水鱼 |

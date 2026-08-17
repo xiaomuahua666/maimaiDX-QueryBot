@@ -459,7 +459,14 @@ async def _(
         return
     username = message.extract_plain_text().strip()
     await _finish_score(
-        best50, generate(qqid, username), None if username else qqid, username=username or None,
+        best50,
+        generate(
+            qqid,
+            username,
+            access_mode='shared' if user_id is not None and not username else 'self',
+        ),
+        None if username else qqid,
+        username=username or None,
         billing_event=event,
     )
 
