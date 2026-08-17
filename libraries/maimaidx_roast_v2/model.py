@@ -4,6 +4,7 @@ import json
 import re
 from typing import Any
 
+from loguru import logger as log
 from openai import AsyncOpenAI, BadRequestError
 
 from ...config import maiconfig
@@ -192,15 +193,52 @@ async def generate_report(pack: EvidencePack, style: StyleSpec) -> tuple[RoastRe
         max_tokens=max(512, int(getattr(maiconfig, "b50_llm_max_tokens", 6144))),
         response_format={"type": "json_object"},
     )
-    try:
-        response = await client.chat.completions.create(**request)
-    except BadRequestError as exc:
-        detail = str(exc).lower()
-        if "response_format" not in detail and "json_object" not in detail:
+    prompt_cache_key = str(
+        getattr(maiconfig, "b50_llm_prompt_cache_key", "maimaidx-b50-roast-v2") or ""
+    ).strip()
+    if prompt_cache_key:
+        # OpenAI-compatible gateways can use this stable routing key to keep
+        # identical system-prefix blocks in the same prompt-cache partition.
+        request["extra_body"] = {"prompt_cache_key": prompt_cache_key}
+
+    response = None
+    for _ in range(3):
+        try:
+            response = await client.chat.completions.create(**request)
+            break
+        except BadRequestError as exc:
+            detail = str(exc).lower()
+            if "extra_body" in request and "prompt_cache_key" in detail:
+                log.warning("[roast_v2] 当前网关不支持 prompt_cache_key，已回退普通请求")
+                request.pop("extra_body", None)
+                continue
+            if "response_format" in request and any(
+                marker in detail for marker in ("response_format", "json_object")
+            ):
+                request.pop("response_format", None)
+                continue
+            if "extra_body" in request and any(
+                marker in detail for marker in ("unknown field", "unknown parameter")
+            ):
+                log.warning("[roast_v2] 当前网关拒绝扩展缓存参数，已回退普通请求")
+                request.pop("extra_body", None)
+                continue
+            if "response_format" in request and any(
+                marker in detail for marker in ("unknown field", "unknown parameter")
+            ):
+                request.pop("response_format", None)
+                continue
             raise
-        request.pop("response_format", None)
-        response = await client.chat.completions.create(**request)
+    if response is None:
+        raise RuntimeError("模型请求未返回响应")
     usage = _token_usage(response)
+    cached_input_tokens = int(usage.get("cached_input_tokens") or 0)
+    input_tokens = int(usage.get("input_tokens") or 0)
+    cache_rate = cached_input_tokens / input_tokens if input_tokens > 0 else 0.0
+    log.info(
+        "[roast_v2] 模型 Prompt Cache "
+        f"cached={cached_input_tokens} input={input_tokens} rate={cache_rate:.1%}"
+    )
     content = str(response.choices[0].message.content or "").strip()
     try:
         payload = json.loads(content)

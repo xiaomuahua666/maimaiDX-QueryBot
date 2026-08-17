@@ -82,6 +82,10 @@ assert pack.metrics["chart_count"] == 50
 assert pack.metrics["b35_avg"] > pack.metrics["b15_avg"]
 assert pack.metrics["b35_b15_gap"] > 0
 assert pack.metrics["achievement_stddev"] > 0
+assert pack.metrics["floor_gap"] == 20
+assert pack.metrics["bottom10_avg"] is not None
+assert pack.metrics["sss_rate"] == 0
+assert pack.metrics["high_sssp_count"] == 0
 assert pack.metrics["top3_estimated_gain"] == 13
 assert {item.evidence_id for item in pack.evidence} >= {
     "rating", "b35_avg", "b15_avg", "high_avg", "b35_b15_gap",
@@ -106,6 +110,7 @@ no_high_snapshot = {
 no_high_pack = build_evidence_pack(no_high_snapshot)
 assert no_high_pack.metrics["high_count"] == 0
 assert no_high_pack.metrics["high_avg"] is None
+assert no_high_pack.metrics["high_sssp_rate"] == 0
 assert next(item for item in no_high_pack.evidence if item.evidence_id == "high_avg").value == "暂无 14+ 样本"
 
 rating_13k_snapshot = {

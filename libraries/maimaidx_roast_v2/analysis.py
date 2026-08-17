@@ -387,6 +387,12 @@ def build_evidence_pack(snapshot: dict, peer_stats: dict | None = None) -> Evide
     achievement_stddev = pstdev(achievements) if len(achievements) >= 2 else 0.0
     sssp_count = sum(1 for value in achievements if value >= 100.5)
     sss_only_count = sum(1 for value in achievements if 100.0 <= value < 100.5)
+    chart_count = len(rows)
+    sss_count = sss_only_count + sssp_count
+    high_sssp_count = sum(1 for row in high if _f(row.get("achievement")) >= 100.5)
+    tail = sorted(achievements)[:min(10, len(achievements))]
+    bottom10_avg = mean(tail) if tail else None
+    floor_gap = new_floor - old_floor if b35 and b15 else None
     evidence = [
         Evidence("rating", "当前 Rating", str(rating), "snapshot"),
         Evidence("b35_avg", "B35 平均达成率", f"{b35_avg:.4f}%", "b35"),
@@ -398,7 +404,7 @@ def build_evidence_pack(snapshot: dict, peer_stats: dict | None = None) -> Evide
         Evidence("recommendation_ds_cap", "保守推荐定数上限", f"{ds_cap:.2f}", "capability_profile"),
         Evidence("route_gain", "前三步边际累计收益", f"+{top3_gain} Rating", "route_simulation"),
         Evidence("top3_gain", "推荐路线前三步收益", f"+{top3_gain} Rating", "route_simulation"),
-        Evidence("sss_count", "B50 SSS / SSS+ 数量", f"{sss_only_count + sssp_count} / {sssp_count}", "b50"),
+        Evidence("sss_count", "B50 SSS / SSS+ 数量", f"{sss_count} / {sssp_count}", "b50"),
     ]
     if peer.get("available"):
         evidence.append(Evidence(
@@ -412,11 +418,19 @@ def build_evidence_pack(snapshot: dict, peer_stats: dict | None = None) -> Evide
         "achievement_median": median(achievements) if achievements else 0.0,
         "b35_avg": b35_avg, "b15_avg": b15_avg, "high_avg": high_avg,
         "high_count": len(high), "b35_floor": old_floor, "b15_floor": new_floor,
-        "ceiling": ceiling, "chart_count": len(rows),
+        "ceiling": ceiling, "chart_count": chart_count,
         "recommendation_ds_center": ds_center, "recommendation_stable_upper": ds_upper,
         "recommendation_ds_cap": ds_cap, "b35_b15_gap": b35_b15_gap,
         "achievement_stddev": achievement_stddev, "sss_only_count": sss_only_count,
-        "sss_count": sss_only_count + sssp_count, "sssp_count": sssp_count, "top3_estimated_gain": top3_gain,
+        "sss_count": sss_count, "sssp_count": sssp_count,
+        "sss_rate": sss_count / chart_count if chart_count else 0.0,
+        "sssp_rate": sssp_count / chart_count if chart_count else 0.0,
+        "high_rate": len(high) / chart_count if chart_count else 0.0,
+        "high_sssp_count": high_sssp_count,
+        "high_sssp_rate": high_sssp_count / len(high) if high else 0.0,
+        "bottom10_avg": bottom10_avg,
+        "floor_gap": floor_gap,
+        "top3_estimated_gain": top3_gain,
         "pool_profiles": pool_profiles, "route_count": len(candidates),
         "conservative_route_count": sum(1 for item in candidates if item.risk == "稳妥"),
     }
