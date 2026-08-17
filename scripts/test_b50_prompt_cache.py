@@ -112,7 +112,7 @@ class RoastFakeCompletions:
                         content=(
                             '{"headline":"稳定前缀测试",'
                             '"summary":"当前成绩结构稳定。",'
-                            '"analysis":"当前成绩结构稳定，建议继续整理地板。",'
+                            '"analysis":"当前成绩结构稳定，暂无14+平均数据，建议继续整理地板。",'
                             '"strengths":["当前数据有稳定表现"],'
                             '"weaknesses":["仍有地板整理空间"],'
                             '"peer_takeaways":["同段样本不足"],'
@@ -168,6 +168,8 @@ async def roast_main() -> None:
         == second["messages"][1]["content"].split("\nSTYLE_JSON:\n", 1)[0]
     )
     assert usage["cached_input_tokens"] == 1500
+    assert not roast_model._has_unsupported_high_claim("暂无14+平均数据")
+    assert roast_model._has_unsupported_high_claim("14+平均达到100.5000%")
 
 
 asyncio.run(roast_main())

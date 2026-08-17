@@ -144,11 +144,15 @@ def _facts_evidence(pack: EvidencePack) -> list[dict[str, Any]]:
             "confidence": _text(getattr(item, "confidence", "high"), 24),
         }
         for item in pack.evidence
+        if not str(getattr(item, "evidence_id", "")).startswith("song:")
     ]
 
 
 def build_user_prompt(pack: EvidencePack, style: StyleSpec) -> str:
     metrics = dict(pack.metrics or {})
+    # pool_profiles is exposed below as its own structured section. Removing
+    # the duplicate copy saves uncached input tokens without losing evidence.
+    pool_profiles = metrics.pop("pool_profiles", None) or []
     # Keep the packet deliberately closed: enough evidence for a useful report,
     # without exposing local paths or arbitrary snapshot fields.
     facts = {
@@ -157,7 +161,7 @@ def build_user_prompt(pack: EvidencePack, style: StyleSpec) -> str:
         "metrics": metrics,
         "peer": dict(pack.peer or {}),
         "trend": dict(pack.trend or {}),
-        "pool_profiles": metrics.get("pool_profiles") or [],
+        "pool_profiles": pool_profiles,
         "ds_bands": list(pack.ds_bands or []),
         "difficulty_bands": list(pack.difficulty_bands or []),
         "genre_profiles": list(pack.genre_profiles or []),

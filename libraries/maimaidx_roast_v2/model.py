@@ -92,6 +92,20 @@ def _candidate_row(candidate: Any, reason: str | None = None) -> dict[str, Any]:
     return row
 
 
+def _has_unsupported_high_claim(text: str) -> bool:
+    pattern = re.compile(r"14\+\s*(?:平均|均值|断层|上限|底力)")
+    absence_markers = (
+        "暂无", "没有", "无样本", "样本不足", "不可用", "无法判断",
+        "不能判断", "不作结论", "未提供", "数据缺失", "0首", "为0",
+    )
+    for match in pattern.finditer(text):
+        window = text[max(0, match.start() - 24):match.end() + 36]
+        if any(marker in window for marker in absence_markers):
+            continue
+        return True
+    return False
+
+
 def _clean_report(raw: Any, pack: EvidencePack, style: StyleSpec) -> RoastReport:
     if not isinstance(raw, dict):
         raise ValueError("模型返回格式无效")
@@ -101,8 +115,7 @@ def _clean_report(raw: Any, pack: EvidencePack, style: StyleSpec) -> RoastReport
     }
     data = {key: raw.get(key) for key in allowed}
     all_text = json.dumps(data, ensure_ascii=False)
-    unsupported_high_claim = re.search(r"14\+\s*(?:平均|均值|断层|上限|底力)", all_text)
-    if not pack.metrics.get("high_count") and unsupported_high_claim:
+    if not pack.metrics.get("high_count") and _has_unsupported_high_claim(all_text):
         raise ValueError("模型引用了不存在的 14+ 样本")
     for key, limit in (("headline", 120), ("summary", 1000), ("analysis", 2600)):
         value = str(data.get(key) or "").strip()
