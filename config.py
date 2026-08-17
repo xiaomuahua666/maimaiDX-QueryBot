@@ -218,6 +218,9 @@ class Config(BaseModel):
     b50_llm_prompt_cache_key: str = 'maimaidx-b50-roast-v2'
     b50_send_timeout_seconds: float = 30.0
     b50_assets_path: str = ''
+    # 独立锐评 V2：固定报价，风格文本只作为不可信配置解析。
+    roast_v2_cost: int = 4
+    roast_v2_style_max_length: int = 240
 
     # ---------- 你想我猜（20 问）LLM 兜底 ----------
     # 规则未命中（unknown）时调用 LLM 判断是非题，复用 b50_llm_* 配置。

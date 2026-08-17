@@ -63,6 +63,7 @@ packages = [
     "nonebot_plugin_maimaidx.command",
     "nonebot_plugin_maimaidx.libraries",
     "nonebot_plugin_maimaidx.libraries.b50_analysis",
+    "nonebot_plugin_maimaidx.libraries.maimaidx_roast_v2",
 ]
 
 [tool.setuptools.package-data]

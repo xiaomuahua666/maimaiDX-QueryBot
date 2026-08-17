@@ -7,6 +7,7 @@ from .mai_base import *
 from .mai_break import *
 from .mai_card import *
 from .mai_b50_analysis import *
+from .mai_roast_style import *
 from .mai_feature import *
 from .mai_guess import *
 from .mai_letter import *
