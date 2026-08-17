@@ -46,6 +46,9 @@ class Candidate:
     current_ra: int = 0
     target_ra: int = 0
     priority_score: float = 0.0
+    route_step: int = 0
+    cumulative_gain: int = 0
+    risk: str = "稳妥"
 
 
 @dataclass
@@ -58,14 +61,22 @@ class EvidencePack:
     evidence: list[Evidence] = field(default_factory=list)
     candidates: list[Candidate] = field(default_factory=list)
     metrics: dict[str, Any] = field(default_factory=dict)
+    peer: dict[str, Any] = field(default_factory=dict)
+    ds_bands: list[dict[str, Any]] = field(default_factory=list)
+    difficulty_bands: list[dict[str, Any]] = field(default_factory=list)
+    genre_profiles: list[dict[str, Any]] = field(default_factory=list)
+    song_groups: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    trend: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class RoastReport:
     headline: str
     summary: str
+    analysis: str
     strengths: list[str]
     weaknesses: list[str]
+    peer_takeaways: list[str]
     actions: list[str]
     recommendations: list[dict[str, Any]]
     claims: list[dict[str, Any]]

@@ -22,7 +22,20 @@ from ..libraries.maimaidx_platform import (
     use_qq_mode,
 )
 from ..libraries.maimaidx_reaction import react_processing
-from ..libraries.maimaidx_break import refund_analysis_charge
+from ..libraries.maimaidx_break import (
+    analysis_token_cost,
+    break_db,
+    ensure_image_render_affordable,
+    format_analysis_cost_line,
+    format_analysis_pricing_help,
+    format_free_window_exemption,
+    format_freedom_exemption,
+    refund_analysis_charge,
+    reserve_analysis_charge,
+    settle_analysis_charge,
+    settle_image_render,
+    take_break_charge_footer,
+)
 from ..libraries.maimaidx_roast_v2 import (
     build_evidence_pack,
     build_report_fallback,
@@ -31,7 +44,6 @@ from ..libraries.maimaidx_roast_v2 import (
     normalize_style,
     render_report,
 )
-from ..libraries.maimaidx_roast_v2.billing import commit_quote, prepare_quote
 from ..libraries.maimaidx_roast_v2.style_store import get_style
 
 fetch_for_analysis = fetch_snapshot
@@ -93,9 +105,29 @@ async def _run_timed_stage(awaitable, *, stage: str, timeout: float):
 
 
 def _analysis_failure_note(reserved) -> str:
+    if bool(getattr(reserved, "daily_free", False)):
+        return "（今日首次免费名额未消耗）"
+    if bool(getattr(reserved, "freedom", False)):
+        return "（FREEDOM 生效，本次未预扣）"
     if int(getattr(reserved, "amount", reserved) or 0) > 0:
         return "（预扣已全额退回）"
     return "（本次未扣费）"
+
+
+def _empty_token_usage() -> dict[str, int | bool]:
+    return {
+        "available": False,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "cached_input_tokens": 0,
+    }
+
+
+def _format_freedom_line(
+    qqid: int, cost: int, remaining: float,
+) -> str:
+    return format_freedom_exemption(qqid, "锐评", cost, remaining)
 
 
 async def _deliver_result_or_refund(
@@ -118,13 +150,15 @@ async def _deliver_result_or_refund(
             stage="图片发送",
             timeout=_timeout("b50_send_timeout_seconds", 30.0),
         )
-    except Exception as exc:
+    except BaseException as exc:
         await asyncio.to_thread(
             refund_analysis_charge,
             billing_qq,
             reserved,
             reason=f"发送结果:{type(exc).__name__}",
         )
+        if isinstance(exc, FinishedException) or not isinstance(exc, Exception):
+            raise
         await plugin_finish(
             matcher,
             f"锐评图片发送失败：{exc}{_analysis_failure_note(reserved)}",
@@ -148,9 +182,10 @@ async def _handle_impl(matcher: Matcher, bot: Bot, event: MessageEvent, args: Me
         style = await asyncio.to_thread(get_style, platform_user_id(event))
 
     if use_qq_mode(event) or not bool(getattr(maiconfig, "maimaidx_compact_messages", True)):
+        pricing_help = await asyncio.to_thread(format_analysis_pricing_help)
         await plugin_send(
             matcher,
-            "正在处理 B50 锐评，请稍候喵…",
+            f"正在处理 B50 锐评，请稍候喵…\n{pricing_help.strip().removeprefix('· ')}",
             event=event,
             mention_sender=use_qq_mode(event),
         )
@@ -178,49 +213,149 @@ async def _handle_impl(matcher: Matcher, bot: Bot, event: MessageEvent, args: Me
             qq_buttons=_SHORTCUTS,
         )
         return
-    pack = await asyncio.to_thread(build_evidence_pack, snapshot)
-    quote = await asyncio.to_thread(
-        prepare_quote,
-        billing_qq,
-        int(getattr(maiconfig, "roast_v2_cost", 4) or 4),
-    )
+    pack = await asyncio.to_thread(build_evidence_pack, snapshot, _LEGACY_PEER_STATS)
+    reserved = None
     try:
-        report = await asyncio.wait_for(
-            generate_report(pack, style),
-            timeout=_timeout("b50_llm_timeout_seconds", 180.0),
+        reserved = await asyncio.to_thread(reserve_analysis_charge, billing_qq)
+        if not reserved.daily_free:
+            await asyncio.to_thread(ensure_image_render_affordable, billing_qq)
+    except BreakInsufficientError:
+        if reserved is not None:
+            await asyncio.to_thread(
+                refund_analysis_charge,
+                billing_qq,
+                reserved,
+                reason="制图费用预检不足",
+            )
+        raise
+    try:
+        token_usage = _empty_token_usage()
+        try:
+            report, token_usage = await asyncio.wait_for(
+                generate_report(pack, style),
+                timeout=_timeout("b50_llm_timeout_seconds", 180.0),
+            )
+        except FinishedException:
+            raise
+        except Exception as exc:
+            # Validation failures may still carry usage from a completed model
+            # response.  Preserve it when the deterministic fallback is used.
+            candidate_usage = getattr(exc, "token_usage", None)
+            if isinstance(candidate_usage, dict):
+                token_usage = candidate_usage
+            log.warning(
+                f"[roast_v2] model failed, using deterministic fallback: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            report = await asyncio.to_thread(build_report_fallback, pack, style)
+
+        if not isinstance(token_usage, dict):
+            token_usage = _empty_token_usage()
+        input_tokens = int(token_usage.get("input_tokens") or 0)
+        output_tokens = int(token_usage.get("output_tokens") or 0)
+        usage_available = bool(token_usage.get("available"))
+        cost = await asyncio.to_thread(
+            analysis_token_cost,
+            input_tokens,
+            output_tokens,
+            usage_available=usage_available,
         )
-    except Exception as exc:
-        log.warning(
-            f"[roast_v2] model failed, using deterministic fallback: "
-            f"{type(exc).__name__}: {exc}"
-        )
-        report = build_report_fallback(pack, style)
-    image = await run_image_cpu(render_report, pack, report)
-    await asyncio.wait_for(
-        plugin_send(
+        image = await run_image_cpu(render_report, pack, report)
+    except BaseException as exc:
+        if reserved is not None:
+            await asyncio.to_thread(
+                refund_analysis_charge,
+                billing_qq,
+                reserved,
+                reason=f"分析流程:{type(exc).__name__}",
+            )
+        if isinstance(exc, FinishedException) or not isinstance(exc, Exception):
+            raise
+        if isinstance(exc, (BreakInsufficientError, QBindRequiredError, ValueError)):
+            raise
+        await plugin_finish(
             matcher,
-            MessageSegment.image(image),
+            f"锐评生成失败：{exc}{_analysis_failure_note(reserved or 0)}",
             event=event,
             mention_sender=use_qq_mode(event),
-            publish_qq_image=True,
-        ),
-        timeout=_timeout("b50_send_timeout_seconds", 30.0),
+            qq_buttons=_SHORTCUTS,
+        )
+        return
+
+    if not await _deliver_result_or_refund(
+        matcher, event, image, billing_qq, reserved,
+    ):
+        return
+
+    try:
+        def _settle_result():
+            render_line = None
+            if not reserved.daily_free:
+                render_line = settle_image_render(billing_qq)
+            charged = settle_analysis_charge(
+                billing_qq,
+                cost,
+                reserved=reserved,
+                token_usage=token_usage,
+            )
+            return render_line, charged, break_db.get_balance(billing_qq)
+
+        render_line, charged, balance = await asyncio.to_thread(_settle_result)
+    except BaseException as exc:
+        await asyncio.to_thread(
+            refund_analysis_charge,
+            billing_qq,
+            reserved,
+            reason=f"结算异常:{type(exc).__name__}",
+        )
+        if isinstance(exc, FinishedException) or not isinstance(exc, Exception):
+            raise
+        log.exception(f"[roast_v2] settlement failed after delivery: {exc}")
+        await plugin_finish(
+            matcher,
+            "锐评图片已发送，但结算异常；本次预扣已退回。",
+            event=event,
+            mention_sender=use_qq_mode(event),
+            qq_buttons=_SHORTCUTS,
+        )
+        return
+
+    footer_parts = take_break_charge_footer()
+    if render_line:
+        footer_parts.append(render_line)
+    if reserved.daily_free:
+        footer_parts.append(
+            f"🎁 今日首次锐评免费（含图片生成） · 余额 {balance} BREAK"
+        )
+    elif reserved.freedom:
+        freedom_line = await asyncio.to_thread(
+            _format_freedom_line,
+            billing_qq,
+            cost,
+            reserved.freedom_remaining,
+        )
+        footer_parts.append(
+            "🪽 FREEDOM 生效，本次未预扣\n"
+            + freedom_line
+        )
+    elif reserved.free_window:
+        footer_parts.append(format_free_window_exemption(billing_qq, "锐评", cost))
+    cost_line = await asyncio.to_thread(
+        format_analysis_cost_line,
+        charged=0 if (reserved.daily_free or reserved.freedom or reserved.free_window) else charged,
+        balance=balance,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cached_input_tokens=int(token_usage.get("cached_input_tokens") or 0),
+        usage_available=usage_available,
+        compact=True,
     )
-    settlement = await asyncio.to_thread(commit_quote, billing_qq, quote)
-    summary = report.summary
-    charge = int(settlement.get("charged", 0) or 0)
-    balance = int(settlement.get("balance", 0) or 0)
-    if settlement.get("free"):
-        footer = f"🎁 今日首次锐评免费 · 余额 {balance} BREAK\n{summary}"
-    elif settlement.get("free_window"):
-        footer = f"🕒 免费时段 · 余额 {balance} BREAK\n{summary}"
-    elif settlement.get("freedom"):
-        footer = f"🪽 FREEDOM 生效，本次免扣 · 余额 {balance} BREAK\n{summary}"
-    else:
-        footer = f"💳 锐评 V2 消耗 {charge} BREAK · 余额 {balance} BREAK\n{summary}"
+    footer_parts.append(cost_line)
+    footer_parts.append(report.summary)
+    footer_parts.append("更多详情请前往吃分推荐喵")
     await plugin_finish(
         matcher,
-        footer,
+        "\n".join(footer_parts),
         event=event,
         mention_sender=use_qq_mode(event),
         qq_buttons=_SHORTCUTS,

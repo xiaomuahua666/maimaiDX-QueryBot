@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from datetime import datetime, timezone
 from typing import Any
 
 from ..maimaidx_best_50 import _music_is_new
@@ -44,6 +46,50 @@ def _is_new(song_id: str) -> bool:
     return bool(music and _music_is_new(music))
 
 
+def _history_timestamp(value: Any) -> float | None:
+    try:
+        text = str(value or "").strip().replace("Z", "+00:00")
+        if not text:
+            return None
+        parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _rating_trend(qqid: int) -> dict[str, Any]:
+    try:
+        from ..maimaidx_data_storage import data_storage
+
+        if not data_storage.is_enabled(int(qqid)):
+            return {}
+        history = data_storage.get_rating_history(int(qqid), days=90)
+        points = [
+            {"date": str(item.get("date") or item.get("stored_at") or ""), "rating": int(item.get("rating") or 0)}
+            for item in history
+            if item.get("date") is not None or item.get("stored_at") is not None
+        ]
+        points.sort(key=lambda item: item["date"])
+        points = [item for item in points if item["rating"] > 0][-14:]
+        if len(points) < 2:
+            return {"points": points, "available": False}
+        delta = points[-1]["rating"] - points[0]["rating"]
+        start = _history_timestamp(points[0]["date"])
+        end = _history_timestamp(points[-1]["date"])
+        span_days = max(1.0, (end - start) / 86400) if start is not None and end is not None and end >= start else None
+        return {
+            "available": True,
+            "points": points,
+            "delta": delta,
+            "span_days": round(span_days, 1) if span_days is not None else None,
+            "average_per_day": round(delta / span_days, 2) if span_days else None,
+        }
+    except Exception:
+        return {}
+
+
 async def fetch_snapshot(qqid: int) -> dict:
     user = await get_user_b50(qqid=qqid)
     charts = getattr(user, "charts", None)
@@ -62,10 +108,12 @@ async def fetch_snapshot(qqid: int) -> dict:
             item["pool"] = "new" if _is_new(item["song_id"]) else "old"
             all_charts.append(item)
             seen.add(key)
+    trend = await asyncio.to_thread(_rating_trend, qqid)
     return {
         "nickname": str(getattr(user, "nickname", "Player") or "Player"),
         "rating": int(getattr(user, "rating", 0) or 0),
         "b35": b35,
         "b15": b15,
         "all_charts": all_charts,
+        "trend": trend,
     }

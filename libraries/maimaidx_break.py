@@ -3708,6 +3708,7 @@ def format_analysis_cost_line(
     output_tokens: int = 0,
     cached_input_tokens: int = 0,
     usage_available: bool = True,
+    compact: bool = False,
 ) -> str:
     """向用户展示 Token 用量、实际收费和余额。"""
     cost = charged if charged is not None else analysis_token_cost(
@@ -3721,6 +3722,16 @@ def format_analysis_cost_line(
             detail += f'，模型缓存 {cached:,}（{rate:.1%}）'
     else:
         detail = '模型未返回 Token 用量，按兜底价计费'
+    if compact:
+        if usage_available:
+            token_line = f'📊 Token 用量：输入 {max(0, input_tokens):,} · 输出 {max(0, output_tokens):,}'
+            cached = min(max(0, cached_input_tokens), max(0, input_tokens))
+            if cached > 0:
+                token_line += f' · 缓存 {cached:,}'
+        else:
+            token_line = '📊 Token 用量：模型未返回，按兜底价'
+        balance_text = f' · 余额 {balance} BREAK' if balance is not None else ''
+        return f'{token_line}\n💳 锐评扣费：{cost} BREAK{balance_text}'
     text = f'💳 锐评消耗 {cost} BREAK（{detail}）'
     if balance is not None:
         text += f' · 余额 {balance} BREAK'
@@ -3955,9 +3966,21 @@ def settle_analysis_charge(
     free_window = bool(getattr(reserved, 'free_window', False))
     usage = dict(token_usage or {})
     if is_superuser_exempt(qqid):
+        if reserved_amount > 0:
+            break_db.refund_analysis_reservation(
+                qqid,
+                reserved_amount,
+                meta={'kind': 'llm', 'stage': 'billing_disabled_settlement'},
+            )
         break_db.record_usage(qqid, 'analysis', break_delta=0)
         return 0
     if not break_db.billing_enabled():
+        if reserved_amount > 0:
+            break_db.refund_analysis_reservation(
+                qqid,
+                reserved_amount,
+                meta={'kind': 'llm', 'stage': 'billing_disabled_settlement'},
+            )
         break_db.record_usage(qqid, 'analysis', break_delta=0)
         return 0
     meta = {
