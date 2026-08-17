@@ -1068,6 +1068,7 @@ _GAME_EVENT_MAPPINGS = {
     26090191: "Title 609000（WEC2026 称号）",
     24021661: "chargeId=5（付费 5 倍票券解放）",
 }
+_GAME_EVENT_DISPLAY_LIMIT = 12
 
 
 def _game_event_rows(payload: Any) -> list[dict]:
@@ -1079,39 +1080,71 @@ def _game_event_rows(payload: Any) -> list[dict]:
     return [row for row in rows if isinstance(row, dict)]
 
 
-def _format_user_game_event(payload: Any) -> str:
-    """展示活动事件，同时保留上游 businessData 的完整原始 JSON。"""
+def _game_event_timestamp(value: Any) -> Optional[float]:
+    raw = str(value or "").strip().replace("T", " ")[:19]
+    if not raw:
+        return None
+    try:
+        return time.mktime(time.strptime(raw, "%Y-%m-%d %H:%M:%S"))
+    except ValueError:
+        return None
+
+
+def _game_event_is_current(row: dict, now: float) -> bool:
+    enabled = _pick(row, "enable", "Enable", default=1)
+    if enabled in (False, 0, "0", "false", "False"):
+        return False
+    start = _game_event_timestamp(_pick(row, "startDate", "StartDate"))
+    end = _game_event_timestamp(_pick(row, "endDate", "EndDate"))
+    return (start is None or start <= now) and (end is None or now <= end)
+
+
+def _format_user_game_event(payload: Any, *, now: Optional[float] = None) -> str:
+    """只展示当前有效的重点活动，避免整份 businessData 刷屏。"""
     if not isinstance(payload, dict):
         raise RuntimeError("活动事件返回格式异常")
     rows = _game_event_rows(payload)
+    current = float(time.time() if now is None else now)
+    active_rows = [row for row in rows if _game_event_is_current(row, current)]
+    mapped_rows = []
+    for row in active_rows:
+        event_id = _pick(row, "id", "Id", "eventId", "EventId")
+        try:
+            mapped = int(event_id) in _GAME_EVENT_MAPPINGS
+        except (TypeError, ValueError):
+            mapped = False
+        if mapped:
+            mapped_rows.append(row)
+    candidates = mapped_rows or active_rows
+    shown = candidates[:_GAME_EVENT_DISPLAY_LIMIT]
     lines = [
         "🎪 舞萌活动事件",
         f"事件类型：{_pick(payload, 'type', 'Type', default='未返回')}",
-        f"事件数量：{len(rows)}",
+        f"共 {len(rows)} 条 · 当前有效 {len(active_rows)} 条 · 展示 {len(shown)} 条",
     ]
-    if rows:
+    if shown:
         lines.append("")
-        for row in rows:
+        for row in shown:
             event_id = _pick(row, "id", "Id", "eventId", "EventId", default="未知")
             try:
                 mapping = _GAME_EVENT_MAPPINGS.get(int(event_id))
             except (TypeError, ValueError):
                 mapping = None
-            lines.append(f"· EVENT {event_id}" + (f"：{mapping}" if mapping else ""))
-            for label, keys in (
-                ("开始", ("startDate", "StartDate")),
-                ("结束", ("endDate", "EndDate")),
-                ("启用", ("enable", "Enable")),
-                ("禁用区域", ("disableArea", "DisableArea")),
-            ):
-                value = _pick(row, *keys)
-                if value not in (None, ""):
-                    lines.append(f"  {label}：{value}")
-    lines.extend([
-        "",
-        "完整 businessData：",
-        json.dumps(payload, ensure_ascii=False, indent=2, default=str),
-    ])
+            lines.append(f"· EVENT {event_id}" + (f"｜{mapping}" if mapping else ""))
+            start = str(_pick(row, "startDate", "StartDate", default="") or "")[:10]
+            end = str(_pick(row, "endDate", "EndDate", default="") or "")[:10]
+            if start or end:
+                lines.append(f"  {start or '未知'} ～ {end or '未知'}")
+            disable_area = _pick(row, "disableArea", "DisableArea")
+            if disable_area not in (None, ""):
+                lines.append(f"  禁用区域：{disable_area}")
+    else:
+        lines.append("当前没有可展示的有效活动。")
+    omitted = len(candidates) - len(shown)
+    if omitted > 0:
+        lines.append(f"另有 {omitted} 条有效事件未展示。")
+    if mapped_rows and len(active_rows) > len(mapped_rows):
+        lines.append(f"已隐藏 {len(active_rows) - len(mapped_rows)} 条未识别的有效事件。")
     return "\n".join(lines)
 
 
