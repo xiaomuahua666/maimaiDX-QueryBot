@@ -1093,7 +1093,8 @@ class BreakDatabase:
         self._migrate_ticket_cost_default()
         self._migrate_analysis_max_cost_default()
         self._migrate_analysis_token_rates_default()
-        self._migrate_analysis_pricing_default()
+        # 锐评倍率和预扣额度允许管理员自定义；历史迁移不能在每次启动时重放，
+        # 否则合法的 ×3 / ×5 配置会被误判成旧默认值并覆盖。
         self._migrate_streak_curve_default()
 
     def _migrate_ticket_cost_default(self) -> None:
@@ -1123,32 +1124,6 @@ class BreakDatabase:
             )
             self._conn.commit()
         log.info('[BREAK] 已将锐评 Token 计费封顶迁移为 20 BREAK')
-
-    def _migrate_analysis_pricing_default(self) -> None:
-        """将旧版锐评倍率 ×3/×5 迁移为 ×1，预扣额度仍保留 10 BREAK。"""
-        migrations = {
-            'analysis_price_multiplier': '3',
-            'analysis_precharge_cost': '6',
-        }
-        changed = False
-        for key, old_value in migrations.items():
-            row = self._conn.execute(
-                'SELECT value FROM break_config WHERE key = ?', (key,)
-            ).fetchone()
-            if row and (
-                (key == 'analysis_price_multiplier' and str(row['value']) in {'3', '5'})
-                or (key != 'analysis_price_multiplier' and str(row['value']) == old_value)
-            ):
-                self._conn.execute(
-                    'UPDATE break_config SET value = ? WHERE key = ?',
-                    (DEFAULT_CONFIG[key], key),
-                )
-                changed = True
-        if changed:
-            self._conn.commit()
-            log.info(
-                '[BREAK] 已将锐评默认计费迁移为倍率 ×1、预扣 10 BREAK'
-            )
 
     def _migrate_analysis_token_rates_default(self) -> None:
         """将旧版锐评默认费率迁移为新标准，保留管理员自定义值。"""

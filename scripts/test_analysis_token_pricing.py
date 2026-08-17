@@ -2,6 +2,7 @@
 
 import ast
 import math
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Optional
@@ -10,6 +11,44 @@ from typing import Any, Optional
 ROOT = Path(__file__).resolve().parent.parent
 break_source = (ROOT / "libraries" / "maimaidx_break.py").read_text(encoding="utf-8")
 assert "self._migrate_analysis_token_rates_default()" in break_source
+
+break_tree = ast.parse(break_source)
+break_class = next(
+    node
+    for node in break_tree.body
+    if isinstance(node, ast.ClassDef) and node.name == "BreakDatabase"
+)
+seed_config_node = next(
+    node
+    for node in break_class.body
+    if isinstance(node, ast.FunctionDef) and node.name == "_seed_config"
+)
+seed_config_source = ast.get_source_segment(break_source, seed_config_node) or ""
+assert "_migrate_analysis_pricing_default" not in seed_config_source
+
+# 重启时只补齐缺失配置，管理员设置的合法倍率必须保持不变。
+config_db = sqlite3.connect(":memory:")
+config_db.execute(
+    "CREATE TABLE break_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+)
+config_db.execute(
+    "INSERT OR IGNORE INTO break_config (key, value) VALUES (?, ?)",
+    ("analysis_price_multiplier", "1"),
+)
+config_db.execute(
+    "UPDATE break_config SET value = ? WHERE key = ?",
+    ("5", "analysis_price_multiplier"),
+)
+config_db.execute(
+    "INSERT OR IGNORE INTO break_config (key, value) VALUES (?, ?)",
+    ("analysis_price_multiplier", "1"),
+)
+saved_multiplier = config_db.execute(
+    "SELECT value FROM break_config WHERE key = ?",
+    ("analysis_price_multiplier",),
+).fetchone()
+assert saved_multiplier == ("5",)
+config_db.close()
 
 
 def load_functions(path: Path, names: set[str], namespace: dict) -> dict:
