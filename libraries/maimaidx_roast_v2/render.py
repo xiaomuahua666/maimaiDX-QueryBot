@@ -163,7 +163,19 @@ def _draw_chart(draw: ImageDraw.ImageDraw, pack: EvidencePack, y: int) -> int:
         draw.text((chip_x + 18, y + 20), label, font=_font(SIYUAN, 20), fill=MUTED)
         draw.text((chip_x + 18, y + 43), value, font=_font(TBFONT, 25), fill=color)
         chip_x += 296
-    return y + 105
+    diagnostic_chips = [
+        ("B35 / B15 差", f"{float(metrics.get('b35_b15_gap', 0)):+.2f}%", BLUE),
+        ("达成率波动", f"σ {float(metrics.get('achievement_stddev', 0)):.2f}%", ORANGE),
+        ("SSS / SSS+", f"{metrics.get('sss_count', 0)} / {metrics.get('sssp_count', 0)}", GREEN),
+        ("Top3 可兑现", f"+{metrics.get('top3_estimated_gain', 0)}", RED),
+    ]
+    chip_x = 102
+    for label, value, color in diagnostic_chips:
+        draw.rounded_rectangle((chip_x, y + 92, chip_x + 275, y + 157), radius=15, fill=(248, 250, 253), outline=LINE, width=2)
+        draw.text((chip_x + 18, y + 102), label, font=_font(SIYUAN, 20), fill=MUTED)
+        draw.text((chip_x + 18, y + 125), value, font=_font(TBFONT, 25), fill=color)
+        chip_x += 296
+    return y + 187
 
 
 def _draw_featured(draw: ImageDraw.ImageDraw, im: Image.Image, pack: EvidencePack, y: int) -> int:

@@ -80,8 +80,12 @@ snapshot = {
 pack = build_evidence_pack(snapshot)
 assert pack.metrics["chart_count"] == 50
 assert pack.metrics["b35_avg"] > pack.metrics["b15_avg"]
+assert pack.metrics["b35_b15_gap"] > 0
+assert pack.metrics["achievement_stddev"] > 0
+assert pack.metrics["top3_estimated_gain"] == 13
 assert {item.evidence_id for item in pack.evidence} >= {
-    "rating", "b35_avg", "b15_avg", "high_avg",
+    "rating", "b35_avg", "b15_avg", "high_avg", "b35_b15_gap",
+    "achievement_stddev", "sss_count", "top3_gain",
 }
 report = build_report_fallback(pack, style)
 assert "主人" in report.summary

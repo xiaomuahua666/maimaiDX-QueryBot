@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from statistics import mean, median
+from statistics import mean, median, pstdev
 
 from .domain import Candidate, Evidence, EvidencePack, RoastReport, StyleSpec
 
@@ -181,6 +181,17 @@ def build_evidence_pack(snapshot: dict) -> EvidencePack:
             priority_score=round(priority_score, 3),
         ))
     candidates.sort(key=lambda x: (-x.priority_score, x.target_achievement - x.achievement, -x.estimated_gain, x.ds))
+    b35_b15_gap = b35_avg - b15_avg
+    achievement_stddev = pstdev(achievements) if len(achievements) >= 2 else 0.0
+    sss_count = sum(1 for value in achievements if value >= 100.0)
+    sssp_count = sum(1 for value in achievements if value >= 100.5)
+    top3_gain = sum(item.estimated_gain for item in candidates[:3])
+    evidence.extend([
+        Evidence("b35_b15_gap", "B35 与 B15 平均差", f"{b35_b15_gap:+.4f}%", "b50"),
+        Evidence("achievement_stddev", "B50 达成率波动", f"σ {achievement_stddev:.4f}%", "b50"),
+        Evidence("sss_count", "B50 SSS / SSS+ 数量", f"{sss_count} / {sssp_count}", "b50"),
+        Evidence("top3_gain", "推荐路线 Top3 预计收益", f"+{top3_gain} Rating", "candidates"),
+    ])
     metrics = {
         "achievement_median": median(achievements) if achievements else 0,
         "b35_avg": b35_avg,
@@ -193,6 +204,11 @@ def build_evidence_pack(snapshot: dict) -> EvidencePack:
         "chart_count": len(rows),
         "recommendation_ds_center": ds_center,
         "recommendation_ds_cap": recommended_ds_cap,
+        "b35_b15_gap": b35_b15_gap,
+        "achievement_stddev": achievement_stddev,
+        "sss_count": sss_count,
+        "sssp_count": sssp_count,
+        "top3_estimated_gain": top3_gain,
     }
     return EvidencePack(
         nickname=str(snapshot.get("nickname") or "Player"),
