@@ -223,11 +223,16 @@ async def _(event: MessageEvent):
 
 @break_game_caps.handle()
 async def _(event: MessageEvent):
-    # 消息任意位置含「上限」即 @发送者并回复小游戏每日 BREAK 上限规则表（静态规则，不查个人用量）。
+    # 消息任意位置含「上限」即 @发送者并回复小游戏每日 BREAK 上限与个人进度。
     # 同「红门」门攻略机制：on_keyword 子串命中，priority=99, block=False。
+    try:
+        qqid = normalize_billing_qqid(billing_user_id(event))
+    except QBindRequiredError:
+        qqid = None
+    text = await asyncio.to_thread(format_game_break_caps, qqid)
     await plugin_finish(
         break_game_caps,
-        format_game_break_caps(),
+        text,
         event=event,
         reply_message=False,
         mention_sender=True,

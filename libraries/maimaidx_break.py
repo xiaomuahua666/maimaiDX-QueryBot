@@ -72,6 +72,7 @@ DEFAULT_CONFIG: Dict[str, str] = {
     'ticket_cost_per_multiplier': '10',
     'ticket_status_cost': '1',
     'awmc_read_cost': '5',
+    'awmc_game_event_cost': '2',
     'awmc_status_cost': '2',
     'awmc_music_upsert_cost': '75',
     'awmc_music_delete_cost': '50',
@@ -2328,6 +2329,20 @@ class BreakDatabase:
         """全部游戏每日 BREAK 上限（game_key → 上限，0 = 不限制）。"""
         return self._parse_game_caps()
 
+    def get_game_break_daily_status(self, qqid: int) -> tuple[int, Dict[str, int]]:
+        """读取指定用户当天小游戏 BREAK 的全局与分游戏发放量。"""
+        rows = self._conn.execute(
+            'SELECT game, COALESCE(break_awarded, 0) AS break_awarded '
+            'FROM break_game_daily WHERE qqid=? AND date=?',
+            (int(qqid), self._today()),
+        ).fetchall()
+        awards: Dict[str, int] = {}
+        for row in rows:
+            game = str(row['game'] or '').strip()
+            if game:
+                awards[game] = max(0, int(row['break_awarded'] or 0))
+        return sum(awards.values()), awards
+
     def _parse_game_caps(self) -> Dict[str, int]:
         raw = self.get_config('guess_daily_caps', '') or ''
         caps: Dict[str, int] = {}
@@ -3692,20 +3707,30 @@ GAME_BREAK_CAP_LABELS: Tuple[Tuple[str, str], ...] = (
 )
 
 
-def format_game_break_caps() -> str:
-    """列出小游戏每日 BREAK 上限规则（各游戏上限 + 全局总上限）。"""
+def format_game_break_caps(qqid: Optional[int] = None) -> str:
+    """列出小游戏每日 BREAK 上限；传入用户时附带当天发放进度。"""
     global_cap = break_db.get_global_game_cap()
     caps = break_db.get_all_game_caps()
+    total_awarded, game_awarded = (
+        break_db.get_game_break_daily_status(qqid) if qqid is not None else (0, {})
+    )
     lines = ['🎉 小游戏每日 BREAK 上限']
     if global_cap > 0:
-        lines.append(f'· 全局总上限：{global_cap} BREAK / 天（所有小游戏合计）')
+        progress = f'{total_awarded}/' if qqid is not None else ''
+        lines.append(
+            f'· 全局总上限：{progress}{global_cap} BREAK / 天（所有小游戏合计）'
+        )
     else:
         lines.append('· 全局总上限：不限制')
     lines.append('')
     lines.append('各游戏单独上限（BREAK / 天）：')
     for key, label in GAME_BREAK_CAP_LABELS:
         cap = caps.get(key, 0)
-        lines.append(f'· {label}：{cap if cap > 0 else "不限制"}')
+        if qqid is not None and cap > 0:
+            value = f'{int(game_awarded.get(key, 0) or 0)}/{cap}'
+        else:
+            value = str(cap) if cap > 0 else '不限制'
+        lines.append(f'· {label}：{value}')
     lines.append('')
     lines.append('说明：单个游戏达到自身上限后该游戏不再发放；')
     lines.append('全局总上限用满后所有小游戏均不再发放，次日 0 点重置。')

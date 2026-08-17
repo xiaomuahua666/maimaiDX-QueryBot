@@ -96,6 +96,7 @@ account_items = on_command("mai道具", aliases={"道具"})
 account_gate_status = on_command(
     "mai门状态", aliases={"mai查门", "查门", "门状态"}
 )
+account_game_event = on_command("maievent", aliases={"mai活动", "舞萌活动"})
 account_music_upsert = on_command(
     "mai改成绩", aliases={"修改成绩", "改成绩", "改分"}
 )
@@ -113,6 +114,7 @@ _ACCOUNT_SHORTCUTS = (
     ('账号预览', 'mai预览'),
     ('查看道具', 'mai道具'),
     ('门状态', 'mai门状态'),
+    ('活动事件', 'maievent'),
     ('修改成绩', 'mai改成绩'),
     ('修改道具', 'mai改道具'),
     ('上传水鱼', 'maiu'),
@@ -170,6 +172,7 @@ for _serial_account_matcher in (
     account_preview,
     account_items,
     account_gate_status,
+    account_game_event,
     account_music_upsert,
     account_music_delete,
     account_item_upsert,
@@ -1054,6 +1057,64 @@ def _format_gate_status(payload: Any) -> str:
     return "\n".join(lines)
 
 
+_GAME_EVENT_MAPPINGS = {
+    26080511: "区域介绍公告",
+    26080521: "乐曲 11811、11812、11813、11814",
+    26080525: "Utage 谱面 111852、121852、131852、141852、151852、161852",
+    26080531: "Map 550002（龙之区域4）",
+    26080532: "Kaleidx Gate/Key/Course 6（红色之门）",
+    26080541: "Map 550054（联动区域）",
+    26080551: "Challenge 118130（关联乐曲 11813）",
+    26090191: "Title 609000（WEC2026 称号）",
+    24021661: "chargeId=5（付费 5 倍票券解放）",
+}
+
+
+def _game_event_rows(payload: Any) -> list[dict]:
+    if not isinstance(payload, dict):
+        return []
+    rows = payload.get("gameEventList") or payload.get("GameEventList") or []
+    if not isinstance(rows, list):
+        return []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _format_user_game_event(payload: Any) -> str:
+    """展示活动事件，同时保留上游 businessData 的完整原始 JSON。"""
+    if not isinstance(payload, dict):
+        raise RuntimeError("活动事件返回格式异常")
+    rows = _game_event_rows(payload)
+    lines = [
+        "🎪 舞萌活动事件",
+        f"事件类型：{_pick(payload, 'type', 'Type', default='未返回')}",
+        f"事件数量：{len(rows)}",
+    ]
+    if rows:
+        lines.append("")
+        for row in rows:
+            event_id = _pick(row, "id", "Id", "eventId", "EventId", default="未知")
+            try:
+                mapping = _GAME_EVENT_MAPPINGS.get(int(event_id))
+            except (TypeError, ValueError):
+                mapping = None
+            lines.append(f"· EVENT {event_id}" + (f"：{mapping}" if mapping else ""))
+            for label, keys in (
+                ("开始", ("startDate", "StartDate")),
+                ("结束", ("endDate", "EndDate")),
+                ("启用", ("enable", "Enable")),
+                ("禁用区域", ("disableArea", "DisableArea")),
+            ):
+                value = _pick(row, *keys)
+                if value not in (None, ""):
+                    lines.append(f"  {label}：{value}")
+    lines.extend([
+        "",
+        "完整 businessData：",
+        json.dumps(payload, ensure_ascii=False, indent=2, default=str),
+    ])
+    return "\n".join(lines)
+
+
 _GATE_NAMES = {
     1: "蓝色之门",
     2: "白色之门",
@@ -1709,6 +1770,10 @@ async def _service_cost(service: str, *, multiple: int = 1) -> int:
         return max(0, int(await asyncio.to_thread(
             break_db.get_config, "awmc_read_cost", "5"
         )))
+    if service == "awmc_game_event":
+        return max(0, int(await asyncio.to_thread(
+            break_db.get_config, "awmc_game_event_cost", "2"
+        )))
     if service == "awmc_music_upsert":
         return max(0, int(await asyncio.to_thread(
             break_db.get_config, "awmc_music_upsert_cost", "75"
@@ -1768,6 +1833,7 @@ def _charge_text(result, qqid: Optional[int] = None) -> str:
         "awmc_preview": "账号预览查询",
         "awmc_items": "道具查询",
         "awmc_gate_status": "门状态查询",
+        "awmc_game_event": "活动事件查询",
         "awmc_music_upsert": "成绩编辑",
         "awmc_music_delete": "成绩删除",
         "awmc_item_upsert": "道具修改",
@@ -1805,6 +1871,7 @@ async def _(event: MessageEvent):
             ("upload_fish_cost", "2"), ("upload_lx_cost", "2"),
             ("upload_all_cost", "3"), ("ticket_cost_per_multiplier", "10"),
             ("ticket_status_cost", "1"), ("awmc_read_cost", "5"),
+            ("awmc_game_event_cost", "2"),
             ("awmc_status_cost", "2"), ("awmc_music_upsert_cost", "75"),
             ("awmc_music_delete_cost", "50"),
             ("awmc_item_upsert_cost", "100"),
@@ -1812,7 +1879,7 @@ async def _(event: MessageEvent):
     ))
     (
         fish_cost, lx_cost, all_cost, ticket_unit, ticket_status_cost,
-        read_cost, status_cost, edit_cost, delete_cost, item_cost,
+        read_cost, game_event_cost, status_cost, edit_cost, delete_cost, item_cost,
     ) = values
     ticket_multipliers = "/".join(map(str, _allowed_ticket_multipliers()))
     await plugin_finish(
@@ -1829,6 +1896,7 @@ async def _(event: MessageEvent):
         f"mai查票 / 查票：查询舞萌票券状态，每次成功查询 {ticket_status_cost} BREAK，失败不扣费\n"
         "mai预览 / 预览：查询账号预览；mai道具 / 道具：查询全部道具\n"
         "mai门状态 / 查门：查询 Kaleidx Gate\n"
+        f"maievent / mai活动：查询舞萌活动事件，每次成功查询 {game_event_cost} BREAK\n"
         "mai改成绩 / 改分 [歌曲 难度 达成率 DX分 FC FS]：交互或一步编辑成绩\n"
         "mai删成绩 / 删分 [歌曲 难度]：交互或一步删除成绩\n"
         "mai改道具 / 改道具：高风险道具修改\n"
@@ -3443,6 +3511,7 @@ async def _run_paid_awmc_read(
                 "awmc_preview": "账号预览查询",
                 "awmc_items": "道具查询",
                 "awmc_gate_status": "门状态查询",
+                "awmc_game_event": "活动事件查询",
             }.get(service, "查询")
             raise QrcodeRefreshRequiredError(_pending_qrcode_prompt("已过期，需刷新", label))
         raise RuntimeError(error or "账号未绑定")
@@ -3458,6 +3527,7 @@ async def _run_paid_awmc_read(
                 "awmc_preview": "账号预览查询",
                 "awmc_items": "道具查询",
                 "awmc_gate_status": "门状态查询",
+                "awmc_game_event": "活动事件查询",
             }.get(service, "查询")
             _raise_sgid_refresh_required(key, service, {}, label)
         raise
@@ -3499,11 +3569,12 @@ async def continue_pending_account_retry(
         return _pending_qrcode_prompt("验证失败，请重新获取", "原操作")
 
     try:
-        if operation in {"awmc_preview", "awmc_items", "awmc_gate_status"}:
+        if operation in {"awmc_preview", "awmc_items", "awmc_gate_status", "awmc_game_event"}:
             fetchers = {
                 "awmc_preview": (sw_api.get_user_preview, _format_user_preview),
                 "awmc_items": (sw_api.get_user_items, _format_user_items),
                 "awmc_gate_status": (sw_api.get_user_kaleidx_scope, _format_gate_status),
+                "awmc_game_event": (sw_api.get_user_game_event, _format_user_game_event),
             }
             fetch, formatter = fetchers[operation]
             return await _run_paid_awmc_read(
@@ -3782,6 +3853,36 @@ async def _(event: MessageEvent):
         )
     await plugin_finish(
         account_gate_status,
+        text,
+        event=event,
+        reply_message=True,
+        qq_buttons=_account_flow_shortcuts(event),
+    )
+
+
+@account_game_event.handle()
+async def _(event: MessageEvent):
+    await _require_agreement(account_game_event, event)
+    try:
+        text = await _run_paid_awmc_read(
+            event,
+            service="awmc_game_event",
+            fetch=sw_api.get_user_game_event,
+            formatter=_format_user_game_event,
+        )
+    except Exception as exc:
+        if isinstance(exc, QrcodeRefreshRequiredError):
+            await plugin_finish(account_game_event, str(exc), event=event, reply_message=True)
+        detail = _exception_detail(exc)
+        ref = _log(_user_key(event), "awmc_game_event", "error", detail)
+        await plugin_finish(
+            account_game_event,
+            f"活动事件查询失败：{detail}\n本次不扣 BREAK\nRef_ID: {ref}",
+            event=event,
+            reply_message=True,
+        )
+    await plugin_finish(
+        account_game_event,
         text,
         event=event,
         reply_message=True,

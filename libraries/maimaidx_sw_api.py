@@ -867,6 +867,24 @@ class SwApiClient:
         )
         return self._parse_envelope(data)
 
+    async def get_user_game_event(self, qrcode: str) -> dict:
+        """读取舞萌活动事件（POST /user/game-event）。
+
+        ``businessData`` 由上游直接返回活动对象（通常含 ``type`` 和
+        ``gameEventList``）；这里只剥掉网关包装，不改写其中的事件记录。
+        """
+        data = await self._request(
+            "POST",
+            self._api_path("user/game-event"),
+            json_body=self._machine_body(qrcode),
+            timeout=30,
+            retry_count=0,
+        )
+        payload = self._parse_envelope(data)
+        if not isinstance(payload, dict):
+            raise SwApiError("AWMC 活动事件返回格式异常")
+        return payload
+
     async def upsert_music(self, qrcode: str, music: dict) -> Any:
         write_timeout = float(
             getattr(maiconfig, "awmc_music_write_timeout_seconds", 120.0)

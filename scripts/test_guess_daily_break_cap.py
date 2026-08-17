@@ -261,6 +261,17 @@ def test_multi_game_independence():
     assert db.award_game_break(uid, "rating", 3, "t").awarded == 0
 
 
+def test_daily_status_snapshot():
+    db = make_db()
+    uid = 1007
+    assert db.award_game_break(uid, "twentyq", 16, "t").awarded == 16
+    assert db.award_game_break(uid, "letter", 4, "t").awarded == 4
+    total, games = db.get_game_break_daily_status(uid)
+    assert total == 20
+    assert games["twentyq"] == 16
+    assert games["letter"] == 4
+
+
 def test_award_guess_points_routes_game_key():
     db = make_db()
     uid = 1006
@@ -309,6 +320,7 @@ def run():
         test_double_card_exempts_all_caps,
         test_partial_award_under_cap,
         test_multi_game_independence,
+        test_daily_status_snapshot,
         test_award_guess_points_routes_game_key,
         test_seed_config_includes_new_keys,
     ]
