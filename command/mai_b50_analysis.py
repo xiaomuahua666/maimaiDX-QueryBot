@@ -40,6 +40,7 @@ _MAX_CONCURRENCY = max(1, int(getattr(maiconfig, "b50_analysis_max_concurrency",
 _ANALYSIS_SEMAPHORE = asyncio.Semaphore(_MAX_CONCURRENCY)
 _SEMAPHORE = _ANALYSIS_SEMAPHORE
 _USER_LOCKS: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+_LEGACY_PEER_STATS = None
 _SHORTCUTS = (
     ("锐评", "锐评一下"),
     ("标准 B50", "b50"),
@@ -52,6 +53,12 @@ _SHORTCUTS = (
     ("查看风格", "锐评风格 查看"),
 )
 _ANALYSIS_SHORTCUTS = _SHORTCUTS
+
+
+def set_peer_stats(stats) -> None:
+    """Keep the startup hook compatible; Roast V2 computes its own evidence."""
+    global _LEGACY_PEER_STATS
+    _LEGACY_PEER_STATS = stats
 
 
 def _user_lock(user_id: str) -> asyncio.Lock:
