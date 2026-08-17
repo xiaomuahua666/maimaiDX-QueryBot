@@ -182,8 +182,15 @@ def _unique_rows(rows: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]
 
 def _song_groups(b35: list[dict[str, Any]], b15: list[dict[str, Any]], rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     with_peer = [row for row in rows if row.get("peer_gap") is not None]
-    peer_strong = sorted(with_peer, key=lambda row: _f(row.get("peer_gap")), reverse=True)
-    peer_weak = sorted(with_peer, key=lambda row: _f(row.get("peer_gap")))
+    peer_strong = sorted(
+        [row for row in with_peer if _f(row.get("peer_gap")) >= 0.03],
+        key=lambda row: _f(row.get("peer_gap")),
+        reverse=True,
+    )
+    peer_weak = sorted(
+        [row for row in with_peer if _f(row.get("peer_gap")) <= -0.03],
+        key=lambda row: _f(row.get("peer_gap")),
+    )
     top_ra = sorted(rows, key=lambda row: _i(row.get("ra")), reverse=True)
     floors = sorted(b35, key=lambda row: _i(row.get("ra")))[:3] + sorted(b15, key=lambda row: _i(row.get("ra")))[:2]
     unusual = sorted(
@@ -357,6 +364,54 @@ def _song_evidence(row: dict[str, Any]) -> Evidence:
     )
 
 
+def _peer_evidence_value(peer: dict[str, Any], total: int) -> str:
+    common = (
+        f"{peer.get('bucket')}；匹配 {peer.get('matched')}/{total}；"
+        f"同段玩家 {peer.get('player_count')}；{peer.get('confidence_text')}"
+    )
+    if peer.get("distribution_kind") == "player_arpi":
+        return f"ARPI {peer.get('arpi'):+.4f} pp；玩家 ARPI 分位：{peer.get('position')}；{common}"
+    return (
+        f"匹配谱面平均差 {peer.get('arpi'):+.4f} pp；{peer.get('position')}；"
+        f"谱面差值 P25/中位/P75 {peer.get('p25'):+.4f}/"
+        f"{peer.get('median'):+.4f}/{peer.get('p75'):+.4f} pp；{common}"
+    )
+
+
+def _trend_evidence(trend: dict[str, Any]) -> list[Evidence]:
+    if not trend.get("available"):
+        return []
+    span_days = _i(trend.get("span_days"))
+    delta = _i(trend.get("delta"))
+    average_per_day = trend.get("average_per_day")
+    quality = str(trend.get("quality") or "low")
+    result = [Evidence(
+        "rating_trend",
+        "近 30 日 Rating 趋势",
+        (
+            f"{span_days} 天内 {delta:+d} Rating；"
+            f"日均 {_f(average_per_day):+.2f}；{trend.get('status_text') or '趋势可用'}；"
+            f"样本 {trend.get('point_count') or 0} 个"
+        ),
+        "local_score_snapshots",
+        confidence=quality,
+    )]
+    forecast = trend.get("forecast") or {}
+    if forecast.get("available"):
+        result.append(Evidence(
+            "rating_forecast",
+            "7 日 Rating 保守估算",
+            (
+                f"中值 {forecast.get('rating_mid')}；区间 "
+                f"{forecast.get('rating_low')}–{forecast.get('rating_high')}；"
+                f"预计变化 +{forecast.get('gain_mid')}；不是涨分承诺"
+            ),
+            "robust_snapshot_forecast",
+            confidence=str(forecast.get("quality") or quality),
+        ))
+    return result
+
+
 def build_evidence_pack(snapshot: dict, peer_stats: dict | None = None) -> EvidencePack:
     b35 = [dict(item, pool="old") for item in list(snapshot.get("b35") or [])[:35]]
     b15 = [dict(item, pool="new") for item in list(snapshot.get("b15") or [])[:15]]
@@ -393,6 +448,7 @@ def build_evidence_pack(snapshot: dict, peer_stats: dict | None = None) -> Evide
     tail = sorted(achievements)[:min(10, len(achievements))]
     bottom10_avg = mean(tail) if tail else None
     floor_gap = new_floor - old_floor if b35 and b15 else None
+    trend = dict(snapshot.get("trend") or {})
     evidence = [
         Evidence("rating", "当前 Rating", str(rating), "snapshot"),
         Evidence("b35_avg", "B35 平均达成率", f"{b35_avg:.4f}%", "b35"),
@@ -406,10 +462,29 @@ def build_evidence_pack(snapshot: dict, peer_stats: dict | None = None) -> Evide
         Evidence("top3_gain", "推荐路线前三步收益", f"+{top3_gain} Rating", "route_simulation"),
         Evidence("sss_count", "B50 SSS / SSS+ 数量", f"{sss_count} / {sssp_count}", "b50"),
     ]
+    if not high:
+        highest_band = next(
+            (
+                band for band in reversed(ds_bands)
+                if _i(band.get("count")) > 0 and band.get("avg_achievement") is not None
+            ),
+            None,
+        )
+        if highest_band:
+            evidence.append(Evidence(
+                "highest_ds_band",
+                "最高有效定数段",
+                (
+                    f"{highest_band.get('label')}；{highest_band.get('count')} 首；"
+                    f"平均 {_f(highest_band.get('avg_achievement')):.4f}%"
+                ),
+                "b50_ds_band",
+            ))
+    evidence.extend(_trend_evidence(trend))
     if peer.get("available"):
         evidence.append(Evidence(
             "peer_profile", "同段位置",
-            f"{peer.get('bucket')}；ARPI {peer.get('arpi'):+.4f} pp；{peer.get('position')}；匹配 {peer.get('matched')}/{len(rows)}；同段玩家 {peer.get('player_count')}；{peer.get('confidence_text')}",
+            _peer_evidence_value(peer, len(rows)),
             "anonymized_peer_aggregate", confidence=str(peer.get("confidence") or "low"),
         ))
     for row in song_groups.get("evidence_cards", []):
@@ -439,7 +514,7 @@ def build_evidence_pack(snapshot: dict, peer_stats: dict | None = None) -> Evide
         b35=b35, b15=b15, all_charts=all_charts, evidence=evidence,
         candidates=candidates, metrics=metrics, peer=peer, ds_bands=ds_bands,
         difficulty_bands=difficulty_bands, genre_profiles=genre_profiles,
-        song_groups=song_groups, trend=dict(snapshot.get("trend") or {}),
+        song_groups=song_groups, trend=trend,
     )
 
 
@@ -456,7 +531,10 @@ def build_report_fallback(pack: EvidencePack, style: StyleSpec) -> RoastReport:
         structure = "B35 与 B15 结构接近，整体比较均衡"
     peer_text = ""
     if pack.peer.get("available"):
-        peer_text = f"；同段位于{pack.peer.get('position')}，ARPI {pack.peer.get('arpi'):+.4f} pp"
+        if pack.peer.get("distribution_kind") == "player_arpi":
+            peer_text = f"；同段玩家 ARPI 分位为{pack.peer.get('position')}，ARPI {pack.peer.get('arpi'):+.4f} pp"
+        else:
+            peer_text = f"；匹配谱面平均差 {pack.peer.get('arpi'):+.4f} pp，判断为{pack.peer.get('position')}"
     headline = f"{address}{structure}，先走保守边际收益路线{suffix}"
     summary = (
         f"{address}{structure}{peer_text}。推荐上限约 "
@@ -465,10 +543,23 @@ def build_report_fallback(pack: EvidencePack, style: StyleSpec) -> RoastReport:
     ).strip()
     evidence_cards = pack.song_groups.get("evidence_cards", [])
     named = "、".join(str(row.get("title") or "") for row in evidence_cards[:4]) or "当前 B50 曲目"
+    trend_text = ""
+    trend = pack.trend or {}
+    if trend.get("available"):
+        trend_text = (
+            f"近 {_i(trend.get('span_days'))} 天 Rating 变化 {_i(trend.get('delta')):+d}，"
+            f"日均 {_f(trend.get('average_per_day')):+.2f}。"
+        )
+        forecast = trend.get("forecast") or {}
+        if forecast.get("available"):
+            trend_text += (
+                f"按历史快照保守估算，7 日后参考中值 {forecast.get('rating_mid')}，"
+                f"区间 {forecast.get('rating_low')}–{forecast.get('rating_high')}；这不是涨分承诺。"
+            )
     analysis = (
         f"B35 平均 {metrics.get('b35_avg', 0):.4f}%，B15 平均 {metrics.get('b15_avg', 0):.4f}%，"
         f"差值 {gap:+.4f} pp；B50 达成率标准差 {metrics.get('achievement_stddev', 0):.4f} pp。"
-        f"本次引用的成绩证据包括：{named}。推荐器只保留接近目标线、且不超过已稳定定数上沿一小档的曲目；"
+        f"{trend_text}本次引用的成绩证据包括：{named}。推荐器只保留接近目标线、且不超过已稳定定数上沿一小档的曲目；"
         "每一步收益都会在上一步替换槽位后重算，不把多首歌重复按同一个地板相加。"
     )
     strengths = [

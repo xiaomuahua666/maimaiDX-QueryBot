@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import math
+from datetime import date, datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable
@@ -410,12 +411,54 @@ def _measure_bullet_group(items: list[str], width: int) -> int:
     return height + 8
 
 
+def _peer_position_color(peer: dict[str, Any]) -> tuple[int, int, int]:
+    if not peer.get("available"):
+        return MUTED
+    position = str(peer.get("position") or "")
+    if position in {"上四分位", "平均高于同段"}:
+        return GREEN
+    if position in {"下四分位", "平均低于同段"}:
+        return RED
+    return BLUE
+
+
+def _trend_date(value: Any) -> date | None:
+    text = str(value or "").strip().replace("Z", "+00:00")
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text).date()
+    except (TypeError, ValueError, OverflowError):
+        try:
+            return date.fromisoformat(text[:10])
+        except (TypeError, ValueError):
+            return None
+
+
+def _trend_points(pack: EvidencePack) -> list[dict[str, Any]]:
+    points_by_date: dict[date, int] = {}
+    for item in (pack.trend or {}).get("points") or []:
+        if not isinstance(item, dict):
+            continue
+        point_date = _trend_date(item.get("date"))
+        rating = _i(item.get("rating"))
+        if point_date is None or rating <= 0:
+            continue
+        points_by_date[point_date] = rating
+    return [
+        {"date": point_date, "rating": rating}
+        for point_date, rating in sorted(points_by_date.items())
+    ]
+
+
 def _measure_layout(pack: EvidencePack, report: RoastReport) -> dict[str, Any]:
     summary_title_lines = _wrap_lines(report.headline, _font(SIYUAN, 35), CONTENT_W - 80, max_lines=3)
     summary_lines = _wrap_lines(report.summary, _font(SIYUAN, 29), CONTENT_W - 80, max_lines=12)
     summary_h = max(230, 54 + len(summary_title_lines) * 48 + 12 + len(summary_lines) * 42 + 68)
     ds_rows = list(pack.ds_bands or [])
     diagnostics_h = 104 + PROFILE_BODY_H
+    trend_points = _trend_points(pack)
+    trend_h = 104 + 330 if len(trend_points) >= 2 and (pack.trend or {}).get("available") else 0
     ds_h = 104 + 62 + max(1, len(ds_rows)) * 68 + 18
     evidence = _select_evidence(pack, limit=8)
     evidence_rows = max(1, math.ceil(len(evidence) / 2))
@@ -430,10 +473,11 @@ def _measure_layout(pack: EvidencePack, report: RoastReport) -> dict[str, Any]:
     recommendations = _recommendation_rows(pack, report, limit=5)
     route_cards_h = len(recommendations) * 188 + max(0, len(recommendations) - 1) * 14 if recommendations else 92
     routes_h = 104 + route_cards_h + (48 if recommendations else 0)
-    method_h = 150
+    method_h = 180
     footer_h = 92
+    trend_space = trend_h + 24 if trend_h else 0
     height = (
-        58 + 166 + 22 + summary_h + 24 + diagnostics_h + 24 + ds_h + 24
+        58 + 166 + 22 + summary_h + 24 + diagnostics_h + 24 + trend_space + ds_h + 24
         + evidence_h + 24 + analysis_h + 24 + routes_h + 24 + method_h + footer_h + 42
     )
     return {
@@ -442,6 +486,8 @@ def _measure_layout(pack: EvidencePack, report: RoastReport) -> dict[str, Any]:
         "summary_lines": summary_lines,
         "summary_h": summary_h,
         "diagnostics_h": diagnostics_h,
+        "trend_h": trend_h,
+        "trend_points": trend_points,
         "ds_rows": ds_rows,
         "ds_h": ds_h,
         "evidence": evidence,
@@ -483,9 +529,10 @@ def _draw_summary(im: Image.Image, draw: ImageDraw.ImageDraw, pack: EvidencePack
     _draw_lines(draw, layout["summary_lines"], CONTENT_X + 48, cursor + 6, _font(SIYUAN, 29), INK, 42)
     metrics = pack.metrics or {}
     peer_position = str((pack.peer or {}).get("position") or "同段数据不足")
+    peer_color = _peer_position_color(pack.peer or {})
     chips = (
         ("B35/B15 差", f"{_f(metrics.get('b35_b15_gap')):+.4f} pp", BLUE),
-        ("同段定位", peer_position, GREEN if (pack.peer or {}).get("available") else MUTED),
+        ("同段定位", peer_position, peer_color),
         ("保守路线", f"{_i(metrics.get('route_count'))} 首候选", ORANGE),
     )
     chip_y = y + height - 58
@@ -501,9 +548,10 @@ def _draw_summary(im: Image.Image, draw: ImageDraw.ImageDraw, pack: EvidencePack
 def _draw_achievement_scale(draw: ImageDraw.ImageDraw, x: int, y: int, width: int, label: str, value: float | None, color: tuple[int, int, int], peer_value: float | None = None) -> None:
     label_font = _font(SIYUAN, 22)
     value_font = _font(TBFONT, 24)
-    draw.text((x, y), label, font=label_font, fill=INK)
-    bar_x = x + 170
-    bar_w = width - 315
+    label_w = 210
+    draw.text((x, y), _fit_line(label, label_font, label_w - 12), font=label_font, fill=INK)
+    bar_x = x + label_w
+    bar_w = width - label_w - 145
     bar_y = y + 11
     draw.rounded_rectangle((bar_x, bar_y, bar_x + bar_w, bar_y + 20), radius=10, fill=(225, 232, 241))
     if value is None:
@@ -528,15 +576,131 @@ def _pool_peer_avg(pack: EvidencePack, label: str) -> float | None:
     return None
 
 
+def _row_in_ds_band(row: dict[str, Any], label: str) -> bool:
+    ds = _f(row.get("ds"), -1.0)
+    ranges: dict[str, tuple[float | None, float | None]] = {
+        "<13": (None, 13.0),
+        "13.0–13.5": (13.0, 13.6),
+        "13.6–13.9": (13.6, 14.0),
+        "14.0–14.5": (14.0, 14.6),
+        "14.6–15.0": (14.6, None),
+    }
+    bounds = ranges.get(label)
+    if bounds is None:
+        return False
+    low, high = bounds
+    return (low is None or ds >= low) and (high is None or ds < high)
+
+
+def _profile_reference(pack: EvidencePack) -> dict[str, Any]:
+    """Pick the most useful high-end profile reference available to the UI."""
+    metrics = pack.metrics or {}
+    rows = list(pack.b35 or []) + list(pack.b15 or [])
+    chart_count = max(len(rows), max(0, _i(metrics.get("chart_count"))))
+    high_count = max(0, _i(metrics.get("high_count")))
+    high_avg = metrics.get("high_avg")
+    if high_count > 0 and high_avg is not None:
+        sssp_count = max(0, _i(metrics.get("high_sssp_count")))
+        return {
+            "label": "14+",
+            "average_label": "14+ 平均",
+            "average": _f(high_avg),
+            "count_label": "14+ 容量",
+            "count": high_count,
+            "share": high_count / chart_count if chart_count else 0.0,
+            "sssp_label": "14+ SSS+ 覆盖",
+            "sssp_count": sssp_count,
+            "sssp_rate": sssp_count / high_count,
+            "fallback": False,
+        }
+
+    label_ranks = {
+        "<13": 0.0,
+        "13.0–13.5": 13.0,
+        "13.6–13.9": 13.6,
+        "14.0–14.5": 14.0,
+        "14.6–15.0": 14.6,
+    }
+    valid_bands: list[tuple[float, int, dict[str, Any]]] = []
+    for index, band in enumerate(pack.ds_bands or []):
+        if not isinstance(band, dict) or _i(band.get("count")) <= 0 or band.get("avg_achievement") is None:
+            continue
+        label = str(band.get("label") or "定数段")
+        rank = _f(band.get("avg_ds"), label_ranks.get(label, -1.0))
+        valid_bands.append((rank, index, band))
+
+    if valid_bands:
+        _, _, band = max(valid_bands, key=lambda item: (item[0], item[1]))
+        label = str(band.get("label") or "定数段")
+        count = max(1, _i(band.get("count")))
+        band_rows = [row for row in rows if _row_in_ds_band(row, label)]
+        sssp_count = max(
+            0,
+            _i(band.get("sssp_count"), sum(1 for row in band_rows if _f(row.get("achievement")) >= 100.5)),
+        )
+        sssp_rate = band.get("sssp_rate")
+        if sssp_rate is None:
+            sssp_rate = sssp_count / count
+        return {
+            "label": label,
+            "average_label": f"{label} 均分",
+            "average": _f(band.get("avg_achievement")),
+            "count_label": f"{label} 样本",
+            "count": count,
+            "share": count / chart_count if chart_count else 0.0,
+            "sssp_label": f"{label} SSS+",
+            "sssp_count": sssp_count,
+            "sssp_rate": max(0.0, min(1.0, _f(sssp_rate))),
+            "fallback": True,
+        }
+
+    pool_label = "B15" if pack.b15 else "B35" if pack.b35 else "B50"
+    pool_rows = list(pack.b15 if pack.b15 else pack.b35 if pack.b35 else rows)
+    count = len(pool_rows) or chart_count
+    average = metrics.get(f"{pool_label.lower()}_avg")
+    if average is None and pool_rows:
+        values = [_f(row.get("achievement")) for row in pool_rows if _f(row.get("achievement")) > 0]
+        average = sum(values) / len(values) if values else None
+    if average is None and chart_count:
+        average = metrics.get("achievement_median")
+        average_label = "B50 中位"
+    else:
+        average_label = f"{pool_label} 平均"
+    sssp_count = sum(1 for row in pool_rows if _f(row.get("achievement")) >= 100.5)
+    if not pool_rows and pool_label == "B50":
+        sssp_count = max(0, _i(metrics.get("sssp_count")))
+    return {
+        "label": pool_label,
+        "average_label": average_label,
+        "average": _f(average) if average is not None else None,
+        "count_label": f"{pool_label} 样本",
+        "count": count,
+        "share": count / chart_count if chart_count else 0.0,
+        "sssp_label": f"{pool_label} SSS+",
+        "sssp_count": sssp_count,
+        "sssp_rate": sssp_count / count if count else 0.0,
+        "fallback": True,
+    }
+
+
 def _draw_structure_panel(im: Image.Image, draw: ImageDraw.ImageDraw, pack: EvidencePack, box: tuple[int, int, int, int]) -> None:
     x1, y1, x2, y2 = box
     _panel(im, box, radius=20, fill=CARD)
     draw.text((x1 + 28, y1 + 22), "成绩结构", font=_font(SIYUAN, 29), fill=INK)
     draw.text((x2 - 240, y1 + 28), "刻度 97%–101%", font=_font(SIYUAN, 17), fill=MUTED)
     metrics = pack.metrics or {}
+    reference = _profile_reference(pack)
     _draw_achievement_scale(draw, x1 + 28, y1 + 78, x2 - x1 - 56, "B35 平均", metrics.get("b35_avg"), BLUE, _pool_peer_avg(pack, "B35"))
     _draw_achievement_scale(draw, x1 + 28, y1 + 138, x2 - x1 - 56, "B15 平均", metrics.get("b15_avg"), ORANGE, _pool_peer_avg(pack, "B15"))
-    _draw_achievement_scale(draw, x1 + 28, y1 + 198, x2 - x1 - 56, "14+ 平均", metrics.get("high_avg"), GREEN)
+    _draw_achievement_scale(
+        draw,
+        x1 + 28,
+        y1 + 198,
+        x2 - x1 - 56,
+        str(reference["average_label"]),
+        reference.get("average"),
+        GREEN,
+    )
     b35_ra = sum(_i(item.get("ra")) for item in pack.b35)
     b15_ra = sum(_i(item.get("ra")) for item in pack.b15)
     total = max(1, b35_ra + b15_ra)
@@ -588,20 +752,30 @@ def _draw_peer_panel(im: Image.Image, draw: ImageDraw.ImageDraw, pack: EvidenceP
         bucket_text = str(peer.get("bucket") or "同段")
         draw.text((x1 + 28, y1 + 70), bucket_text, font=_value_font(bucket_text, 22), fill=MUTED)
         arpi = _f(peer.get("arpi"))
-        arpi_color = GREEN if arpi >= 0 else RED
-        draw.text((x1 + 28, y1 + 104), f"ARPI {arpi:+.4f} pp", font=_font(TBFONT, 35), fill=arpi_color)
         position = str(peer.get("position") or "未知")
+        position_color = _peer_position_color(peer)
+        metric_label = "ARPI" if peer.get("distribution_kind") == "player_arpi" else "匹配谱面平均差"
+        draw.text((x1 + 28, y1 + 100), metric_label, font=_font(SIYUAN, 16), fill=MUTED)
+        metric_text = f"{arpi:+.4f} pp"
+        draw.text((x1 + 28, y1 + 120), metric_text, font=_value_font(metric_text, 31), fill=position_color)
         position_w = min(190, max(105, int(_text_width(_font(SIYUAN, 21), position)) + 34))
         position_known = position not in {"", "未知"}
-        position_fill = GREEN_SOFT if arpi >= 0 else RED_SOFT
-        position_color = arpi_color
+        position_fill = BLUE_SOFT
+        if position_color == GREEN:
+            position_fill = GREEN_SOFT
+        elif position_color == RED:
+            position_fill = RED_SOFT
         if not position_known:
             position_fill = (238, 243, 248)
             position_color = MUTED
         draw.rounded_rectangle((x2 - 28 - position_w, y1 + 101, x2 - 28, y1 + 143), radius=14, fill=position_fill)
         draw.text((x2 - 28 - position_w // 2, y1 + 122), position, font=_font(SIYUAN, 21), fill=position_color, anchor="mm")
         p25, median, p75 = peer.get("p25"), peer.get("median"), peer.get("p75")
-        rail_x, rail_y, rail_w = x1 + 32, y1 + 176, x2 - x1 - 64
+        distribution_label = str(peer.get("distribution_label") or "同段参考分布")
+        distribution_count = max(0, _i(peer.get("distribution_count")))
+        distribution_text = f"{distribution_label} · n={distribution_count}" if distribution_count else distribution_label
+        draw.text((x1 + 30, y1 + 158), _fit_line(distribution_text, _font(SIYUAN, 15), x2 - x1 - 60), font=_font(SIYUAN, 15), fill=MUTED)
+        rail_x, rail_y, rail_w = x1 + 32, y1 + 186, x2 - x1 - 64
         draw.rounded_rectangle((rail_x, rail_y, rail_x + rail_w, rail_y + 15), radius=7, fill=(218, 228, 240))
         values = [_f(value) for value in (p25, median, p75, arpi) if value is not None]
         low = min(values, default=-0.5)
@@ -614,7 +788,7 @@ def _draw_peer_panel(im: Image.Image, draw: ImageDraw.ImageDraw, pack: EvidenceP
             px = rail_x + int(rail_w * (_f(value) - low) / max(0.001, high - low))
             draw.line((px, rail_y - 6, px, rail_y + 21), fill=color, width=line_width)
         player_x = rail_x + int(rail_w * (arpi - low) / max(0.001, high - low))
-        draw.ellipse((player_x - 8, rail_y - 1, player_x + 8, rail_y + 15), fill=arpi_color, outline=WHITE, width=2)
+        draw.ellipse((player_x - 8, rail_y - 1, player_x + 8, rail_y + 15), fill=position_color, outline=WHITE, width=2)
         p25_text = f"P25 {_f(p25):+.4f}" if p25 is not None else "P25 --"
         median_text = f"中位 {_f(median):+.4f}" if median is not None else "中位 --"
         p75_text = f"P75 {_f(p75):+.4f}" if p75 is not None else "P75 --"
@@ -623,7 +797,7 @@ def _draw_peer_panel(im: Image.Image, draw: ImageDraw.ImageDraw, pack: EvidenceP
         draw.text((rail_x + rail_w // 2, rail_y + 27), median_text, font=scale_font, fill=BLUE, anchor="ma")
         draw.text((rail_x + rail_w, rail_y + 27), p75_text, font=scale_font, fill=MUTED, anchor="ra")
         coverage = max(0.0, min(1.0, _f(peer.get("coverage"))))
-        progress_y = y1 + 248
+        progress_y = y1 + 258
         draw.text((x1 + 28, progress_y), "谱面覆盖", font=_font(SIYUAN, 19), fill=MUTED)
         progress_x = x1 + 142
         progress_w = x2 - x1 - 170
@@ -661,8 +835,6 @@ def _draw_profile_kpis(im: Image.Image, draw: ImageDraw.ImageDraw, pack: Evidenc
     chart_count = max(0, _i(metrics.get("chart_count")))
     sss_count = max(0, _i(metrics.get("sss_count")))
     sssp_count = max(0, _i(metrics.get("sssp_count")))
-    high_count = max(0, _i(metrics.get("high_count")))
-    high_sssp_count = max(0, _i(metrics.get("high_sssp_count")))
     floor_gap = metrics.get("floor_gap")
     bottom10_avg = metrics.get("bottom10_avg")
     trend = pack.trend or {}
@@ -671,13 +843,16 @@ def _draw_profile_kpis(im: Image.Image, draw: ImageDraw.ImageDraw, pack: Evidenc
 
     sss_rate = _f(metrics.get("sss_rate"))
     sssp_rate = _f(metrics.get("sssp_rate"))
-    high_rate = _f(metrics.get("high_rate"))
-    high_sssp_rate = _f(metrics.get("high_sssp_rate"))
+    reference = _profile_reference(pack)
+    reference_count = max(0, _i(reference.get("count")))
+    reference_share = max(0.0, min(1.0, _f(reference.get("share"))))
+    reference_sssp_count = max(0, _i(reference.get("sssp_count")))
+    reference_sssp_rate = max(0.0, min(1.0, _f(reference.get("sssp_rate"))))
     items = (
         ("B50 SSS 覆盖", f"{sss_count}/{chart_count} · {sss_rate * 100:.0f}%" if chart_count else "暂无", GREEN if sss_rate >= 0.8 else ORANGE),
         ("B50 SSS+ 覆盖", f"{sssp_count}/{chart_count} · {sssp_rate * 100:.0f}%" if chart_count else "暂无", GREEN if sssp_rate >= 0.5 else BLUE),
-        ("14+ 容量", f"{high_count} 首 · {high_rate * 100:.0f}%" if chart_count else "暂无", GREEN if high_rate >= 0.2 else ORANGE),
-        ("14+ SSS+ 覆盖", f"{high_sssp_count}/{high_count} · {high_sssp_rate * 100:.0f}%" if high_count else "暂无 14+", GREEN if high_sssp_rate >= 0.5 else RED),
+        (str(reference["count_label"]), f"{reference_count} 首 · {reference_share * 100:.0f}%" if chart_count else "暂无", GREEN if reference_share >= 0.2 else ORANGE),
+        (str(reference["sssp_label"]), f"{reference_sssp_count}/{reference_count} · {reference_sssp_rate * 100:.0f}%" if reference_count else "暂无", GREEN if reference_sssp_rate >= 0.5 else RED),
         ("B15 - B35 地板", f"{_i(floor_gap):+d} RA" if floor_gap is not None else "暂无双池", GREEN if _i(floor_gap) >= 0 else RED),
         ("尾部 10 首均分", f"{_f(bottom10_avg):.4f}%" if bottom10_avg is not None else "暂无", GREEN if _f(bottom10_avg) >= 100.0 else ORANGE),
         ("B50 达成率中位", f"{_f(metrics.get('achievement_median')):.4f}%" if chart_count else "暂无", BLUE),
@@ -721,6 +896,171 @@ def _draw_diagnostics(im: Image.Image, draw: ImageDraw.ImageDraw, pack: Evidence
     kpi_y = y + PROFILE_MAIN_H + 18
     _draw_profile_kpis(im, draw, pack, (CONTENT_X, kpi_y, CONTENT_R, kpi_y + PROFILE_KPI_H))
     return start + 104 + PROFILE_BODY_H
+
+
+def _draw_dashed_line(
+    draw: ImageDraw.ImageDraw,
+    start: tuple[int, int],
+    end: tuple[int, int],
+    *,
+    fill: tuple[int, int, int],
+    width: int = 3,
+    dash: int = 12,
+    gap: int = 8,
+) -> None:
+    dx = end[0] - start[0]
+    dy = end[1] - start[1]
+    length = math.hypot(dx, dy)
+    if length <= 0:
+        return
+    distance = 0.0
+    while distance < length:
+        segment_end = min(length, distance + dash)
+        ratio1 = distance / length
+        ratio2 = segment_end / length
+        draw.line(
+            (
+                start[0] + dx * ratio1,
+                start[1] + dy * ratio1,
+                start[0] + dx * ratio2,
+                start[1] + dy * ratio2,
+            ),
+            fill=fill,
+            width=width,
+        )
+        distance += dash + gap
+
+
+def _trend_quality_text(value: Any) -> str:
+    return {
+        "high": "高",
+        "medium": "中",
+        "low": "低",
+        "insufficient": "不足",
+    }.get(str(value or ""), "不足")
+
+
+def _forecast_unavailable_text(reason: Any) -> str:
+    return {
+        "insufficient_history": "历史样本不足，暂不预测",
+        "insufficient_slope_data": "近期点位不足，暂不预测",
+        "rating_reset_detected": "检测到 Rating 重置，停止外推",
+        "negative_rating_trend": "近期净回落，停止外推",
+    }.get(str(reason or ""), "当前不提供预测")
+
+
+def _draw_trend(
+    im: Image.Image,
+    draw: ImageDraw.ImageDraw,
+    pack: EvidencePack,
+    layout: dict[str, Any],
+    y: int,
+) -> int:
+    start = y
+    if not layout.get("trend_h"):
+        return start
+    trend = pack.trend or {}
+    points = list(layout.get("trend_points") or [])
+    y = _section(draw, y, "成长趋势", "近 30 日 Rating 快照实线 · 7 日统计估算虚线；预测只作参考，不是涨分承诺")
+    body_h = int(layout["trend_h"]) - 104
+    _panel(im, (CONTENT_X, y, CONTENT_R, y + body_h), radius=20, fill=(248, 251, 255, 240))
+
+    chart_x = CONTENT_X + 28
+    chart_w = 930
+    plot_x = chart_x + 68
+    plot_y = y + 58
+    plot_w = chart_w - 86
+    plot_h = 190
+    right_x = chart_x + chart_w + 48
+    divider_x = right_x - 24
+    draw.line((divider_x, y + 22, divider_x, y + body_h - 22), fill=LINE, width=2)
+
+    forecast = trend.get("forecast") or {}
+    forecast_available = bool(forecast.get("available"))
+    first_date = points[0]["date"]
+    last_date = points[-1]["date"]
+    span_days = max(1, (last_date - first_date).days)
+    history_w = plot_w - 132 if forecast_available else plot_w
+    x_for = lambda point_date: plot_x + int(history_w * (point_date - first_date).days / span_days)
+
+    ratings = [int(point["rating"]) for point in points]
+    if forecast_available:
+        ratings.extend([
+            _i(forecast.get("rating_low")),
+            _i(forecast.get("rating_mid")),
+            _i(forecast.get("rating_high")),
+        ])
+    rating_min = min(ratings)
+    rating_max = max(ratings)
+    padding = max(5, int(math.ceil(max(1, rating_max - rating_min) * 0.18)))
+    scale_min = rating_min - padding
+    scale_max = rating_max + padding
+    scale_span = max(1, scale_max - scale_min)
+    y_for = lambda rating: plot_y + plot_h - int(plot_h * (int(rating) - scale_min) / scale_span)
+
+    draw.text((plot_x, y + 22), "历史快照", font=_font(SIYUAN, 17), fill=BLUE)
+    draw.line((plot_x + 88, y + 32, plot_x + 128, y + 32), fill=BLUE, width=4)
+    if forecast_available:
+        draw.text((plot_x + 160, y + 22), "7 日估算", font=_font(SIYUAN, 17), fill=ORANGE)
+        _draw_dashed_line(draw, (plot_x + 242, y + 32), (plot_x + 286, y + 32), fill=ORANGE, width=3)
+
+    for index in range(4):
+        ratio = index / 3
+        grid_y = plot_y + int(plot_h * ratio)
+        tick = round(scale_max - scale_span * ratio)
+        draw.line((plot_x, grid_y, plot_x + plot_w, grid_y), fill=(224, 232, 241), width=1)
+        draw.text((plot_x - 12, grid_y), str(tick), font=_font(TBFONT, 15), fill=MUTED, anchor="rm")
+
+    history_coords = [(x_for(point["date"]), y_for(point["rating"])) for point in points]
+    if forecast_available:
+        last_x, last_y = history_coords[-1]
+        future_x = plot_x + plot_w
+        low_y = y_for(forecast.get("rating_low"))
+        mid_y = y_for(forecast.get("rating_mid"))
+        high_y = y_for(forecast.get("rating_high"))
+        draw.polygon(((last_x, last_y), (future_x, high_y), (future_x, low_y)), fill=ORANGE_SOFT)
+        draw.line((future_x, high_y, future_x, low_y), fill=ORANGE, width=3)
+        _draw_dashed_line(draw, (last_x, last_y), (future_x, mid_y), fill=ORANGE, width=4)
+        draw.ellipse((future_x - 6, mid_y - 6, future_x + 6, mid_y + 6), fill=ORANGE, outline=WHITE, width=2)
+        gain_text = f"+{_i(forecast.get('gain_mid'))}"
+        draw.text((future_x - 4, max(plot_y + 4, mid_y - 28)), gain_text, font=_font(TBFONT, 17), fill=ORANGE, anchor="ra")
+
+    if len(history_coords) >= 2:
+        draw.line(history_coords, fill=BLUE, width=5, joint="curve")
+    for point_x, point_y in history_coords:
+        draw.ellipse((point_x - 5, point_y - 5, point_x + 5, point_y + 5), fill=WHITE, outline=BLUE, width=3)
+    draw.text((plot_x, plot_y + plot_h + 15), first_date.strftime("%m-%d"), font=_font(TBFONT, 16), fill=MUTED)
+    draw.text((plot_x + history_w, plot_y + plot_h + 15), last_date.strftime("%m-%d"), font=_font(TBFONT, 16), fill=MUTED, anchor="ra")
+    if forecast_available:
+        forecast_date = _trend_date(forecast.get("date"))
+        if forecast_date is not None:
+            draw.text((plot_x + plot_w, plot_y + plot_h + 15), forecast_date.strftime("%m-%d"), font=_font(TBFONT, 16), fill=ORANGE, anchor="ra")
+
+    status = str(trend.get("status") or "")
+    status_color = GREEN if status in {"rising_fast", "rising", "steady"} else RED if status in {"reset", "volatile"} else BLUE
+    draw.text((right_x, y + 22), _fit_line(str(trend.get("status_text") or "近期趋势"), _font(SIYUAN, 23), CONTENT_R - right_x - 24), font=_font(SIYUAN, 23), fill=status_color)
+    average_per_day = trend.get("average_per_day")
+    forecast_value = (
+        f"{forecast.get('rating_mid')} · {forecast.get('rating_low')}–{forecast.get('rating_high')}"
+        if forecast_available else "暂不预测"
+    )
+    summary_rows = (
+        (f"近 {_i(trend.get('span_days'))} 日变化", f"{_i(trend.get('delta')):+d} Rating", status_color),
+        ("日均变化", f"{_f(average_per_day):+.2f} / 日" if average_per_day is not None else "--", BLUE),
+        ("历史质量", f"{_trend_quality_text(trend.get('quality'))} · {_i(trend.get('point_count'))} 点", BLUE),
+        ("7 日参考", forecast_value, ORANGE if forecast_available else MUTED),
+    )
+    row_y = y + 72
+    value_w = CONTENT_R - right_x - 24
+    for label, value, color in summary_rows:
+        draw.text((right_x, row_y), label, font=_font(SIYUAN, 17), fill=MUTED)
+        draw.text((CONTENT_R - 24, row_y - 2), _fit_line(value, _value_font(value, 20), value_w - 118), font=_value_font(value, 20), fill=color, anchor="ra")
+        row_y += 50
+
+    note = str(forecast.get("note") or "") if forecast_available else _forecast_unavailable_text(forecast.get("reason"))
+    note_lines = _wrap_lines(note, _font(SIYUAN, 16), CONTENT_R - right_x - 24, max_lines=2)
+    _draw_lines(draw, note_lines, right_x, y + 278, _font(SIYUAN, 16), MUTED, 23)
+    return start + int(layout["trend_h"])
 
 
 def _draw_ds_table(im: Image.Image, draw: ImageDraw.ImageDraw, pack: EvidencePack, layout: dict[str, Any], y: int) -> int:
@@ -944,11 +1284,26 @@ def _draw_method(im: Image.Image, draw: ImageDraw.ImageDraw, pack: EvidencePack,
     draw.text((CONTENT_X + 28, y + 22), "数据口径", font=_font(SIYUAN, 24), fill=BLUE)
     peer = pack.peer or {}
     if peer.get("available"):
-        peer_line = f"同段 {peer.get('bucket')} · 玩家 {_i(peer.get('player_count'))} · 匹配 {_i(peer.get('matched'))}/{_i(pack.metrics.get('chart_count'))} · {peer.get('confidence_text')}"
+        peer_line = (
+            f"同段 {peer.get('bucket')} · 玩家 {_i(peer.get('player_count'))} · "
+            f"匹配 {_i(peer.get('matched'))}/{_i(pack.metrics.get('chart_count'))} · "
+            f"{peer.get('distribution_label') or '同段参考'} · {peer.get('confidence_text')}"
+        )
     else:
         peer_line = "同段聚合不可用：本页不生成同段定论，仅展示个人成绩结构。"
-    method = f"{peer_line}\n推荐定数上限 {_f(pack.metrics.get('recommendation_ds_cap')):.2f}；路线收益为当前快照下的逐槽模拟值，不是涨分承诺。"
-    lines = _wrap_lines(method, _font(SIYUAN, 20), CONTENT_W - 56, max_lines=3)
+    trend = pack.trend or {}
+    forecast = trend.get("forecast") or {}
+    trend_line = ""
+    if trend.get("available"):
+        trend_line = (
+            f"\n趋势使用近 30 日本地成绩快照；7 日估算"
+            f"{'已按质量折减并给出区间' if forecast.get('available') else '因样本或异常保护而停用'}，不是涨分承诺。"
+        )
+    method = (
+        f"{peer_line}{trend_line}\n推荐定数上限 {_f(pack.metrics.get('recommendation_ds_cap')):.2f}；"
+        "路线收益为当前快照下的逐槽模拟值，不是涨分承诺。"
+    )
+    lines = _wrap_lines(method, _font(SIYUAN, 20), CONTENT_W - 56, max_lines=4)
     _draw_lines(draw, lines, CONTENT_X + 28, y + 60, _font(SIYUAN, 20), MUTED, 30)
     return y + height
 
@@ -981,6 +1336,9 @@ def render_report(pack: EvidencePack, report: RoastReport) -> io.BytesIO:
     y += 24
     y = _draw_diagnostics(im, draw, pack, y)
     y += 24
+    if layout.get("trend_h"):
+        y = _draw_trend(im, draw, pack, layout, y)
+        y += 24
     y = _draw_ds_table(im, draw, pack, layout, y)
     y += 24
     y = _draw_evidence(im, draw, layout, y)

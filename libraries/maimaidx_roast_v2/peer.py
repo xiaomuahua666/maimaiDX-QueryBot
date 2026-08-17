@@ -17,6 +17,15 @@ def _f(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _optional_f(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _i(value: Any, default: int = 0) -> int:
     try:
         return int(value)
@@ -56,6 +65,54 @@ def _age_days(value: Any) -> float | None:
         return None
 
 
+def _percentile(values: list[float], p: float) -> float:
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    position = (len(ordered) - 1) * max(0.0, min(1.0, p))
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    ratio = position - lower
+    return ordered[lower] * (1 - ratio) + ordered[upper] * ratio
+
+
+def _complete_arpi_distribution(bucket: dict[str, Any]) -> tuple[float, float, float] | None:
+    distribution = bucket.get("arpi_distribution") or {}
+    if not isinstance(distribution, dict):
+        return None
+    distribution_count = _i(distribution.get("count"))
+    p25 = _optional_f(distribution.get("p25"))
+    median = _optional_f(distribution.get("median"))
+    p75 = _optional_f(distribution.get("p75"))
+    if distribution_count < 20 or p25 is None or median is None or p75 is None or not p25 <= median <= p75:
+        return None
+    return p25, median, p75
+
+
+def _gap_position(arpi: float, confidence: str, matched: int) -> tuple[str, str]:
+    # 小差值很容易受单次成绩波动影响。置信越低，保持“接近同段”的
+    # 中性区间越宽，避免把少量匹配谱面包装成整体玩家排名。
+    neutral_margin = {
+        "high": 0.03,
+        "medium": 0.05,
+        "low": 0.08,
+        "unavailable": 0.08,
+    }.get(confidence, 0.08)
+    if arpi > neutral_margin:
+        position = "平均高于同段"
+    elif arpi < -neutral_margin:
+        position = "平均低于同段"
+    else:
+        position = "接近同段"
+    if confidence == "high":
+        qualifier = "匹配覆盖充足，可作为同段方向参考"
+    elif confidence == "medium":
+        qualifier = "仅作方向参考，细小差距不作定论"
+    else:
+        qualifier = f"只描述已匹配的 {matched} 张谱面，不能外推为全部同段玩家排名"
+    return position, f"匹配谱面平均差 {arpi:+.4f} pp，{position}；{qualifier}"
+
+
 def _confidence(player_count: int, matched: int, coverage: float, *, stale: bool) -> tuple[str, str]:
     if player_count >= 50 and matched >= 35 and coverage >= 0.7:
         level, text = "high", "高置信：样本和谱面覆盖充足"
@@ -89,6 +146,13 @@ def attach_peer_profile(rows: list[dict[str, Any]], rating: int, peer_stats: dic
         "confidence_text": "不可用：没有足够同段聚合数据",
         "position": "未知",
         "position_detail": "同段样本不足，跳过同段结论",
+        "distribution_kind": "none",
+        "distribution_label": "暂无分布",
+        "distribution_count": 0,
+        "position_basis": "none",
+        "p25": None,
+        "median": None,
+        "p75": None,
         "generated_at": "",
         "age_days": None,
         "stale": False,
@@ -153,17 +217,45 @@ def attach_peer_profile(rows: list[dict[str, Any]], rating: int, peer_stats: dic
     avg_peer = sum(matched_peers) / matched if matched else None
     avg_appear = sum(appearance) / len(appearance) if appearance else None
     distribution = raw_bucket.get("arpi_distribution") or {}
-    p25 = _f(distribution.get("p25"), 0.0)
-    median = _f(distribution.get("median"), 0.0)
-    p75 = _f(distribution.get("p75"), 0.0)
-    if matched and distribution.get("median") is not None:
+    player_distribution = _complete_arpi_distribution(raw_bucket)
+    if matched and player_distribution is not None:
+        p25, median, p75 = player_distribution
+        distribution_kind = "player_arpi"
+        distribution_label = "同段玩家 ARPI 分布"
+        distribution_count = _i(distribution.get("count"))
+        position_basis = "player_arpi_quartile"
         if arpi >= p75:
-            position, detail = "上四分位", f"ARPI {arpi:+.4f}，高于同段大多数玩家"
+            position = "上四分位"
         elif arpi <= p25:
-            position, detail = "下四分位", f"ARPI {arpi:+.4f}，低于同段大多数玩家"
+            position = "下四分位"
         else:
-            position, detail = "中位区间", f"ARPI {arpi:+.4f}，接近同段常态"
+            position = "中位区间"
+        detail = f"ARPI {arpi:+.4f}，落在同段玩家 ARPI 分布的{position}"
+        if distribution_count < 20 or confidence in {"low", "unavailable"}:
+            detail += "；玩家分布或谱面覆盖有限，仅作弱参考"
+        elif confidence == "medium":
+            detail += "；可作方向参考，细小差距不作定论"
+        elif position == "上四分位":
+            detail += "，高于同段大多数玩家"
+        elif position == "下四分位":
+            detail += "，低于同段大多数玩家"
+        else:
+            detail += "，接近同段常态"
+    elif matched:
+        p25 = _percentile(matched_gaps, 0.25)
+        median = _percentile(matched_gaps, 0.5)
+        p75 = _percentile(matched_gaps, 0.75)
+        distribution_kind = "chart_peer_gap"
+        distribution_label = "匹配谱面差值分布"
+        distribution_count = matched
+        position_basis = "matched_chart_gap"
+        position, detail = _gap_position(arpi, confidence, matched)
     else:
+        p25 = median = p75 = None
+        distribution_kind = "none"
+        distribution_label = "暂无分布"
+        distribution_count = 0
+        position_basis = "none"
         position, detail = "未知", "同段 ARPI 样本不足，跳过分位结论"
 
     schema = "typed" if typed_matches and not legacy_matches else "legacy" if legacy_matches else "none"
@@ -181,9 +273,13 @@ def attach_peer_profile(rows: list[dict[str, Any]], rating: int, peer_stats: dic
         "confidence_text": confidence_text,
         "position": position,
         "position_detail": detail,
-        "p25": round(p25, 4) if distribution.get("p25") is not None else None,
-        "median": round(median, 4) if distribution.get("median") is not None else None,
-        "p75": round(p75, 4) if distribution.get("p75") is not None else None,
+        "distribution_kind": distribution_kind,
+        "distribution_label": distribution_label,
+        "distribution_count": distribution_count,
+        "position_basis": position_basis,
+        "p25": round(p25, 4) if p25 is not None else None,
+        "median": round(median, 4) if median is not None else None,
+        "p75": round(p75, 4) if p75 is not None else None,
         "generated_at": generated_at,
         "age_days": round(age_days, 1) if age_days is not None else None,
         "stale": stale,
