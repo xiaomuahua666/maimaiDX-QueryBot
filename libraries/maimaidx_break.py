@@ -2702,6 +2702,7 @@ class BreakDatabase:
             'days': max(1, int(days)),
             'calls': 0,
             'usage_available_calls': 0,
+            'cache_hit_calls': 0,
             'input_tokens': 0,
             'output_tokens': 0,
             'total_tokens': 0,
@@ -2715,11 +2716,20 @@ class BreakDatabase:
             result['calls'] += 1
             if meta.get('available'):
                 result['usage_available_calls'] += 1
+            try:
+                if int(meta.get('cached_input_tokens') or 0) > 0:
+                    result['cache_hit_calls'] += 1
+            except (TypeError, ValueError):
+                pass
             for key in ('input_tokens', 'output_tokens', 'total_tokens', 'cached_input_tokens'):
                 try:
                     result[key] += max(0, int(meta.get(key) or 0))
                 except (TypeError, ValueError):
                     pass
+        input_tokens = int(result['input_tokens'])
+        result['cached_input_rate'] = round(
+            int(result['cached_input_tokens']) / input_tokens, 4
+        ) if input_tokens > 0 else 0.0
         return result
 
     def list_break_calls(
@@ -3667,6 +3677,7 @@ def format_analysis_cost_line(
     balance: Optional[int] = None,
     input_tokens: int = 0,
     output_tokens: int = 0,
+    cached_input_tokens: int = 0,
     usage_available: bool = True,
 ) -> str:
     """向用户展示 Token 用量、实际收费和余额。"""
@@ -3675,6 +3686,10 @@ def format_analysis_cost_line(
     )
     if usage_available:
         detail = f'输入 {max(0, input_tokens):,} / 输出 {max(0, output_tokens):,} Token'
+        cached = min(max(0, cached_input_tokens), max(0, input_tokens))
+        if cached > 0:
+            rate = cached / max(1, input_tokens)
+            detail += f'，模型缓存 {cached:,}（{rate:.1%}）'
     else:
         detail = '模型未返回 Token 用量，按兜底价计费'
     text = f'💳 锐评消耗 {cost} BREAK（{detail}）'

@@ -581,6 +581,8 @@ def analysis_tokens_card(report: dict[str, Any]) -> dict:
         f"输出 Token：**{_fmt_count(report.get('output_tokens'))}**\n"
         f"总 Token：**{_fmt_count(report.get('total_tokens'))}**\n"
         f"缓存输入：**{_fmt_count(report.get('cached_input_tokens'))}**\n"
+        f"缓存输入占比：**{float(report.get('cached_input_rate') or 0):.1%}**\n"
+        f"命中缓存的调用：{report.get('cache_hit_calls', 0)} 次\n"
         f"有 usage 的调用：{report.get('usage_available_calls', 0)} 次"
     )
     return _card("今日锐评 Token 消耗", content, template="yellow")

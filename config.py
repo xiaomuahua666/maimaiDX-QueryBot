@@ -207,13 +207,15 @@ class Config(BaseModel):
     # 锐评涉及多个外部服务，必须有硬超时，避免 Matcher 永久停在“处理中”。
     b50_reaction_timeout_seconds: float = 2.0
     # 锐评是模型 + 制图 + QQ 媒体发送的重任务；满载时快速拒绝，避免无限堆积。
-    b50_analysis_max_concurrency: int = 6
+    b50_analysis_max_concurrency: int = 12
     b50_analysis_queue_timeout_seconds: float = 2.0
     b50_fetch_timeout_seconds: float = 45.0
     b50_llm_timeout_seconds: float = 180.0
     b50_llm_max_retries: int = 0
     b50_llm_max_tokens: int = 6144
     b50_llm_reasoning_effort: str = 'low'
+    # 相同稳定前缀固定路由到同一 Prompt Cache 分区；不兼容的网关会自动回退。
+    b50_llm_prompt_cache_key: str = 'maimaidx-b50-roast-v2'
     b50_send_timeout_seconds: float = 30.0
     b50_assets_path: str = ''
 

@@ -51,10 +51,10 @@ _peer_stats = None
 
 try:
     _ANALYSIS_MAX_CONCURRENCY = max(
-        1, int(getattr(maiconfig, 'b50_analysis_max_concurrency', 6) or 6)
+        1, int(getattr(maiconfig, 'b50_analysis_max_concurrency', 12) or 12)
     )
 except (TypeError, ValueError):
-    _ANALYSIS_MAX_CONCURRENCY = 6
+    _ANALYSIS_MAX_CONCURRENCY = 12
 _ANALYSIS_SEMAPHORE = asyncio.Semaphore(_ANALYSIS_MAX_CONCURRENCY)
 
 _ANALYSIS_SHORTCUTS = (
@@ -280,8 +280,10 @@ async def _handle_impl(matcher: Matcher, bot: Bot, event: MessageEvent, args: Me
     except Exception as e:
         log.debug(f'[b50_analysis] 读取推分趋势失败 qq={legacy_qq}: {e}')
 
-    peer_stats = get_peer_stats()
-    context = build_context(b50_data, peer_stats)
+    # peer_stats 解压和 B50 证据聚合都属于 CPU/文件任务，放到工作线程，
+    # 让 NoneBot 事件循环继续接收消息和处理轻量命令。
+    peer_stats = await asyncio.to_thread(get_peer_stats)
+    context = await asyncio.to_thread(build_context, b50_data, peer_stats)
     context['player']['qq'] = str(legacy_qq)
 
     try:
@@ -425,6 +427,7 @@ async def _handle_impl(matcher: Matcher, bot: Bot, event: MessageEvent, args: Me
                 balance=balance,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
+                cached_input_tokens=int(token_usage.get('cached_input_tokens') or 0),
                 usage_available=usage_available,
             )
         )

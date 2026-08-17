@@ -787,9 +787,12 @@ async def prepare_render_cache(context: dict, assets_path: str) -> None:
             try:
                 resp = await client.get(url)
                 resp.raise_for_status()
-                tmp = path.with_suffix(path.suffix + ".part")
-                tmp.write_bytes(resp.content)
-                tmp.replace(path)
+                def persist() -> None:
+                    tmp = path.with_suffix(path.suffix + ".part")
+                    tmp.write_bytes(resp.content)
+                    tmp.replace(path)
+
+                await asyncio.to_thread(persist)
             except Exception:
                 try:
                     path.with_suffix(path.suffix + ".part").unlink(missing_ok=True)

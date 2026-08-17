@@ -6,7 +6,7 @@ import re
 from typing import Any
 
 from loguru import logger as log
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, BadRequestError
 
 _FORBIDDEN_OUTPUT_PATTERNS = [
     "综上所述", "整体来看", "值得称赞", "值得一提", "由此可见", "不难看出",
@@ -830,8 +830,16 @@ def _fmt(context: dict) -> str:
 async def generate_analysis(
     context: dict, config: Any, style: str = ""
 ) -> tuple[str, dict[str, Any]]:
-    style_instruction = f"\n- 请用以下风格/语气/需求进行锐评：{style}" if style else ""
-    system = _SYSTEM.format(style_instruction=style_instruction)
+    # Keep the system message byte-for-byte stable. User-selected style belongs
+    # in the dynamic user message so compatible providers can reuse the much
+    # larger system-prefix cache across different users and styles.
+    system = _SYSTEM.format(style_instruction="")
+    normalized_style = " ".join(str(style or "").split())
+    style_instruction = (
+        f"\n\n本次表达风格/关注点：{normalized_style}"
+        if normalized_style
+        else ""
+    )
 
     client = AsyncOpenAI(
         api_key=config.b50_llm_key,
@@ -839,20 +847,52 @@ async def generate_analysis(
         timeout=max(1.0, float(getattr(config, "b50_llm_timeout_seconds", 180.0))),
         max_retries=max(0, int(getattr(config, "b50_llm_max_retries", 0))),
     )
-    resp = await client.chat.completions.create(
+    request: dict[str, Any] = dict(
         model=config.b50_llm_model,
         messages=[
             {"role": "system", "content": system},
             {
                 "role": "user",
-                "content": "本次唯一事实数据如下。只能据此锐评：\n\n" + _fmt(context),
+                "content": (
+                    "本次唯一事实数据如下。只能据此锐评：\n\n"
+                    + _fmt(context)
+                    + style_instruction
+                ),
             },
         ],
         temperature=0.35,
         max_tokens=max(512, int(getattr(config, "b50_llm_max_tokens", 6144))),
         reasoning_effort=_reasoning_effort(config),
     )
+    prompt_cache_key = str(
+        getattr(config, "b50_llm_prompt_cache_key", "maimaidx-b50-roast-v2") or ""
+    ).strip()
+    if prompt_cache_key:
+        # extra_body keeps compatibility with older openai 1.x clients whose
+        # typed create() signature predates prompt_cache_key.
+        request["extra_body"] = {"prompt_cache_key": prompt_cache_key}
+    try:
+        resp = await client.chat.completions.create(**request)
+    except BadRequestError as exc:
+        detail = str(exc).lower()
+        if not prompt_cache_key or not any(
+            marker in detail
+            for marker in ("prompt_cache_key", "unknown field", "unknown parameter")
+        ):
+            raise
+        log.warning(
+            "[b50_analysis] 当前兼容网关不支持 prompt_cache_key，已回退普通请求"
+        )
+        request.pop("extra_body", None)
+        resp = await client.chat.completions.create(**request)
     token_usage = _response_token_usage(resp)
+    cached_input_tokens = int(token_usage.get("cached_input_tokens") or 0)
+    input_tokens = int(token_usage.get("input_tokens") or 0)
+    cache_rate = cached_input_tokens / input_tokens if input_tokens > 0 else 0.0
+    log.info(
+        "[b50_analysis] 模型 Prompt Cache "
+        f"cached={cached_input_tokens} input={input_tokens} rate={cache_rate:.1%}"
+    )
     choice = resp.choices[0]
     content = str(_message_field(choice.message, "content") or "").strip()
     finish_reason = _finish_reason(resp)
@@ -873,7 +913,7 @@ async def generate_analysis(
     fallback_push = _select_push_recommendations(
         context.get("push_candidates") or [],
         context.get("config_focus") or {},
-        style,
+        normalized_style,
         3,
     )
     cleaned["push_recommendations"] = _merge_push_recommendations(

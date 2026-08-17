@@ -63,9 +63,11 @@ line = pricing["format_analysis_cost_line"](
     balance=21,
     input_tokens=16000,
     output_tokens=4000,
+    cached_input_tokens=12000,
 )
 assert "锐评消耗 8 BREAK" in line
 assert "输入 16,000 / 输出 4,000 Token" in line
+assert "模型缓存 12,000（75.0%）" in line
 assert "输入每 4,000 Token + 输出每 1,000 Token" in line
 assert "基础价合计向上取整后 ×1" in line
 assert "最低 2、最高 20" in line
