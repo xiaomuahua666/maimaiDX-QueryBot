@@ -62,7 +62,6 @@ from ..libraries.maimaidx_qrcode_util import (
     extract_sgwcmaid_from_image_segments,
     extract_sgwcmaid_qrcode,
 )
-from ..libraries.maimaidx_score_filter import filter_anomalous_scores
 from ..libraries.maimaidx_pending_session import finish_pending, session_key, track_event
 from ..libraries.maimaidx_processing_time import (
     format_processing_estimate,
@@ -2705,9 +2704,7 @@ async def _upload(
             qqid = int(key)
         except ValueError:
             qqid = 0
-        pc_records = filter_anomalous_scores(
-            pc_db.get_user_play_counts(qqid) if qqid else []
-        )
+        pc_records = pc_db.get_user_play_counts(qqid) if qqid else []
         fresh_seconds = float(getattr(maiconfig, 'awmc_lxns_pc_cache_seconds', 600) or 600)
         fresh_pc = bool(
             pc_records
@@ -2741,7 +2738,6 @@ async def _upload(
                 sw_api.get_user_music(qrcode, timeout=music_timeout, retry_count=0),
                 timeout=music_timeout + 1.0,
             )
-            raw_scores = filter_anomalous_scores(raw_scores)
             lxns_scores = convert_sega_music_scores(raw_scores)
             if not lxns_scores:
                 raise RuntimeError("机台返回的全量成绩为空或无法转换")

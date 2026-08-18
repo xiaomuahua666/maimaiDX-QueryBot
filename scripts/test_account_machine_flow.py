@@ -291,6 +291,7 @@ assert "A broken OAuth grant must never silently fall back" in upload_src
 assert "lxns_scores = convert_sega_music_scores(raw_scores)" in upload_src
 assert "fish_records = convert_sega_music_scores_to_divingfish(raw_scores)" in upload_src
 assert "results.extend(external_warnings)" in upload_src
+assert "filter_anomalous_scores" not in upload_src
 fallback_block = (
     "if not binding.lxns_token:\n"
     "                        raise RuntimeError(\n"

@@ -1,8 +1,11 @@
 """水鱼查分器 OAuth 授权：一次授权同时用于查分与成绩上传。"""
 
+import asyncio
+import time
 from textwrap import dedent
 
 from nonebot import on_command
+from nonebot.adapters import Bot
 from nonebot.adapters.onebot.v11 import Message, MessageEvent
 from nonebot.params import CommandArg
 
@@ -15,15 +18,98 @@ from ..libraries.maimaidx_divingfish_oauth import (
     revoke_url,
 )
 from ..libraries.maimaidx_error import (
+    DivingFishNotAuthorizedError,
     DivingFishOAuthError,
     QBindRequiredError,
 )
 from ..libraries.maimaidx_platform import (
     build_markdown_message,
+    build_mention_message,
+    get_event_group_id,
     plugin_finish,
+    platform_user_id,
     resolve_score_qqid,
+    send_group_message,
     use_qq_mode,
 )
+
+
+_df_bind_tasks: dict[int, asyncio.Task] = {}
+
+
+async def _wait_for_df_bind_and_notify(
+    bot: Bot,
+    event: MessageEvent,
+    qqid: int,
+    *,
+    expires_in: int,
+    interval: int,
+) -> None:
+    """Poll the device grant and announce completion in the originating group."""
+    group_id = get_event_group_id(event)
+    if group_id is None:
+        return
+    deadline = time.monotonic() + max(int(expires_in), 1)
+    delay = max(int(interval), 2)
+    while time.monotonic() < deadline:
+        await asyncio.sleep(min(delay, max(deadline - time.monotonic(), 0)))
+        if time.monotonic() >= deadline:
+            break
+        try:
+            await get_access_token(qqid)
+        except DivingFishNotAuthorizedError:
+            continue
+        except (DivingFishOAuthError, RuntimeError, OSError) as exc:
+            log.debug(
+                f'[divingfish-oauth] bind poll pending qq={qqid}: '
+                f'{type(exc).__name__}'
+            )
+            continue
+        try:
+            message = build_mention_message(
+                platform_user_id(event),
+                '\n✅ 水鱼 OAuth 绑定成功！现在可以使用水鱼数据源查询 B50，'
+                '也可以通过 maiu/maiua 上传成绩。',
+                event=event,
+            )
+            await send_group_message(bot, group_id, message)
+        except Exception as exc:
+            log.warning(
+                f'[divingfish-oauth] group bind notification failed '
+                f'qq={qqid}: {type(exc).__name__}'
+            )
+        return
+
+
+def _forget_df_bind_task(qqid: int, task: asyncio.Task) -> None:
+    if _df_bind_tasks.get(qqid) is task:
+        _df_bind_tasks.pop(qqid, None)
+
+
+def _schedule_df_bind_notification(
+    bot: Bot,
+    event: MessageEvent,
+    qqid: int,
+    *,
+    expires_in: int,
+    interval: int,
+) -> None:
+    if get_event_group_id(event) is None:
+        return
+    previous = _df_bind_tasks.get(qqid)
+    if previous is not None and not previous.done():
+        previous.cancel()
+    task = asyncio.create_task(
+        _wait_for_df_bind_and_notify(
+            bot,
+            event,
+            qqid,
+            expires_in=expires_in,
+            interval=interval,
+        )
+    )
+    _df_bind_tasks[qqid] = task
+    task.add_done_callback(lambda done: _forget_df_bind_task(qqid, done))
 
 
 def _oauth_prompt(url: str, qqid: int, expires_in: int, *, event) -> object:
@@ -81,6 +167,7 @@ df_status = on_command(
 
 @df_bind.handle()
 async def _handle_df_bind(
+    bot: Bot,
     event: MessageEvent,
     args: Message = CommandArg(),
 ):
@@ -113,6 +200,13 @@ async def _handle_df_bind(
             reply_message=True,
         )
 
+    _schedule_df_bind_notification(
+        bot,
+        event,
+        qqid,
+        expires_in=authorization.expires_in,
+        interval=authorization.interval,
+    )
     await plugin_finish(
         df_bind,
         _oauth_prompt(

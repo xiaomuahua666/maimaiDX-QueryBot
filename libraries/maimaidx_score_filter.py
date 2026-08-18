@@ -36,13 +36,15 @@ def _resolve_dx_score_max(record: Any, music_resolver: MusicResolver | None) -> 
             record,
             "dxScoreMax",
             "dx_score_max",
+            "deluxscoreMax",
+            "delux_score_max",
         )
     )
     if explicit_max is not None:
         return explicit_max
 
-    song_id = _field(record, "song_id", "songId", "musicId", "id")
-    level_index = _field(record, "level_index", "levelIndex", "level")
+    song_id = _field(record, "song_id", "songId", "id")
+    level_index = _field(record, "level_index", "levelIndex")
     if song_id is None or level_index is None:
         return None
 
@@ -73,21 +75,12 @@ def is_anomalous_perfect_score(
     Achievement comparison follows the four-decimal value shown to users.
     """
     try:
-        raw_achievements = _field(record, "achievements", "achievement")
-        achievements = float(raw_achievements)
-        if _field(record, "achievements") is None and achievements > 101:
-            achievements /= 10000.0
-        dx_score = int(
-            _field(record, "dxScore", "dx_score", "deluxscore", "deluxscoreMax")
-        )
+        achievements = float(_field(record, "achievements"))
+        dx_score = int(_field(record, "dxScore", "dx_score", "deluxscore"))
     except (TypeError, ValueError):
         return False
 
-    raw_fc = _field(record, "fc", "comboStatus", "combo_status")
-    if isinstance(raw_fc, int):
-        fc = {3: "ap", 4: "app"}.get(raw_fc, "")
-    else:
-        fc = str(raw_fc or "").lower()
+    fc = str(_field(record, "fc", "comboStatus", "combo_status") or "").lower()
     if round(achievements, 4) != 101.0 or fc not in {"app", "ap+"}:
         return False
 

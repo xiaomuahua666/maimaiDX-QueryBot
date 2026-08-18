@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import ast
 import hashlib
 import importlib.util
 import sys
@@ -133,7 +134,70 @@ assert '_fish_bind_aliases.update' not in account_source
 assert '绑定水鱼上传' in account_source
 assert 'maibindfish' in account_source
 assert 'if not divingfish_oauth_enabled():' in account_source
+assert '_schedule_df_bind_notification(' in command_source
+assert '✅ 水鱼 OAuth 绑定成功！' in command_source
+assert 'send_group_message(bot, group_id, message)' in command_source
 assert "'divingfish_oauth_enabled': '0'" in break_source
+
+# The completion watcher must mention the initiating user in the original group.
+command_tree = ast.parse(command_source)
+watcher_node = next(
+    node for node in command_tree.body
+    if isinstance(node, ast.AsyncFunctionDef)
+    and node.name == '_wait_for_df_bind_and_notify'
+)
+notifications = []
+
+
+class FakeClock:
+    @staticmethod
+    def monotonic():
+        return 0.0
+
+
+class FakeAsyncio:
+    @staticmethod
+    async def sleep(_seconds):
+        return None
+
+
+async def fake_group_send(_bot, group_id, message):
+    notifications.append((group_id, message))
+
+
+watcher_namespace = {
+    'Bot': object,
+    'MessageEvent': object,
+    'asyncio': FakeAsyncio,
+    'time': FakeClock,
+    'get_event_group_id': lambda _event: 98765,
+    'get_access_token': lambda _qqid: asyncio.sleep(0, result='token'),
+    'DivingFishNotAuthorizedError': DivingFishNotAuthorizedError,
+    'DivingFishOAuthError': DivingFishOAuthError,
+    'build_mention_message': lambda target, text, event=None: (target, text),
+    'platform_user_id': lambda _event: 'platform-user',
+    'send_group_message': fake_group_send,
+    'log': types.SimpleNamespace(debug=lambda *_: None, warning=lambda *_: None),
+}
+exec(
+    compile(ast.Module(body=[watcher_node], type_ignores=[]), 'mai_divingfish.py', 'exec'),
+    watcher_namespace,
+)
+asyncio.run(
+    watcher_namespace['_wait_for_df_bind_and_notify'](
+        object(), object(), 12345, expires_in=30, interval=2
+    )
+)
+assert notifications == [
+    (
+        98765,
+        (
+            'platform-user',
+            '\n✅ 水鱼 OAuth 绑定成功！现在可以使用水鱼数据源查询 B50，'
+            '也可以通过 maiu/maiua 上传成绩。',
+        ),
+    )
+]
 
 # AWMCNET 缺数据或强制刷新时仍会探测 divingfish；OAuth 返回的数据沿用同一同步器。
 assert "force_source='divingfish'" in datasource_source
