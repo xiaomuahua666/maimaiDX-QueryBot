@@ -6,7 +6,7 @@ import re
 from typing import Any
 
 from loguru import logger as log
-from openai import AsyncOpenAI, BadRequestError
+from openai import APIStatusError, AsyncOpenAI, BadRequestError
 
 from ...config import maiconfig
 from ..maimaidx_break import analysis_reasoning_effort
@@ -30,13 +30,21 @@ def _field(value: Any, *names: str) -> Any:
 
 def _token_usage(response: Any) -> dict[str, Any]:
     usage = _field(response, "usage")
+    if usage is None and isinstance(response, dict):
+        # Some OneAPI deployments wrap the Chat Completions envelope in
+        # ``data``/``response`` while leaving choices at the outer level.
+        for wrapper in ("data", "response", "meta"):
+            nested = response.get(wrapper)
+            if isinstance(nested, dict) and nested.get("usage") is not None:
+                usage = nested.get("usage")
+                break
     if usage is None:
         return {"available": False, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cached_input_tokens": 0}
-    input_tokens = _field(usage, "prompt_tokens", "input_tokens")
-    output_tokens = _field(usage, "completion_tokens", "output_tokens")
+    input_tokens = _field(usage, "prompt_tokens", "input_tokens", "input_token_count")
+    output_tokens = _field(usage, "completion_tokens", "output_tokens", "output_token_count")
     total_tokens = _field(usage, "total_tokens")
     prompt_details = _field(usage, "prompt_tokens_details", "input_tokens_details")
-    cached = _field(prompt_details, "cached_tokens") if prompt_details is not None else 0
+    cached = _field(prompt_details, "cached_tokens") if prompt_details is not None else _field(usage, "cached_tokens")
     try:
         input_tokens = int(input_tokens or 0)
         output_tokens = int(output_tokens or 0)
@@ -46,7 +54,7 @@ def _token_usage(response: Any) -> dict[str, Any]:
         return {"available": False, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cached_input_tokens": 0}
     if total_tokens <= 0:
         total_tokens = input_tokens + output_tokens
-    available = input_tokens > 0 or output_tokens > 0
+    available = input_tokens > 0 or output_tokens > 0 or total_tokens > 0
     return {
         "available": available,
         "input_tokens": max(0, input_tokens),
@@ -323,7 +331,7 @@ async def generate_report(pack: EvidencePack, style: StyleSpec) -> tuple[RoastRe
         request["extra_body"] = {"prompt_cache_key": prompt_cache_key}
 
     response = None
-    for _ in range(5):
+    for _ in range(8):
         try:
             response = await client.chat.completions.create(**request)
             break
@@ -361,6 +369,28 @@ async def generate_report(pack: EvidencePack, style: StyleSpec) -> tuple[RoastRe
                 log.warning("[roast_v2] 当前网关拒绝 reasoning_effort，已回退默认请求")
                 request.pop("reasoning_effort", None)
                 continue
+        except APIStatusError as exc:
+            # A few OneAPI gateways surface unsupported extension fields as a
+            # generic 500 instead of a useful 400. Retry once with a smaller
+            # compatibility surface; the SDK's bounded retry handles transient
+            # upstream failures before reaching this branch.
+            status = int(getattr(exc, "status_code", 0) or 0)
+            detail = str(exc).lower()
+            if status >= 500 and "extra_body" in request:
+                log.warning("[roast_v2] 上游 5xx，移除 Prompt Cache 扩展后重试")
+                request.pop("extra_body", None)
+                continue
+            if status >= 500 and "reasoning_effort" in request:
+                log.warning("[roast_v2] 上游 5xx，移除 reasoning_effort 后重试")
+                request.pop("reasoning_effort", None)
+                continue
+            if status >= 500 and "response_format" in request:
+                log.warning("[roast_v2] 上游 5xx，移除 response_format 后重试")
+                request.pop("response_format", None)
+                continue
+            if status >= 500 and any(marker in detail for marker in ("do_request_failed", "upstream error")):
+                log.warning("[roast_v2] 上游 5xx 重试后仍失败")
+            raise
             raise
     if response is None:
         raise RuntimeError("模型请求未返回响应")

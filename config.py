@@ -218,7 +218,7 @@ class Config(BaseModel):
     b50_fetch_timeout_seconds: float = 45.0
     b50_llm_timeout_seconds: float = 180.0
     # OneAPI 等兼容网关偶发 5xx/连接中断；由 SDK 对瞬时故障做有限重试。
-    b50_llm_max_retries: int = 2
+    b50_llm_max_retries: int = 3
     b50_llm_max_tokens: int = 6144
     b50_llm_reasoning_effort: str = 'low'
     # 相同稳定前缀固定路由到同一 Prompt Cache 分区；不兼容的网关会自动回退。

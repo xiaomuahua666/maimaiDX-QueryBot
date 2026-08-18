@@ -97,6 +97,11 @@ asyncio.run(main())
 roast_requests: list[dict] = []
 roast_client_options: list[dict] = []
 
+assert roast_model._token_usage({
+    "choices": [],
+    "data": {"usage": {"prompt_tokens": 12, "completion_tokens": 4, "total_tokens": 16}},
+})["available"] is True
+
 
 class RoastFakeCompletions:
     async def create(self, **kwargs):
