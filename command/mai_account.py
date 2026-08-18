@@ -86,8 +86,6 @@ account_unbind = on_command("mai解绑", aliases={"解绑舞萌", "舞萌解绑"
 account_status = on_command("mai状态", aliases={"mymai"})
 maimai_live_status = on_command("舞萌状态", aliases={"mais"})
 _fish_bind_aliases = {"绑定水鱼token", "绑定水鱼上传", "maibindfish"}
-if not divingfish_oauth_enabled():
-    _fish_bind_aliases.update({"dfbind", "绑定水鱼", "绑定df"})
 fish_bind = on_command(
     "mai绑定水鱼", aliases=_fish_bind_aliases
 )

@@ -426,6 +426,10 @@ def register_admin_web() -> bool:
         except ValueError:
             raise HTTPException(status_code=400, detail="配置值格式或范围不正确")
         await asyncio.to_thread(break_db.set_config, key, value)
+        if key == "divingfish_oauth_enabled":
+            from .maimaidx_divingfish_oauth import reload_oauth_config
+
+            reload_oauth_config()
         ref = audit_action("web.set_break_config", key, {"key": key, "value": value})
         return {"ok": True, "key": key, "value": value, "ref_id": ref}
 

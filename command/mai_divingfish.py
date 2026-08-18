@@ -69,71 +69,86 @@ def _oauth_prompt(url: str, qqid: int, expires_in: int, *, event) -> object:
     return build_markdown_message(markdown, event=event)
 
 
-df_bind = None
-df_status = None
+df_bind = on_command(
+    'dfbind',
+    aliases={'绑定水鱼', '绑定df', '水鱼授权'},
+    block=True,
+)
+df_status = on_command(
+    'dfstatus', aliases={'水鱼授权状态', '水鱼OAuth状态'}, block=True
+)
 
-if oauth_enabled():
-    df_bind = on_command(
-        'dfbind',
-        aliases={'绑定水鱼', '绑定df', '水鱼授权'},
-        block=True,
-    )
-    df_status = on_command(
-        'dfstatus', aliases={'水鱼授权状态', '水鱼OAuth状态'}, block=True
-    )
 
-    @df_bind.handle()
-    async def _handle_df_bind(
-        event: MessageEvent,
-        args: Message = CommandArg(),
-    ):
-        if args.extract_plain_text().strip():
-            await df_bind.finish(
-                '水鱼 OAuth 绑定不需要参数，请直接发送「绑定水鱼」。\n'
-                '如需绑定 Import-Token，请发送「mai绑定水鱼 <Token>」。',
-                reply_message=True,
-            )
-        try:
-            qqid = resolve_score_qqid(event)
-            authorization = await create_device_authorization(qqid)
-        except QBindRequiredError as exc:
-            await df_bind.finish(str(exc), reply_message=True)
-        except (DivingFishOAuthError, RuntimeError, OSError) as exc:
-            log.warning(f'[divingfish-oauth] authorization failed: {type(exc).__name__}')
-            await df_bind.finish(
-                '发起水鱼授权失败：水鱼账号服务可能暂时不可用，请稍后再试。',
-                reply_message=True,
-            )
-
+@df_bind.handle()
+async def _handle_df_bind(
+    event: MessageEvent,
+    args: Message = CommandArg(),
+):
+    if not oauth_enabled():
         await plugin_finish(
             df_bind,
-            _oauth_prompt(
-                authorization.verification_uri_complete,
-                qqid,
-                authorization.expires_in,
-                event=event,
-            ),
+            '水鱼 OAuth 当前未开启。\n'
+            '如需绑定 Import-Token，请发送「mai绑定水鱼 <Token>」。',
+            event=event,
+            reply_message=True,
+        )
+    if args.extract_plain_text().strip():
+        await plugin_finish(
+            df_bind,
+            '水鱼 OAuth 绑定不需要参数，请直接发送「绑定水鱼」。',
+            event=event,
+            reply_message=True,
+        )
+    try:
+        qqid = resolve_score_qqid(event)
+        authorization = await create_device_authorization(qqid)
+    except QBindRequiredError as exc:
+        await plugin_finish(df_bind, str(exc), event=event, reply_message=True)
+    except (DivingFishOAuthError, RuntimeError, OSError) as exc:
+        log.warning(f'[divingfish-oauth] authorization failed: {type(exc).__name__}')
+        await plugin_finish(
+            df_bind,
+            '发起水鱼授权失败：水鱼账号服务可能暂时不可用，请稍后再试。',
             event=event,
             reply_message=True,
         )
 
-    @df_status.handle()
-    async def _handle_df_status(event: MessageEvent):
-        try:
-            qqid = resolve_score_qqid(event)
-            await get_access_token(qqid)
-        except QBindRequiredError as exc:
-            await plugin_finish(df_status, str(exc), event=event)
-        except Exception:
-            await plugin_finish(
-                df_status,
-                '尚未完成新版水鱼 OAuth 授权，或授权已失效。\n'
-                '请发送「绑定水鱼」重新授权；旧 Import-Token 仅作为迁移期兼容。',
-                event=event,
-            )
+    await plugin_finish(
+        df_bind,
+        _oauth_prompt(
+            authorization.verification_uri_complete,
+            qqid,
+            authorization.expires_in,
+            event=event,
+        ),
+        event=event,
+        reply_message=True,
+    )
+
+
+@df_status.handle()
+async def _handle_df_status(event: MessageEvent):
+    if not oauth_enabled():
         await plugin_finish(
             df_status,
-            '水鱼 OAuth 授权有效。\n已授权：账号资料读取、成绩读取、成绩写入。\n'
-            '查分和上传会优先使用这一次授权。',
+            '水鱼 OAuth 当前未开启。',
             event=event,
         )
+    try:
+        qqid = resolve_score_qqid(event)
+        await get_access_token(qqid)
+    except QBindRequiredError as exc:
+        await plugin_finish(df_status, str(exc), event=event)
+    except Exception:
+        await plugin_finish(
+            df_status,
+            '尚未完成新版水鱼 OAuth 授权，或授权已失效。\n'
+            '请发送「绑定水鱼」重新授权；旧 Import-Token 已停用。',
+            event=event,
+        )
+    await plugin_finish(
+        df_status,
+        '水鱼 OAuth 授权有效。\n已授权：账号资料读取、成绩读取、成绩写入。\n'
+        '查分和上传会使用这一次授权。',
+        event=event,
+    )

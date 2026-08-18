@@ -127,7 +127,9 @@ assert "'/player/record'" in api_source
 assert "'/player/plate'" in api_source
 assert "headers={'Authorization': f'Bearer {access_token}'}" in api_source
 assert "aliases={'绑定水鱼', '绑定df', '水鱼授权'}" in command_source
-assert 'if oauth_enabled():' in command_source
+assert "df_bind = on_command(" in command_source
+assert 'if not oauth_enabled():' in command_source
+assert '_fish_bind_aliases.update' not in account_source
 assert '绑定水鱼上传' in account_source
 assert 'maibindfish' in account_source
 assert 'if not divingfish_oauth_enabled():' in account_source

@@ -10,6 +10,7 @@ converter = (ROOT / 'libraries' / 'maimaidx_lxns_client.py').read_text(encoding=
 account = (ROOT / 'command' / 'mai_account.py').read_text(encoding='utf-8')
 config = (ROOT / 'config.py').read_text(encoding='utf-8')
 break_config = (ROOT / 'libraries' / 'maimaidx_break.py').read_text(encoding='utf-8')
+admin_web = (ROOT / 'libraries' / 'maimaidx_admin_web.py').read_text(encoding='utf-8')
 
 assert 'divingfish_oauth_enabled: bool = False' in config
 assert "'divingfish_oauth_enabled': '0'" in break_config
@@ -27,6 +28,7 @@ assert 'maiApi.update_records_oauth(qqid, fish_records)' in account
 assert 'await get_divingfish_access_token(int(key))' in account
 assert 'fish_oauth if divingfish_oauth_enabled() else binding.fish_token' in account
 assert '旧 Token 不会回退使用' in account
+assert 'reload_oauth_config()' in admin_web
 assert 'has_fish_oauth' in account
 assert "if raw_id > 100000:\n        return None" in converter
 
