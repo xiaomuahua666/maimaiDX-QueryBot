@@ -44,6 +44,31 @@ raw = {
 }
 assert is_anomalous_perfect_score(raw)
 
+# Sega userMusicDetail uses achievement ×10000, numeric comboStatus and
+# deluxscoreMax as the achieved DX score (not the theoretical maximum).
+sega_raw = {
+    "musicId": 123,
+    "level": 3,
+    "achievement": 1010000,
+    "comboStatus": 4,
+    "deluxscoreMax": 3000,
+}
+sega_music = SimpleNamespace(
+    charts=[
+        SimpleNamespace(notes=(1,)),
+        SimpleNamespace(notes=(1,)),
+        SimpleNamespace(notes=(1,)),
+        SimpleNamespace(notes=(250, 250, 250, 250)),
+    ]
+)
+assert is_anomalous_perfect_score(
+    sega_raw, music_resolver=lambda _: sega_music
+)
+assert not is_anomalous_perfect_score(
+    {**sega_raw, "deluxscoreMax": 2999},
+    music_resolver=lambda _: sega_music,
+)
+
 # Normalized records omit the maximum, so derive it from the chart note count.
 music = SimpleNamespace(
     charts=[

@@ -559,6 +559,12 @@ async def _get_user_b50_from_source(
             force_refresh=force_refresh,
         )
 
+    # Selecting waterfish is an explicit request for waterfish data. During
+    # OAuth mode it therefore requires this user to have authorized the Bot;
+    # AWMCNET remains the binding-free source.
+    if source == 'divingfish' and qqid and not username and divingfish_oauth_enabled():
+        await get_divingfish_access_token(qqid)
+
     if source == 'lxns' and qqid and not username:
         if access_mode == 'shared':
             await _require_shared_source_access(qqid, source)
@@ -673,6 +679,9 @@ async def _get_user_records_from_source(
             qqid, username, source, _fetch_awmcnet_records,
             force_refresh=force_refresh,
         )
+
+    if source == 'divingfish' and qqid and not username and divingfish_oauth_enabled():
+        await get_divingfish_access_token(qqid)
 
     if source == 'lxns' and qqid and not username:
         if access_mode == 'shared':

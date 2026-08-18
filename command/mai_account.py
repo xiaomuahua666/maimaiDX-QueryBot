@@ -11,6 +11,7 @@ import json
 import re
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any, Optional
 
 import httpx
@@ -61,6 +62,7 @@ from ..libraries.maimaidx_qrcode_util import (
     extract_sgwcmaid_from_image_segments,
     extract_sgwcmaid_qrcode,
 )
+from ..libraries.maimaidx_score_filter import filter_anomalous_scores
 from ..libraries.maimaidx_pending_session import finish_pending, session_key, track_event
 from ..libraries.maimaidx_processing_time import (
     format_processing_estimate,
@@ -1643,6 +1645,83 @@ async def _lxns_oauth_access_token(
     return await _get_valid_access_token(qqid, force_refresh=force_refresh)
 
 
+@dataclass(frozen=True)
+class _UploadChannels:
+    fish: bool
+    lxns: bool
+    fish_oauth: bool
+    lxns_oauth_token: Optional[str]
+    warnings: tuple[str, ...] = ()
+
+
+async def _resolve_upload_channels(
+    event: MessageEvent,
+    binding: AccountBinding,
+    *,
+    fish: bool,
+    lxns: bool,
+) -> _UploadChannels:
+    """Resolve the channels that can really be written before acknowledging work."""
+    warnings: list[str] = []
+
+    fish_oauth = False
+    effective_fish = False
+    if fish:
+        if divingfish_oauth_enabled():
+            try:
+                qqid = _oauth_qqid(event)
+                if qqid is None:
+                    raise DivingFishNotAuthorizedError
+                await get_divingfish_access_token(qqid)
+                fish_oauth = True
+                effective_fish = True
+            except DivingFishNotAuthorizedError:
+                warnings.append(
+                    "水鱼：旧 Token 已停用，请重新发送「绑定水鱼」完成 OAuth；"
+                    "本次仅同步 AWMC NET"
+                )
+            except (DivingFishOAuthError, RuntimeError, OSError) as exc:
+                log.warning(
+                    f"[upload] 水鱼 OAuth 预检失败 user={_user_key(event)}: "
+                    f"{type(exc).__name__}"
+                )
+                warnings.append(
+                    "水鱼 OAuth 暂时不可用，本次仅同步 AWMC NET；"
+                    "旧 Token 不会回退使用"
+                )
+        else:
+            effective_fish = bool(binding.fish_token)
+            if not effective_fish:
+                warnings.append("水鱼：尚未绑定 Token，本次仅同步 AWMC NET")
+
+    oauth_token = await _lxns_oauth_access_token(event) if lxns else None
+    has_lxns_oauth = _has_lxns_oauth(event) if lxns else False
+    effective_lxns = bool(lxns and (oauth_token or binding.lxns_token))
+    if lxns and has_lxns_oauth and not oauth_token:
+        if _lxns_oauth_missing_write_scope(event):
+            warnings.append(
+                "落雪：OAuth 缺少 write_player 权限，本次仅同步 AWMC NET；"
+                "请重新发送 lxbind 授权"
+            )
+        else:
+            warnings.append(
+                "落雪 OAuth Token 已失效且自动刷新失败，本次仅同步 AWMC NET；"
+                "请重新发送 lxbind 授权"
+            )
+        # A broken OAuth grant must never silently fall back to an import token.
+        effective_lxns = False
+    elif lxns and not effective_lxns:
+        warnings.append("落雪：尚未绑定 OAuth 或兼容 Token，本次仅同步 AWMC NET")
+
+    return _UploadChannels(
+        fish=effective_fish,
+        lxns=effective_lxns,
+        fish_oauth=fish_oauth,
+        lxns_oauth_token=oauth_token,
+        warnings=tuple(warnings),
+    )
+
+
 def _oauth_token_rejected(exc: Exception) -> bool:
     if isinstance(exc, LxnsApiError):
         return exc.status_code in {401, 403}
@@ -2455,6 +2534,7 @@ async def _upload(
     qrcode_arg: str = "",
     _machine_locked: bool = False,
     _qrcode_verified: bool = False,
+    _channels: Optional[_UploadChannels] = None,
 ) -> str:
     if bool(getattr(maiconfig, "maimaidx_user_agreement_required", True)):
         if not _qrcode_verified and not has_user_agreed(event):
@@ -2464,45 +2544,15 @@ async def _upload(
     if not binding:
         return _ACCOUNT_SETUP_GUIDE
 
-    requested_lxns = lxns
-    external_warnings: list[str] = []
-    oauth_token = await _lxns_oauth_access_token(event) if requested_lxns else None
-    has_lxns_oauth = _has_lxns_oauth(event) if requested_lxns else False
-    has_lxns_upload = bool(oauth_token or binding.lxns_token)
-    if requested_lxns and has_lxns_oauth and not oauth_token and _lxns_oauth_missing_write_scope(event):
-        external_warnings.append(
-            "落雪：OAuth 缺少 write_player 权限，本次仅同步 AWMCNET"
+    if _channels is None:
+        _channels = await _resolve_upload_channels(
+            event, binding, fish=fish, lxns=lxns
         )
-        if not binding.lxns_token:
-            requested_lxns = False
-    if requested_lxns and has_lxns_oauth and not oauth_token:
-        external_warnings.append(
-            "落雪 OAuth Token 已失效且自动刷新失败，本次仍会同步 AWMCNET；请重新 lxbind"
-        )
-        if not binding.lxns_token:
-            requested_lxns = False
-    # AWMCNET 永远上传。OAuth 开启后水鱼强制使用新版读写授权，旧
-    # Import-Token 完全停用；关闭 OAuth 时才保留原有 Token 上传路径。
-    requested_fish = fish
-    fish_oauth = False
-    if requested_fish and divingfish_oauth_enabled():
-        try:
-            await get_divingfish_access_token(int(key))
-            fish_oauth = True
-        except DivingFishNotAuthorizedError:
-            external_warnings.append(
-                "水鱼：尚未完成新版 OAuth 授权，请发送「绑定水鱼」重新绑定"
-            )
-        except (DivingFishOAuthError, RuntimeError, OSError) as exc:
-            log.warning(f'[upload] 水鱼 OAuth 预检失败 user={key}: {type(exc).__name__}')
-            external_warnings.append(
-                "水鱼 OAuth 暂时不可用，本次仅同步 AWMC NET；旧 Token 不会回退使用"
-            )
-    fish = bool(
-        requested_fish
-        and (fish_oauth if divingfish_oauth_enabled() else binding.fish_token)
-    )
-    lxns = bool(requested_lxns and has_lxns_upload)
+    fish = _channels.fish
+    lxns = _channels.lxns
+    fish_oauth = _channels.fish_oauth
+    oauth_token = _channels.lxns_oauth_token
+    external_warnings = list(_channels.warnings)
 
     # 最优路径：仅落雪 + OAuth + 新鲜 PC 缓存 → 直连个人 API，不占机台锁、不验二维码。
     # 文档：POST /api/v0/user/maimai/player/scores（Bearer OAuth）。
@@ -2598,6 +2648,7 @@ async def _upload(
                     qrcode_arg=qrcode_arg,
                     _machine_locked=True,
                     _qrcode_verified=_qrcode_verified,
+                    _channels=_channels,
                 )
         except MachineBusyError as exc:
             return _upload_failure_message(exc)
@@ -2646,7 +2697,7 @@ async def _upload(
     # 每日免费次数，也不收取 BREAK；只有同时上传水鱼/落雪时才计费。
     billing_service = "upload" if (fish or lxns) else "awmcnet_sync"
     cost = await _service_cost(operation) if (fish or lxns) else 0
-    results: list[str] = list(external_warnings)
+    results: list[str] = []
     awmc_result = None
     try:
         await _ensure_service_affordable(int(key), billing_service, cost)
@@ -2654,7 +2705,9 @@ async def _upload(
             qqid = int(key)
         except ValueError:
             qqid = 0
-        pc_records = pc_db.get_user_play_counts(qqid) if qqid else []
+        pc_records = filter_anomalous_scores(
+            pc_db.get_user_play_counts(qqid) if qqid else []
+        )
         fresh_seconds = float(getattr(maiconfig, 'awmc_lxns_pc_cache_seconds', 600) or 600)
         fresh_pc = bool(
             pc_records
@@ -2664,6 +2717,9 @@ async def _upload(
             sync_awmcnet_arcade_scores,
             sync_awmcnet_pc_records,
         )
+        fish_records: list[dict] = []
+        lxns_scores: list[dict] = []
+        upload_source = "PC缓存"
         if fresh_pc:
             awmc_result = await sync_awmcnet_pc_records(
                 qqid,
@@ -2672,7 +2728,12 @@ async def _upload(
                 rating=binding.rating,
                 play_count=pc_db.get_user_total_plays(qqid),
             )
-        elif not fish and not lxns:
+            if fish:
+                fish_records = convert_pc_records_to_divingfish_scores(pc_records)
+            if lxns:
+                lxns_scores = convert_pc_records_to_lxns_scores(pc_records)
+        else:
+            upload_source = "机台全量成绩"
             music_timeout = float(
                 getattr(maiconfig, "awmc_user_music_timeout_seconds", 15.0)
             )
@@ -2680,53 +2741,31 @@ async def _upload(
                 sw_api.get_user_music(qrcode, timeout=music_timeout, retry_count=0),
                 timeout=music_timeout + 1.0,
             )
-            converted = convert_sega_music_scores(raw_scores)
+            raw_scores = filter_anomalous_scores(raw_scores)
+            lxns_scores = convert_sega_music_scores(raw_scores)
+            if not lxns_scores:
+                raise RuntimeError("机台返回的全量成绩为空或无法转换")
             awmc_result = await sync_awmcnet_arcade_scores(
-                qqid, converted, nickname=binding.user_name, rating=binding.rating
+                qqid,
+                lxns_scores,
+                nickname=binding.user_name,
+                rating=binding.rating,
+                play_count=pc_db.get_user_total_plays(qqid),
             )
-        else:
-            # 外部上传会消耗一次性二维码；先把现有上游快照写入 AWMCNET，
-            # 上传成功后的维护任务会再拉取最新结果覆盖。
-            from ..libraries.maimaidx_awmcnet_sync import sync_awmcnet
-            from ..libraries.maimaidx_datasource import get_user_records
-            for source in ('divingfish', 'lxns'):
-                if (source == 'divingfish' and not fish) or (source == 'lxns' and not lxns):
-                    continue
-                try:
-                    upstream_user, upstream_records = await get_user_records(
-                        qqid=qqid, force_source=source
-                    )
-                    awmc_result = await sync_awmcnet(
-                        qqid, upstream_user, upstream_records, source=source
-                    )
-                    if awmc_result:
-                        break
-                except Exception as exc:
-                    log.info(f'[upload] AWMCNET 上游预同步跳过 source={source}: {exc}')
-        if awmc_result is None and not (fish or lxns):
+            if fish:
+                fish_records = convert_sega_music_scores_to_divingfish(raw_scores)
+        if awmc_result is None:
             raise RuntimeError('AWMCNET 同步失败，请检查 Bot-Token 与服务地址')
-        if awmc_result is not None:
-            results.append(_AWMCNET_SYNCED_LINE)
+        results.append(_AWMCNET_SYNCED_LINE)
+        results.extend(external_warnings)
         if fish:
             if fish_oauth:
-                # OAuth write uses the same user grant as reads. Prefer fresh PC
-                # rows when available; otherwise obtain the machine records once
-                # and send the normalized update_records payload directly.
-                if fresh_pc:
-                    fish_records = convert_pc_records_to_divingfish_scores(pc_records)
-                else:
-                    music_timeout = float(
-                        getattr(maiconfig, 'awmc_user_music_timeout_seconds', 15.0)
-                    )
-                    raw_scores = await asyncio.wait_for(
-                        sw_api.get_user_music(
-                            qrcode,
-                            timeout=music_timeout,
-                            retry_count=0,
-                        ),
-                        timeout=music_timeout + 1.0,
-                    )
-                    fish_records = convert_sega_music_scores_to_divingfish(raw_scores)
+                if not fish_records:
+                    raise RuntimeError("全量成绩无法转换为水鱼写入格式")
+                log.info(
+                    f"[upload] 水鱼 OAuth：使用{upload_source} "
+                    f"{len(fish_records)} 条直接写入 user={key}"
+                )
                 result = await maiApi.update_records_oauth(qqid, fish_records)
             else:
                 result = await sw_api.update_fish(qrcode, binding.fish_token)
@@ -2737,50 +2776,20 @@ async def _upload(
             )
         if lxns:
             if oauth_token:
-                # 主路径：机台全量成绩 + OAuth 个人 API 直传。
-                # 不再回退 update_lx（会二次占用已消耗的二维码并长时间挂起）。
-                lxns_stage = "读取玩家 PC 数据"
+                # The same full snapshot written to AWMCNET is converted once
+                # and submitted through the user's OAuth grant.
+                lxns_stage = "向落雪写入成绩"
                 try:
-                    # 机台路径也可能已有本轮刚写入的 PC；再试一次本地，避免重复登录。
-                    try:
-                        qqid = int(key)
-                    except ValueError:
-                        qqid = 0
-                    pc_scores = _lxns_scores_from_pc_cache(qqid) if qqid else None
-                    if pc_scores:
-                        lxns_stage = "向落雪写入成绩"
-                        log.info(
-                            f"[upload] 落雪 OAuth：机台会话内改用 PC 缓存 "
-                            f"{len(pc_scores)} 条 user={key}"
-                        )
-                        result = await _oauth_upload_lxns_with_refresh(
-                            event, oauth_token, pc_scores, source="PC缓存"
-                        )
-                        results.append("落雪（OAuth/PC缓存）：" + _result_text(result))
-                    else:
-                        log.info(f"[upload] 落雪 OAuth：开始读取机台成绩 user={key}")
-                        music_timeout = float(
-                            getattr(maiconfig, "awmc_user_music_timeout_seconds", 15.0)
-                        )
-                        raw_scores = await asyncio.wait_for(
-                            sw_api.get_user_music(
-                                qrcode,
-                                timeout=music_timeout,
-                                retry_count=0,
-                            ),
-                            timeout=music_timeout + 1.0,
-                        )
-                        scores = convert_sega_music_scores(raw_scores)
-                        if not scores:
-                            raise RuntimeError("机台返回的成绩无法转换为落雪 Score")
-                        log.info(
-                            f"[upload] 落雪 OAuth：转换完成 {len(scores)} 条，开始写入落雪"
-                        )
-                        lxns_stage = "向落雪写入成绩"
-                        result = await _oauth_upload_lxns_with_refresh(
-                            event, oauth_token, scores, source="机台"
-                        )
-                        results.append("落雪（OAuth）：" + _result_text(result))
+                    if not lxns_scores:
+                        raise RuntimeError("全量成绩无法转换为落雪写入格式")
+                    log.info(
+                        f"[upload] 落雪 OAuth：使用{upload_source} "
+                        f"{len(lxns_scores)} 条直接写入 user={key}"
+                    )
+                    result = await _oauth_upload_lxns_with_refresh(
+                        event, oauth_token, lxns_scores, source=upload_source
+                    )
+                    results.append("落雪（OAuth）：" + _result_text(result))
                 except Exception as exc:
                     raise RuntimeError(
                         _lxns_upload_failure_text(exc, stage=lxns_stage)
@@ -2792,26 +2801,6 @@ async def _upload(
                 result = await sw_api.update_lx(qrcode, binding.lxns_token)
                 result = await _await_upload_success(result, lxns=True)
                 results.append("落雪（兼容 Token）：" + _result_text(result))
-        if awmc_result is None:
-            from ..libraries.maimaidx_awmcnet_sync import sync_awmcnet
-            from ..libraries.maimaidx_datasource import get_user_records
-            for source in ('divingfish', 'lxns'):
-                if (source == 'divingfish' and not fish) or (source == 'lxns' and not lxns):
-                    continue
-                try:
-                    upstream_user, upstream_records = await get_user_records(
-                        qqid=qqid, force_source=source, force_refresh=True
-                    )
-                    awmc_result = await sync_awmcnet(
-                        qqid, upstream_user, upstream_records, source=source
-                    )
-                    if awmc_result:
-                        results.insert(0, _AWMCNET_SYNCED_LINE)
-                        break
-                except Exception as exc:
-                    log.warning(f'[upload] 外部上传后同步 AWMCNET 失败 source={source}: {exc}')
-        if awmc_result is None:
-            raise RuntimeError('外部平台已处理，但 AWMCNET 同步失败，请稍后重试')
         account_db.mark_uploaded(key)
         charge = await _settle_service_success(
             int(key), billing_service, cost,
@@ -3154,6 +3143,11 @@ async def _(
         return
     if preflight_error:
         await matcher.finish(preflight_error, reply_message=False)
+    binding = account_db.get(_user_key(event))
+    assert binding is not None
+    channels = await _resolve_upload_channels(
+        event, binding, fish=fish, lxns=lxns
+    )
     raw = _arg_text(args)
     if raw and not extract_sgwcmaid_qrcode(raw):
         await matcher.finish("上传失败：二维码格式无效", reply_message=True)
@@ -3171,12 +3165,20 @@ async def _(
             await matcher.finish(recall_notice, reply_message=False)
     await react_processing(bot, event)
     if _upload_can_start_now(
-        event, fish=fish, lxns=lxns, qrcode_arg=raw
+        event, fish=channels.fish, lxns=channels.lxns, qrcode_arg=raw
     ):
-        await _notify_upload_accepted(matcher, event, fish=fish, lxns=lxns)
-    timing_key = upload_workflow_key(fish=fish, lxns=lxns)
+        await _notify_upload_accepted(
+            matcher, event, fish=channels.fish, lxns=channels.lxns
+        )
+    timing_key = upload_workflow_key(fish=channels.fish, lxns=channels.lxns)
     started_at = time.perf_counter()
-    result = await _upload(event, fish=fish, lxns=lxns, qrcode_arg=raw)
+    result = await _upload(
+        event,
+        fish=fish,
+        lxns=lxns,
+        qrcode_arg=raw,
+        _channels=channels,
+    )
     if result.startswith("上传完成"):
         processing_time_estimator.record(
             timing_key, time.perf_counter() - started_at
@@ -3221,6 +3223,11 @@ async def _(
     if preflight_error:
         finish_pending(pending_key)
         await matcher.finish(preflight_error, reply_message=False)
+    binding = account_db.get(_user_key(event))
+    assert binding is not None
+    channels = await _resolve_upload_channels(
+        event, binding, fish=fish, lxns=lxns
+    )
     qrcode = extract_sgwcmaid_qrcode(raw)
     if not qrcode and any(seg.type == 'image' for seg in qrcode_message):
         qrcode = await extract_sgwcmaid_from_image_segments(qrcode_message)
@@ -3234,10 +3241,18 @@ async def _(
             await matcher.finish(recall_notice, reply_message=False)
     await react_processing(bot, event)
     if qrcode:
-        await _notify_upload_accepted(matcher, event, fish=fish, lxns=lxns)
-        timing_key = upload_workflow_key(fish=fish, lxns=lxns)
+        await _notify_upload_accepted(
+            matcher, event, fish=channels.fish, lxns=channels.lxns
+        )
+        timing_key = upload_workflow_key(fish=channels.fish, lxns=channels.lxns)
         started_at = time.perf_counter()
-        result = await _upload(event, fish=fish, lxns=lxns, qrcode_arg=qrcode)
+        result = await _upload(
+            event,
+            fish=fish,
+            lxns=lxns,
+            qrcode_arg=qrcode,
+            _channels=channels,
+        )
         if result.startswith("上传完成"):
             processing_time_estimator.record(
                 timing_key, time.perf_counter() - started_at

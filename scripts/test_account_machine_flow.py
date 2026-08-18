@@ -5,6 +5,7 @@ import asyncio
 import json
 import re
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Optional
@@ -84,6 +85,86 @@ assert account["auto_upload_channels"](
 assert account["auto_upload_channels"](
     fish_token="fish", has_lxns_oauth=True
 ) == (True, True)
+
+# OAuth mode must resolve an old waterfish Import-Token to AWMCNET-only before
+# the accepted message is built, while a valid grant keeps waterfish enabled.
+channel_tree = ast.parse(
+    (ROOT / "command" / "mai_account.py").read_text(encoding="utf-8")
+)
+channel_nodes = [
+    node for node in channel_tree.body
+    if (
+        isinstance(node, ast.ClassDef) and node.name == "_UploadChannels"
+    ) or (
+        isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "_resolve_upload_channels"
+    )
+]
+assert len(channel_nodes) == 2
+
+
+class FakeFishNotAuthorized(Exception):
+    pass
+
+
+class FakeFishOAuthError(Exception):
+    pass
+
+
+class FakeLog:
+    def warning(self, _message):
+        pass
+
+
+async def denied_fish_token(_qqid):
+    raise FakeFishNotAuthorized
+
+
+channel_namespace = {
+    "AccountBinding": Any,
+    "MessageEvent": Any,
+    "Optional": Optional,
+    "dataclass": dataclass,
+    "divingfish_oauth_enabled": lambda: True,
+    "get_divingfish_access_token": denied_fish_token,
+    "DivingFishNotAuthorizedError": FakeFishNotAuthorized,
+    "DivingFishOAuthError": FakeFishOAuthError,
+    "_oauth_qqid": lambda _event: 12345,
+    "_user_key": lambda _event: "12345",
+    "_lxns_oauth_access_token": lambda _event: None,
+    "_has_lxns_oauth": lambda _event: False,
+    "_lxns_oauth_missing_write_scope": lambda _event: False,
+    "log": FakeLog(),
+}
+exec(
+    compile(ast.Module(body=channel_nodes, type_ignores=[]), "mai_account.py", "exec"),
+    channel_namespace,
+)
+binding = SimpleNamespace(fish_token="legacy-token", lxns_token="")
+channels = asyncio.run(
+    channel_namespace["_resolve_upload_channels"](
+        object(), binding, fish=True, lxns=False
+    )
+)
+assert not channels.fish
+assert not channels.lxns
+assert "旧 Token 已停用" in channels.warnings[0]
+
+
+async def valid_fish_token(_qqid):
+    return "access-token"
+
+
+channel_namespace["get_divingfish_access_token"] = valid_fish_token
+channels = asyncio.run(
+    channel_namespace["_resolve_upload_channels"](
+        object(), binding, fish=True, lxns=False
+    )
+)
+assert channels.fish
+assert channels.fish_oauth
+assert channels.warnings == ()
+
 test_config.awmc_ticket_allowed_multipliers = "3，5, 7,invalid"
 assert account["_allowed_ticket_multipliers"]() == (3, 5)
 test_config.awmc_ticket_allowed_multipliers = ""
@@ -196,16 +277,20 @@ assert fake_db.saved is not None
 assert fake_db.saved[1]["refresh_token"] == "old-refresh"
 assert fake_db.saved[1]["scope"] == "read_player write_player"
 
-# 落雪 OAuth 主路径失败后不得再静默回退 update_lx（会二次占用已消耗的二维码并长时间挂起）。
+# OAuth 上传先解析真实渠道，并复用写入 AWMCNET 的同一份全量成绩。
 upload_src = (ROOT / "command" / "mai_account.py").read_text(encoding="utf-8")
 assert 'lines.extend(["", _format_ticket_status(charge)])' in upload_src
 assert 'if isinstance(matcher, upload_fish):' in upload_src
 assert 'if isinstance(matcher, upload_lx):' in upload_src
 assert 'if isinstance(matcher, upload_all):' in upload_src
 assert 'stored = matcher.state.get(_UPLOAD_MODE_STATE_KEY)' in upload_src
-assert "不再回退 update_lx" in upload_src
+assert "async def _resolve_upload_channels(" in upload_src
+assert "旧 Token 已停用，请重新发送「绑定水鱼」完成 OAuth" in upload_src
 assert "OAuth Token 已失效且自动刷新失败" in upload_src
-assert "仅无 OAuth 时才用导入 Token" in upload_src
+assert "A broken OAuth grant must never silently fall back" in upload_src
+assert "lxns_scores = convert_sega_music_scores(raw_scores)" in upload_src
+assert "fish_records = convert_sega_music_scores_to_divingfish(raw_scores)" in upload_src
+assert "results.extend(external_warnings)" in upload_src
 fallback_block = (
     "if not binding.lxns_token:\n"
     "                        raise RuntimeError(\n"
@@ -258,6 +343,8 @@ ready_pos = upload_src.index("if _upload_can_start_now(")
 notify_pos = upload_src.index("await _notify_upload_accepted(", ready_pos)
 request_pos = upload_src.index("result = await _upload(", notify_pos)
 assert ready_pos < notify_pos < request_pos
+assert "fish=channels.fish, lxns=channels.lxns" in upload_src[ready_pos:request_pos]
+assert "_channels=channels" in upload_src[request_pos:]
 assert "format_processing_estimate(seconds, samples)" in upload_src
 
 lxns_client_src = (ROOT / "libraries" / "maimaidx_lxns_client.py").read_text(
