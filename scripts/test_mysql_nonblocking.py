@@ -9,6 +9,8 @@ import time
 import types
 from pathlib import Path
 
+import pymysql.err
+
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -70,6 +72,11 @@ class FakeConnection:
         pass
 
 
+class BrokenRollbackConnection(FakeConnection):
+    def rollback(self):
+        raise pymysql.err.OperationalError(2013, "read operation timed out")
+
+
 created: list[FakeConnection] = []
 
 
@@ -110,6 +117,14 @@ assert slow_done.is_set()
 
 assert not db._read_only_sql("UPDATE break_users SET balance=0")
 assert db._read_only_sql(" SELECT balance FROM break_users")
+
+# rollback 遇到断线时应换掉当前线程的坏连接，不把失效会话留给下一请求。
+broken = BrokenRollbackConnection()
+conn._conn = broken
+created_before_rollback = len(created)
+conn.rollback()
+assert conn._conn is not broken
+assert len(created) == created_before_rollback + 1
 
 source = (ROOT / "libraries" / "maimaidx_db.py").read_text(encoding="utf-8")
 assert "innodb_lock_wait_timeout" in source

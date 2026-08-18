@@ -2032,8 +2032,6 @@ class BreakDatabase:
             balance = self.get_balance(qqid)
             if balance < cost:
                 raise BreakInsufficientError(cost, balance, qqid=qqid)
-            self._ensure_user(qqid)
-            self._ensure_daily(qqid)
             prizes = random.choices(
                 LOTTERY_PRIZES,
                 weights=LOTTERY_WEIGHTS,
@@ -2042,20 +2040,31 @@ class BreakDatabase:
             prize = sum(prizes)
             net = prize - cost
             now = time.time()
-            self._conn.execute(
-                'UPDATE break_users SET balance=balance+?, updated_at=? WHERE qqid=?',
-                (net, now, qqid),
-            )
-            self._conn.execute(
-                """UPDATE break_daily_usage SET break_spent=break_spent+?,
-                   break_gained=break_gained+? WHERE qqid=? AND date=?""",
-                (cost, prize, qqid, self._today()),
-            )
-            self._append_log(
-                qqid, net, 'lottery',
-                meta={'count': count, 'cost': cost, 'prizes': prizes, 'prize': prize},
-            )
-            self._conn.commit()
+            try:
+                self._ensure_user(qqid)
+                self._ensure_daily(qqid)
+                self._conn.execute(
+                    'UPDATE break_users SET balance=balance+?, updated_at=? WHERE qqid=?',
+                    (net, now, qqid),
+                )
+                self._conn.execute(
+                    """UPDATE break_daily_usage SET break_spent=break_spent+?,
+                       break_gained=break_gained+? WHERE qqid=? AND date=?""",
+                    (cost, prize, qqid, self._today()),
+                )
+                self._append_log(
+                    qqid, net, 'lottery',
+                    meta={
+                        'count': count,
+                        'cost': cost,
+                        'prizes': prizes,
+                        'prize': prize,
+                    },
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
             return LotteryResult(count, cost, prize, balance + net)
 
     def _get_remaining_distributable(self, today: str) -> int:

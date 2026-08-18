@@ -318,7 +318,15 @@ class UnifiedConnection:
     def rollback(self):
         guard = self._lock if self._backend == 'sqlite' else nullcontext()
         with guard:
-            self._conn.rollback()
+            try:
+                self._conn.rollback()
+            except Exception as exc:
+                if self._backend == 'mysql' and _is_connection_error(exc):
+                    # 连接丢失时服务端会回滚该会话未提交的事务。主动换掉坏连接，
+                    # 避免同一工作线程的下一次请求继续复用失效连接。
+                    self._connect()
+                    return
+                raise
 
     @property
     def row_factory(self):

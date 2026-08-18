@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
-"""BREAK 发放/转账 SQL 链中途异常时必须 rollback（防 1205 锁等待/半截事务）。
-
-同时验证 award_game_break 成功路径显式 commit。
-"""
-"""验证 award_game_break / transfer SQL 中途异常时 rollback 且无半截事务。"""
+"""验证 BREAK 多语句事务中途异常时 rollback 且无半截事务。"""
 import ast
 import sys
 import types
 import sqlite3
 import time
 import json
+import random
 import re
 from pathlib import Path
 from typing import Optional, List, Dict, Tuple, Any
@@ -114,5 +111,32 @@ bal100 = real_exec('SELECT balance FROM break_users WHERE qqid=100').fetchone()[
 bal200 = real_exec('SELECT balance FROM break_users WHERE qqid=200').fetchone()['balance']
 assert bal100 == 5 and bal200 == 0, f'转账回滚后余额应 5/0, got {bal100}/{bal200}'
 
-# —— 余额不足异常（BreakInsufficientError）不应触发 rollback 副作用，但也不炸 ——
-print('rollback verification: OK (award+transfer 异常均回滚，无半截事务)')
+# —— lottery 已更新余额、写每日统计时炸，必须完整回滚且不写日志 ——
+rolled.clear()
+real_exec('UPDATE break_users SET balance=20 WHERE qqid=100')
+conn.commit()
+
+class PatchedConn3(PatchedConn):
+    def execute(self, sql, *a, **k):
+        if 'UPDATE break_daily_usage SET break_spent=break_spent+?' in sql:
+            raise sqlite3.OperationalError('simulated lottery timeout')
+        return self._inner.execute(sql, *a, **k)
+
+db._conn = PatchedConn3(conn)
+try:
+    db.lottery(100, 2)
+    raise SystemExit('lottery should have raised')
+except sqlite3.OperationalError:
+    pass
+db._conn = conn
+assert rolled == [1], f'lottery rollback 未被调用: {rolled}'
+lottery_balance = real_exec(
+    'SELECT balance FROM break_users WHERE qqid=100'
+).fetchone()['balance']
+assert lottery_balance == 20, f'抽奖回滚后余额应仍为 20, got {lottery_balance}'
+lottery_logs = real_exec(
+    "SELECT COUNT(*) AS total FROM break_log WHERE qqid=100 AND reason='lottery'"
+).fetchone()['total']
+assert lottery_logs == 0, f'抽奖失败不应留下日志, got {lottery_logs}'
+
+print('rollback verification: OK (award+transfer+lottery 均无半截事务)')
