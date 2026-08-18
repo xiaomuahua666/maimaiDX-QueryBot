@@ -399,7 +399,11 @@ def register_admin_web() -> bool:
         body = await request.json()
         value = str(body.get("value", "")).strip()
         try:
-            if key == "streak_bonus":
+            if key == "b50_llm_reasoning_effort":
+                value = value.lower()
+                if value not in {"none", "low", "medium", "high"}:
+                    raise ValueError
+            elif key == "streak_bonus":
                 values = [int(item.strip()) for item in value.split(",")]
                 if not values or len(values) > 31 or any(item < 0 or item > 20 for item in values):
                     raise ValueError

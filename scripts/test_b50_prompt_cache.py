@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 from pathlib import Path
@@ -99,17 +100,20 @@ roast_requests: list[dict] = []
 class RoastFakeCompletions:
     async def create(self, **kwargs):
         roast_requests.append(kwargs)
-        return SimpleNamespace(
-            usage=SimpleNamespace(
-                prompt_tokens=2000,
-                completion_tokens=300,
-                total_tokens=2300,
-                prompt_tokens_details=SimpleNamespace(cached_tokens=1500),
-            ),
-            choices=[
-                SimpleNamespace(
-                    message=SimpleNamespace(
-                        content=(
+        # OneAPI may return the whole Chat Completion envelope as a JSON
+        # string. The production parser must preserve both choices and usage.
+        return json.dumps(
+            {
+                "usage": {
+                    "prompt_tokens": 2000,
+                    "completion_tokens": 300,
+                    "total_tokens": 2300,
+                    "prompt_tokens_details": {"cached_tokens": 1500},
+                },
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
                             '{"headline":"稳定前缀测试",'
                             '"summary":"当前成绩结构稳定。",'
                             '"analysis":"当前成绩结构稳定，暂无14+平均数据，建议继续整理地板。",'
@@ -120,10 +124,12 @@ class RoastFakeCompletions:
                             '"recommendations":[],'
                             '"claims":[{"text":"当前 Rating 为 15000",'
                             '"evidence_ids":["rating"]}]}'
-                        )
-                    )
-                )
-            ],
+                            )
+                        }
+                    }
+                ],
+            },
+            ensure_ascii=False,
         )
 
 
@@ -135,7 +141,9 @@ class RoastFakeClient:
 async def roast_main() -> None:
     original_client = roast_model.AsyncOpenAI
     original_config = roast_model.maiconfig
+    original_reasoning = roast_model.analysis_reasoning_effort
     roast_model.AsyncOpenAI = RoastFakeClient
+    roast_model.analysis_reasoning_effort = lambda: "high"
     roast_model.maiconfig = SimpleNamespace(
         b50_llm_key="test",
         b50_llm_url="https://example.invalid/v1",
@@ -158,16 +166,20 @@ async def roast_main() -> None:
     finally:
         roast_model.AsyncOpenAI = original_client
         roast_model.maiconfig = original_config
+        roast_model.analysis_reasoning_effort = original_reasoning
 
     assert len(roast_requests) == 2
     first, second = roast_requests
     assert first["extra_body"]["prompt_cache_key"] == "maimaidx-b50-roast-v2"
+    assert first["reasoning_effort"] == "high"
     assert first["messages"][0]["content"] == second["messages"][0]["content"]
     assert (
         first["messages"][1]["content"].split("\nSTYLE_JSON:\n", 1)[0]
         == second["messages"][1]["content"].split("\nSTYLE_JSON:\n", 1)[0]
     )
     assert usage["cached_input_tokens"] == 1500
+    assert usage["input_tokens"] == 2000
+    assert usage["output_tokens"] == 300
     assert not roast_model._has_unsupported_high_claim("暂无14+平均数据")
     assert roast_model._has_unsupported_high_claim("14+平均达到100.5000%")
 

@@ -49,6 +49,8 @@ DEFAULT_CONFIG: Dict[str, str] = {
     # 锐评按原 Token 价格计费；调用模型前先预扣固定额度。
     'analysis_price_multiplier': '1',
     'analysis_precharge_cost': '10',
+    # 锐评推理强度由数据库热配置覆盖环境变量；仅允许 none/low/medium/high。
+    'b50_llm_reasoning_effort': 'low',
     # 第 1～5 天按曲线递增；streak_bonus_growth 控制超过曲线后每天的增长量，0 = 封顶。
     # 曲线收敛至 3，避免连签奖励成为长期通胀来源。
     'streak_bonus': '1,1,2,2,3',
@@ -3679,6 +3681,28 @@ def analysis_price_multiplier() -> int:
 
 def analysis_precharge_cost() -> int:
     return max(0, _config_int('analysis_precharge_cost', 10))
+
+
+_ANALYSIS_REASONING_EFFORTS = frozenset({'none', 'low', 'medium', 'high'})
+
+
+def analysis_reasoning_effort() -> str:
+    """返回数据库优先的锐评推理强度，并安全降级到环境配置。"""
+    fallback = str(
+        getattr(maiconfig, 'b50_llm_reasoning_effort', 'low') or 'low'
+    ).strip().lower()
+    if fallback not in _ANALYSIS_REASONING_EFFORTS:
+        fallback = 'low'
+    try:
+        raw_value = break_db.get_config('b50_llm_reasoning_effort', fallback)
+    except Exception as exc:
+        log.warning(
+            '[BREAK] 读取锐评 reasoning_effort 失败，已回退环境配置：'
+            f'{type(exc).__name__}: {exc}'
+        )
+        raw_value = fallback
+    value = str(raw_value or fallback).strip().lower()
+    return value if value in _ANALYSIS_REASONING_EFFORTS else fallback
 
 
 def analysis_token_cost(

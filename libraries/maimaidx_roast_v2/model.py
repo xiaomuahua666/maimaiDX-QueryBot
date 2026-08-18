@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from typing import Any
@@ -8,6 +9,7 @@ from loguru import logger as log
 from openai import AsyncOpenAI, BadRequestError
 
 from ...config import maiconfig
+from ..maimaidx_break import analysis_reasoning_effort
 from .analysis import build_report_fallback
 from .domain import EvidencePack, RoastReport, StyleSpec
 from .policy import validate_report_text
@@ -52,6 +54,49 @@ def _token_usage(response: Any) -> dict[str, Any]:
         "total_tokens": max(0, total_tokens),
         "cached_input_tokens": max(0, min(cached, input_tokens)),
     }
+
+
+def _normalize_response(response: Any) -> Any:
+    """解包部分 OneAPI 网关返回的字符串或 data 包裹 JSON。"""
+    current = response
+    for _ in range(3):
+        if isinstance(current, str):
+            text = current.strip()
+            if not text:
+                return current
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                return current
+            if parsed == current:
+                return current
+            current = parsed
+            continue
+        if isinstance(current, dict):
+            data = current.get("data")
+            if (
+                "choices" not in current
+                and isinstance(data, dict)
+                and ("choices" in data or "usage" in data)
+            ):
+                current = data
+                continue
+        break
+    return current
+
+
+def _response_content(response: Any) -> str:
+    choices = _field(response, "choices")
+    if choices:
+        message = _field(choices[0], "message")
+        return str(_field(message, "content") or "").strip()
+    if isinstance(response, dict) and any(
+        key in response for key in ("headline", "summary", "analysis")
+    ):
+        return json.dumps(response, ensure_ascii=False)
+    if isinstance(response, str):
+        return response.strip()
+    return ""
 
 
 def _candidate_key(value: Any) -> tuple[str, str, int]:
@@ -199,11 +244,13 @@ async def generate_report(pack: EvidencePack, style: StyleSpec) -> tuple[RoastRe
         timeout=max(1.0, float(getattr(maiconfig, "b50_llm_timeout_seconds", 180.0))),
         max_retries=0,
     )
+    reasoning_effort = await asyncio.to_thread(analysis_reasoning_effort)
     request = dict(
         model=maiconfig.b50_llm_model,
         messages=[{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": build_user_prompt(pack, style)}],
         temperature=0.35,
         max_tokens=max(512, int(getattr(maiconfig, "b50_llm_max_tokens", 6144))),
+        reasoning_effort=reasoning_effort,
         response_format={"type": "json_object"},
     )
     prompt_cache_key = str(
@@ -215,7 +262,7 @@ async def generate_report(pack: EvidencePack, style: StyleSpec) -> tuple[RoastRe
         request["extra_body"] = {"prompt_cache_key": prompt_cache_key}
 
     response = None
-    for _ in range(3):
+    for _ in range(5):
         try:
             response = await client.chat.completions.create(**request)
             break
@@ -230,6 +277,12 @@ async def generate_report(pack: EvidencePack, style: StyleSpec) -> tuple[RoastRe
             ):
                 request.pop("response_format", None)
                 continue
+            if "reasoning_effort" in request and any(
+                marker in detail for marker in ("reasoning_effort", "reasoning effort")
+            ):
+                log.warning("[roast_v2] 当前网关不支持 reasoning_effort，已回退默认请求")
+                request.pop("reasoning_effort", None)
+                continue
             if "extra_body" in request and any(
                 marker in detail for marker in ("unknown field", "unknown parameter")
             ):
@@ -241,9 +294,19 @@ async def generate_report(pack: EvidencePack, style: StyleSpec) -> tuple[RoastRe
             ):
                 request.pop("response_format", None)
                 continue
+            if "reasoning_effort" in request and any(
+                marker in detail for marker in ("unknown field", "unknown parameter")
+            ):
+                log.warning("[roast_v2] 当前网关拒绝 reasoning_effort，已回退默认请求")
+                request.pop("reasoning_effort", None)
+                continue
             raise
     if response is None:
         raise RuntimeError("模型请求未返回响应")
+    raw_response = response
+    response = _normalize_response(response)
+    if isinstance(raw_response, str) and not isinstance(response, str):
+        log.info("[roast_v2] 已兼容解包 OneAPI 字符串响应")
     usage = _token_usage(response)
     cached_input_tokens = int(usage.get("cached_input_tokens") or 0)
     input_tokens = int(usage.get("input_tokens") or 0)
@@ -252,7 +315,11 @@ async def generate_report(pack: EvidencePack, style: StyleSpec) -> tuple[RoastRe
         "[roast_v2] 模型 Prompt Cache "
         f"cached={cached_input_tokens} input={input_tokens} rate={cache_rate:.1%}"
     )
-    content = str(response.choices[0].message.content or "").strip()
+    content = _response_content(response)
+    if not content:
+        error = ValueError("模型未返回锐评正文，请检查推理预算或 max_tokens")
+        error.token_usage = usage
+        raise error
     try:
         payload = json.loads(content)
     except json.JSONDecodeError as exc:

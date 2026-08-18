@@ -11,6 +11,7 @@ from typing import Any, Optional
 ROOT = Path(__file__).resolve().parent.parent
 break_source = (ROOT / "libraries" / "maimaidx_break.py").read_text(encoding="utf-8")
 assert "self._migrate_analysis_token_rates_default()" in break_source
+assert "'b50_llm_reasoning_effort': 'low'" in break_source
 
 break_tree = ast.parse(break_source)
 break_class = next(
@@ -88,6 +89,40 @@ pricing = load_functions(
     },
     {"Optional": Optional, "math": math, "_config_int": config_int},
 )
+
+
+class FakeConfigDb:
+    def __init__(self, value: str):
+        self.value = value
+
+    def get_config(self, _key: str, default: str = "") -> str:
+        return self.value or default
+
+
+reasoning = load_functions(
+    ROOT / "libraries" / "maimaidx_break.py",
+    {"analysis_reasoning_effort"},
+    {
+        "break_db": FakeConfigDb("HIGH"),
+        "maiconfig": SimpleNamespace(b50_llm_reasoning_effort="low"),
+        "_ANALYSIS_REASONING_EFFORTS": frozenset({"none", "low", "medium", "high"}),
+    },
+)["analysis_reasoning_effort"]
+assert reasoning() == "high"
+reasoning.__globals__["break_db"] = FakeConfigDb("unsupported")
+reasoning.__globals__["maiconfig"] = SimpleNamespace(b50_llm_reasoning_effort="medium")
+assert reasoning() == "medium"
+reasoning.__globals__["break_db"] = FakeConfigDb("none")
+assert reasoning() == "none"
+reasoning.__globals__["break_db"] = SimpleNamespace(
+    get_config=lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("db down"))
+)
+reasoning.__globals__["log"] = SimpleNamespace(warning=lambda *_args, **_kwargs: None)
+assert reasoning() == "medium"
+
+admin_source = (ROOT / "libraries" / "maimaidx_admin_web.py").read_text(encoding="utf-8")
+assert 'key == "b50_llm_reasoning_effort"' in admin_source
+assert '{"none", "low", "medium", "high"}' in admin_source
 cost = pricing["analysis_token_cost"]
 assert cost(0, 0) == 2
 assert cost(4000, 1000) == 2
