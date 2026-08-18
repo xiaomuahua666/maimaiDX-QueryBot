@@ -95,6 +95,7 @@ asyncio.run(main())
 
 
 roast_requests: list[dict] = []
+roast_client_options: list[dict] = []
 
 
 class RoastFakeCompletions:
@@ -114,16 +115,15 @@ class RoastFakeCompletions:
                     {
                         "message": {
                             "content": (
+                            "```json\n"
                             '{"headline":"稳定前缀测试",'
                             '"summary":"当前成绩结构稳定。",'
                             '"analysis":"当前成绩结构稳定，暂无14+平均数据，建议继续整理地板。",'
                             '"strengths":["当前数据有稳定表现"],'
                             '"weaknesses":["仍有地板整理空间"],'
-                            '"peer_takeaways":["同段样本不足"],'
                             '"actions":["完成一首后重新生成报告"],'
-                            '"recommendations":[],'
-                            '"claims":[{"text":"当前 Rating 为 15000",'
-                            '"evidence_ids":["rating"]}]}'
+                            '"recommendations":[]}'
+                            "\n```"
                             )
                         }
                     }
@@ -135,6 +135,7 @@ class RoastFakeCompletions:
 
 class RoastFakeClient:
     def __init__(self, **kwargs):
+        roast_client_options.append(kwargs)
         self.chat = SimpleNamespace(completions=RoastFakeCompletions())
 
 
@@ -149,6 +150,7 @@ async def roast_main() -> None:
         b50_llm_url="https://example.invalid/v1",
         b50_llm_model="cache-test-model",
         b50_llm_timeout_seconds=10,
+        b50_llm_max_retries=2,
         b50_llm_max_tokens=1024,
         b50_llm_prompt_cache_key="maimaidx-b50-roast-v2",
     )
@@ -159,7 +161,7 @@ async def roast_main() -> None:
         metrics={"high_count": 0},
     )
     try:
-        _, usage = await roast_model.generate_report(
+        report, usage = await roast_model.generate_report(
             pack, StyleSpec(direction="短版直说")
         )
         await roast_model.generate_report(pack, StyleSpec(direction="温柔一点"))
@@ -169,6 +171,7 @@ async def roast_main() -> None:
         roast_model.analysis_reasoning_effort = original_reasoning
 
     assert len(roast_requests) == 2
+    assert roast_client_options[0]["max_retries"] == 2
     first, second = roast_requests
     assert first["extra_body"]["prompt_cache_key"] == "maimaidx-b50-roast-v2"
     assert first["reasoning_effort"] == "high"
@@ -180,6 +183,10 @@ async def roast_main() -> None:
     assert usage["cached_input_tokens"] == 1500
     assert usage["input_tokens"] == 2000
     assert usage["output_tokens"] == 300
+    assert report.peer_takeaways
+    assert report.claims == [
+        {"text": "当前 Rating：15000", "evidence_ids": ["rating"]}
+    ]
     assert not roast_model._has_unsupported_high_claim("暂无14+平均数据")
     assert roast_model._has_unsupported_high_claim("14+平均达到100.5000%")
 

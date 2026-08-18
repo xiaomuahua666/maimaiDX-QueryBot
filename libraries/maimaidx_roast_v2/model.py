@@ -89,7 +89,22 @@ def _response_content(response: Any) -> str:
     choices = _field(response, "choices")
     if choices:
         message = _field(choices[0], "message")
-        return str(_field(message, "content") or "").strip()
+        content = _field(message, "content")
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, dict):
+            value = _field(content, "text", "output_text", "content")
+            if value is not None:
+                return str(value).strip()
+            return json.dumps(content, ensure_ascii=False)
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                value = _field(item, "text", "output_text", "content")
+                if value is not None:
+                    parts.append(str(value))
+            return "".join(parts).strip()
+        return str(content or "").strip()
     if isinstance(response, dict) and any(
         key in response for key in ("headline", "summary", "analysis")
     ):
@@ -97,6 +112,39 @@ def _response_content(response: Any) -> str:
     if isinstance(response, str):
         return response.strip()
     return ""
+
+
+def _finish_reason(response: Any) -> str:
+    choices = _field(response, "choices")
+    if not choices:
+        return ""
+    return str(_field(choices[0], "finish_reason") or "").strip().lower()
+
+
+def _parse_json_object(content: str) -> dict[str, Any]:
+    """解析合法 JSON 对象，并兼容代码围栏或少量前后说明。"""
+    text = str(content or "").strip().lstrip("\ufeff")
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text).strip()
+    try:
+        value = json.loads(text)
+        if isinstance(value, dict):
+            return value
+    except json.JSONDecodeError:
+        pass
+
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            value, _ = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            return value
+    raise ValueError("模型没有返回合法 JSON")
 
 
 def _candidate_key(value: Any) -> tuple[str, str, int]:
@@ -179,8 +227,10 @@ def _clean_report(raw: Any, pack: EvidencePack, style: StyleSpec) -> RoastReport
                 raise ValueError("模型返回包含不安全内容")
             cleaned_values.append(value)
         lists[key] = cleaned_values
+    fallback = None
     if not lists["peer_takeaways"]:
-        raise ValueError("模型没有返回同段结论")
+        fallback = build_report_fallback(pack, style)
+        lists["peer_takeaways"] = fallback.peer_takeaways[:3]
 
     known_by_key = {_candidate_key(candidate): candidate for candidate in pack.candidates}
     by_song: dict[str, list[Any]] = {}
@@ -220,7 +270,18 @@ def _clean_report(raw: Any, pack: EvidencePack, style: StyleSpec) -> RoastReport
         if claim and refs and validate_report_text(claim)["safe"]:
             claims.append({"text": claim[:160], "evidence_ids": refs[:4]})
     if not claims:
-        raise ValueError("模型没有返回可验证的事实依据")
+        fallback = fallback or build_report_fallback(pack, style)
+        for item in fallback.claims:
+            refs = [str(x) for x in item.get("evidence_ids", []) if str(x) in evidence_ids]
+            claim = str(item.get("text") or "").strip()
+            if claim and refs:
+                claims.append({"text": claim[:160], "evidence_ids": refs[:4]})
+        if not claims and pack.evidence:
+            evidence = pack.evidence[0]
+            claims.append({
+                "text": f"{evidence.label}：{evidence.value}"[:160],
+                "evidence_ids": [evidence.evidence_id],
+            })
     return RoastReport(
         headline=data["headline"],
         summary=data["summary"],
@@ -242,7 +303,7 @@ async def generate_report(pack: EvidencePack, style: StyleSpec) -> tuple[RoastRe
         api_key=maiconfig.b50_llm_key,
         base_url=str(maiconfig.b50_llm_url).rstrip("/"),
         timeout=max(1.0, float(getattr(maiconfig, "b50_llm_timeout_seconds", 180.0))),
-        max_retries=0,
+        max_retries=max(0, int(getattr(maiconfig, "b50_llm_max_retries", 2))),
     )
     reasoning_effort = await asyncio.to_thread(analysis_reasoning_effort)
     request = dict(
@@ -317,13 +378,20 @@ async def generate_report(pack: EvidencePack, style: StyleSpec) -> tuple[RoastRe
     )
     content = _response_content(response)
     if not content:
-        error = ValueError("模型未返回锐评正文，请检查推理预算或 max_tokens")
+        finish_reason = _finish_reason(response)
+        log.warning(
+            "[roast_v2] 模型正文为空 "
+            f"model={maiconfig.b50_llm_model} "
+            f"finish_reason={finish_reason or 'unknown'} "
+            f"output_tokens={usage.get('output_tokens', 0)}"
+        )
+        error = ValueError("模型未返回锐评正文，请检查上游状态或输出预算")
         error.token_usage = usage
         raise error
     try:
-        payload = json.loads(content)
-    except json.JSONDecodeError as exc:
-        error = ValueError("模型没有返回合法 JSON")
+        payload = _parse_json_object(content)
+    except ValueError as exc:
+        error = ValueError(str(exc))
         error.token_usage = usage
         raise error from exc
     try:
