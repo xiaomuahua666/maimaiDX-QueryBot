@@ -74,6 +74,13 @@ assert account["auto_upload_channels"]() == (False, False)
 assert account["auto_upload_channels"](fish_token="fish") == (True, False)
 assert account["auto_upload_channels"](lxns_token="lx") == (False, True)
 assert account["auto_upload_channels"](has_lxns_oauth=True) == (False, True)
+assert account["auto_upload_channels"](has_fish_oauth=True) == (False, False)
+assert account["auto_upload_channels"](
+    fish_token="old", divingfish_oauth_mode=True
+) == (False, False)
+assert account["auto_upload_channels"](
+    has_fish_oauth=True, divingfish_oauth_mode=True
+) == (True, False)
 assert account["auto_upload_channels"](
     fish_token="fish", has_lxns_oauth=True
 ) == (True, True)

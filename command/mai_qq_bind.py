@@ -71,6 +71,10 @@ qbind_status = on_command(
 my_platform_id = on_command('我的id', aliases={'platformid', '平台id', '我的openid'})
 group_member_list = on_command('群成员记录', permission=PLUGIN_ADMIN_ONLY)
 forum_bind_cancel = on_command('取消论坛绑定', aliases={'论坛绑定取消', '取消qbind'})
+plain_mode_cmd = on_command('兼容模式', aliases={'纯文本模式'})
+markdown_mode_cmd = on_command(
+    '标准模式', aliases={'Markdown模式', 'markdown模式', '关闭兼容模式'}
+)
 
 for _bind_matcher in (
     qbind_cmd,
@@ -78,10 +82,45 @@ for _bind_matcher in (
     qbind_status,
     my_platform_id,
     forum_bind_cancel,
+    plain_mode_cmd,
+    markdown_mode_cmd,
 ):
     setattr(_bind_matcher, '_maimaidx_announcement_exempt', True)
     setattr(_bind_matcher, '_maimaidx_debt_exempt', True)
     setattr(_bind_matcher, '_maimaidx_busy_surcharge_exempt', True)
+
+
+@plain_mode_cmd.handle()
+async def _(event: MessageEvent):
+    if not use_qq_mode(event):
+        await plugin_finish(
+            plain_mode_cmd,
+            '当前平台原本就使用普通文本，无需切换兼容模式。',
+            event=event,
+        )
+    qq_bind_db.set_plain_text_mode(platform_user_id(event), True)
+    await plugin_finish(
+        plain_mode_cmd,
+        '已开启兼容模式：除 @、图片、音频等必要消息段外，后续回复使用普通文本，链接显示为原始网址。\n'
+        '发送「标准模式」可恢复 Markdown 和快捷按钮。',
+        event=event,
+    )
+
+
+@markdown_mode_cmd.handle()
+async def _(event: MessageEvent):
+    if not use_qq_mode(event):
+        await plugin_finish(
+            markdown_mode_cmd,
+            '当前平台不使用官方 QQ Markdown，无需切换。',
+            event=event,
+        )
+    qq_bind_db.set_plain_text_mode(platform_user_id(event), False)
+    await plugin_finish(
+        markdown_mode_cmd,
+        '已恢复标准模式：后续回复会使用 Markdown 超链接和快捷按钮。',
+        event=event,
+    )
 
 # 官方 QQ：群消息时登记 member_openid（无全量拉群 API，仅能积累见过的成员）
 _qq_member_recorder = on_message(priority=99, block=False)
@@ -516,17 +555,19 @@ def _build_welcome_keyboard(event: Optional[MessageEvent] = None) -> MessageKeyb
     has_account = bool(binding and binding.qrcode)
     if not has_account:
         action_buttons.append(('绑定舞萌', 'mai绑定'))
-    if not (binding and binding.fish_token):
-        action_buttons.append(('绑定水鱼', 'mai绑定水鱼'))
+    fish_oauth_mode = False
     try:
         from ..libraries.maimaidx_divingfish_oauth import oauth_enabled
-        if oauth_enabled():
-            action_buttons.append(('授权水鱼查分', 'dfbind'))
+        fish_oauth_mode = oauth_enabled()
     except Exception:
         pass
+    if fish_oauth_mode:
+        action_buttons.append(('授权水鱼查分/上传', 'dfbind'))
+    elif not (binding and binding.fish_token):
+        action_buttons.append(('绑定水鱼', 'mai绑定水鱼'))
     if not has_lxns:
         action_buttons.append(('绑定落雪', 'lxbind'))
-    if has_account and binding.fish_token and has_lxns:
+    if has_account and (fish_oauth_mode or binding.fish_token) and has_lxns:
         action_buttons.append(('自动上传 B50', 'maiua'))
     action_buttons.extend([
         ('标准 B50', 'b50'),

@@ -29,7 +29,13 @@ from ..libraries.maimaidx_lxns_client import (
     user_get_player,
 )
 from ..libraries.maimaidx_lxns_db import lxns_db
-from ..libraries.maimaidx_platform import plugin_finish, resolve_score_qqid
+from ..libraries.maimaidx_platform import (
+    build_markdown_message,
+    plugin_finish,
+    plugin_send,
+    resolve_score_qqid,
+    use_qq_mode,
+)
 from ..libraries.maimaidx_pending_session import finish_pending, session_key, track_event
 
 # ─────────────────────────── helpers ───────────────────────────
@@ -108,10 +114,16 @@ async def _lxbind(matcher: Matcher, event: MessageEvent, message: Message = Comm
         matcher.set_arg('code', message)
     else:
         url = get_authorize_url(maiconfig.lx_client_id)
+        markdown_url = url.replace(')', '\\)')
+        shown_url = (
+            f'[打开落雪授权页面]({markdown_url})'
+            if use_qq_mode(event)
+            else url
+        )
         prompt = dedent(f"""\
             请点击以下链接进行落雪查分器授权
             =======================
-            {url}
+            {shown_url}
             =======================
             授权后你将看到一个授权码（形如 XXXX-XXXX-XXXX）
             请直接发送该授权码完成绑定
@@ -122,7 +134,8 @@ async def _lxbind(matcher: Matcher, event: MessageEvent, message: Message = Comm
             否则 Bot 将无法查询你的成绩
         """).strip()
         track_event(session_key('lxbind', event), event)
-        await lxbind.send(prompt, reply_message=True)
+        payload = build_markdown_message(prompt, event=event) if use_qq_mode(event) else prompt
+        await plugin_send(lxbind, payload, event=event, reply_message=True)
 
 
 @lxbind.got('code')

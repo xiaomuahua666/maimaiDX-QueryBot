@@ -87,11 +87,13 @@ MAIMAIDXPATH=/path/to/static
 
 ### 水鱼查分器 OAuth（内测，默认关闭）
 
-OAuth 当前是显式实验功能。默认情况下，`dfbind`、`绑定水鱼`、`mai绑定水鱼` 等原有命令均继续绑定水鱼 Import-Token，不会切换现有用户流程。
+OAuth 当前由显式开关控制，默认关闭。关闭时原有命令继续绑定水鱼 Import-Token；开启后旧 Import-Token 立即停用，`dfbind` / `绑定水鱼` 改为一次 OAuth 授权，所有旧用户必须重新授权才能继续使用水鱼数据源和上传功能。
 
-向水鱼申请 OAuth 应用后，可同时配置开关和应用凭据。重启 Bot 后，`dfbind` / `绑定水鱼` / `绑定df` 才会切换为 OAuth；`mai绑定水鱼` / `maibindfish` / `绑定水鱼token` 始终保留为 Import-Token 绑定入口。Bot 不保存用户 access token，授权关系保存在水鱼服务端。
+OAuth 应用需申请 `profile`、`prober.profile.read`、`prober.records.read`、`prober.records.write`。重启 Bot 后，用户只需授权一次即可查分、读取全量成绩并上传成绩；Bot 不持久化用户 access token，授权关系保存在水鱼服务端。
 
-同一个 OAuth 应用申请成绩读写权限即可复用：读取使用用户授权令牌，上传时把机台或 PC 成绩转换后直接提交到 `player/update_records`。当前开关默认关闭，未开启时仍只走 Import-Token 上传。
+上传通过 `POST /player/update_records` 使用同一份 Bearer 用户授权，单次最多 1000 条并自动分批；当前接口仅写入 SD/DX，宴谱会跳过。OAuth 开启时强制使用 OAuth，即使授权服务临时不可用也不会回退旧 Import-Token；AWMC NET 同步仍可独立完成。
+
+旧用户应重新发送 `绑定水鱼` 完成 OAuth。`dfstatus` / `水鱼授权状态` 可检查新版授权；账号状态也会提示仍在使用兼容 Token 的用户迁移。
 
 ```env
 DIVINGFISH_OAUTH_ENABLED=true
@@ -433,9 +435,10 @@ BOTNAME=maimai
 
 | 命令 | 说明 |
 |------|------|
-| `dfbind [token]` / `绑定水鱼 [token]` | 默认绑定水鱼 Import-Token；管理员开启 OAuth 后，无参数命令切换为 OAuth 授权 |
-| `mai绑定水鱼 [token]` / `maibindfish [token]` | 始终绑定水鱼上传 Import-Token |
-| `lxbind` | 绑定落雪查分器 |
+| `dfbind` / `绑定水鱼` | 新版水鱼 OAuth；一次授权同时用于查分与上传 |
+| `dfstatus` / `水鱼授权状态` | 检查水鱼 OAuth 读写授权 |
+| `mai绑定水鱼 <token>` / `maibindfish <token>` | 仅 OAuth 关闭时可用的旧 Import-Token 入口 |
+| `lxbind` | 绑定落雪 OAuth |
 | `上传水鱼 <二维码>` | 上传 b50 到水鱼 |
 | `上传落雪 <二维码>` | 上传 b50 到落雪 |
 | `数据源 落雪` | 切换个人数据源 |
@@ -447,7 +450,8 @@ BOTNAME=maimai
 | `mai账号` | 查看账号功能帮助 |
 | `mai绑定` / `maibind` / `mai解绑` | 绑定、认领或解绑舞萌账号 |
 | `mai状态` / `mymai` | 查看详细账号状态；SGID 缓存失效时交互刷新 |
-| `mai绑定水鱼 [token]` / `maibindfish [token]` | 绑定水鱼上传 Import-Token；无参数时提供获取链接并交互等待，最多重试 3 次 |
+| `绑定水鱼` / `dfbind` | 水鱼 OAuth，一次授权同时用于查分和上传（推荐） |
+| `mai绑定水鱼 <token>` / `maibindfish <token>` | 仅 OAuth 关闭时绑定旧水鱼 Import-Token |
 | `lxbind` | 绑定落雪 OAuth，上传无需导入 Token（推荐） |
 | `mai绑定落雪 <导入token>` / `maibindlx <导入token>` | 绑定落雪导入 Token（兼容） |
 | `maiu` / `导` | 仅上传水鱼 |
@@ -465,7 +469,11 @@ BOTNAME=maimai
 | `迁移Koishi 检查/确认 <数据库>` | 超级管理员预检/导入 Koishi maiBot 数据 |
 
 绑定后执行 `更新pc数` 会直接使用已保存账号，不再要求重复发送二维码。
-落雪上传优先复用 `lxbind` OAuth；仅未授权 OAuth 时才需要落雪导入 Token。
+水鱼 OAuth 开启后不再接受或回退旧 Import-Token，旧用户必须重新发送 `绑定水鱼`；落雪仍保留导入 Token 兼容方式。
+
+官方 QQ 的 qbind、水鱼和落雪授权入口均使用 Markdown 超链接。若客户端无法正常显示，发送
+`兼容模式` 后，除原生 @ 和媒体外均改用普通文本并显示原始网址；发送 `标准模式`、
+`Markdown模式` 或 `关闭兼容模式` 可恢复 Markdown 与快捷按钮。
 
 ### AWMCNET 自动同步与认领
 
@@ -486,8 +494,8 @@ Token 或落雪 Token，AWMCNET 暂时不可用也不会影响原有 Bot 查分�
 按日记录的 Rating、B35/B15 和谱面数量趋势。
 
 直接发送 `SGWCMAID...`、舞萌官方二维码链接或含二维码的图片时，Bot 会自动识别并先尝试撤回敏感消息。
-没有账号记录时自动验真绑定，已有记录时更新凭据；随后同步 PC，并按用户已绑定的水鱼 Token / 落雪
-OAuth（或兼容 Token）自动上传：只绑定一边就上传一边，两边都绑定则全部上传。识别成功后会立即提示
+没有账号记录时自动验真绑定，已有记录时更新凭据；随后同步 PC，并按用户已授权的水鱼/落雪 OAuth
+（或兼容 Token）自动上传：只绑定一边就上传一边，两边都绑定则全部上传。识别成功后会立即提示
 撤回状态与根据近期同类流程平均值计算的预计处理时间。普通图片和非舞萌二维码会静默忽略。账号与 BREAK 功能首次使用前需发送
 `用户协议`，阅读链接并完整输入网页确认词。
 

@@ -65,6 +65,12 @@ class QqBindDatabase:
                 );
                 CREATE INDEX IF NOT EXISTS idx_qq_group_bind_legacy
                     ON qq_group_bind(legacy_group_id);
+
+                CREATE TABLE IF NOT EXISTS qq_user_preferences (
+                    platform_id    TEXT PRIMARY KEY,
+                    plain_text_mode INTEGER NOT NULL DEFAULT 0,
+                    updated_at     REAL NOT NULL
+                );
                 '''
             )
             cols = {
@@ -124,6 +130,36 @@ class QqBindDatabase:
                 'SELECT platform_id FROM qq_bind WHERE legacy_qq = ?', (int(legacy_qq),)
             ).fetchone()
         return str(row['platform_id']) if row else None
+
+    # ---------- 官方 QQ 消息显示偏好 ----------
+
+    def set_plain_text_mode(self, platform_id: str, enabled: bool) -> None:
+        """Persist the per-user fallback mode used by official QQ replies."""
+        pid = str(platform_id).strip()
+        with self._lock:
+            self._conn.execute(
+                '''
+                INSERT INTO qq_user_preferences
+                    (platform_id, plain_text_mode, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(platform_id) DO UPDATE SET
+                    plain_text_mode = excluded.plain_text_mode,
+                    updated_at = excluded.updated_at
+                ''',
+                (pid, 1 if enabled else 0, time.time()),
+            )
+            self._conn.commit()
+
+    def is_plain_text_mode(self, platform_id: str) -> bool:
+        pid = str(platform_id).strip()
+        if not pid:
+            return False
+        with self._lock:
+            row = self._conn.execute(
+                'SELECT plain_text_mode FROM qq_user_preferences WHERE platform_id = ?',
+                (pid,),
+            ).fetchone()
+        return bool(row and int(row['plain_text_mode'] or 0))
 
     # ---------- 论坛身份 / OAuth 一次性状态 ----------
 

@@ -579,6 +579,7 @@ async def _process_auto_qrcode_for_account(
         take_awmcnet_first_sync_notice,
         take_pending_account_retry,
         take_pending_ticket_retry,
+        divingfish_oauth_enabled,
     )
 
     prefix = (
@@ -673,13 +674,15 @@ async def _process_auto_qrcode_for_account(
                 else:
                     await _verify_or_auto_bind_account(qqid, qrcode_data)
 
-                from .mai_account import _upload
+                from .mai_account import _has_divingfish_oauth, _upload
 
                 binding = account_db.get(str(qqid))
                 fish, lxns = auto_upload_channels(
                     fish_token=binding.fish_token if binding else '',
                     lxns_token=binding.lxns_token if binding else '',
+                    has_fish_oauth=await _has_divingfish_oauth(event),
                     has_lxns_oauth=_has_lxns_oauth(event),
+                    divingfish_oauth_mode=divingfish_oauth_enabled(),
                 )
                 actual_workflow_key = auto_qrcode_workflow_key(
                     pc=pc_enabled, fish=fish, lxns=lxns

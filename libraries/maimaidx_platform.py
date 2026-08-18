@@ -1192,6 +1192,62 @@ def use_qq_mode(event=None) -> bool:
     return is_qq_official()
 
 
+def qq_plain_text_mode(event=None) -> bool:
+    """Whether this official-QQ user requested the no-Markdown fallback."""
+    if event is None or not use_qq_mode(event):
+        return False
+    try:
+        return qq_bind_db.is_plain_text_mode(str(event.get_user_id()))
+    except Exception as exc:
+        log.debug(f'[qq-plain-mode] preference unavailable: {type(exc).__name__}')
+        return False
+
+
+def _markdown_to_plain_text(content: str) -> str:
+    """Make common QQ Markdown readable while preserving link destinations."""
+    text = str(content or '')
+    text = re.sub(
+        r'\[([^\]]+)\]\((https?://[^)]+)\)',
+        lambda match: f'{match.group(1)}: {match.group(2).replace(chr(92) + ")", ")")}',
+        text,
+    )
+    text = re.sub(r'<qqbot-at-user\s+id="[^"]+"\s*/>', '', text)
+    text = re.sub(r'^\s{0,3}#{1,6}\s*', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^\s*>\s?', '', text, flags=re.MULTILINE)
+    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
+    text = re.sub(r'__([^_]+)__', r'\1', text)
+    text = re.sub(r'`([^`]+)`', r'\1', text)
+    return text.strip()
+
+
+def _qq_plain_fallback_message(message: Any) -> Any:
+    """Drop Markdown/keyboards but retain native mentions and media segments."""
+    try:
+        from nonebot.adapters.qq.message import Message as QQMessage
+        from nonebot.adapters.qq.message import MessageSegment as QQSeg
+    except ImportError:
+        return message
+    if isinstance(message, QQSeg):
+        segments = [message]
+    elif isinstance(message, QQMessage):
+        segments = list(message)
+    else:
+        return message
+    parts: list[Any] = []
+    for segment in segments:
+        seg_type = getattr(segment, 'type', '')
+        if seg_type == 'keyboard':
+            continue
+        if seg_type == 'markdown':
+            model = (getattr(segment, 'data', None) or {}).get('markdown')
+            content = _markdown_to_plain_text(str(getattr(model, 'content', None) or ''))
+            if content:
+                parts.append(QQSeg.text(content))
+            continue
+        parts.append(segment)
+    return QQMessage(parts or [QQSeg.text('（无内容）')])
+
+
 def _matcher_flag(matcher: Any, name: str) -> bool:
     """Read matcher flags from both NoneBot matcher classes and instances."""
     return bool(
@@ -1776,6 +1832,11 @@ def ensure_sender_mention(message: Any, event) -> Any:
         if use_qq_mode(event):
             from nonebot.adapters.qq.message import Message as QQMessage
             from nonebot.adapters.qq.message import MessageSegment as QQSeg
+            if qq_plain_text_mode(event):
+                parts = [_qq_mention_segment(uid, username=nickname or None)]
+                if body:
+                    parts.extend([QQSeg.text('\n'), QQSeg.text(body)])
+                return QQMessage(parts)
             # Use the same native Markdown path for every ordinary QQ reply;
             # typed mention segments remain reserved for structured media.
             content = qq_at_markup(uid)
@@ -1787,6 +1848,15 @@ def ensure_sender_mention(message: Any, event) -> Any:
     if use_qq_mode(event):
         from nonebot.adapters.qq.message import Message as QQMessage
         from nonebot.adapters.qq.message import MessageSegment as QQSeg
+        if qq_plain_text_mode(event):
+            prefix = _qq_mention_segment(uid, username=nickname or None)
+            converted = adapt_guess_outbound(message, event=event)
+            converted = _qq_plain_fallback_message(converted)
+            if isinstance(converted, QQSeg):
+                converted_parts = [converted]
+            else:
+                converted_parts = list(converted)
+            return QQMessage([prefix, QQSeg.text('\n')] + converted_parts)
         markdown_message = _prepend_qq_markdown_mention(message, event)
         if markdown_message is not None:
             return markdown_message
@@ -2714,10 +2784,11 @@ def adapt_reply_payload(
         from nonebot.adapters.qq.message import MessageSegment as QQSeg
 
         parts: List[Any] = []
+        plain_mode = qq_plain_text_mode(event)
         if result.strip():
-            parts.append(QQSeg.markdown(result))
+            parts.append(QQSeg.text(result) if plain_mode else QQSeg.markdown(result))
         if footer:
-            parts.append(QQSeg.markdown(footer))
+            parts.append(QQSeg.text(footer) if plain_mode else QQSeg.markdown(footer))
         return QQMessage(parts) if parts else QQMessage([QQSeg.text('（无内容）')])
 
     if not qq_mode:
@@ -2728,6 +2799,8 @@ def adapt_reply_payload(
     # 已是官方 QQ 消息段：直接发送，避免再被当成 OneBot 丢掉 @。
     result_module = type(result).__module__
     if result_module.startswith('nonebot.adapters.qq'):
+        if qq_plain_text_mode(event):
+            result = _qq_plain_fallback_message(result)
         if footer or publish_qq_image:
             from nonebot.adapters.qq.message import Message as QQMessage
             from nonebot.adapters.qq.message import MessageSegment as QQSeg
@@ -2813,11 +2886,14 @@ def build_markdown_link_message(
     ]
     if not normalized:
         return MessageSegment.text(str(title or ''))
-    if not use_qq_mode(event):
+    if not use_qq_mode(event) or qq_plain_text_mode(event):
         body = '\n'.join(f'{label}: {url}' for label, url in normalized)
-        return MessageSegment.text(
-            f'{title}\n{body}' if str(title or '').strip() else body
-        )
+        content = f'{title}\n{body}' if str(title or '').strip() else body
+        if use_qq_mode(event):
+            from nonebot.adapters.qq.message import Message as QQMessage
+            from nonebot.adapters.qq.message import MessageSegment as QQSeg
+            return QQMessage([QQSeg.text(content)])
+        return MessageSegment.text(content)
 
     from nonebot.adapters.qq.message import Message as QQMessage
     from nonebot.adapters.qq.message import MessageSegment as QQSeg
@@ -2873,6 +2949,8 @@ def build_markdown_message(content: str, *, event=None) -> Any:
     from nonebot.adapters.qq.message import Message as QQMessage
     from nonebot.adapters.qq.message import MessageSegment as QQSeg
 
+    if qq_plain_text_mode(event):
+        return QQMessage([QQSeg.text(_markdown_to_plain_text(text))])
     return QQMessage([QQSeg.markdown(text)])
 
 
@@ -2889,7 +2967,7 @@ def build_command_keyboard(
     data back through the ordinary matcher pipeline. Other adapters return
     ``None`` and keep their existing message format unchanged.
     """
-    if not use_qq_mode(event):
+    if not use_qq_mode(event) or qq_plain_text_mode(event):
         return None
     from nonebot.adapters.qq.models import (
         Action,

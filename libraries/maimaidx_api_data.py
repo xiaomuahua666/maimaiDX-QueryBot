@@ -171,12 +171,15 @@ class MaimaiAPI:
             
             admin_audit.add_step(
                 'http.divingfish',
-                'success' if res.status_code == 200 else 'error',
+                'success' if 200 <= res.status_code < 300 else 'error',
                 {'method': method, 'endpoint': endpoint, 'status_code': res.status_code},
                 started_at=_audit_started,
             )
-            if res.status_code == 200:
-                data = res.json()
+            if 200 <= res.status_code < 300:
+                try:
+                    data = res.json()
+                except (ValueError, TypeError):
+                    data = {'success': True, 'status_code': res.status_code}
                 if _bill_qq:
                     await asyncio.to_thread(settle_prober_fetch, _bill_qq)
                 return data
@@ -304,13 +307,22 @@ class MaimaiAPI:
             )
         if not records:
             raise ValueError('没有可写入的成绩记录')
-        return await self._requestmai_oauth(
-            'POST',
-            '/player/update_records',
-            int(qqid),
-            json=records,
-            max_retries=0,
-        )
+        results = []
+        for start in range(0, len(records), 1000):
+            results.append(
+                await self._requestmai_oauth(
+                    'POST',
+                    '/player/update_records',
+                    int(qqid),
+                    json=records[start:start + 1000],
+                    max_retries=0,
+                )
+            )
+        return results[0] if len(results) == 1 else {
+            'success': True,
+            'message': f'已分 {len(results)} 批写入 {len(records)} 条成绩',
+            'batches': results,
+        }
 
     async def music_data(self):
         """获取曲目数据"""

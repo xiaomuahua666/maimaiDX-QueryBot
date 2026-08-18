@@ -357,9 +357,10 @@ def _divingfish_score_payload(
     title = _divingfish_song_title(raw_id)
     if not title:
         return None
+    # 水鱼 update_records 当前只接受 SD / DX；宴谱不能写入该接口。
     if raw_id > 100000:
-        score_type = 'UTAGE'
-    elif raw_id >= 10000:
+        return None
+    if raw_id >= 10000:
         score_type = 'DX'
     else:
         score_type = 'SD'

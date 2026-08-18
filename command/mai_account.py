@@ -25,9 +25,15 @@ from ..libraries.maimaidx_admin_audit import admin_audit, redact
 from ..libraries.maimaidx_break import break_db
 from ..libraries.maimaidx_api_data import maiApi
 from ..libraries.maimaidx_divingfish_oauth import (
+    get_access_token as get_divingfish_access_token,
     oauth_enabled as divingfish_oauth_enabled,
 )
-from ..libraries.maimaidx_error import BreakInsufficientError, QBindRequiredError
+from ..libraries.maimaidx_error import (
+    BreakInsufficientError,
+    DivingFishNotAuthorizedError,
+    DivingFishOAuthError,
+    QBindRequiredError,
+)
 from ..libraries.maimaidx_group_rating import build_forward_node
 from ..libraries.maimaidx_lxns_client import (
     LxnsApiError,
@@ -139,18 +145,21 @@ def _account_flow_shortcuts(event: MessageEvent) -> tuple[tuple[str, str], ...]:
     key = _user_key(event)
     binding = account_db.get(key)
     has_account = bool(binding and binding.qrcode)
-    has_fish = bool(binding and binding.fish_token)
+    oauth_mode = divingfish_oauth_enabled()
+    has_fish = bool(binding and binding.fish_token and not oauth_mode)
     has_lxns = bool(
         (binding and binding.lxns_token) or _has_lxns_oauth(event)
     )
     buttons: list[tuple[str, str]] = []
     if not has_account:
         buttons.append(('绑定舞萌', 'mai绑定'))
-    if not has_fish:
+    if oauth_mode:
+        buttons.append(('授权水鱼', '绑定水鱼'))
+    elif not has_fish:
         buttons.append(('绑定水鱼', 'mai绑定水鱼'))
     if not has_lxns:
         buttons.append(('绑定落雪', 'lxbind'))
-    if has_account and has_fish and has_lxns:
+    if has_account and (has_fish or oauth_mode) and has_lxns:
         buttons.append(('自动上传 B50', 'maiua'))
     buttons.extend([
         ('标准 B50', 'b50'),
@@ -211,7 +220,7 @@ _FISH_TOKEN_MAX_LENGTH = 132
 _ACCOUNT_SETUP_GUIDE = (
     "尚未建立账号记录，请按以下步骤完成：\n"
     "1. 发送最新的 SGWCMAID 字符串，Bot 会自动建档并上传 AWMCNET；\n"
-    "2. 水鱼 Token / 落雪 OAuth 均为可选，绑定后会额外同步对应平台；\n"
+    "2. 水鱼 / 落雪 OAuth 均为可选，授权后会额外同步对应平台；\n"
     "3. 之后再次发送二维码即可更新全部已绑定平台。"
 )
 
@@ -868,7 +877,14 @@ async def _render_account_status(
     lines.append(f"封禁状态：{ban_labels.get(ban_state, '未知' if ban_state is None else ban_state)}")
 
     lines.append("")
-    lines.append(f"🐟 水鱼上传：{'已绑定' if binding.fish_token else '未绑定'}")
+    if await _has_divingfish_oauth(event):
+        lines.append("🐟 水鱼查分/上传：OAuth 已授权（推荐）")
+    elif binding.fish_token and divingfish_oauth_enabled():
+        lines.append("🐟 水鱼：旧 Token 已停用，请发送「绑定水鱼」重新授权")
+    elif binding.fish_token:
+        lines.append("🐟 水鱼上传：Import-Token 已绑定")
+    else:
+        lines.append("🐟 水鱼查分/上传：未授权（发送「绑定水鱼」）")
     if _has_lxns_oauth(event):
         lines.append("❄️ 落雪上传：OAuth 已绑定")
     elif binding.lxns_token:
@@ -1585,6 +1601,20 @@ def _has_lxns_oauth(event: MessageEvent) -> bool:
     return bool(row and row.get("access_token"))
 
 
+async def _has_divingfish_oauth(event: MessageEvent) -> bool:
+    """Probe the upstream grant; waterfish intentionally stores no local token."""
+    if not divingfish_oauth_enabled():
+        return False
+    qqid = _oauth_qqid(event)
+    if qqid is None:
+        return False
+    try:
+        await get_divingfish_access_token(qqid)
+        return True
+    except (DivingFishNotAuthorizedError, DivingFishOAuthError, RuntimeError, OSError):
+        return False
+
+
 def _lxns_oauth_missing_write_scope(event: MessageEvent) -> bool:
     qqid = _oauth_qqid(event)
     if qqid is None:
@@ -1930,7 +1960,8 @@ async def _(event: MessageEvent):
         "mai绑定 / maibind：绑定或认领舞萌账号\n"
         f"mai状态 / mymai：查看账号详细状态，每次成功查询 {status_cost} BREAK，失败不扣费\n"
         "舞萌状态 / mais：AWMC 全局失败率分类图（空分类省略）+ 实时状态\n"
-        "mai绑定水鱼 [Token] / maibindfish：绑定水鱼上传 Import-Token，无参数时交互引导，最多重试 3 次\n"
+        "绑定水鱼 / dfbind：一次 OAuth 同时用于水鱼查分和上传（推荐）\n"
+        "mai绑定水鱼 <Token> / maibindfish <Token>：仅 OAuth 关闭时使用旧 Import-Token\n"
         "lxbind：落雪 OAuth（推荐）；maibindlx <导入Token> 为兼容方式\n"
         "发送二维码：始终上传 AWMCNET；已绑定水鱼/落雪时同时同步对应平台\n"
         "maiu / maiul / maiua：AWMCNET + 指定且已绑定的外部平台\n"
@@ -2046,7 +2077,9 @@ async def _(
     fish, lxns = auto_upload_channels(
         fish_token=binding.fish_token,
         lxns_token=binding.lxns_token,
+        has_fish_oauth=await _has_divingfish_oauth(event),
         has_lxns_oauth=_has_lxns_oauth(event),
+        divingfish_oauth_mode=divingfish_oauth_enabled(),
     )
     upload_note = ""
     first_notice = ""
@@ -2292,6 +2325,14 @@ def _save_upload_token(event: MessageEvent, token: str, kind: str) -> str:
 @fish_bind.handle()
 async def _(matcher: Matcher, event: MessageEvent, args: Message = CommandArg()):
     await _require_agreement(fish_bind, event)
+    if divingfish_oauth_enabled():
+        await plugin_finish(
+            fish_bind,
+            "水鱼 OAuth 已开启，旧 Import-Token 不再用于查分或上传。\n"
+            "请发送「绑定水鱼」重新授权；一次授权即可同时查分和上传成绩。",
+            event=event,
+            reply_message=True,
+        )
     token = _arg_text(args)
     if token:
         matcher.set_arg("fish_token", Message(token))
@@ -2356,7 +2397,9 @@ async def _(
     finish_pending(pending_key)
     await plugin_finish(
         fish_bind,
-        f"✅ 水鱼 Token 已绑定。\nToken：{_mask(token, 8, 4)}\nRef_ID: {ref}",
+        f"✅ 水鱼兼容 Token 已绑定。\nToken：{_mask(token, 8, 4)}\n"
+        "建议再发送「绑定水鱼」迁移到一次授权即可查分和上传的 OAuth。\n"
+        f"Ref_ID: {ref}",
         event=event,
         reply_message=True,
         qq_buttons=_account_flow_shortcuts(event),
@@ -2440,14 +2483,27 @@ async def _upload(
         )
         if not binding.lxns_token:
             requested_lxns = False
-    # AWMCNET 永远上传；外部平台仅在用户已绑定时参与，不再阻塞建档。
-    # Import-Token users keep the established upload path even when the
-    # experimental OAuth switch is enabled. OAuth write is used only when the
-    # user explicitly requests a waterfish upload without a saved token.
-    fish_oauth = bool(
-        fish and divingfish_oauth_enabled() and not binding.fish_token
+    # AWMCNET 永远上传。OAuth 开启后水鱼强制使用新版读写授权，旧
+    # Import-Token 完全停用；关闭 OAuth 时才保留原有 Token 上传路径。
+    requested_fish = fish
+    fish_oauth = False
+    if requested_fish and divingfish_oauth_enabled():
+        try:
+            await get_divingfish_access_token(int(key))
+            fish_oauth = True
+        except DivingFishNotAuthorizedError:
+            external_warnings.append(
+                "水鱼：尚未完成新版 OAuth 授权，请发送「绑定水鱼」重新绑定"
+            )
+        except (DivingFishOAuthError, RuntimeError, OSError) as exc:
+            log.warning(f'[upload] 水鱼 OAuth 预检失败 user={key}: {type(exc).__name__}')
+            external_warnings.append(
+                "水鱼 OAuth 暂时不可用，本次仅同步 AWMC NET；旧 Token 不会回退使用"
+            )
+    fish = bool(
+        requested_fish
+        and (fish_oauth if divingfish_oauth_enabled() else binding.fish_token)
     )
-    fish = bool(fish and (binding.fish_token or fish_oauth))
     lxns = bool(requested_lxns and has_lxns_upload)
 
     # 最优路径：仅落雪 + OAuth + 新鲜 PC 缓存 → 直连个人 API，不占机台锁、不验二维码。
@@ -2678,7 +2734,7 @@ async def _upload(
                 result = await sw_api.update_fish(qrcode, binding.fish_token)
             result = await _await_upload_success(result, lxns=False)
             results.append(
-                ('水鱼（OAuth）：' if fish_oauth else '水鱼：')
+                ('水鱼（OAuth）：' if fish_oauth else '水鱼（Import-Token）：')
                 + _result_text(result)
             )
         if lxns:
@@ -2884,12 +2940,16 @@ def _upload_can_start_now(
 
 
 def auto_upload_channels(
-    *, fish_token: str = "", lxns_token: str = "", has_lxns_oauth: bool = False
+    *,
+    fish_token: str = "",
+    lxns_token: str = "",
+    has_fish_oauth: bool = False,
+    has_lxns_oauth: bool = False,
+    divingfish_oauth_mode: bool = False,
 ) -> tuple[bool, bool]:
     """直接二维码默认按 maiua 处理，但只上传用户实际绑定的渠道。"""
-    # Waterfish OAuth authorization lives upstream and has no local binding
-    # marker, so automatic QR handling must not assume every user is authorized.
-    return bool(fish_token), bool(lxns_token or has_lxns_oauth)
+    fish = has_fish_oauth if divingfish_oauth_mode else bool(fish_token)
+    return bool(fish), bool(lxns_token or has_lxns_oauth)
 
 
 def _upload_retryable(message: str) -> bool:
