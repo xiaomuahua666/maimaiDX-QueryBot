@@ -38,7 +38,6 @@ from ..libraries.maimaidx_break import (
 )
 from ..libraries.maimaidx_roast_v2 import (
     build_evidence_pack,
-    build_report_fallback,
     fetch_snapshot,
     generate_report,
     normalize_style,
@@ -230,24 +229,11 @@ async def _handle_impl(matcher: Matcher, bot: Bot, event: MessageEvent, args: Me
         raise
     try:
         token_usage = _empty_token_usage()
-        try:
-            report, token_usage = await asyncio.wait_for(
-                generate_report(pack, style),
-                timeout=_timeout("b50_llm_timeout_seconds", 180.0),
-            )
-        except FinishedException:
-            raise
-        except Exception as exc:
-            # Validation failures may still carry usage from a completed model
-            # response.  Preserve it when the deterministic fallback is used.
-            candidate_usage = getattr(exc, "token_usage", None)
-            if isinstance(candidate_usage, dict):
-                token_usage = candidate_usage
-            log.warning(
-                f"[roast_v2] model failed, using deterministic fallback: "
-                f"{type(exc).__name__}: {exc}"
-            )
-            report = await asyncio.to_thread(build_report_fallback, pack, style)
+        report, token_usage = await _run_timed_stage(
+            generate_report(pack, style),
+            stage="模型生成",
+            timeout=_timeout("b50_llm_timeout_seconds", 360.0),
+        )
 
         if not isinstance(token_usage, dict):
             token_usage = _empty_token_usage()

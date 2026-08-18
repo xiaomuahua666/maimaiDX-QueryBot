@@ -19,6 +19,9 @@ assert source.index("plugin_send(") < source.index("react_processing(")
 assert "b50_reaction_timeout_seconds" in source
 assert "b50_fetch_timeout_seconds" in source
 assert "b50_llm_timeout_seconds" in source
+assert "stage=\"模型生成\"" in source
+assert "build_report_fallback" not in source
+assert "model failed, using deterministic fallback" not in source
 assert "b50_llm_max_tokens" in (ROOT / "libraries" / "b50_analysis" / "llm.py").read_text(encoding="utf-8")
 assert "b50_send_timeout_seconds" in source
 assert "asyncio.wait_for(" in source

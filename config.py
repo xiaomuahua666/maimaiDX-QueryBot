@@ -216,9 +216,11 @@ class Config(BaseModel):
     b50_analysis_max_concurrency: int = 12
     b50_analysis_queue_timeout_seconds: float = 2.0
     b50_fetch_timeout_seconds: float = 45.0
-    b50_llm_timeout_seconds: float = 180.0
-    # OneAPI 等兼容网关偶发 5xx/连接中断；由 SDK 对瞬时故障做有限重试。
-    b50_llm_max_retries: int = 3
+    # 整个模型阶段允许完成多轮兼容降级；单次 HTTP 请求使用更短的独立超时。
+    b50_llm_timeout_seconds: float = 360.0
+    b50_llm_request_timeout_seconds: float = 75.0
+    # 应用层会按参数兼容性重试，SDK 默认不再叠加重试，避免耗尽总时限。
+    b50_llm_max_retries: int = 0
     b50_llm_max_tokens: int = 6144
     b50_llm_reasoning_effort: str = 'low'
     # 相同稳定前缀固定路由到同一 Prompt Cache 分区；不兼容的网关会自动回退。

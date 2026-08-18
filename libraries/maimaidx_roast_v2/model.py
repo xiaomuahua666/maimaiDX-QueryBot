@@ -6,7 +6,13 @@ import re
 from typing import Any
 
 from loguru import logger as log
-from openai import APIStatusError, AsyncOpenAI, BadRequestError
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    APITimeoutError,
+    AsyncOpenAI,
+    BadRequestError,
+)
 
 from ...config import maiconfig
 from ..maimaidx_break import analysis_reasoning_effort
@@ -306,12 +312,15 @@ def _clean_report(raw: Any, pack: EvidencePack, style: StyleSpec) -> RoastReport
 
 async def generate_report(pack: EvidencePack, style: StyleSpec) -> tuple[RoastReport, dict[str, Any]]:
     if not getattr(maiconfig, "b50_llm_key", ""):
-        return build_report_fallback(pack, style), {"available": False, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cached_input_tokens": 0}
+        raise RuntimeError("锐评模型未配置，无法生成模型报告")
     client = AsyncOpenAI(
         api_key=maiconfig.b50_llm_key,
         base_url=str(maiconfig.b50_llm_url).rstrip("/"),
-        timeout=max(1.0, float(getattr(maiconfig, "b50_llm_timeout_seconds", 180.0))),
-        max_retries=max(0, int(getattr(maiconfig, "b50_llm_max_retries", 2))),
+        timeout=max(
+            1.0,
+            float(getattr(maiconfig, "b50_llm_request_timeout_seconds", 75.0)),
+        ),
+        max_retries=max(0, int(getattr(maiconfig, "b50_llm_max_retries", 0))),
     )
     reasoning_effort = await asyncio.to_thread(analysis_reasoning_effort)
     request = dict(
@@ -391,6 +400,26 @@ async def generate_report(pack: EvidencePack, style: StyleSpec) -> tuple[RoastRe
             if status >= 500 and any(marker in detail for marker in ("do_request_failed", "upstream error")):
                 log.warning("[roast_v2] 上游 5xx 重试后仍失败")
             raise
+        except (APITimeoutError, APIConnectionError) as exc:
+            if "extra_body" in request:
+                log.warning(
+                    f"[roast_v2] {type(exc).__name__}，移除 Prompt Cache 扩展后重试"
+                )
+                request.pop("extra_body", None)
+                continue
+            if "reasoning_effort" in request:
+                log.warning(
+                    f"[roast_v2] {type(exc).__name__}，移除 reasoning_effort 后重试"
+                )
+                request.pop("reasoning_effort", None)
+                continue
+            if "response_format" in request:
+                log.warning(
+                    f"[roast_v2] {type(exc).__name__}，移除 response_format 后重试"
+                )
+                request.pop("response_format", None)
+                continue
+            raise
             raise
     if response is None:
         raise RuntimeError("模型请求未返回响应")
@@ -399,6 +428,10 @@ async def generate_report(pack: EvidencePack, style: StyleSpec) -> tuple[RoastRe
     if isinstance(raw_response, str) and not isinstance(response, str):
         log.info("[roast_v2] 已兼容解包 OneAPI 字符串响应")
     usage = _token_usage(response)
+    if not usage.get("available"):
+        error = ValueError("模型未返回 Token 用量，本次报告不发送且不扣费")
+        error.token_usage = usage
+        raise error
     cached_input_tokens = int(usage.get("cached_input_tokens") or 0)
     input_tokens = int(usage.get("input_tokens") or 0)
     cache_rate = cached_input_tokens / input_tokens if input_tokens > 0 else 0.0
