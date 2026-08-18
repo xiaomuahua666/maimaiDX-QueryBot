@@ -213,7 +213,7 @@ class Config(BaseModel):
     # 锐评涉及多个外部服务，必须有硬超时，避免 Matcher 永久停在“处理中”。
     b50_reaction_timeout_seconds: float = 2.0
     # 锐评是模型 + 制图 + QQ 媒体发送的重任务；满载时快速拒绝，避免无限堆积。
-    b50_analysis_max_concurrency: int = 12
+    b50_analysis_max_concurrency: int = 6
     b50_analysis_queue_timeout_seconds: float = 2.0
     b50_fetch_timeout_seconds: float = 45.0
     # 整个模型阶段允许完成多轮兼容降级；单次 HTTP 请求使用更短的独立超时。
@@ -250,7 +250,9 @@ class Config(BaseModel):
     maimaidx_qq_media_max_bytes: int = 16 * 1024 * 1024
     # 官方 QQ 网关的并发保护；超时后快速失败，避免发送任务无限堆积。
     qq_send_max_concurrency: int = 8
-    qq_send_queue_timeout_seconds: float = 5.0
+    # 媒体上传单独限流，始终给签到、错误提示等轻量文本保留发送槽位。
+    qq_media_send_max_concurrency: int = 4
+    qq_send_queue_timeout_seconds: float = 10.0
     # 插件管理员 platform id（逗号/空格分隔），与 SUPERUSER 等效；官方 QQ 填 openid
     maimaidx_bot_admins: str = ''
     # ---------- AWMC 论坛（ThemeHouse/Audentio OAuth） ----------

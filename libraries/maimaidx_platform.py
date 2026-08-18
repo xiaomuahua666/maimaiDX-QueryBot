@@ -56,6 +56,17 @@ try:
 except (TypeError, ValueError):
     _QQ_SEND_MAX_CONCURRENCY = 8
 _QQ_SEND_SEMAPHORE = asyncio.Semaphore(_QQ_SEND_MAX_CONCURRENCY)
+try:
+    _QQ_MEDIA_SEND_MAX_CONCURRENCY = max(
+        1,
+        min(
+            _QQ_SEND_MAX_CONCURRENCY,
+            int(getattr(maiconfig, 'qq_media_send_max_concurrency', 4) or 4),
+        ),
+    )
+except (TypeError, ValueError):
+    _QQ_MEDIA_SEND_MAX_CONCURRENCY = min(4, _QQ_SEND_MAX_CONCURRENCY)
+_QQ_MEDIA_SEND_SEMAPHORE = asyncio.Semaphore(_QQ_MEDIA_SEND_MAX_CONCURRENCY)
 
 
 def _qq_send_queue_timeout() -> float:
@@ -71,18 +82,49 @@ def _qq_send_queue_timeout() -> float:
         return 5.0
 
 
+def _qq_send_has_media(args, kwargs) -> bool:
+    message = kwargs.get('message')
+    if message is None and args:
+        message = args[-1]
+    if message is None:
+        return False
+    if getattr(message, 'type', None) in {'image', 'audio', 'video', 'file'}:
+        return True
+    try:
+        return any(
+            getattr(segment, 'type', None) in {'image', 'audio', 'video', 'file'}
+            for segment in message
+        )
+    except TypeError:
+        return False
+
+
 async def _bounded_qq_send(send_func, *args, **kwargs):
+    media_acquired = False
+    if _qq_send_has_media(args, kwargs):
+        try:
+            await asyncio.wait_for(
+                _QQ_MEDIA_SEND_SEMAPHORE.acquire(),
+                timeout=_qq_send_queue_timeout(),
+            )
+            media_acquired = True
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError('QQ 媒体发送队列繁忙，请稍后重试') from exc
     try:
         await asyncio.wait_for(
             _QQ_SEND_SEMAPHORE.acquire(),
             timeout=_qq_send_queue_timeout(),
         )
     except asyncio.TimeoutError as exc:
+        if media_acquired:
+            _QQ_MEDIA_SEND_SEMAPHORE.release()
         raise TimeoutError('QQ 出站消息队列繁忙，请稍后重试') from exc
     try:
         return await send_func(*args, **kwargs)
     finally:
         _QQ_SEND_SEMAPHORE.release()
+        if media_acquired:
+            _QQ_MEDIA_SEND_SEMAPHORE.release()
 
 
 def _send_retry_count() -> int:

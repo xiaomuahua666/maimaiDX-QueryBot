@@ -37,8 +37,10 @@ class FakeEvent:
 
 async def test_qq_send_backpressure() -> None:
     old_semaphore = platform._QQ_SEND_SEMAPHORE
+    old_media_semaphore = platform._QQ_MEDIA_SEND_SEMAPHORE
     old_config = platform.maiconfig
     platform._QQ_SEND_SEMAPHORE = asyncio.Semaphore(1)
+    platform._QQ_MEDIA_SEND_SEMAPHORE = asyncio.Semaphore(1)
     platform.maiconfig = SimpleNamespace(qq_send_queue_timeout_seconds=0.02)
     started = asyncio.Event()
     release = asyncio.Event()
@@ -61,6 +63,45 @@ async def test_qq_send_backpressure() -> None:
     assert await asyncio.wait_for(first, timeout=0.2) == "first"
     assert not platform._QQ_SEND_SEMAPHORE.locked(), "发送完成后未释放槽位"
     platform._QQ_SEND_SEMAPHORE = old_semaphore
+    platform._QQ_MEDIA_SEND_SEMAPHORE = old_media_semaphore
+    platform.maiconfig = old_config
+
+
+async def test_qq_media_keeps_text_lane_free() -> None:
+    old_send = platform._QQ_SEND_SEMAPHORE
+    old_media = platform._QQ_MEDIA_SEND_SEMAPHORE
+    old_config = platform.maiconfig
+    platform._QQ_SEND_SEMAPHORE = asyncio.Semaphore(2)
+    platform._QQ_MEDIA_SEND_SEMAPHORE = asyncio.Semaphore(1)
+    platform.maiconfig = SimpleNamespace(qq_send_queue_timeout_seconds=0.02)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_send(*, message):
+        started.set()
+        await release.wait()
+        return message
+
+    async def fast_send(*, message):
+        return message
+
+    media = [SimpleNamespace(type="image")]
+    first = asyncio.create_task(
+        platform._bounded_qq_send(slow_send, message=media)
+    )
+    await asyncio.wait_for(started.wait(), timeout=0.2)
+    text = await platform._bounded_qq_send(fast_send, message="签到成功")
+    assert text == "签到成功", "媒体上传不应堵住文本发送槽位"
+    try:
+        await platform._bounded_qq_send(fast_send, message=media)
+    except TimeoutError as exc:
+        assert "媒体发送队列繁忙" in str(exc)
+    else:
+        raise AssertionError("媒体并发上限没有生效")
+    release.set()
+    await asyncio.wait_for(first, timeout=0.2)
+    platform._QQ_SEND_SEMAPHORE = old_send
+    platform._QQ_MEDIA_SEND_SEMAPHORE = old_media
     platform.maiconfig = old_config
 
 
@@ -165,6 +206,7 @@ async def test_official_qq_skips_onebot_reaction() -> None:
 
 async def main() -> None:
     await test_qq_send_backpressure()
+    await test_qq_media_keeps_text_lane_free()
     await test_analysis_backpressure()
     await test_official_qq_skips_onebot_reaction()
 
