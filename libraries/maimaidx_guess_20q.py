@@ -557,10 +557,23 @@ _VERSION_ORDER = (
     'maimai でらっくす circle',         # 2025-09-18 圈代
     'maimai でらっくす circle plus',    # 2026-03-19 圈+
 )
-# 版本 → 发售顺序索引（归一化后查找：去空格+小写，与 _norm 一致）
-# 注意：此处 _norm 尚未定义（在下方），故内联等价归一化（版本串无「比X大」句式）。
+def _vnorm_version(raw: str) -> str:
+    """归一化版本串为可比较标识。
+
+    曲库 basic_info.from 对旧框 PLUS 版会省略「maimai」前缀
+    （如 'MiLK PLUS' 而非表里规范的 'maimai milk plus'），且可能用 '+' 而非 'plus'。
+    统一：小写、去空格、'+'→'plus'、去掉 'maimai' 前缀（仅 初代 本身时回退为
+    'maimai'，避免空串），使 'MiLK PLUS' 与 'maimai milk plus' 归一到同一标识。
+    """
+    t = (raw or '').strip().lower().replace(' ', '').replace('+', 'plus')
+    if t.startswith('maimai'):
+        t = t[6:]
+    return t or 'maimai'
+
+
+# 版本 → 发售顺序索引（归一化后查找，与 _vnorm_version 一致）
 _VERSION_INDEX = {
-    v.lower().replace(' ', '').replace('　', ''): i
+    _vnorm_version(v): i
     for i, v in enumerate(_VERSION_ORDER)
 }
 
@@ -1156,7 +1169,7 @@ def _ver_kw_match(kw: str, text: str) -> bool:
 
 def _music_version_index(music: Music) -> Optional[int]:
     """曲目版本在 _VERSION_ORDER 中的索引。无法识别时返回 None。"""
-    mv = _norm(music.basic_info.version)
+    mv = _vnorm_version(music.basic_info.version)
     # 直接命中
     if mv in _VERSION_INDEX:
         return _VERSION_INDEX[mv]
@@ -1207,7 +1220,7 @@ def _q_version_order(music: Music, text: str) -> Optional[str]:
     for group_name, versions in _VERSION_GROUP_ALIASES:
         if group_name not in text:
             continue
-        idxs = [_VERSION_INDEX.get(_norm(v)) for v in versions]
+        idxs = [_VERSION_INDEX.get(_vnorm_version(v)) for v in versions]
         if any(i is None for i in idxs):
             continue
         lo, hi = min(idxs), max(idxs)
@@ -1227,7 +1240,7 @@ def _q_version_order(music: Music, text: str) -> Optional[str]:
         matched_kw = next((kw for kw in kws if _ver_kw_match(kw, text)), None)
         if matched_kw is None:
             continue
-        cv = _norm(canonical)
+        cv = _vnorm_version(canonical)
         target_idx = _VERSION_INDEX.get(cv)
         if target_idx is None:
             continue
@@ -1286,19 +1299,19 @@ def _q_version(music: Music, text: str) -> Optional[str]:
         has_ver_kw = _looks_like_ascii_version_text(text)
     if not has_ver_kw:
         return None
-    music_ver = _norm(music.basic_info.version)
+    music_ver = _vnorm_version(music.basic_info.version)
     # 把 music_ver 拆成「基版 + 是否plus」便于精确匹配
     music_is_plus = music_ver.endswith('plus')
-    music_base = music_ver[:-5].rstrip() if music_is_plus else music_ver
+    music_base = music_ver[:-4] if music_is_plus else music_ver
 
     # 1. 合并叫法（舞代/熊华代/双宴代等）——任一子版本都算
     for group_name, versions in _VERSION_GROUP_ALIASES:
         if group_name in text:
             # 精确匹配：任一子版本的 base+plus 与 music 的 base+plus 一致
             def _v_match(v: str) -> bool:
-                cv = _norm(v)
+                cv = _vnorm_version(v)
                 cv_is_plus = cv.endswith('plus')
-                cv_base = cv[:-5].rstrip() if cv_is_plus else cv
+                cv_base = cv[:-4] if cv_is_plus else cv
                 return cv_base == music_base and cv_is_plus == music_is_plus
             matched = any(_v_match(v) for v in versions)
             return _r(matched, f'判定维度：版本是否为{group_name}')
@@ -1306,9 +1319,9 @@ def _q_version(music: Music, text: str) -> Optional[str]:
     for canonical, kws in _VERSION_KEYWORDS:
         matched_kw = next((kw for kw in kws if _ver_kw_match(kw, text)), None)
         if matched_kw is not None:
-            cv = _norm(canonical)
+            cv = _vnorm_version(canonical)
             cv_is_plus = cv.endswith('plus')
-            cv_base = cv[:-5].rstrip() if cv_is_plus else cv
+            cv_base = cv[:-4] if cv_is_plus else cv
             # 精确匹配：基版相同且 plus 标志一致
             matched = (cv_base == music_base) and (cv_is_plus == music_is_plus)
             # reason 用玩家问的俗称（原始形式），不泄露官方版本名
@@ -1924,18 +1937,24 @@ def _version_cn(version: str) -> str:
 
     优先返回精确子版本俗称（双代/宴代），而非合并组名（双宴代），
     避免 profile 让 LLM 误以为曲目同时属于两个版本。
+
+    比较前用 _vnorm_version 归一化（去 'maimai' 前缀、'+'→'plus'），
+    对齐曲库真实 from 字段（如 'MiLK PLUS' 也能映射到 '雪代'）。
     """
-    v = (version or '').lower()
+    raw = version or ''
+    if not raw.strip():
+        return '未知'
+    nv = _vnorm_version(raw)
     for canonical, kws in _VERSION_KEYWORDS:
-        if v == canonical:
+        if nv == _vnorm_version(canonical):
             for kw in kws:
                 if _CJK_RE.search(kw):
                     return kw
             return kws[0] if kws else canonical
     for alias, versions in _VERSION_GROUP_ALIASES:
-        if v in versions:
+        if nv in {_vnorm_version(x) for x in versions}:
             return alias
-    return version or '未知'
+    return raw
 
 
 def _build_music_profile(music: Music, wmc_tags: Optional[Dict[int, dict]] = None, text: Optional[str] = None) -> str:
