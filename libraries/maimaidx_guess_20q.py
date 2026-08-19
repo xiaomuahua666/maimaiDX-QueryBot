@@ -377,7 +377,7 @@ _SUBJECTIVE_KW = (
     '好听', '难听', '好不好听', '燃吗', '燃不', '带感', '爽吗', '爽不', '上头',
     '喜欢吗', '喜欢不', '喜欢', '讨厌', '爱不爱', '中意', '值不值', '值得练', '推荐吗',
     '神曲', '牛不牛', '牛吗', '厉不厉害', '厉害吗', '适合新手', '新手友好',
-    '主观', '觉得', '感觉', '体验', '好不好玩',
+    '主观', '体验', '好不好玩',
     '带不带感', '爽不爽',
 )
 
@@ -2484,7 +2484,10 @@ _GUESS_20Q_LLM_MAX_CONCURRENCY = 4
 # 提示词更新后长期使用旧结果。容量上限防内存膨胀。
 _GUESS_20Q_LLM_CACHE_MAX = 512
 _GUESS_20Q_LLM_CACHE_TTL = 6 * 3600
-_llm_cache: "OrderedDict[Tuple[str, str], Tuple[float, Optional[Tuple[str, str]]]]" = OrderedDict()
+# 哨兵：用于表示「LLM 判定为无法回答」的缓存值。
+# 不能用 None（与「未命中」混淆，见 _llm_classify），故用专门的不可答标记。
+_CACHE_CANNOT = ("__cannot__", "")
+_llm_cache: "OrderedDict[Tuple[str, str], Tuple[float, object]]" = OrderedDict()
 
 
 def _llm_cache_key(music: Music, text: str, wmc_tags: Optional[Dict[int, dict]] = None) -> Tuple[str, str]:
@@ -2578,6 +2581,9 @@ async def _llm_classify(
     cache_key = _llm_cache_key(music, text, wmc_tags)
     cached = _llm_cache_get(cache_key)
     if cached is not None:
+        if cached is _CACHE_CANNOT:
+            log.info(f'[Guess20Q] LLM 缓存命中（无法回答）question={text!r}（不重复请求）')
+            return _CANNOT_ANSWER, '无已知数据比对，尝试换种问法'
         ans = cached[0] if cached else None
         log.info(f'[Guess20Q] LLM 缓存命中 question={text!r} answer={ans!r}（不重复请求）')
         return cached
@@ -2653,7 +2659,7 @@ async def _llm_classify(
                 f'understand={understand!r}'
             )
             cannot_reason = '无已知数据比对，尝试换种问法'
-            _llm_cache_set(cache_key, None)
+            _llm_cache_set(cache_key, _CACHE_CANNOT)
             return _CANNOT_ANSWER, cannot_reason
         except Exception as e:
             elapsed = time.time() - t0
