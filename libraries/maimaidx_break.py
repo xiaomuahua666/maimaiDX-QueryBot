@@ -37,6 +37,8 @@ DEFAULT_CONFIG: Dict[str, str] = {
     'billing_enabled': '1',
     'checkin_base_min': '1',
     'checkin_base_max': '2',
+    # 重复签到每次扣除的 BREAK（余额不足时扣到 0）；0 = 不扣。
+    'duplicate_checkin_penalty': '5',
     'query_cost': '1',
     'cache_query_cost': '1',
     # 每次成功出图（含读缓存）额外收取的生成图片费用；0 = 关闭。
@@ -303,6 +305,7 @@ class CheckinResult:
     base_max: int = 2
     bonus_labels: List[str] = field(default_factory=list)
     already_checked: bool = False
+    duplicate_penalty: int = 0
     storage_enabled: bool = False
     prompt_enable_storage: bool = False
 
@@ -2994,15 +2997,40 @@ class BreakDatabase:
             else bool(storage_bonus_eligible)
         )
         if user.get('last_checkin_date') == today:
+            penalty = max(0, _parse_config_int(
+                self.get_config('duplicate_checkin_penalty', '5'), 5
+            ))
+            current_balance = int(user.get('balance', 0))
+            deducted = 0
+            if penalty > 0 and self.billing_enabled() and current_balance > 0:
+                deducted = min(penalty, current_balance)
+                now = time.time()
+                self._conn.execute(
+                    'UPDATE break_users SET balance = balance - ?, updated_at = ? WHERE qqid = ?',
+                    (deducted, now, qqid),
+                )
+                self._ensure_daily(qqid)
+                self._conn.execute(
+                    '''UPDATE break_daily_usage SET break_spent = break_spent + ?
+                       WHERE qqid = ? AND date = ?''',
+                    (deducted, qqid, today),
+                )
+                self._append_log(
+                    qqid, -deducted, 'duplicate_checkin_penalty',
+                    meta={'penalty': penalty},
+                )
+                self._conn.commit()
+                current_balance -= deducted
             return CheckinResult(
                 qqid=qqid,
                 reward=0,
-                balance=int(user.get('balance', 0)),
+                balance=current_balance,
                 streak=int(user.get('streak', 0)),
                 streak_bonus=0,
                 base=0,
                 multiplier_sum=0,
                 already_checked=True,
+                duplicate_penalty=deducted,
                 storage_enabled=bool(storage_enabled),
                 prompt_enable_storage=not bool(storage_enabled),
             )
@@ -4303,7 +4331,13 @@ def format_account_profile_sections(
 
 def format_checkin_result(result: CheckinResult) -> str:
     if result.already_checked:
-        text = f'今天已经签到过啦~ 当前 BREAK：{result.balance}'
+        if result.duplicate_penalty > 0:
+            text = (
+                f'笨蛋！你今天已经签到过了！扣你 {result.duplicate_penalty} BREAK！\n'
+                f'当前余额：{result.balance} BREAK'
+            )
+        else:
+            text = f'今天已经签到过啦~ 当前 BREAK：{result.balance}'
         if result.prompt_enable_storage:
             text += (
                 '\n💡 还未开启数据存储：发送「开启存储数据」'

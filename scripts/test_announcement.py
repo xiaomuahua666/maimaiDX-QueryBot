@@ -71,6 +71,8 @@ assert "_pending_required" in command_source
 assert "确认阅读公告" in command_source
 assert "message_may_contain_qrcode" in command_source
 assert "enforce_current_announcement" in command_source
+assert 'state.pop("__maimaidx_serial_user_operation", None)' in command_source
+assert "finish_account_operation(_user_key(event))" in command_source
 assert "_maimaidx_passive_recorder" in command_source
 assert "_maimaidx_deferred_audit" in command_source
 assert "_maimaidx_debt_exempt" in command_source

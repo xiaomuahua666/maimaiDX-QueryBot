@@ -51,6 +51,8 @@ class DailySnapshot:
 
 class DataStorageManager:
     def __init__(self):
+        self._config_cache: Optional[Dict[str, Any]] = None
+        self._config_mtime: float = 0.0
         self._ensure_config_file()
 
     def _ensure_config_file(self):
@@ -60,8 +62,14 @@ class DataStorageManager:
 
     def _load_config(self) -> Dict[str, Any]:
         try:
+            mtime = CONFIG_FILE.stat().st_mtime
+            if self._config_cache is not None and mtime == self._config_mtime:
+                return self._config_cache
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+            self._config_cache = data
+            self._config_mtime = mtime
+            return data
         except Exception as e:
             log.error(f"[DataStorage] 加载配置失败: {e}")
             return {"enabled_users": []}
@@ -70,8 +78,11 @@ class DataStorageManager:
         try:
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
                 json.dump(config, f, ensure_ascii=False, indent=2)
+            self._config_cache = config
+            self._config_mtime = CONFIG_FILE.stat().st_mtime
         except Exception as e:
             log.error(f"[DataStorage] 保存配置失败: {e}")
+            self._config_cache = None
 
     def is_enabled(self, qqid: int) -> bool:
         return int(qqid) in self.enabled_users()

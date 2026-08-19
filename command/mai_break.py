@@ -64,6 +64,8 @@ for _checkin_matcher in (awmc_checkin, awmc_makeup_checkin):
     setattr(_checkin_matcher, '_maimaidx_serial_user_operation', True)
 # 补签本身已有固定阶梯价格，不再叠加高负载附加费。
 setattr(awmc_makeup_checkin, '_maimaidx_busy_surcharge_exempt', True)
+# 签到是获取 BREAK 的入口，高峰期扣费会导致余额不足的用户永远无法签到。
+setattr(awmc_checkin, '_maimaidx_busy_surcharge_exempt', True)
 my_awmc = on_command(
     '我的AWMC', aliases={'我的awmc', 'AWMC状态', 'awmc状态', '我的账号'}
 )
@@ -628,15 +630,16 @@ def _storage_qqids_for_event(event: MessageEvent, account_qqid: int) -> list[int
 def _storage_status_for_event(
     event: MessageEvent, account_qqid: int
 ) -> tuple[bool, bool]:
-    """返回 (当前已开启, 签到是否可享存储加成)。
+    qqids = _storage_qqids_for_event(event, account_qqid)
+    return _storage_status_for_qqids(qqids)
 
-    加成需「开启并保持到跨天」，防止当天开关刷奖励。
-    """
+
+def _storage_status_for_qqids(qqids: list[int]) -> tuple[bool, bool]:
     from ..libraries.maimaidx_data_storage import data_storage
 
     enabled = False
     eligible = False
-    for qid in _storage_qqids_for_event(event, account_qqid):
+    for qid in qqids:
         if data_storage.is_enabled(qid):
             enabled = True
         if data_storage.storage_bonus_eligible_for_checkin(qid):
@@ -652,7 +655,10 @@ async def _(event: MessageEvent):
     except QBindRequiredError as exc:
         await awmc_checkin.finish(str(exc), reply_message=True)
         return
-    storage_on, storage_eligible = _storage_status_for_event(event, qqid)
+    qqids = _storage_qqids_for_event(event, qqid)
+    storage_on, storage_eligible = await asyncio.to_thread(
+        _storage_status_for_qqids, qqids
+    )
     result = await asyncio.to_thread(
         break_db.checkin, qqid, group_id,
         storage_enabled=storage_on,

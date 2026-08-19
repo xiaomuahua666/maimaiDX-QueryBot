@@ -162,7 +162,6 @@ def _required_prompt(announcement: Announcement, *, show_id: bool) -> str:
 async def _announcement_preprocessor(
     matcher: Matcher, bot: Bot, event: Event, state: T_State
 ):
-    del state
     if (
         not _plugin_matcher(matcher)
         or _announcement_gate_exempt(matcher)
@@ -178,6 +177,20 @@ async def _announcement_preprocessor(
         pass
 
     if not await enforce_current_announcement(bot, event):
+        # NoneBot runs all @run_preprocessor hooks concurrently in a task group,
+        # so the audit/runtime preprocessor may claim the per-user serial guard
+        # at any time around this check.  Releasing only via state.pop is racy:
+        # if it sets the key one instruction after we read it, the guard leaks
+        # and every later request from that user is silently dropped by
+        # "serial user operation already active".  Always release by user key
+        # (discard is a no-op when absent) in addition to clearing state.
+        from ..libraries.maimaidx_user_operation import finish_account_operation
+
+        state.pop("__maimaidx_serial_user_operation", None)
+        try:
+            finish_account_operation(_user_key(event))
+        except Exception:
+            pass
         raise IgnoredException("required announcement awaiting confirmation")
 
 
