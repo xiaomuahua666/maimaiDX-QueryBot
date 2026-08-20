@@ -358,35 +358,30 @@ def default_menu_items() -> list[dict]:
 
 
 def default_c2c_panel_items() -> list[dict]:
-    """C2C 指令面板默认项（单聊查分/账号为主）。"""
+    """C2C 指令面板默认项（单聊：查分 / 账号 / 个人分析为主）。"""
     return [
         {"type": "command", "name": "b50", "desc": "查询 B50 成绩"},
-        {"type": "command", "name": "ab50", "desc": "查询全部 B50"},
+        {"type": "command", "name": "刷新b50", "desc": "刷新最新成绩"},
+        {"type": "command", "name": "锐评一下", "desc": "AI 锐评 B50"},
+        {"type": "command", "name": "吃分推荐", "desc": "个性化推分"},
+        {"type": "command", "name": "mymai", "desc": "我的舞萌资料"},
         {"type": "command", "name": "mai绑定", "desc": "绑定舞萌账号"},
-        {"type": "command", "name": "mai状态", "desc": "我的舞萌资料"},
         {"type": "command", "name": "签到", "desc": "每日签到"},
         {"type": "command", "name": "查歌", "desc": "搜索曲目"},
         {"type": "command", "name": "今日mai", "desc": "今日运势"},
-        {"type": "command", "name": "吃分推荐", "desc": "个性化推分"},
-        {"type": "command", "name": "理想b50", "desc": "理想成绩表"},
-        {"type": "command", "name": "b50鸟率", "desc": "鸟/鸟加率统计"},
         {"type": "command", "name": "我有多菜", "desc": "弱项分析"},
-        {"type": "command", "name": "mai预览", "desc": "账号预览"},
-        {"type": "command", "name": "mai道具", "desc": "道具一览"},
-        {"type": "command", "name": "mai地图", "desc": "游玩地图"},
-        {"type": "command", "name": "刷新b50", "desc": "刷新成绩"},
-        {
-            "type": "command",
-            "name": "帮助",
-            "desc": "查看完整帮助",
-        },
+        {"type": "command", "name": "含金量", "desc": "成绩含金量"},
+        {"type": "command", "name": "b50鸟率", "desc": "鸟/鸟加率统计"},
+        {"type": "command", "name": "我的AWMC", "desc": "我的 BREAK 资产"},
+        {"type": "command", "name": "帮助", "desc": "查看完整帮助"},
     ]
 
 
 def default_group_panel_items() -> list[dict]:
-    """Group 指令面板默认项（群聊互动/查分）。"""
+    """Group 指令面板默认项（群聊：查分 / 猜歌 / 排行 / 签到）。"""
     return [
         {"type": "command", "name": "b50", "desc": "查询 B50 成绩"},
+        {"type": "command", "name": "锐评一下", "desc": "AI 锐评 B50"},
         {"type": "command", "name": "签到", "desc": "每日签到"},
         {"type": "command", "name": "猜歌", "desc": "开始猜歌"},
         {"type": "command", "name": "猜封面", "desc": "开始猜曲绘"},
@@ -397,12 +392,8 @@ def default_group_panel_items() -> list[dict]:
         {"type": "command", "name": "今日mai", "desc": "今日运势"},
         {"type": "command", "name": "猜歌积分排行", "desc": "查看排行榜"},
         {"type": "command", "name": "本群猜歌排行", "desc": "群内排行"},
-        {"type": "command", "name": "我的AWMC", "desc": "我的资产"},
-        {
-            "type": "command",
-            "name": "帮助",
-            "desc": "查看完整帮助",
-        },
+        {"type": "command", "name": "我的AWMC", "desc": "我的 BREAK 资产"},
+        {"type": "command", "name": "帮助", "desc": "查看完整帮助"},
     ]
 
 
