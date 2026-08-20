@@ -13,6 +13,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from typing import Any, Optional
 
 from nonebot.drivers import Request
@@ -425,43 +427,62 @@ async def apply_default_panels(bot: Any, *, scopes: tuple[str, ...] = ("c2c", "g
             log.warning(f"[qq-menu] 默认面板暂不支持 scope={scope}，跳过")
             continue
         items_builder, remark = builders[scope]
-        existing = await iter_all_panels(bot, scope)
-        target = next(
-            (
-                p
-                for p in existing
-                if (p.get("panel") or {}).get("remark") == remark
-                and p.get("target_type") == "all"
-            ),
-            None,
-        )
-        if target:
-            panel_id = target["panel_id"]
-            await update_panel(bot, panel_id, items_builder(), remark=remark)
-            log.info(f"[qq-menu] 已更新 {scope} 默认面板 {panel_id}")
-        else:
-            created = await create_panel(
-                bot,
-                scope,
-                items_builder(),
-                target_type="all",
-                remark=remark,
+        try:
+            existing = await iter_all_panels(bot, scope)
+            target = next(
+                (
+                    p
+                    for p in existing
+                    if (p.get("panel") or {}).get("remark") == remark
+                    and p.get("target_type") == "all"
+                ),
+                None,
             )
-            panel_id = created.get("panel_id", "")
-            log.success(f"[qq-menu] 已创建 {scope} 默认面板 {panel_id}")
-        result[scope] = panel_id
+            if target:
+                panel_id = target["panel_id"]
+                await update_panel(bot, panel_id, items_builder(), remark=remark)
+                log.info(f"[qq-menu] 已更新 {scope} 默认面板 {panel_id}")
+            else:
+                created = await create_panel(
+                    bot,
+                    scope,
+                    items_builder(),
+                    target_type="all",
+                    remark=remark,
+                )
+                panel_id = created.get("panel_id", "")
+                log.success(f"[qq-menu] 已创建 {scope} 默认面板 {panel_id}")
+            result[scope] = panel_id
+        except Exception as exc:
+            log.warning(f"[qq-menu] {scope} 面板同步失败（不影响其它面板）: {exc}")
     return result
 
 
-async def safe_auto_setup(bot: Any) -> None:
+async def safe_auto_setup(bot: Any) -> bool:
     """启动时自动配置菜单/面板的容错入口。
 
-    任何错误都只记日志，不影响 Bot 启动。
+    菜单与面板互相独立；任一失败都只记日志、不影响 Bot 启动，也不影响
+    另一项。返回 True 表示全部成功（供调用方决定是否需要下次重连重试）。
     """
+    if not is_qq_bot(bot):
+        return True
+    ok = True
     try:
-        if not is_qq_bot(bot):
-            return
         await apply_default_menu(bot)
-        await apply_default_panels(bot)
+    except asyncio.CancelledError:
+        log.warning("[qq-menu] 菜单同步被取消（可能是网络断连），下次重连重试")
+        ok = False
     except Exception as exc:
-        log.warning(f"[qq-menu] 自动配置菜单/面板失败（不影响启动）: {exc}")
+        log.warning(f"[qq-menu] 菜单同步失败（不影响启动）: {exc}")
+        ok = False
+    try:
+        panels = await apply_default_panels(bot)
+        if {"c2c", "group"} != set(panels):
+            ok = False
+    except asyncio.CancelledError:
+        log.warning("[qq-menu] 面板同步被取消（可能是网络断连），下次重连重试")
+        ok = False
+    except Exception as exc:
+        log.warning(f"[qq-menu] 面板同步失败（不影响启动）: {exc}")
+        ok = False
+    return ok

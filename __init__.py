@@ -52,8 +52,25 @@ async def _setup_qq_menu_on_connect(bot):
     bot_id = str(getattr(bot, 'self_id', None) or getattr(bot, 'bot_info', None) or id(bot))
     if bot_id in _qq_menu_setup_done:
         return
-    _qq_menu_setup_done.add(bot_id)
-    asyncio.ensure_future(_maimaidx_qq_menu.safe_auto_setup(bot))
+
+    async def _run():
+        ok = await _maimaidx_qq_menu.safe_auto_setup(bot)
+        if ok:
+            _qq_menu_setup_done.add(bot_id)
+        else:
+            log.warning(f"[qq-menu] Bot {bot_id} 本次同步未完全成功，下次重连将重试")
+
+    asyncio.ensure_future(_run())
+
+
+@driver.on_bot_disconnect
+async def _reset_qq_menu_on_disconnect(bot):
+    """断连后清除成功标记，使重连后能再次尝试同步。"""
+    from .libraries.maimaidx_platform import is_qq_bot
+    if not is_qq_bot(bot):
+        return
+    bot_id = str(getattr(bot, 'self_id', None) or getattr(bot, 'bot_info', None) or id(bot))
+    _qq_menu_setup_done.discard(bot_id)
 
 
 @driver.on_startup
