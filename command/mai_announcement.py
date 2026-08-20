@@ -87,6 +87,26 @@ def _validate_content(content: str) -> Optional[str]:
     return None
 
 
+_CONFIRM_WORD_PREFIX = "确认词："
+
+
+def _split_confirmation_word(text: str) -> tuple[str, Optional[str]]:
+    """从正文首行解析自定义确认词。
+
+    语法：首行以「确认词：xxx」开头时，xxx 为确认词，其余行为正文。
+    「确认词：无」或空值表示清除确认词。
+    """
+    value = str(text).lstrip("\n")
+    head, sep, tail = value.partition("\n")
+    head = head.strip()
+    if head.startswith(_CONFIRM_WORD_PREFIX):
+        word = head[len(_CONFIRM_WORD_PREFIX):].strip()
+        if word in ("", "无", "清除", "删除"):
+            return tail.strip(), ""
+        return tail.strip(), word
+    return text, None
+
+
 def _matcher_module_name(matcher: Matcher) -> str:
     for obj in (matcher, type(matcher)):
         name = getattr(obj, "module_name", None)
@@ -149,13 +169,21 @@ def _trim_blocked_events(now: float) -> None:
 
 
 def _required_prompt(announcement: Announcement, *, show_id: bool) -> str:
-    return (
-        format_announcement(
-            announcement, show_id=show_id, include_current=True
-        )
-        + "\n\n此公告为必读公告。请输入「确认阅读公告」完成确认，"
-        "然后重新执行刚才的指令。"
+    text = format_announcement(
+        announcement, show_id=show_id, include_current=True
     )
+    if announcement.confirmation_text:
+        text += (
+            "\n\n此公告为必读公告。请发送「确认公告 "
+            + announcement.confirmation_text
+            + "」完成确认，然后重新执行刚才的指令。"
+        )
+    else:
+        text += (
+            "\n\n此公告为必读公告。请输入「确认阅读公告」完成确认，"
+            "然后重新执行刚才的指令。"
+        )
+    return text
 
 
 @run_preprocessor
@@ -253,19 +281,29 @@ async def enforce_current_announcement(bot: Bot, event: Event) -> bool:
 @announcement_publish.handle()
 async def _(event: Event, args=CommandArg()):
     raw = _plain_arg(args)
-    required, content = _mode_prefix(raw)
+    required, text = _mode_prefix(raw)
     required = bool(required) if required is not None else False
+    content, confirmation_word = _split_confirmation_word(text)
     error = _validate_content(content)
     if error:
         await announcement_publish.finish(
-            error + "\n用法：发布公告 [必读|不必读] <内容>\n默认：不必读"
+            error
+            + "\n用法：发布公告 [必读|不必读] [确认词：xxx] <内容>\n默认：不必读"
         )
     item = await asyncio.to_thread(
-        announcement_db.create, content, required=required
+        announcement_db.create,
+        content,
+        required=required,
+        confirmation_text=confirmation_word or None,
+    )
+    confirm_hint = (
+        f"\n确认词：{item.confirmation_text}"
+        if item.confirmation_text else ""
     )
     await announcement_publish.finish(
         f"公告 #{item.id} 已发布并设为当前公告。\n"
         f"类型：{'必读' if item.required else '不必读'} · 版本 {item.revision}"
+        + confirm_hint
     )
 
 
@@ -275,16 +313,21 @@ async def _(args=CommandArg()):
     parts = raw.split(maxsplit=1)
     if not parts or not parts[0].isdigit():
         await announcement_edit.finish(
-            "用法：编辑公告 <ID> [必读|不必读] [新内容]"
+            "用法：编辑公告 <ID> [必读|不必读] [确认词：xxx] [新内容]"
         )
     announcement_id = int(parts[0])
     tail = parts[1].strip() if len(parts) > 1 else ""
-    required, content = _mode_prefix(tail)
-    new_content: Optional[str] = content or None
-    if required is None and new_content is None:
+    required, text = _mode_prefix(tail)
+    body, confirmation_word = _split_confirmation_word(text)
+    new_content: Optional[str] = body or None
+    if (
+        required is None
+        and new_content is None
+        and confirmation_word is None
+    ):
         await announcement_edit.finish(
-            "请提供新内容或必读状态。\n"
-            "用法：编辑公告 <ID> [必读|不必读] [新内容]"
+            "请提供新内容、必读状态或确认词。\n"
+            "用法：编辑公告 <ID> [必读|不必读] [确认词：xxx] [新内容]"
         )
     if new_content is not None:
         error = _validate_content(new_content)
@@ -295,13 +338,20 @@ async def _(args=CommandArg()):
         announcement_id,
         content=new_content,
         required=required,
+        confirmation_text=confirmation_word,
     )
     if item is None:
         await announcement_edit.finish(f"未找到公告 #{announcement_id}。")
     position = "当前公告" if item.is_current else "历史公告"
+    confirm_hint = (
+        f"\n确认词：{item.confirmation_text}"
+        if item.confirmation_text
+        else ("\n已清除确认词" if confirmation_word == "" else "")
+    )
     await announcement_edit.finish(
         f"公告 #{item.id} 已更新（{position}）。\n"
         f"类型：{'必读' if item.required else '不必读'} · 版本 {item.revision}"
+        + confirm_hint
     )
 
 
@@ -340,6 +390,7 @@ async def _(event: Event):
             is_current=item.is_current,
             created_at=item.created_at,
             updated_at=item.updated_at,
+            confirmation_text=item.confirmation_text,
         )
         blocks.append(
             format_announcement(
@@ -362,8 +413,9 @@ async def _show_required_for_confirmation(
 
 
 @announcement_confirm.handle()
-async def _(event: Event):
+async def _(event: Event, args=CommandArg()):
     user_key = _user_key(event)
+    supplied = _plain_arg(args)
     current = await asyncio.to_thread(announcement_db.current)
     pending = _pending_required.get(user_key)
     if current is None or not current.required:
@@ -376,6 +428,15 @@ async def _(event: Event):
             await announcement_confirm.finish("当前必读公告已经确认过了。")
         await _show_required_for_confirmation(event, unseen)
         return
+    if current.confirmation_text:
+        if not supplied:
+            await announcement_confirm.finish(
+                f"请发送「确认公告 {current.confirmation_text}」完成确认。"
+            )
+        if supplied != current.confirmation_text:
+            await announcement_confirm.finish(
+                f"确认词不正确。请发送「确认公告 {current.confirmation_text}」完成确认。"
+            )
     marked = await asyncio.to_thread(
         announcement_db.mark_seen,
         user_key,

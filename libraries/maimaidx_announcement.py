@@ -26,17 +26,19 @@ class Announcement:
     is_current: bool
     created_at: float
     updated_at: float
+    confirmation_text: Optional[str] = None
 
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS announcements (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    content     TEXT NOT NULL,
-    required    INTEGER NOT NULL DEFAULT 0,
-    revision    INTEGER NOT NULL DEFAULT 1,
-    is_current  INTEGER NOT NULL DEFAULT 0,
-    created_at  REAL NOT NULL,
-    updated_at  REAL NOT NULL
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    content           TEXT NOT NULL,
+    required          INTEGER NOT NULL DEFAULT 0,
+    revision          INTEGER NOT NULL DEFAULT 1,
+    is_current        INTEGER NOT NULL DEFAULT 0,
+    created_at        REAL NOT NULL,
+    updated_at        REAL NOT NULL,
+    confirmation_text TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_announcement_single_current
     ON announcements(is_current) WHERE is_current = 1;
@@ -65,12 +67,28 @@ class AnnouncementDatabase:
         configure_sqlite_connection(self._conn)
         with self._lock:
             self._conn.executescript(_SCHEMA)
+            self._migrate()
             self._conn.commit()
+
+    def _migrate(self) -> None:
+        columns = {
+            row[1] for row in self._conn.execute("PRAGMA table_info(announcements)")
+        }
+        if "confirmation_text" not in columns:
+            self._conn.execute(
+                "ALTER TABLE announcements ADD COLUMN confirmation_text TEXT"
+            )
 
     @staticmethod
     def _from_row(row: sqlite3.Row | None) -> Optional[Announcement]:
         if row is None:
             return None
+        keys = row.keys()
+        confirmation_text = (
+            str(row["confirmation_text"]) if "confirmation_text" in keys and row["confirmation_text"] is not None else None
+        )
+        if confirmation_text is not None:
+            confirmation_text = confirmation_text.strip() or None
         return Announcement(
             id=int(row["id"]),
             content=str(row["content"]),
@@ -79,12 +97,20 @@ class AnnouncementDatabase:
             is_current=bool(row["is_current"]),
             created_at=float(row["created_at"]),
             updated_at=float(row["updated_at"]),
+            confirmation_text=confirmation_text,
         )
 
-    def create(self, content: str, *, required: bool = False) -> Announcement:
+    def create(
+        self,
+        content: str,
+        *,
+        required: bool = False,
+        confirmation_text: Optional[str] = None,
+    ) -> Announcement:
         text = str(content).strip()
         if not text:
             raise ValueError("公告内容不能为空")
+        confirm = confirmation_text.strip() if confirmation_text else None
         now = time.time()
         with self._lock:
             self._conn.execute("BEGIN IMMEDIATE")
@@ -94,9 +120,9 @@ class AnnouncementDatabase:
                 )
                 cursor = self._conn.execute(
                     """INSERT INTO announcements
-                       (content, required, revision, is_current, created_at, updated_at)
-                       VALUES (?, ?, 1, 1, ?, ?)""",
-                    (text, int(required), now, now),
+                       (content, required, revision, is_current, created_at, updated_at, confirmation_text)
+                       VALUES (?, ?, 1, 1, ?, ?, ?)""",
+                    (text, int(required), now, now, confirm),
                 )
                 announcement_id = int(cursor.lastrowid)
                 self._conn.commit()
@@ -137,6 +163,7 @@ class AnnouncementDatabase:
         *,
         content: Optional[str] = None,
         required: Optional[bool] = None,
+        confirmation_text: Optional[str] = None,
     ) -> Optional[Announcement]:
         with self._lock:
             row = self._conn.execute(
@@ -150,14 +177,21 @@ class AnnouncementDatabase:
             if not text:
                 raise ValueError("公告内容不能为空")
             must_read = current.required if required is None else bool(required)
-            if text == current.content and must_read == current.required:
+            confirm = current.confirmation_text
+            if confirmation_text is not None:
+                confirm = confirmation_text.strip() or None
+            if (
+                text == current.content
+                and must_read == current.required
+                and confirm == current.confirmation_text
+            ):
                 return current
             self._conn.execute(
                 """UPDATE announcements
-                   SET content = ?, required = ?, revision = revision + 1,
-                       updated_at = ?
+                   SET content = ?, required = ?, confirmation_text = ?,
+                       revision = revision + 1, updated_at = ?
                    WHERE id = ?""",
-                (text, int(must_read), time.time(), current.id),
+                (text, int(must_read), confirm, time.time(), current.id),
             )
             self._conn.commit()
         return self.get(current.id)
@@ -257,6 +291,8 @@ def format_announcement(
         )
         lines.append(f"更新时间：{updated} · 版本 {announcement.revision}")
     lines.append(announcement.content)
+    if announcement.required and announcement.confirmation_text:
+        lines.append(f"\n确认词：{announcement.confirmation_text}")
     return "\n".join(lines)
 
 
