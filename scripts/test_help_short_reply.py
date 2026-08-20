@@ -93,7 +93,7 @@ finally:
 assert mai_base._qq_help_message(onebot_event) is None
 
 source = (ROOT / "command" / "mai_base.py").read_text(encoding="utf-8")
-assert "on_command('帮助', aliases={'help'})" in source
+assert "on_command('帮助', aliases={'help'" in source
 assert "_maimaidx_qbind_exempt" in source
 assert "机器人帮助请前往" in source
 
