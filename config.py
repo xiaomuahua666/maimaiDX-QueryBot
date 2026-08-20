@@ -255,6 +255,9 @@ class Config(BaseModel):
     qq_send_queue_timeout_seconds: float = 10.0
     # 插件管理员 platform id（逗号/空格分隔），与 SUPERUSER 等效；官方 QQ 填 openid
     maimaidx_bot_admins: str = ''
+    # 官方 QQ Bot 上线后是否自动推送默认自定义菜单（C2C）与指令面板（c2c/group）。
+    # 默认关闭；管理员也可随时私聊发送「设置QQ菜单」「设置QQ面板」手动推送。
+    maimaidx_qq_menu_auto_setup: bool = False
     # ---------- AWMC 论坛（ThemeHouse/Audentio OAuth） ----------
     # 论坛域名默认 bbs.wmc.pub；兼容网页端使用的 AWWC_XF_* 环境变量。
     awmc_xf_base_url: str = 'https://bbs.wmc.pub'

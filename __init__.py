@@ -18,6 +18,7 @@ from .libraries.maimaidx_music_info import get_music_tags
 from .libraries import maimaidx_admin_web as _maimaidx_admin_web  # 注册可选管理 WebUI
 from .libraries import maimaidx_storage_runtime as _maimaidx_storage_runtime  # 统一存储同步
 from .libraries import maimaidx_pending_session as _maimaidx_pending_session  # 关机通知未完成交互
+from .libraries import maimaidx_qq_menu as _maimaidx_qq_menu  # 官方 QQ 菜单/面板
 
 scheduler = require('nonebot_plugin_apscheduler')
 
@@ -36,6 +37,23 @@ __plugin_meta__ = PluginMetadata(
 sub_plugins = nonebot.load_plugins(
     str(Path(__file__).parent.joinpath('plugins').resolve())
 )
+
+_qq_menu_setup_done: set[str] = set()
+
+
+@driver.on_bot_connect
+async def _setup_qq_menu_on_connect(bot):
+    """官方 QQ Bot 上线后按配置自动推送默认菜单/指令面板。"""
+    if not getattr(maiconfig, 'maimaidx_qq_menu_auto_setup', False):
+        return
+    from .libraries.maimaidx_platform import is_qq_bot
+    if not is_qq_bot(bot):
+        return
+    bot_id = str(getattr(bot, 'self_id', None) or getattr(bot, 'bot_info', None) or id(bot))
+    if bot_id in _qq_menu_setup_done:
+        return
+    _qq_menu_setup_done.add(bot_id)
+    asyncio.ensure_future(_maimaidx_qq_menu.safe_auto_setup(bot))
 
 
 @driver.on_startup

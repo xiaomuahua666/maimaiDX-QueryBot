@@ -26,3 +26,5 @@ from .mai_howto import *
 from .mai_gate_guide import *
 from .mai_draw_guess import *
 from .mai_divingfish import *
+
+from .mai_qq_menu import *
