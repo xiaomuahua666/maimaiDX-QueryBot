@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from email.utils import parsedate_to_datetime
 import time
 from typing import Any, Sequence
@@ -20,6 +21,64 @@ from ..config import log, maiconfig
 # previous snapshot is still being committed.  Keep writes for one QQ in order
 # inside this bot process so maintenance jobs cannot race an explicit upload.
 _SYNC_LOCKS: dict[int, asyncio.Lock] = {}
+
+# AWMCNET rejects overlapping writes globally as well as per player.  The
+# periodic backfill can submit hundreds of snapshots at once; without a
+# process-wide write gate every coroutine retries independently and turns one
+# upstream 429 into a retry storm.  Keep at most a small number of in-flight
+# sync POSTs and open a short circuit when the upstream keeps failing.
+_SYNC_CONDITION = asyncio.Condition()
+_SYNC_ACTIVE = 0
+_SYNC_FAILURE_TIMES: deque[float] = deque()
+_SYNC_CIRCUIT_OPEN_UNTIL = 0.0
+
+
+def _awmcnet_sync_max_concurrency() -> int:
+    return max(
+        1,
+        int(getattr(maiconfig, "awmcnet_sync_max_concurrency", 4) or 0),
+    )
+
+
+def _awmcnet_circuit_threshold() -> int:
+    return max(
+        1,
+        int(getattr(maiconfig, "awmcnet_sync_circuit_threshold", 12) or 0),
+    )
+
+
+def _awmcnet_circuit_seconds() -> float:
+    return max(
+        1.0,
+        float(getattr(maiconfig, "awmcnet_sync_circuit_seconds", 30.0) or 0.0),
+    )
+
+
+def _sync_circuit_is_open() -> bool:
+    return time.monotonic() < _SYNC_CIRCUIT_OPEN_UNTIL
+
+
+def _sync_note_failure() -> None:
+    global _SYNC_CIRCUIT_OPEN_UNTIL
+    now = time.monotonic()
+    _SYNC_FAILURE_TIMES.append(now)
+    window = _awmcnet_circuit_seconds() * 2
+    while _SYNC_FAILURE_TIMES and now - _SYNC_FAILURE_TIMES[0] > window:
+        _SYNC_FAILURE_TIMES.popleft()
+    if len(_SYNC_FAILURE_TIMES) >= _awmcnet_circuit_threshold():
+        opened_until = now + _awmcnet_circuit_seconds()
+        if opened_until > _SYNC_CIRCUIT_OPEN_UNTIL:
+            _SYNC_CIRCUIT_OPEN_UNTIL = opened_until
+            log.warning(
+                f"[AWMCNET] 写同步连续失败 {len(_SYNC_FAILURE_TIMES)} 次，"
+                f"熔断 {_awmcnet_circuit_seconds():.0f}s"
+            )
+
+
+def _sync_note_success() -> None:
+    global _SYNC_CIRCUIT_OPEN_UNTIL
+    _SYNC_FAILURE_TIMES.clear()
+    _SYNC_CIRCUIT_OPEN_UNTIL = 0.0
 
 
 def _sync_lock_for(qqid: int) -> asyncio.Lock:
@@ -168,41 +227,66 @@ async def _post_sync(payload: dict) -> dict | None:
     connection = _connection()
     if connection is None:
         return None
+    if _sync_circuit_is_open():
+        log.warning(
+            "[AWMCNET] 写同步熔断中，本次上传暂缓；恢复后会随后续查询/补存自动重试"
+        )
+        return None
     base_url, token, timeout = connection
     qqid = int(payload.get("qq") or 0)
     lock = _sync_lock_for(qqid)
     async with lock:
+        async with _SYNC_CONDITION:
+            while _sync_circuit_is_open() or _SYNC_ACTIVE >= _awmcnet_sync_max_concurrency():
+                if _sync_circuit_is_open():
+                    log.warning("[AWMCNET] 写同步熔断中，上传被放弃")
+                    return None
+                await _SYNC_CONDITION.wait()
+            _SYNC_ACTIVE += 1
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = None
-                retry_count = _sync_retry_count()
-                for attempt in range(retry_count + 1):
-                    response = await client.post(
-                        f"{base_url}/api/bot/sync",
-                        headers={"Bot-Token": token},
-                        json=payload,
-                    )
-                    if response.status_code == 200:
-                        break
-                    transient = response.status_code == 429 or response.status_code in {
-                        500,
-                        502,
-                        503,
-                        504,
-                    }
-                    if not transient or attempt >= retry_count:
-                        break
-                    delay = _sync_retry_delay(response, attempt)
-                    log.warning(
-                        f"[AWMCNET] 成绩同步暂不可用 status={response.status_code}，"
-                        f"{delay:.1f}s 后重试 ({attempt + 1}/{retry_count})"
-                    )
-                    await asyncio.sleep(delay)
+            response = None
+            result: dict | None = None
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    retry_count = _sync_retry_count()
+                    for attempt in range(retry_count + 1):
+                        if _sync_circuit_is_open():
+                            break
+                        response = await client.post(
+                            f"{base_url}/api/bot/sync",
+                            headers={"Bot-Token": token},
+                            json=payload,
+                        )
+                        if response.status_code == 200:
+                            break
+                        transient = response.status_code == 429 or response.status_code in {
+                            500,
+                            502,
+                            503,
+                            504,
+                        }
+                        if not transient or attempt >= retry_count:
+                            break
+                        delay = _sync_retry_delay(response, attempt)
+                        log.warning(
+                            f"[AWMCNET] 成绩同步暂不可用 status={response.status_code}，"
+                            f"{delay:.1f}s 后重试 ({attempt + 1}/{retry_count})"
+                        )
+                        await asyncio.sleep(delay)
 
-            if response is None or response.status_code != 200:
-                status = response.status_code if response is not None else "unknown"
-                body = response.text[:240] if response is not None else ""
-                if status in (401, 403):
+                if response is None:
+                    if _sync_circuit_is_open():
+                        log.warning("[AWMCNET] 写同步因熔断中止，本次上传未完成")
+                        return None
+                    status = "unknown"
+                    body = ""
+                else:
+                    status = response.status_code
+                    body = response.text[:240]
+
+                if status == 200:
+                    result = response.json()
+                elif status in (401, 403):
                     log.error(
                         f"[AWMCNET] 成绩同步鉴权失败 status={status}; "
                         "请检查 Bot-Token 是否与 AWMCNET 服务端一致"
@@ -215,26 +299,36 @@ async def _post_sync(payload: dict) -> dict | None:
                     )
                 else:
                     log.warning(f"[AWMCNET] 成绩同步失败 status={status} body={body}")
-                return None
-            result = response.json()
-            sent_count = len(payload.get("records") or [])
-            stored_count = result.get("stored_records")
-            if sent_count and stored_count is not None and int(stored_count) <= 0:
-                errors = result.get("errors") or []
-                log.warning(
-                    f"[AWMCNET] QQ={payload['qq']} 收到 {sent_count} 条但未落库 "
-                    f"skipped={result.get('skipped', 0)} errors={errors[:2]}"
+
+                if result is None:
+                    _sync_note_failure()
+                    return None
+
+                sent_count = len(payload.get("records") or [])
+                stored_count = result.get("stored_records")
+                if sent_count and stored_count is not None and int(stored_count) <= 0:
+                    errors = result.get("errors") or []
+                    log.warning(
+                        f"[AWMCNET] QQ={payload['qq']} 收到 {sent_count} 条但未落库 "
+                        f"skipped={result.get('skipped', 0)} errors={errors[:2]}"
+                    )
+                    _sync_note_failure()
+                    return None
+                _sync_note_success()
+                log.info(
+                    f"[AWMCNET] QQ={payload['qq']} source={payload.get('source')} "
+                    f"imported={result.get('imported', 0)} updated={result.get('updated', 0)} "
+                    f"stored={stored_count if stored_count is not None else 'unknown'}"
                 )
+                return result
+            except Exception as exc:
+                _sync_note_failure()
+                log.warning(f"[AWMCNET] 成绩同步异常: {type(exc).__name__}: {exc}")
                 return None
-            log.info(
-                f"[AWMCNET] QQ={payload['qq']} source={payload.get('source')} "
-                f"imported={result.get('imported', 0)} updated={result.get('updated', 0)} "
-                f"stored={stored_count if stored_count is not None else 'unknown'}"
-            )
-            return result
-        except Exception as exc:
-            log.warning(f"[AWMCNET] 成绩同步异常: {type(exc).__name__}: {exc}")
-            return None
+        finally:
+            async with _SYNC_CONDITION:
+                _SYNC_ACTIVE -= 1
+                _SYNC_CONDITION.notify_all()
 
 
 async def sync_awmcnet(

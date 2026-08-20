@@ -14,6 +14,8 @@ from loguru import logger as log
 from nonebot import require, get_bot
 from nonebot.adapters.onebot.v11 import Bot
 
+from ..config import maiconfig
+
 # 使用 require 导入定时任务调度器
 require("nonebot_plugin_apscheduler")
 from nonebot_plugin_apscheduler import scheduler
@@ -23,8 +25,20 @@ from ..libraries.maimaidx_datasource import get_user_records
 from ..libraries.maimaidx_error import LxnsDataError
 
 
+def _scheduler_batch_concurrency() -> int:
+    """后台批量补存的并发上限；默认 8，允许生产按机器核数调整。"""
+    return max(
+        1,
+        int(getattr(maiconfig, "maimaidx_storage_scheduler_concurrency", 8) or 0),
+    )
+
+
 async def fetch_and_store_user_scores(
-    qqid: int, *, source: str = "manual", target_date: Optional[str] = None
+    qqid: int,
+    *,
+    source: str = "manual",
+    target_date: Optional[str] = None,
+    force_refresh: bool = False,
 ) -> bool:
     """
     获取并存储用户成绩
@@ -38,8 +52,11 @@ async def fetch_and_store_user_scores(
     try:
         from .maimaidx_share_snapshot import build_daily_snapshot
 
-        # 强制刷新并写入玩家缓存，供其它指令复用
-        userinfo, dev_records = await get_user_records(qqid=qqid, force_refresh=True)
+        # 默认优先复用近期玩家缓存，避免每日/6 小时补存把 795 人全部打回
+        # 水鱼、落雪和 AWMCNET。个人显式刷新/开启时仍可用 force_refresh。
+        userinfo, dev_records = await get_user_records(
+            qqid=qqid, force_refresh=force_refresh
+        )
         records = list(dev_records or [])
         
         if not records:
@@ -136,11 +153,13 @@ async def daily_storage_task():
         f"缓存贡献写入 {share_from_cache} 人"
     )
 
-    semaphore = asyncio.Semaphore(5)
+    semaphore = asyncio.Semaphore(_scheduler_batch_concurrency())
 
     async def store_one(qqid: int):
         async with semaphore:
-            return await fetch_and_store_user_scores(qqid, source="auto")
+            return await fetch_and_store_user_scores(
+                qqid, source="auto", force_refresh=False
+            )
 
     results = await asyncio.gather(
         *[store_one(qqid) for qqid in enabled_users], return_exceptions=True
@@ -178,12 +197,15 @@ async def periodic_storage_check():
     if users_to_store:
         log.info(f"[DataScheduler] 发现 {len(users_to_store)} 个用户今天尚未存储成绩，开始补存")
         
-        semaphore = asyncio.Semaphore(5)
+        semaphore = asyncio.Semaphore(_scheduler_batch_concurrency())
         
         async def store_one(qqid: int):
             async with semaphore:
                 return await fetch_and_store_user_scores(
-                    qqid, source="periodic_check", target_date=today
+                    qqid,
+                    source="periodic_check",
+                    target_date=today,
+                    force_refresh=False,
                 )
         
         tasks = [store_one(qqid) for qqid in users_to_store]
@@ -207,12 +229,15 @@ async def on_startup_storage():
     if users_to_store:
         log.info(f"[DataScheduler] 启动补存：{len(users_to_store)} 个用户昨天未存储")
         
-        semaphore = asyncio.Semaphore(5)
+        semaphore = asyncio.Semaphore(_scheduler_batch_concurrency())
         
         async def store_one(qqid: int):
             async with semaphore:
                 return await fetch_and_store_user_scores(
-                    qqid, source="startup_backfill", target_date=yesterday
+                    qqid,
+                    source="startup_backfill",
+                    target_date=yesterday,
+                    force_refresh=False,
                 )
         
         tasks = [store_one(qqid) for qqid in users_to_store]

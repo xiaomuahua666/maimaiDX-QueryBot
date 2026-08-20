@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import contextvars
+import asyncio
 import json
 import re
 import sqlite3
@@ -18,6 +19,7 @@ from threading import RLock
 from typing import Any, Optional
 
 from .maimaidx_sqlite import configure_sqlite_connection
+from .maimaidx_io_executor import run_io
 
 
 DB_DIR = Path(__file__).resolve().parent.parent / "data" / "admin"
@@ -192,6 +194,28 @@ class AdminAuditDatabase:
         parent_ref_id: Optional[str] = None,
         ref_id: Optional[str] = None,
     ) -> str:
+        return run_io(
+            self._start_trace_sync,
+            command=command,
+            user_id=user_id,
+            group_id=group_id,
+            matcher=matcher,
+            input_summary=input_summary,
+            parent_ref_id=parent_ref_id,
+            ref_id=ref_id,
+        )
+
+    def _start_trace_sync(
+        self,
+        *,
+        command: str,
+        user_id: str = "",
+        group_id: str = "",
+        matcher: str = "",
+        input_summary: Any = None,
+        parent_ref_id: Optional[str] = None,
+        ref_id: Optional[str] = None,
+    ) -> str:
         ref = ref_id or self.new_ref_id()
         now = time.time()
         with self._lock:
@@ -210,6 +234,17 @@ class AdminAuditDatabase:
         return ref
 
     def finish_trace(
+        self,
+        ref_id: str,
+        status: str,
+        *,
+        error: Optional[BaseException] = None,
+    ) -> None:
+        return run_io(
+            self._finish_trace_sync, ref_id, status, error=error
+        )
+
+    def _finish_trace_sync(
         self,
         ref_id: str,
         status: str,
@@ -247,6 +282,24 @@ class AdminAuditDatabase:
         ref_id: Optional[str] = None,
         started_at: Optional[float] = None,
     ) -> None:
+        return run_io(
+            self._add_step_sync,
+            step_name,
+            status,
+            detail,
+            ref_id=ref_id,
+            started_at=started_at,
+        )
+
+    def _add_step_sync(
+        self,
+        step_name: str,
+        status: str,
+        detail: Any = None,
+        *,
+        ref_id: Optional[str] = None,
+        started_at: Optional[float] = None,
+    ) -> None:
         ref = ref_id or self.current_ref_id()
         if not ref:
             return
@@ -271,12 +324,22 @@ class AdminAuditDatabase:
         try:
             yield
         except Exception as exc:
-            self.add_step(
-                step_name, "error", {"request": detail, "error": str(exc)}, started_at=started
+            await asyncio.to_thread(
+                self._add_step_sync,
+                step_name,
+                "error",
+                {"request": detail, "error": str(exc)},
+                started_at=started,
             )
             raise
         else:
-            self.add_step(step_name, "success", detail, started_at=started)
+            await asyncio.to_thread(
+                self._add_step_sync,
+                step_name,
+                "success",
+                detail,
+                started_at=started,
+            )
 
     def list_traces(
         self, *, limit: int = 100, offset: int = 0, status: str = "", search: str = ""
@@ -299,6 +362,9 @@ class AdminAuditDatabase:
         return [dict(row) for row in rows]
 
     def get_trace(self, ref_id: str) -> Optional[dict]:
+        return run_io(self._get_trace_sync, ref_id)
+
+    def _get_trace_sync(self, ref_id: str) -> Optional[dict]:
         with self._lock:
             row = self._conn.execute(
                 "SELECT * FROM audit_traces WHERE ref_id = ?", (ref_id,)
@@ -420,6 +486,9 @@ class AdminAuditDatabase:
             return cur.rowcount > 0
 
     def get_active_ban(self, user_id: str) -> Optional[dict]:
+        return run_io(self._get_active_ban_sync, user_id)
+
+    def _get_active_ban_sync(self, user_id: str) -> Optional[dict]:
         now = time.time()
         with self._lock:
             self._conn.execute(
@@ -494,6 +563,11 @@ class AdminAuditDatabase:
         self, entries: list[tuple[str, str, int, float]]
     ) -> None:
         """批量落盘群消息计数，避免每条普通聊天都单独 fsync。"""
+        return run_io(self._record_messages_sync, entries)
+
+    def _record_messages_sync(
+        self, entries: list[tuple[str, str, int, float]]
+    ) -> None:
         if not entries:
             return
         day = time.strftime("%Y-%m-%d", time.localtime())

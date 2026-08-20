@@ -14,6 +14,8 @@ from typing import Any, Dict, List, Set
 
 from loguru import logger as log
 
+from .maimaidx_io_executor import run_io
+
 CONFIG_FILE = Path(__file__).resolve().parent.parent / "data" / "data_share_config.json"
 
 _lock = RLock()
@@ -62,6 +64,9 @@ class DataShareManager:
 
     def is_sharing_enabled(self, user_id: int | str) -> bool:
         """默认 True；仅 opt-out 用户为 False。"""
+        return run_io(self._is_sharing_enabled_sync, user_id)
+
+    def _is_sharing_enabled_sync(self, user_id: int | str) -> bool:
         return str(user_id) not in self._opted_out_set()
 
     def opt_out(self, user_id: int | str) -> bool:
@@ -106,6 +111,9 @@ class DataShareManager:
             pass
 
     def list_opted_out(self) -> List[str]:
+        return run_io(self._list_opted_out_sync)
+
+    def _list_opted_out_sync(self) -> List[str]:
         return sorted(self._opted_out_set())
 
     def status_text(self, user_id: int | str) -> str:

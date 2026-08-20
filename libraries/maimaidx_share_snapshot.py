@@ -13,6 +13,7 @@ from typing import Any, List, Optional, Sequence
 from loguru import logger as log
 
 from .maimaidx_data_storage import DailySnapshot, ScoreRecord, data_storage
+from .maimaidx_io_executor import run_io
 
 # 与公开导出默认门槛对齐
 MIN_SHARE_RECORDS = 30
@@ -78,7 +79,9 @@ def build_daily_snapshot(
 
 def _today_snapshot_is_good_enough(qqid: int, candidate: DailySnapshot) -> bool:
     """同日已有不低于候选的快照则跳过，减少重复写盘。"""
-    existing = data_storage.load_daily_snapshot(int(qqid), candidate.date)
+    existing = run_io(
+        data_storage._load_daily_snapshot_sync, int(qqid), candidate.date
+    )
     if not existing:
         return False
     try:
@@ -118,7 +121,7 @@ def maybe_save_share_snapshot(
     if not force and _today_snapshot_is_good_enough(qq, snap):
         return False
     try:
-        ok = data_storage.save_daily_snapshot(snap)
+        ok = run_io(data_storage._save_daily_snapshot_sync, snap)
         if ok:
             log.debug(
                 f"[ShareSnapshot] qq={qq} source={source} "

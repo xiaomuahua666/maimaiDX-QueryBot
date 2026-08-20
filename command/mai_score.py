@@ -1237,7 +1237,9 @@ async def _enable_data_storage(event: MessageEvent):
             '已开启数据存储，正在首次同步全量成绩，请稍候…',
             reply_message=True,
         )
-        store_ok = await fetch_and_store_user_scores(qqid, source="enable")
+        store_ok = await fetch_and_store_user_scores(
+            qqid, source="enable", force_refresh=True
+        )
         sync_tip = (
             '\n首次同步已完成，「牌子统计」等将优先使用本地快照。'
             if store_ok
@@ -1346,7 +1348,7 @@ async def _store_data_now(event: MessageEvent):
     if not bool(getattr(maiconfig, 'maimaidx_compact_messages', True)):
         await store_data_now.send('正在获取并存储你的成绩数据，请稍候...', reply_message=True)
     
-    success = await fetch_and_store_user_scores(qqid)
+    success = await fetch_and_store_user_scores(qqid, force_refresh=True)
     if success:
         # 获取今天的存储信息
         from datetime import datetime

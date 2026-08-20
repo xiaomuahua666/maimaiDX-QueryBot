@@ -94,6 +94,11 @@ class Config(BaseModel):
     awmcnet_sync_retry_count: int = 5
     awmcnet_sync_retry_delay_seconds: float = 1.5
     awmcnet_sync_retry_max_delay_seconds: float = 8.0
+    # 进程内写入并发上限；补存/群查询同时上传时避免 429 重试风暴。
+    awmcnet_sync_max_concurrency: int = 4
+    # 短窗口内写失败达到阈值时暂停所有 AWMCNET 写同步。
+    awmcnet_sync_circuit_threshold: int = 12
+    awmcnet_sync_circuit_seconds: float = 30.0
     # 账号二维码本地缓存时间。0 表示永久保留，单位秒。
     awmc_qrcode_cache_seconds: int = 0
     # mymai/成绩上传复用最近一次已验证 SGID 的时长；0 表示每次重新询问。
@@ -157,6 +162,8 @@ class Config(BaseModel):
     maimaidx_storage_mysql_lock_wait_timeout_seconds: int = 3
     # 仅在工作集发生变化时制作快照；此值是检测间隔，不再代表全量打包频率。
     maimaidx_storage_sync_interval_seconds: int = 900
+    # 后台补存/每日存储的并发数；把慢查询和写盘放进线程池后可调高以利用多核。
+    maimaidx_storage_scheduler_concurrency: int = 8
     maimaidx_storage_include_user_scores: bool = True
     # 最新成绩 API 缓存通常较大且可重建；大型部署可关闭其远端快照。
     maimaidx_storage_include_player_cache: bool = True

@@ -20,6 +20,7 @@ from typing import List, Optional, Tuple
 
 from ..config import log, maiconfig
 from .maimaidx_data_storage import DailySnapshot, ScoreRecord, data_storage
+from .maimaidx_io_executor import run_io
 from .maimaidx_model import PlayInfoDev, UserInfo
 from .maimaidx_sqlite import configure_sqlite_connection
 
@@ -96,10 +97,14 @@ def will_fetch_from_api(
     if force_refresh:
         return True
     ttl = _cache_ttl_seconds()
-    hit = player_cache_db.get(qqid, username, source, ttl)
+    from .maimaidx_io_executor import run_io
+
+    hit = run_io(player_cache_db.get, qqid, username, source, ttl)
     if hit is None:
         if qqid and not username:
-            snap = _try_storage_snapshot(qqid, _storage_fallback_ttl_seconds())
+            snap = run_io(
+                _try_storage_snapshot, qqid, _storage_fallback_ttl_seconds()
+            )
             if snap is not None:
                 if need_charts and snap.userinfo.charts is None:
                     return True
@@ -202,13 +207,15 @@ def get_cached_player_for_friend_battle(qqid: int) -> Optional[CachedPlayerBundl
         source = get_user_source(qqid)
     except Exception:
         source = "divingfish"
-    hit = player_cache_db.get(qqid, None, source, ttl)
+    from .maimaidx_io_executor import run_io
+
+    hit = run_io(player_cache_db.get, qqid, None, source, ttl)
     if hit is not None and hit.records:
         log.debug(
             f"[PlayerCache] 友人对战命中 SQLite qq={qqid} age={int(time.time() - hit.fetched_at)}s"
         )
         return hit
-    snap_hit = _try_storage_snapshot(qqid, ttl)
+    snap_hit = run_io(_try_storage_snapshot, qqid, ttl)
     if snap_hit is not None:
         log.debug(f"[PlayerCache] 友人对战命中数据存储快照 qq={qqid}")
     return snap_hit
@@ -262,6 +269,11 @@ class PlayerCacheDB:
     def get(
         self, qqid: Optional[int], username: Optional[str], source: str, ttl: int
     ) -> Optional[CachedPlayerBundle]:
+        return self._get_sync(qqid, username, source, ttl)
+
+    def _get_sync(
+        self, qqid: Optional[int], username: Optional[str], source: str, ttl: int
+    ) -> Optional[CachedPlayerBundle]:
         if ttl <= 0:
             return None
         key = _cache_key(qqid, username, source)
@@ -287,6 +299,16 @@ class PlayerCacheDB:
             return None
 
     def set(
+        self,
+        qqid: Optional[int],
+        username: Optional[str],
+        source: str,
+        userinfo: UserInfo,
+        records: List[PlayInfoDev],
+    ) -> None:
+        self._set_sync(qqid, username, source, userinfo, records)
+
+    def _set_sync(
         self,
         qqid: Optional[int],
         username: Optional[str],
@@ -327,6 +349,9 @@ class PlayerCacheDB:
         )
 
     def delete_by_qqid(self, qqid: int) -> int:
+        return self._delete_by_qqid_sync(qqid)
+
+    def _delete_by_qqid_sync(self, qqid: int) -> int:
         cur = self._conn.execute(
             "DELETE FROM player_cache WHERE qqid = ?", (int(qqid),)
         )
@@ -334,6 +359,17 @@ class PlayerCacheDB:
         return cur.rowcount
 
     def list_recent_full_records(
+        self,
+        *,
+        since_ts: float,
+        min_records: int = 30,
+        limit: int = 2000,
+    ) -> List[dict]:
+        return self._list_recent_full_records_sync(
+            since_ts=since_ts, min_records=min_records, limit=limit
+        )
+
+    def _list_recent_full_records_sync(
         self,
         *,
         since_ts: float,
@@ -475,7 +511,9 @@ def invalidate_player_cache(qqid: int) -> None:
     try:
         qqid = int(qqid)
         _INVALIDATED_QQIDS.add(qqid)
-        removed = player_cache_db.delete_by_qqid(qqid)
+        from .maimaidx_io_executor import run_io
+
+        removed = run_io(player_cache_db.delete_by_qqid, qqid)
         if removed:
             log.info(f"[PlayerCache] 已清除 qq={qqid} 的 {removed} 条缓存")
     except Exception as e:
@@ -490,10 +528,12 @@ def get_cached_player(
     force_refresh: bool = False,
 ) -> Optional[CachedPlayerBundle]:
     """读取有效缓存（SQLite → 可选数据存储快照）。"""
+    from .maimaidx_io_executor import run_io
+
     if force_refresh:
         return None
     ttl = _cache_ttl_seconds()
-    hit = player_cache_db.get(qqid, username, source, ttl)
+    hit = run_io(player_cache_db.get, qqid, username, source, ttl)
     if hit is not None:
         log.debug(
             f"[PlayerCache] 命中 SQLite qq={qqid} user={username} source={source} "
@@ -502,7 +542,9 @@ def get_cached_player(
         _set_fetch_meta(hit.fetched_at, "sqlite_cache")
         return hit
     if qqid and not username:
-        snap_hit = _try_storage_snapshot(qqid, _storage_fallback_ttl_seconds())
+        snap_hit = run_io(
+            _try_storage_snapshot, qqid, _storage_fallback_ttl_seconds()
+        )
         if snap_hit is not None:
             _set_fetch_meta(
                 snap_hit.fetched_at,
@@ -521,9 +563,13 @@ def save_cached_player(
 ) -> None:
     if _cache_ttl_seconds() <= 0:
         return
+    from .maimaidx_io_executor import run_io
+
     # 合并旧缓存：避免「先拉全量、后拉 B50」时互相覆盖 charts / records。
     # 只合并未过期的缓存，防止把过期的旧成绩「复活」成新数据。
-    prev = player_cache_db.get(qqid, username, source, _cache_ttl_seconds())
+    prev = run_io(
+        player_cache_db.get, qqid, username, source, _cache_ttl_seconds()
+    )
     if prev is not None:
         if userinfo.charts is None and prev.userinfo.charts is not None:
             userinfo = prev.userinfo.model_copy(
@@ -538,7 +584,7 @@ def save_cached_player(
             )
         if not records and prev.records:
             records = prev.records
-    player_cache_db.set(qqid, username, source, userinfo, records)
+    run_io(player_cache_db.set, qqid, username, source, userinfo, records)
     if qqid:
         _INVALIDATED_QQIDS.discard(int(qqid))
     if qqid and len(records) >= 30:

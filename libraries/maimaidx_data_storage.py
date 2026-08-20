@@ -15,6 +15,8 @@ from dataclasses import dataclass
 
 from loguru import logger as log
 
+from .maimaidx_io_executor import run_io
+
 # 数据存储路径
 DATA_DIR = Path(__file__).parent.parent / "data" / "user_scores"
 CONFIG_FILE = Path(__file__).parent.parent / "data" / "storage_config.json"
@@ -89,6 +91,9 @@ class DataStorageManager:
 
     def enabled_users(self) -> set:
         """返回所有开启数据存储的用户集合（单次 IO，供批量判断用）。"""
+        return run_io(self._enabled_users_sync)
+
+    def _enabled_users_sync(self) -> set:
         try:
             return {int(x) for x in self._load_config().get("enabled_users", [])}
         except Exception:
@@ -102,6 +107,9 @@ class DataStorageManager:
         return meta
 
     def get_user_meta(self, qqid: int) -> Dict[str, Any]:
+        return run_io(self._get_user_meta_sync, qqid)
+
+    def _get_user_meta_sync(self, qqid: int) -> Dict[str, Any]:
         config = self._load_config()
         meta = self._user_meta_map(config).get(str(int(qqid)))
         return dict(meta) if isinstance(meta, dict) else {}
@@ -117,6 +125,9 @@ class DataStorageManager:
 
     def enable_user(self, qqid: int) -> bool:
         """开启存储。返回是否成功；重复开启也返回 True。"""
+        return run_io(self._enable_user_sync, qqid)
+
+    def _enable_user_sync(self, qqid: int) -> bool:
         try:
             qqid = int(qqid)
             config = self._load_config()
@@ -143,6 +154,9 @@ class DataStorageManager:
             return False
 
     def disable_user(self, qqid: int) -> bool:
+        return run_io(self._disable_user_sync, qqid)
+
+    def _disable_user_sync(self, qqid: int) -> bool:
         try:
             qqid = int(qqid)
             config = self._load_config()
@@ -168,6 +182,9 @@ class DataStorageManager:
             return False
 
     def get_enabled_users(self) -> List[int]:
+        return run_io(self._get_enabled_users_sync)
+
+    def _get_enabled_users_sync(self) -> List[int]:
         return [int(x) for x in self._load_config().get("enabled_users", [])]
 
     def storage_bonus_eligible_for_checkin(
@@ -331,6 +348,9 @@ class DataStorageManager:
         return index_data
 
     def save_daily_snapshot(self, snapshot: DailySnapshot) -> bool:
+        return run_io(self._save_daily_snapshot_sync, snapshot)
+
+    def _save_daily_snapshot_sync(self, snapshot: DailySnapshot) -> bool:
         try:
             now = datetime.now()
             if not snapshot.stored_at:
@@ -399,6 +419,11 @@ class DataStorageManager:
             return False
 
     def load_snapshot_by_id(self, qqid: int, snapshot_id: str) -> Optional[DailySnapshot]:
+        return run_io(self._load_snapshot_by_id_sync, qqid, snapshot_id)
+
+    def _load_snapshot_by_id_sync(
+        self, qqid: int, snapshot_id: str
+    ) -> Optional[DailySnapshot]:
         try:
             path = self._snapshot_file(qqid, snapshot_id)
             if not path.exists():
@@ -440,11 +465,18 @@ class DataStorageManager:
         """
         兼容旧接口：按日期加载“最新一次”快照。
         """
+        return run_io(self._load_daily_snapshot_sync, qqid, date)
+
+    def _load_daily_snapshot_sync(
+        self, qqid: int, date: str
+    ) -> Optional[DailySnapshot]:
         try:
             index_data = self._load_index(qqid)
             for meta in index_data.get("snapshots", []):
                 if meta.get("date") == date:
-                    return self.load_snapshot_by_id(qqid, meta["snapshot_id"])
+                    return self._load_snapshot_by_id_sync(
+                        qqid, meta["snapshot_id"]
+                    )
 
             # 兼容旧文件命名：YYYY-MM-DD.json
             old_file = self._user_dir(qqid) / f"{date}.json"
@@ -484,6 +516,9 @@ class DataStorageManager:
             return None
 
     def list_snapshots(self, qqid: int, limit: int = 30) -> List[Dict[str, Any]]:
+        return run_io(self._list_snapshots_sync, qqid, limit)
+
+    def _list_snapshots_sync(self, qqid: int, limit: int = 30) -> List[Dict[str, Any]]:
         index_data = self._load_index(qqid)
         return index_data.get("snapshots", [])[:limit]
 
