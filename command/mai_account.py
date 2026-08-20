@@ -2001,6 +2001,8 @@ def _charge_text(result, qqid: Optional[int] = None) -> str:
             int(getattr(result, 'listed_cost', 0) or 0),
             remaining,
         )
+    if getattr(result, "free_window", False):
+        return f"💳 {label}限时免费时段，本次免费 · 余额 {result.balance} BREAK"
     return f"💳 {label}消耗 {result.charged} BREAK · 余额 {result.balance} BREAK"
 
 
