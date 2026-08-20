@@ -27,7 +27,7 @@ from nonebot_plugin_apscheduler import scheduler
 __plugin_meta__ = PluginMetadata(
     name='nonebot-plugin-maimaidx',
     description='移植自 mai-bot 开源项目，基于 nonebot2 的街机音游 舞萌DX 的查询插件',
-    usage='请使用 帮助maimaiDX 指令查看使用方法',
+    usage='请使用 帮助 指令查看使用方法',
     type='application',
     config=Config,
     homepage='https://github.com/AWMC-TEAM/maimaiDX-QueryBot',

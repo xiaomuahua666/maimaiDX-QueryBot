@@ -317,7 +317,7 @@ def _validate_panel_items(items: list[dict]) -> None:
 def default_menu_items() -> list[dict]:
     """C2C 底部自定义菜单默认项（与现有指令对齐）。"""
     return [
-        {"type": "send_message", "name": "帮助", "send_message": "帮助maimaiDX"},
+        {"type": "send_message", "name": "帮助", "send_message": "帮助"},
         {"type": "send_message", "name": "B50", "send_message": "b50"},
         {"type": "send_message", "name": "绑定", "send_message": "mai绑定"},
         {"type": "send_message", "name": "签到", "send_message": "签到"},
@@ -377,7 +377,7 @@ def default_c2c_panel_items() -> list[dict]:
         {"type": "command", "name": "刷新b50", "desc": "刷新成绩"},
         {
             "type": "command",
-            "name": "帮助maimaiDX",
+            "name": "帮助",
             "desc": "查看完整帮助",
         },
     ]
@@ -400,7 +400,7 @@ def default_group_panel_items() -> list[dict]:
         {"type": "command", "name": "我的AWMC", "desc": "我的资产"},
         {
             "type": "command",
-            "name": "帮助maimaiDX",
+            "name": "帮助",
             "desc": "查看完整帮助",
         },
     ]

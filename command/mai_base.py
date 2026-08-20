@@ -22,17 +22,15 @@ from ..libraries.maimaidx_platform import (
     use_qq_mode,
 )
 from ..libraries.maimaidx_qq_bind import qq_bind_db
-from ..libraries.maimaidx_timing import finish_timed, finish_timed_sync
+from ..libraries.maimaidx_timing import finish_timed
 from ..libraries.maimaidx_update_plate import *
 from ..libraries.tool import qqhash
 
 update_data         = on_command('更新maimai数据', permission=PLUGIN_ADMIN_ONLY)
-maimaidxhelp        = on_command('帮助maimaiDX', aliases={'帮助maimaidx'})
-short_help          = on_command('帮助', aliases={'help'})
-setattr(short_help, '_maimaidx_qbind_exempt', True)
+help_cmd            = on_command('帮助', aliases={'help', '帮助maimaiDX', '帮助maimaidx'})
+setattr(help_cmd, '_maimaidx_qbind_exempt', True)
 maimaidxrepo        = on_command('项目地址maimaiDX', aliases={'项目地址maimaidx'})
 # Documentation commands do not need a bound score account.
-setattr(maimaidxhelp, '_maimaidx_qbind_exempt', True)
 setattr(maimaidxrepo, '_maimaidx_qbind_exempt', True)
 mai_today           = on_command('今日mai', aliases={'今日舞萌', '今日运势'})
 setattr(mai_today, "_maimaidx_debt_exempt", True)
@@ -106,24 +104,16 @@ async def _(event: PrivateMessageEvent):
     await update_data.finish('maimai数据更新完成')
 
 
-@maimaidxhelp.handle()
-async def _():
-    await finish_timed_sync(
-        maimaidxhelp,
-        lambda: MessageSegment.image(image_to_base64(Image.open(Root / 'maimaidxhelp.png'))),
-    )
-
-
-@short_help.handle()
+@help_cmd.handle()
 async def _(event: MessageEvent, args: Message = CommandArg()):
     payload = _qq_help_message(event, args.extract_plain_text())
     if payload is not None:
         await plugin_finish(
-            short_help, payload, event=event,
+            help_cmd, payload, event=event,
             reply_message=False, mention_sender=False,
         )
         return
-    await short_help.finish(
+    await help_cmd.finish(
         '机器人帮助请前往\nhttps://wiki.awmc.team/guide/bot/intro',
     )
 
