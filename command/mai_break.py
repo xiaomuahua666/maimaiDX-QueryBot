@@ -51,6 +51,7 @@ from ..libraries.maimaidx_group_rating import build_forward_node
 from ..libraries.maimaidx_image_executor import run_image_cpu
 from ..libraries.maimaidx_llm_runtime import (
     LlmRuntimeConfig,
+    clear_llm_runtime_config,
     resolve_llm_runtime_config,
     set_llm_runtime_config,
 )
@@ -917,10 +918,15 @@ async def _(message: Message = CommandArg()):
         command = parts[0]
         value = parts[1] if len(parts) > 1 else ''
         command_lower = command.lower()
-        if command_lower in {'重置', '恢复默认', 'reset'}:
-            runtime = await asyncio.to_thread(
-                set_llm_runtime_config, reset=True, config=maiconfig
+        if command_lower in {'清空', '重置', '恢复默认', 'reset'}:
+            await asyncio.to_thread(clear_llm_runtime_config)
+            log.warning('[LLM配置] 管理员已清空数据库锐评端点，相关功能暂停')
+            await llm_runtime_config.finish(
+                '已清空数据库锐评配置。锐评和 20 问 AI 兜底将暂停，'
+                '重新设置 Base URL 与模型后立即恢复。',
+                reply_message=True,
             )
+            return
         elif command_lower in {'url', 'baseurl', '地址'}:
             runtime = await asyncio.to_thread(
                 set_llm_runtime_config, base_url=value.strip(), config=maiconfig
@@ -949,7 +955,7 @@ async def _(message: Message = CommandArg()):
             '锐评模型配置 URL https://example.com/v1\n'
             '锐评模型配置 模型 qwen3.8-27b\n'
             '锐评模型配置 设置 https://example.com/v1 qwen3.8-27b\n'
-            '锐评模型配置 恢复默认',
+            '锐评模型配置 清空',
             reply_message=True,
         )
         return

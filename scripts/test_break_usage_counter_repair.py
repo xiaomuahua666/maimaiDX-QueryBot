@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import sqlite3
 import time
+from contextlib import contextmanager
 from threading import RLock
 from typing import Optional
 
@@ -20,6 +21,7 @@ class_node = next(
     if isinstance(node, ast.ClassDef) and node.name == "BreakDatabase"
 )
 method_names = {
+    "_db_lock",
     "_ensure_user",
     "_today",
     "_ensure_daily",
@@ -60,6 +62,7 @@ namespace = {
     "time": time,
     "RLock": RLock,
     "Optional": Optional,
+    "contextmanager": contextmanager,
 }
 exec(
     compile(ast.Module(body=[test_class], type_ignores=[]), str(SOURCE), "exec"),

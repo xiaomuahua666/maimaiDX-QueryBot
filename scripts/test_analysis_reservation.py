@@ -4,6 +4,7 @@ import ast
 import json
 import sqlite3
 import time
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from threading import RLock
@@ -19,6 +20,7 @@ class_node = next(
     if isinstance(node, ast.ClassDef) and node.name == "BreakDatabase"
 )
 method_names = {
+    "_db_lock",
     "_ensure_user",
     "_today",
     "_ensure_daily",
@@ -60,6 +62,7 @@ namespace = {
     "timezone": timezone,
     "json": json,
     "time": time,
+    "contextmanager": contextmanager,
     "DAILY_FREE_SERVICES": frozenset({'upload', 'analysis'}),
 }
 exec(compile(ast.Module(body=[test_class], type_ignores=[]), str(source_path), "exec"), namespace)

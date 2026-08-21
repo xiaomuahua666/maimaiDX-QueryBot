@@ -2584,7 +2584,7 @@ async def _llm_classify(
 ) -> Optional[Tuple[str, str]]:
     """LLM 兜底判断。返回 (是/否, 判定依据) 或 None（无法回答或调用失败）。
 
-    完全沿用锐评（B50 分析）的 b50_llm_url / b50_llm_key / b50_llm_model 配置。
+    与锐评共用环境变量中的 Key，以及数据库热配置的 Base URL / 模型。
     每个决策点（开关/key/缓存/请求/结果/失败）都写日志，便于排查为什么没走 AI。
 
     wmc_tags: v.wmc.pub 谱面标签 {level_index: tags_dict}，由调用方懒加载并整局缓存；
@@ -2610,7 +2610,7 @@ async def _llm_classify(
     if not getattr(config, 'b50_llm_key', ''):
         log.warning(
             '[Guess20Q] LLM 跳过：未配置 b50_llm_key（与锐评/B50分析共用），'
-            '请在 .env 填写 B50_LLM_KEY/B50_LLM_URL/B50_LLM_MODEL'
+            '请在 .env 填写 B50_LLM_KEY，并由管理员设置锐评模型配置'
         )
         return None
 
@@ -2621,7 +2621,14 @@ async def _llm_classify(
         log.warning('[Guess20Q] LLM 兜底需要 openai 库，未安装')
         return None
 
-    runtime = await asyncio.to_thread(resolve_llm_runtime_config, config)
+    try:
+        runtime = await asyncio.to_thread(resolve_llm_runtime_config, config)
+    except Exception as exc:
+        log.warning(
+            '[Guess20Q] LLM 跳过：数据库锐评模型配置不可用：'
+            f'{type(exc).__name__}: {exc}'
+        )
+        return None
     log.info(
         f'[Guess20Q] LLM 发起请求 model={runtime.model} '
         f'url={runtime.base_url} question={text!r}'

@@ -216,9 +216,7 @@ class Config(BaseModel):
     maimaidx_friend_battle_cache_seconds: int = 604800
 
     # ---------- B50 分析（LLM 锐评） ----------
-    b50_llm_url: str = 'https://api.openai.com/v1'
     b50_llm_key: str = ''
-    b50_llm_model: str = 'gemini-3-flash-preview'
     # 锐评涉及多个外部服务，必须有硬超时，避免 Matcher 永久停在“处理中”。
     b50_reaction_timeout_seconds: float = 2.0
     # 锐评是模型 + 制图 + QQ 媒体发送的重任务；满载时快速拒绝，避免无限堆积。

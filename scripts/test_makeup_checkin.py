@@ -6,6 +6,7 @@ import sqlite3
 import sys
 import time
 import types
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -113,6 +114,7 @@ db_namespace.update({
     "parse_makeup_checkin_costs": parse_costs,
     "calculate_makeup_streak": repair,
     "log": type("Log", (), {"info": staticmethod(lambda *args, **kwargs: None)})(),
+    "contextmanager": contextmanager,
 })
 module = ast.Module(
     body=[ast.ImportFrom(module="__future__", names=[ast.alias("annotations")], level=0), *class_nodes],

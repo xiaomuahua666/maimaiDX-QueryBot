@@ -11,6 +11,7 @@ import ast
 import json
 import sqlite3
 import time
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from threading import RLock
@@ -119,6 +120,7 @@ ns: dict = {
     "BreakInsufficientError": type("BreakInsufficientError", (Exception,), {}),
     "_test_card_manager": _TEST_CARD,
     "DEFAULT_CONFIG": DEFAULT_CONFIG,
+    "contextmanager": contextmanager,
 }
 exec(compile(ast.parse(module_src), "maimaidx_break_extracted", "exec"), ns)
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ast
 import sqlite3
+from contextlib import contextmanager
 import sys
 import time
 import types as _types
@@ -67,6 +68,7 @@ MODULE_LEVEL_NAMES = {
 }
 # BreakDatabase 里需要的方法
 NEEDED_METHODS = {
+    "_db_lock",
     "_ensure_user",
     "_ensure_daily",
     "_today",
@@ -140,6 +142,7 @@ namespace: dict = {
     # dataclass/field 装饰器
     "dataclass": __import__("dataclasses").dataclass,
     "field": __import__("dataclasses").field,
+    "contextmanager": contextmanager,
 }
 exec(
     compile(

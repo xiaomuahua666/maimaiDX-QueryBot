@@ -23,12 +23,6 @@ class LlmRuntimeConfig:
     model_source: str
 
 
-def _default_config() -> Any:
-    from ..config import maiconfig
-
-    return maiconfig
-
-
 def _default_db() -> Any:
     from .maimaidx_break import break_db
 
@@ -65,40 +59,26 @@ def resolve_llm_runtime_config(
     config: Any = None,
     db: Any = None,
 ) -> LlmRuntimeConfig:
-    """Resolve DB overrides for one request, falling back safely to env config."""
-    config = config or _default_config()
-    fallback_url = validate_llm_base_url(getattr(config, "b50_llm_url", ""))
-    fallback_model = validate_llm_model(getattr(config, "b50_llm_model", ""))
+    """Resolve the endpoint exclusively from the runtime configuration DB."""
+    del config  # Kept in the signature for compatibility with existing callers.
     db = db or _default_db()
     try:
-        url_override = str(db.get_config(LLM_URL_OVERRIDE_KEY, "") or "").strip()
-        model_override = str(db.get_config(LLM_MODEL_OVERRIDE_KEY, "") or "").strip()
+        base_url = str(db.get_config(LLM_URL_OVERRIDE_KEY, "") or "").strip()
+        model = str(db.get_config(LLM_MODEL_OVERRIDE_KEY, "") or "").strip()
     except Exception as exc:
-        log.warning(
-            "[LLM配置] 读取数据库覆盖值失败，已回退环境配置："
-            f"{type(exc).__name__}: {exc}"
-        )
-        url_override = ""
-        model_override = ""
-
-    try:
-        base_url = validate_llm_base_url(url_override) if url_override else fallback_url
-    except ValueError as exc:
-        log.warning(f"[LLM配置] 数据库 Base URL 无效，已回退环境配置：{exc}")
-        base_url = fallback_url
-        url_override = ""
-    try:
-        model = validate_llm_model(model_override) if model_override else fallback_model
-    except ValueError as exc:
-        log.warning(f"[LLM配置] 数据库模型名无效，已回退环境配置：{exc}")
-        model = fallback_model
-        model_override = ""
+        message = f"数据库读取失败：{type(exc).__name__}: {exc}"
+        log.error(f"[LLM配置] {message}")
+        raise RuntimeError(message) from exc
+    if not base_url or not model:
+        raise ValueError("数据库尚未配置完整的锐评 Base URL 和模型")
+    base_url = validate_llm_base_url(base_url)
+    model = validate_llm_model(model)
 
     return LlmRuntimeConfig(
         base_url=base_url,
         model=model,
-        url_source="database" if url_override else "environment",
-        model_source="database" if model_override else "environment",
+        url_source="database",
+        model_source="database",
     )
 
 
@@ -106,23 +86,25 @@ def set_llm_runtime_config(
     *,
     base_url: Optional[str] = None,
     model: Optional[str] = None,
-    reset: bool = False,
     config: Any = None,
     db: Any = None,
 ) -> LlmRuntimeConfig:
     """Validate and persist runtime overrides, then return effective values."""
-    config = config or _default_config()
+    del config
     db = db or _default_db()
-    if reset:
-        db.set_config(LLM_URL_OVERRIDE_KEY, "")
-        db.set_config(LLM_MODEL_OVERRIDE_KEY, "")
-    else:
-        if base_url is None and model is None:
-            raise ValueError("请至少提供 Base URL 或模型名")
-        normalized_url = validate_llm_base_url(base_url) if base_url is not None else None
-        normalized_model = validate_llm_model(model) if model is not None else None
-        if normalized_url is not None:
-            db.set_config(LLM_URL_OVERRIDE_KEY, normalized_url)
-        if normalized_model is not None:
-            db.set_config(LLM_MODEL_OVERRIDE_KEY, normalized_model)
-    return resolve_llm_runtime_config(config=config, db=db)
+    if base_url is None and model is None:
+        raise ValueError("请至少提供 Base URL 或模型名")
+    normalized_url = validate_llm_base_url(base_url) if base_url is not None else None
+    normalized_model = validate_llm_model(model) if model is not None else None
+    if normalized_url is not None:
+        db.set_config(LLM_URL_OVERRIDE_KEY, normalized_url)
+    if normalized_model is not None:
+        db.set_config(LLM_MODEL_OVERRIDE_KEY, normalized_model)
+    return resolve_llm_runtime_config(db=db)
+
+
+def clear_llm_runtime_config(db: Any = None) -> None:
+    """Clear the DB endpoint; LLM features remain disabled until configured."""
+    db = db or _default_db()
+    db.set_config(LLM_URL_OVERRIDE_KEY, "")
+    db.set_config(LLM_MODEL_OVERRIDE_KEY, "")

@@ -19,6 +19,7 @@ nonebot.init()
 from nonebot_plugin_maimaidx.libraries.maimaidx_llm_runtime import (
     LLM_MODEL_OVERRIDE_KEY,
     LLM_URL_OVERRIDE_KEY,
+    clear_llm_runtime_config,
     resolve_llm_runtime_config,
     set_llm_runtime_config,
 )
@@ -44,12 +45,13 @@ CONFIG = SimpleNamespace(
 )
 
 
-def test_empty_overrides_use_environment() -> None:
-    runtime = resolve_llm_runtime_config(CONFIG, FakeDb())
-    assert runtime.base_url == "https://env.example/v1"
-    assert runtime.model == "env-model"
-    assert runtime.url_source == "environment"
-    assert runtime.model_source == "environment"
+def test_empty_database_config_is_rejected() -> None:
+    try:
+        resolve_llm_runtime_config(CONFIG, FakeDb())
+    except ValueError as exc:
+        assert "数据库尚未配置" in str(exc)
+    else:
+        raise AssertionError("empty database config must not fall back to env")
 
 
 def test_database_overrides_take_effect_immediately() -> None:
@@ -64,7 +66,7 @@ def test_database_overrides_take_effect_immediately() -> None:
     assert runtime.model_source == "database"
 
 
-def test_set_and_reset_runtime_config() -> None:
+def test_set_and_clear_runtime_config() -> None:
     db = FakeDb()
     runtime = set_llm_runtime_config(
         base_url="https://hot.example/v1/",
@@ -77,11 +79,15 @@ def test_set_and_reset_runtime_config() -> None:
     assert db.values[LLM_URL_OVERRIDE_KEY] == "https://hot.example/v1"
     assert db.values[LLM_MODEL_OVERRIDE_KEY] == "new/model-v2"
 
-    runtime = set_llm_runtime_config(reset=True, config=CONFIG, db=db)
-    assert runtime.base_url == "https://env.example/v1"
-    assert runtime.model == "env-model"
+    clear_llm_runtime_config(db)
     assert db.values[LLM_URL_OVERRIDE_KEY] == ""
     assert db.values[LLM_MODEL_OVERRIDE_KEY] == ""
+    try:
+        resolve_llm_runtime_config(CONFIG, db)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("cleared database config must disable LLM")
 
 
 def test_invalid_values_are_rejected_before_write() -> None:
@@ -102,31 +108,35 @@ def test_invalid_values_are_rejected_before_write() -> None:
         assert not db.values
 
 
-def test_database_read_failure_falls_back_to_environment() -> None:
-    runtime = resolve_llm_runtime_config(CONFIG, FakeDb(fail_reads=True))
-    assert runtime.base_url == "https://env.example/v1"
-    assert runtime.model == "env-model"
+def test_database_read_failure_is_reported() -> None:
+    try:
+        resolve_llm_runtime_config(CONFIG, FakeDb(fail_reads=True))
+    except RuntimeError as exc:
+        assert "数据库读取失败" in str(exc)
+    else:
+        raise AssertionError("database failure must not fall back to env")
 
 
-def test_invalid_database_values_fall_back_to_environment() -> None:
+def test_invalid_database_values_are_rejected() -> None:
     db = FakeDb({
         LLM_URL_OVERRIDE_KEY: "javascript:alert(1)",
         LLM_MODEL_OVERRIDE_KEY: "bad model",
     })
-    runtime = resolve_llm_runtime_config(CONFIG, db)
-    assert runtime.base_url == "https://env.example/v1"
-    assert runtime.model == "env-model"
-    assert runtime.url_source == "environment"
-    assert runtime.model_source == "environment"
+    try:
+        resolve_llm_runtime_config(CONFIG, db)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("invalid database values must not fall back to env")
 
 
 def main() -> None:
-    test_empty_overrides_use_environment()
+    test_empty_database_config_is_rejected()
     test_database_overrides_take_effect_immediately()
-    test_set_and_reset_runtime_config()
+    test_set_and_clear_runtime_config()
     test_invalid_values_are_rejected_before_write()
-    test_database_read_failure_falls_back_to_environment()
-    test_invalid_database_values_fall_back_to_environment()
+    test_database_read_failure_is_reported()
+    test_invalid_database_values_are_rejected()
     print("llm runtime config tests passed")
 
 

@@ -65,7 +65,11 @@ class FakeClient:
 
 async def main() -> None:
     original = llm.AsyncOpenAI
+    original_runtime = llm.resolve_llm_runtime_config
     llm.AsyncOpenAI = FakeClient
+    llm.resolve_llm_runtime_config = lambda _config=None: SimpleNamespace(
+        base_url="https://example.invalid/v1", model="cache-test-model"
+    )
     config = SimpleNamespace(
         b50_llm_key="test",
         b50_llm_url="https://example.invalid/v1",
@@ -82,6 +86,7 @@ async def main() -> None:
         await llm.generate_analysis(context, config, "温柔一点")
     finally:
         llm.AsyncOpenAI = original
+        llm.resolve_llm_runtime_config = original_runtime
 
     assert len(requests) == 2
     first, second = requests
@@ -149,8 +154,12 @@ async def roast_main() -> None:
     original_client = roast_model.AsyncOpenAI
     original_config = roast_model.maiconfig
     original_reasoning = roast_model.analysis_reasoning_effort
+    original_runtime = roast_model.resolve_llm_runtime_config
     roast_model.AsyncOpenAI = RoastFakeClient
     roast_model.analysis_reasoning_effort = lambda: "high"
+    roast_model.resolve_llm_runtime_config = lambda _config=None: SimpleNamespace(
+        base_url="https://example.invalid/v1", model="cache-test-model"
+    )
     roast_model.maiconfig = SimpleNamespace(
         b50_llm_key="test",
         b50_llm_url="https://example.invalid/v1",
@@ -175,6 +184,7 @@ async def roast_main() -> None:
         roast_model.AsyncOpenAI = original_client
         roast_model.maiconfig = original_config
         roast_model.analysis_reasoning_effort = original_reasoning
+        roast_model.resolve_llm_runtime_config = original_runtime
 
     assert len(roast_requests) == 2
     assert roast_client_options[0]["max_retries"] == 2
@@ -221,8 +231,12 @@ async def roast_timeout_main() -> None:
     original_client = roast_model.AsyncOpenAI
     original_config = roast_model.maiconfig
     original_reasoning = roast_model.analysis_reasoning_effort
+    original_runtime = roast_model.resolve_llm_runtime_config
     roast_model.AsyncOpenAI = RoastTimeoutClient
     roast_model.analysis_reasoning_effort = lambda: "low"
+    roast_model.resolve_llm_runtime_config = lambda _config=None: SimpleNamespace(
+        base_url="https://example.invalid/v1", model="timeout-test-model"
+    )
     roast_model.maiconfig = SimpleNamespace(
         b50_llm_key="test",
         b50_llm_url="https://example.invalid/v1",
@@ -248,6 +262,7 @@ async def roast_timeout_main() -> None:
         roast_model.AsyncOpenAI = original_client
         roast_model.maiconfig = original_config
         roast_model.analysis_reasoning_effort = original_reasoning
+        roast_model.resolve_llm_runtime_config = original_runtime
 
     assert timeout_requests == 1, "网络超时不应触发参数降级连环重试"
 

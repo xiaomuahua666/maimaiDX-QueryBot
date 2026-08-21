@@ -601,10 +601,10 @@ class BreakDatabase:
     @contextmanager
     def _db_lock(self):
         """Serialize SQLite writes, but keep MySQL worker sessions independent."""
-        if self._conn is not None and self._conn._backend == 'mysql':
+        if self._conn is not None and getattr(self._conn, '_backend', 'sqlite') == 'mysql':
             yield
             return
-        with BreakDatabase._lock:
+        with self._lock:
             yield
 
     def __new__(cls):
