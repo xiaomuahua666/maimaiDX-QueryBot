@@ -149,6 +149,51 @@ async def test_analysis_backpressure() -> None:
     analysis.use_qq_mode = old_use_qq_mode
 
 
+async def test_analysis_rejects_duplicate_user() -> None:
+    old_semaphore = analysis._ANALYSIS_SEMAPHORE
+    old_handle_impl = analysis._handle_impl
+    old_plugin_finish = analysis.plugin_finish
+    old_platform_user_id = analysis.platform_user_id
+    old_use_qq_mode = analysis.use_qq_mode
+    analysis._ANALYSIS_SEMAPHORE = asyncio.Semaphore(2)
+    analysis._USER_LOCKS.clear()
+    started = asyncio.Event()
+    release = asyncio.Event()
+    rejected: list[str] = []
+
+    async def slow_handle(*args, **kwargs) -> None:
+        started.set()
+        await release.wait()
+
+    async def fake_finish(matcher, message, **kwargs) -> None:
+        rejected.append(str(message))
+
+    analysis._handle_impl = slow_handle
+    analysis.plugin_finish = fake_finish
+    analysis.platform_user_id = lambda event: "same-user"
+    analysis.use_qq_mode = lambda event: True
+    first = asyncio.create_task(
+        analysis._handle(FakeMatcher(), object(), FakeEvent(), FakeArgs())
+    )
+    await asyncio.wait_for(started.wait(), timeout=0.2)
+    await asyncio.wait_for(
+        analysis._handle(FakeMatcher(), object(), FakeEvent(), FakeArgs()),
+        timeout=0.2,
+    )
+    assert rejected == [
+        "你已有锐评正在生成，请等待结果，勿重复发送。"
+    ]
+
+    release.set()
+    await asyncio.wait_for(first, timeout=0.2)
+    analysis._USER_LOCKS.clear()
+    analysis._ANALYSIS_SEMAPHORE = old_semaphore
+    analysis._handle_impl = old_handle_impl
+    analysis.plugin_finish = old_plugin_finish
+    analysis.platform_user_id = old_platform_user_id
+    analysis.use_qq_mode = old_use_qq_mode
+
+
 async def test_official_qq_skips_onebot_reaction() -> None:
     old_config = analysis.maiconfig
     old_functions = {
@@ -162,6 +207,10 @@ async def test_official_qq_skips_onebot_reaction() -> None:
             "plugin_finish",
             "react_processing",
             "fetch_for_analysis",
+            "get_event_group_id",
+            "ensure_sender_mention",
+            "adapt_reply_payload",
+            "send_group_message",
         )
     }
     analysis.maiconfig = SimpleNamespace(
@@ -172,6 +221,7 @@ async def test_official_qq_skips_onebot_reaction() -> None:
     )
     reaction_calls = 0
     finished: list[str] = []
+    active_messages: list[tuple[str, str]] = []
 
     async def fake_send(*args, **kwargs):
         return {"id": "sent"}
@@ -186,6 +236,9 @@ async def test_official_qq_skips_onebot_reaction() -> None:
     async def fake_fetch(*args, **kwargs):
         raise ValueError("stop-after-ack")
 
+    async def fake_group_send(_bot, group_id, message) -> None:
+        active_messages.append((str(group_id), str(message)))
+
     analysis.platform_user_id = lambda event: "openid"
     analysis.billing_user_id = lambda event: 1
     analysis.resolve_score_qqid = lambda event: 1
@@ -194,10 +247,15 @@ async def test_official_qq_skips_onebot_reaction() -> None:
     analysis.plugin_finish = fake_finish
     analysis.react_processing = fake_reaction
     analysis.fetch_for_analysis = fake_fetch
+    analysis.get_event_group_id = lambda event: "group-openid"
+    analysis.ensure_sender_mention = lambda message, event: message
+    analysis.adapt_reply_payload = lambda message, **kwargs: message
+    analysis.send_group_message = fake_group_send
 
     await analysis._handle_impl(FakeMatcher(), object(), FakeEvent(), FakeArgs())
     assert reaction_calls == 0, "官方 QQ 不应调用 OneBot 表情 API"
-    assert finished == ["stop-after-ack"]
+    assert finished == []
+    assert active_messages == [("group-openid", "stop-after-ack")]
 
     analysis.maiconfig = old_config
     for name, value in old_functions.items():
@@ -208,6 +266,7 @@ async def main() -> None:
     await test_qq_send_backpressure()
     await test_qq_media_keeps_text_lane_free()
     await test_analysis_backpressure()
+    await test_analysis_rejects_duplicate_user()
     await test_official_qq_skips_onebot_reaction()
 
 

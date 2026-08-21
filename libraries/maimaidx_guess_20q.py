@@ -2616,13 +2616,15 @@ async def _llm_classify(
 
     try:
         from openai import AsyncOpenAI
+        from .maimaidx_llm_runtime import resolve_llm_runtime_config
     except ImportError:
         log.warning('[Guess20Q] LLM 兜底需要 openai 库，未安装')
         return None
 
+    runtime = await asyncio.to_thread(resolve_llm_runtime_config, config)
     log.info(
-        f'[Guess20Q] LLM 发起请求 model={getattr(config, "b50_llm_model", "?")} '
-        f'url={getattr(config, "b50_llm_url", "?")} question={text!r}'
+        f'[Guess20Q] LLM 发起请求 model={runtime.model} '
+        f'url={runtime.base_url} question={text!r}'
     )
 
     profile = _build_music_profile(music, wmc_tags=wmc_tags, text=text)
@@ -2633,10 +2635,10 @@ async def _llm_classify(
         try:
             client = AsyncOpenAI(
                 api_key=config.b50_llm_key,
-                base_url=config.b50_llm_url.rstrip('/'),
+                base_url=runtime.base_url,
             )
             resp = await client.chat.completions.create(
-                model=config.b50_llm_model,
+                model=runtime.model,
                 messages=[
                     {'role': 'system', 'content': system},
                     {'role': 'user', 'content': text},
@@ -2657,7 +2659,7 @@ async def _llm_classify(
             in_tok = getattr(usage, 'prompt_tokens', 0) or 0
             out_tok = getattr(usage, 'completion_tokens', 0) or 0
             log.info(
-                f'[Guess20Q] LLM 兜底调用 model={config.b50_llm_model} '
+                f'[Guess20Q] LLM 兜底调用 model={runtime.model} '
                 f'elapsed={elapsed:.2f}s in_tok={in_tok} out_tok={out_tok} '
                 f'question={text!r} raw_response={content!r}'
             )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 
@@ -7,6 +8,8 @@ from typing import Any
 
 from loguru import logger as log
 from openai import AsyncOpenAI, BadRequestError
+
+from ..maimaidx_llm_runtime import resolve_llm_runtime_config
 
 _FORBIDDEN_OUTPUT_PATTERNS = [
     "综上所述", "整体来看", "值得称赞", "值得一提", "由此可见", "不难看出",
@@ -841,14 +844,15 @@ async def generate_analysis(
         else ""
     )
 
+    runtime = await asyncio.to_thread(resolve_llm_runtime_config, config)
     client = AsyncOpenAI(
         api_key=config.b50_llm_key,
-        base_url=config.b50_llm_url.rstrip("/"),
+        base_url=runtime.base_url,
         timeout=max(1.0, float(getattr(config, "b50_llm_timeout_seconds", 180.0))),
         max_retries=max(0, int(getattr(config, "b50_llm_max_retries", 0))),
     )
     request: dict[str, Any] = dict(
-        model=config.b50_llm_model,
+        model=runtime.model,
         messages=[
             {"role": "system", "content": system},
             {
@@ -902,7 +906,7 @@ async def generate_analysis(
     if finish_reason in {"length", "max_tokens"} or not content:
         log.warning(
             "[b50_analysis] LLM 响应不完整 "
-            f"model={config.b50_llm_model} finish_reason={finish_reason or 'unknown'} "
+            f"model={runtime.model} finish_reason={finish_reason or 'unknown'} "
             f"content_chars={len(content)} reasoning_chars={len(reasoning_content)} "
             f"output_tokens={token_usage.get('output_tokens', 0)}"
         )

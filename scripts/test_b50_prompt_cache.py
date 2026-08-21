@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import httpx
 import json
 import os
 import sys
@@ -197,4 +198,59 @@ async def roast_main() -> None:
 
 
 asyncio.run(roast_main())
+
+
+timeout_requests = 0
+
+
+class RoastTimeoutCompletions:
+    async def create(self, **kwargs):
+        global timeout_requests
+        timeout_requests += 1
+        raise roast_model.APITimeoutError(
+            request=httpx.Request("POST", "https://example.invalid/v1/chat/completions")
+        )
+
+
+class RoastTimeoutClient:
+    def __init__(self, **kwargs):
+        self.chat = SimpleNamespace(completions=RoastTimeoutCompletions())
+
+
+async def roast_timeout_main() -> None:
+    original_client = roast_model.AsyncOpenAI
+    original_config = roast_model.maiconfig
+    original_reasoning = roast_model.analysis_reasoning_effort
+    roast_model.AsyncOpenAI = RoastTimeoutClient
+    roast_model.analysis_reasoning_effort = lambda: "low"
+    roast_model.maiconfig = SimpleNamespace(
+        b50_llm_key="test",
+        b50_llm_url="https://example.invalid/v1",
+        b50_llm_model="timeout-test-model",
+        b50_llm_request_timeout_seconds=1,
+        b50_llm_max_retries=0,
+        b50_llm_max_tokens=1024,
+        b50_llm_prompt_cache_key="maimaidx-b50-roast-v2",
+    )
+    pack = EvidencePack(
+        nickname="Milk",
+        rating=15000,
+        evidence=[Evidence("rating", "当前 Rating", "15000", "snapshot")],
+    )
+    try:
+        try:
+            await roast_model.generate_report(pack, StyleSpec())
+        except roast_model.APITimeoutError:
+            pass
+        else:
+            raise AssertionError("模型网络超时没有抛出")
+    finally:
+        roast_model.AsyncOpenAI = original_client
+        roast_model.maiconfig = original_config
+        roast_model.analysis_reasoning_effort = original_reasoning
+
+    assert timeout_requests == 1, "网络超时不应触发参数降级连环重试"
+
+
+asyncio.run(roast_timeout_main())
 print("b50 prompt cache tests: ok")

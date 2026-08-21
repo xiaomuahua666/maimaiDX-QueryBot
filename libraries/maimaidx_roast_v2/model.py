@@ -16,6 +16,7 @@ from openai import (
 
 from ...config import maiconfig
 from ..maimaidx_break import analysis_reasoning_effort
+from ..maimaidx_llm_runtime import resolve_llm_runtime_config
 from .analysis import build_report_fallback
 from .domain import EvidencePack, RoastReport, StyleSpec
 from .policy import validate_report_text
@@ -313,9 +314,10 @@ def _clean_report(raw: Any, pack: EvidencePack, style: StyleSpec) -> RoastReport
 async def generate_report(pack: EvidencePack, style: StyleSpec) -> tuple[RoastReport, dict[str, Any]]:
     if not getattr(maiconfig, "b50_llm_key", ""):
         raise RuntimeError("锐评模型未配置，无法生成模型报告")
+    runtime = await asyncio.to_thread(resolve_llm_runtime_config, maiconfig)
     client = AsyncOpenAI(
         api_key=maiconfig.b50_llm_key,
-        base_url=str(maiconfig.b50_llm_url).rstrip("/"),
+        base_url=runtime.base_url,
         timeout=max(
             1.0,
             float(getattr(maiconfig, "b50_llm_request_timeout_seconds", 75.0)),
@@ -324,7 +326,7 @@ async def generate_report(pack: EvidencePack, style: StyleSpec) -> tuple[RoastRe
     )
     reasoning_effort = await asyncio.to_thread(analysis_reasoning_effort)
     request = dict(
-        model=maiconfig.b50_llm_model,
+        model=runtime.model,
         messages=[{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": build_user_prompt(pack, style)}],
         temperature=0.35,
         max_tokens=max(512, int(getattr(maiconfig, "b50_llm_max_tokens", 6144))),
@@ -401,25 +403,10 @@ async def generate_report(pack: EvidencePack, style: StyleSpec) -> tuple[RoastRe
                 log.warning("[roast_v2] 上游 5xx 重试后仍失败")
             raise
         except (APITimeoutError, APIConnectionError) as exc:
-            if "extra_body" in request:
-                log.warning(
-                    f"[roast_v2] {type(exc).__name__}，移除 Prompt Cache 扩展后重试"
-                )
-                request.pop("extra_body", None)
-                continue
-            if "reasoning_effort" in request:
-                log.warning(
-                    f"[roast_v2] {type(exc).__name__}，移除 reasoning_effort 后重试"
-                )
-                request.pop("reasoning_effort", None)
-                continue
-            if "response_format" in request:
-                log.warning(
-                    f"[roast_v2] {type(exc).__name__}，移除 response_format 后重试"
-                )
-                request.pop("response_format", None)
-                continue
-            raise
+            # Transport failures are unrelated to optional request fields.
+            # Retrying each compatibility variant can keep a user waiting for
+            # several minutes and eventually expire the official-QQ msgid.
+            log.warning(f"[roast_v2] {type(exc).__name__}，结束本次请求")
             raise
     if response is None:
         raise RuntimeError("模型请求未返回响应")
@@ -444,7 +431,7 @@ async def generate_report(pack: EvidencePack, style: StyleSpec) -> tuple[RoastRe
         finish_reason = _finish_reason(response)
         log.warning(
             "[roast_v2] 模型正文为空 "
-            f"model={maiconfig.b50_llm_model} "
+            f"model={runtime.model} "
             f"finish_reason={finish_reason or 'unknown'} "
             f"output_tokens={usage.get('output_tokens', 0)}"
         )

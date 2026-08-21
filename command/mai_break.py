@@ -49,6 +49,11 @@ from ..libraries.maimaidx_platform import (
 )
 from ..libraries.maimaidx_group_rating import build_forward_node
 from ..libraries.maimaidx_image_executor import run_image_cpu
+from ..libraries.maimaidx_llm_runtime import (
+    LlmRuntimeConfig,
+    resolve_llm_runtime_config,
+    set_llm_runtime_config,
+)
 from ..libraries.maimaidx_pending_session import finish_pending, session_key, track_event
 from ..config import log, maiconfig
 from .mai_agreement import agreement_prompt, has_user_agreed
@@ -75,6 +80,9 @@ break_economy = on_command(
 awmc_admin_set = on_command('设置BREAK', permission=PLUGIN_ADMIN_ONLY)
 awmc_admin_add = on_command('增减BREAK', permission=PLUGIN_ADMIN_ONLY)
 awmc_admin_config = on_command('BREAK配置', permission=PLUGIN_ADMIN_ONLY)
+llm_runtime_config = on_command(
+    '锐评模型配置', aliases={'LLM配置', 'llm配置'}, permission=PLUGIN_ADMIN_ONLY
+)
 awmc_admin_billing_off = on_command(
     '关闭BREAK计费', aliases={'停用BREAK计费', 'BREAK计费关闭'},
     permission=PLUGIN_ADMIN_ONLY,
@@ -881,6 +889,85 @@ async def _(message: Message = CommandArg()):
     key, value = parts[0].strip(), parts[1].strip()
     await asyncio.to_thread(break_db.set_config, key, value)
     await awmc_admin_config.finish(f'已设置 {key} = {value}', reply_message=True)
+
+
+def _format_llm_runtime_config(runtime: LlmRuntimeConfig) -> str:
+    source_name = {'database': '数据库热配置', 'environment': '环境变量'}
+    return (
+        '当前锐评模型配置：\n'
+        f'Base URL：{runtime.base_url}\n'
+        f'来源：{source_name.get(runtime.url_source, runtime.url_source)}\n'
+        f'模型：{runtime.model}\n'
+        f'来源：{source_name.get(runtime.model_source, runtime.model_source)}'
+    )
+
+
+@llm_runtime_config.handle()
+async def _(message: Message = CommandArg()):
+    raw = message.extract_plain_text().strip()
+    try:
+        if not raw or raw.lower() in {'查看', 'show', 'status'}:
+            runtime = await asyncio.to_thread(resolve_llm_runtime_config, maiconfig)
+            await llm_runtime_config.finish(
+                _format_llm_runtime_config(runtime), reply_message=True
+            )
+            return
+
+        parts = raw.split(maxsplit=1)
+        command = parts[0]
+        value = parts[1] if len(parts) > 1 else ''
+        command_lower = command.lower()
+        if command_lower in {'重置', '恢复默认', 'reset'}:
+            runtime = await asyncio.to_thread(
+                set_llm_runtime_config, reset=True, config=maiconfig
+            )
+        elif command_lower in {'url', 'baseurl', '地址'}:
+            runtime = await asyncio.to_thread(
+                set_llm_runtime_config, base_url=value.strip(), config=maiconfig
+            )
+        elif command_lower in {'模型', 'model'}:
+            runtime = await asyncio.to_thread(
+                set_llm_runtime_config, model=value.strip(), config=maiconfig
+            )
+        elif command_lower in {'设置', 'set'}:
+            values = value.split()
+            if len(values) != 2:
+                raise ValueError('设置时需要依次提供 Base URL 和模型名')
+            runtime = await asyncio.to_thread(
+                set_llm_runtime_config,
+                base_url=values[0],
+                model=values[1],
+                config=maiconfig,
+            )
+        else:
+            raise ValueError('未知操作')
+    except ValueError as exc:
+        await llm_runtime_config.finish(
+            f'{exc}\n\n'
+            '用法：\n'
+            '锐评模型配置\n'
+            '锐评模型配置 URL https://example.com/v1\n'
+            '锐评模型配置 模型 qwen3.8-27b\n'
+            '锐评模型配置 设置 https://example.com/v1 qwen3.8-27b\n'
+            '锐评模型配置 恢复默认',
+            reply_message=True,
+        )
+        return
+    except Exception as exc:
+        log.exception(f'[LLM配置] 热更新失败：{type(exc).__name__}: {exc}')
+        await llm_runtime_config.finish(
+            '热更新失败：数据库暂时不可用，请稍后重试。', reply_message=True
+        )
+        return
+
+    log.warning(
+        '[LLM配置] 管理员已热更新锐评端点：'
+        f'url={runtime.base_url} model={runtime.model}'
+    )
+    await llm_runtime_config.finish(
+        '已热更新，无需重启。\n' + _format_llm_runtime_config(runtime),
+        reply_message=True,
+    )
 
 
 @awmc_admin_billing_off.handle()

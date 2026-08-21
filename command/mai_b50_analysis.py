@@ -15,11 +15,16 @@ from ..config import maiconfig
 from ..libraries.maimaidx_error import BreakInsufficientError, QBindRequiredError, format_command_error
 from ..libraries.maimaidx_image_executor import run_image_cpu
 from ..libraries.maimaidx_platform import (
+    adapt_reply_payload,
     billing_user_id,
+    ensure_sender_mention,
+    get_event_group_id,
     plugin_finish,
     plugin_send,
     platform_user_id,
     resolve_score_qqid,
+    send_group_message,
+    send_private_message,
     use_qq_mode,
 )
 from ..libraries.maimaidx_reaction import react_processing
@@ -151,14 +156,16 @@ async def _deliver_result_or_refund(
     image,
     billing_qq: int,
     reserved,
+    bot: Bot | None = None,
 ) -> bool:
     """Compatibility adapter for callers that still hold a legacy reservation."""
     try:
         await _run_timed_stage(
-            plugin_send(
+            _send_analysis_followup(
                 matcher,
+                bot,
+                event,
                 MessageSegment.image(image),
-                event=event,
                 mention_sender=use_qq_mode(event),
                 publish_qq_image=True,
             ),
@@ -174,14 +181,62 @@ async def _deliver_result_or_refund(
         )
         if isinstance(exc, FinishedException) or not isinstance(exc, Exception):
             raise
-        await plugin_finish(
+        await _send_analysis_followup(
             matcher,
+            bot,
+            event,
             f"锐评图片发送失败：{exc}{_analysis_failure_note(reserved)}",
-            event=event,
             mention_sender=use_qq_mode(event),
+            finish=True,
         )
         return False
     return True
+
+
+async def _send_analysis_followup(
+    matcher: Matcher,
+    bot: Bot | None,
+    event: MessageEvent,
+    message,
+    *,
+    mention_sender: bool = False,
+    publish_qq_image: bool = False,
+    qq_buttons=None,
+    finish: bool = False,
+):
+    """Send long-running results without reusing an expired official-QQ msgid."""
+    if bot is not None and use_qq_mode(event):
+        if mention_sender:
+            message = ensure_sender_mention(message, event)
+        payload = adapt_reply_payload(
+            message,
+            event=event,
+            publish_qq_image=publish_qq_image,
+        )
+        group_id = get_event_group_id(event)
+        if group_id is not None:
+            await send_group_message(bot, group_id, payload)
+        else:
+            await send_private_message(bot, platform_user_id(event), payload)
+        return None
+    send_kwargs = {
+        "event": event,
+        "mention_sender": mention_sender,
+        "publish_qq_image": publish_qq_image,
+    }
+    if qq_buttons is not None:
+        send_kwargs["qq_buttons"] = qq_buttons
+    if finish:
+        return await plugin_finish(
+            matcher,
+            message,
+            **send_kwargs,
+        )
+    return await plugin_send(
+        matcher,
+        message,
+        **send_kwargs,
+    )
 
 
 async def _handle_impl(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message) -> None:
@@ -230,12 +285,14 @@ async def _handle_impl(matcher: Matcher, bot: Bot, event: MessageEvent, args: Me
             timeout=_timeout("b50_fetch_timeout_seconds", 45.0),
         )
     except Exception as exc:
-        await plugin_finish(
+        await _send_analysis_followup(
             matcher,
+            bot,
+            event,
             str(exc),
-            event=event,
             mention_sender=use_qq_mode(event),
             qq_buttons=_SHORTCUTS,
+            finish=True,
         )
         return
     pack = await asyncio.to_thread(build_evidence_pack, snapshot, _LEGACY_PEER_STATS)
@@ -285,17 +342,19 @@ async def _handle_impl(matcher: Matcher, bot: Bot, event: MessageEvent, args: Me
             raise
         if isinstance(exc, (BreakInsufficientError, QBindRequiredError, ValueError)):
             raise
-        await plugin_finish(
+        await _send_analysis_followup(
             matcher,
+            bot,
+            event,
             f"锐评生成失败：{exc}{_analysis_failure_note(reserved or 0)}",
-            event=event,
             mention_sender=use_qq_mode(event),
             qq_buttons=_SHORTCUTS,
+            finish=True,
         )
         return
 
     if not await _deliver_result_or_refund(
-        matcher, event, image, billing_qq, reserved,
+        matcher, event, image, billing_qq, reserved, bot,
     ):
         return
 
@@ -323,12 +382,14 @@ async def _handle_impl(matcher: Matcher, bot: Bot, event: MessageEvent, args: Me
         if isinstance(exc, FinishedException) or not isinstance(exc, Exception):
             raise
         log.exception(f"[roast_v2] settlement failed after delivery: {exc}")
-        await plugin_finish(
+        await _send_analysis_followup(
             matcher,
+            bot,
+            event,
             "锐评图片已发送，但结算异常；本次预扣已退回。",
-            event=event,
             mention_sender=use_qq_mode(event),
             qq_buttons=_SHORTCUTS,
+            finish=True,
         )
         return
 
@@ -372,12 +433,14 @@ async def _handle_impl(matcher: Matcher, bot: Bot, event: MessageEvent, args: Me
     footer_parts.append(f"⏱️ 本次锐评用时 {elapsed:.1f} 秒")
     footer_parts.append(report.summary)
     footer_parts.append("更多详情请前往吃分推荐喵")
-    await plugin_finish(
+    await _send_analysis_followup(
         matcher,
+        bot,
+        event,
         "\n".join(footer_parts),
-        event=event,
         mention_sender=use_qq_mode(event),
         qq_buttons=_SHORTCUTS,
+        finish=True,
     )
 
 
@@ -397,7 +460,17 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
             lock_key = platform_user_id(event)
         except AttributeError:
             lock_key = f"event:{id(event)}"
-        async with _user_lock(lock_key):
+        user_lock = _user_lock(lock_key)
+        if user_lock.locked():
+            await plugin_finish(
+                matcher,
+                "你已有锐评正在生成，请等待结果，勿重复发送。",
+                event=event,
+                mention_sender=use_qq_mode(event),
+                qq_buttons=_SHORTCUTS,
+            )
+            return
+        async with user_lock:
             try:
                 await asyncio.wait_for(_ANALYSIS_SEMAPHORE.acquire(), timeout=queue_timeout)
             except asyncio.TimeoutError:
@@ -414,12 +487,14 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
             finally:
                 _ANALYSIS_SEMAPHORE.release()
     except (BreakInsufficientError, QBindRequiredError, ValueError) as exc:
-        await plugin_finish(
+        await _send_analysis_followup(
             matcher,
+            bot,
+            event,
             str(exc),
-            event=event,
             mention_sender=use_qq_mode(event),
             qq_buttons=_SHORTCUTS,
+            finish=True,
         )
     except FinishedException:
         # matcher.finish() uses this exception as a normal control-flow signal.
@@ -427,10 +502,12 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
         raise
     except Exception as exc:
         log.exception(f"[roast_v2] failed: {exc}")
-        await plugin_finish(
+        await _send_analysis_followup(
             matcher,
+            bot,
+            event,
             format_command_error(exc),
-            event=event,
             mention_sender=use_qq_mode(event),
             qq_buttons=_SHORTCUTS,
+            finish=True,
         )
