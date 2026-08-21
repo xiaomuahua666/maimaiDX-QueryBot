@@ -349,8 +349,6 @@ async def pick_random_candidate(
     Returns:
         (uid, display_name, b50) 或 None
     """
-    from .maimaidx_data_storage import data_storage
-
     exclude = {int(x) for x in (exclude_uids or set())}
 
     # 官方 QQ 没有全量成员列表 API。群成绩模块会从已见成员登记表
@@ -378,22 +376,9 @@ async def pick_random_candidate(
         if int(m['user_id']) not in exclude
     ]
 
-    # 优先从本地数据存储找有快照的用户。
-    # 启用集合一次读入 + 快照索引扫描放线程，避免在事件循环里逐成员读文件
-    def _scan_with_data() -> List[Tuple[int, str]]:
-        enabled = data_storage.enabled_users()
-        if not enabled:
-            return []
-        return [
-            (uid, name)
-            for uid, name in all_members
-            if uid in enabled and data_storage.list_snapshots(uid, limit=1)
-        ]
-
-    candidates_with_data = await asyncio.to_thread(_scan_with_data)
-
-    # 优先选有本地数据的
-    pool = candidates_with_data if candidates_with_data else all_members
+    # 数据存储是成绩拉取的兜底来源，不应改变群友被抽中的概率。实际
+    # B50 可用性统一交给 get_user_b50_or_fallback 判断。
+    pool = all_members
     if not pool:
         return None
 

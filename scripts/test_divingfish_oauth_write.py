@@ -29,8 +29,8 @@ assert 'maiApi.update_records_oauth(qqid, fish_records)' in account
 assert 'await get_divingfish_access_token(qqid)' in account
 assert 'async def _resolve_upload_channels(' in account
 assert 'fish=channels.fish, lxns=channels.lxns' in account
-assert '旧 Token 已停用，请重新发送「绑定水鱼」完成 OAuth' in account
-assert '旧 Token 不会回退使用' in account
+assert '本次使用已绑定的 Import-Token 上传' in account
+assert '读取成绩仍需发送「绑定水鱼」授权' in account
 assert "source == 'divingfish' and qqid and not username and divingfish_oauth_enabled()" in datasource
 assert datasource.count('await get_divingfish_access_token(qqid)') >= 2
 assert 'reload_oauth_config()' in admin_web

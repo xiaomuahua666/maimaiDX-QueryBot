@@ -109,6 +109,15 @@ async def main() -> None:
         assert candidate is not None
         assert candidate[:2] == (LEGACY_QQ, "OneBotMember")
         assert onebot.calls == [("get_group_member_list", {"group_id": 10001})]
+
+        # 数据存储只能作为拉取兜底，不得缩小或加权候选群友。
+        source = (ROOT / "libraries" / "maimaidx_guess_rating.py").read_text(
+            encoding="utf-8"
+        )
+        pick_source = source[source.index("async def pick_random_candidate"):]
+        pick_source = pick_source[:pick_source.index("\ndef select_random_charts")]
+        assert "enabled_users" not in pick_source
+        assert "candidates_with_data" not in pick_source
     finally:
         QqMemberRegistry.list_group = original_list_group
         QqBindDatabase.get_legacy_qq = original_legacy

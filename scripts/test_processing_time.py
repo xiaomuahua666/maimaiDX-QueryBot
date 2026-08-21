@@ -57,6 +57,16 @@ assert "upload_fallback_seconds(" in account_source
 assert "processing_time_estimator.record(" in account_source
 assert "上游服务未返回错误详情" in account_source
 
+analysis_source = (root / "command" / "mai_b50_analysis.py").read_text(
+    encoding="utf-8"
+)
+assert '_ANALYSIS_TIMING_KEY = "b50_analysis"' in analysis_source
+assert "processing_time_estimator.estimate" in analysis_source
+assert "_format_analysis_estimate(estimated, samples)" in analysis_source
+assert "成功锐评的真实平均耗时" in analysis_source
+assert "processing_time_estimator.record" in analysis_source
+assert "本次锐评用时" in analysis_source
+
 assert "_recall_sensitive_qrcode_message" in playcount_source
 assert "recall_message" in playcount_source
 assert "Bot 无法撤回原凭据消息，请立即手动撤回" in playcount_source

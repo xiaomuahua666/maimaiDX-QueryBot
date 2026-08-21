@@ -77,6 +77,12 @@ assert b50['含水量'] == '含水量'
 content = command_map(mai_score._CONTENT_SHORTCUTS)
 assert set(content) == {'含金量', '含水量', '我有多菜', '标准 B50'}
 
+storage_setup = command_map(mai_score._STORAGE_SETUP_SHORTCUTS)
+assert storage_setup == {
+    '开启存储': '开启存储数据',
+    '立即存储': '立即存储数据',
+}
+
 account = command_map(mai_account._ACCOUNT_SHORTCUTS)
 assert account['MyMai'] == 'mymai'
 assert account['游玩地图'] == 'mai地图'
@@ -117,6 +123,7 @@ all_context_buttons = (
     mai_score._B50_SHORTCUTS
     + mai_score._CONTENT_SHORTCUTS
     + mai_score._REPORT_SHORTCUTS
+    + mai_score._STORAGE_SETUP_SHORTCUTS
     + mai_account._ACCOUNT_SHORTCUTS
     + mai_guess._GUESS_SHORTCUTS
     + mai_letter._LETTER_SHORTCUTS

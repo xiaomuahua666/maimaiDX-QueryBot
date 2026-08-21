@@ -10,7 +10,6 @@ assert "int(event.get_user_id())" not in source
 assert "int(platform_user_id(event))" not in source
 assert "billing_qq = billing_user_id(event)" in source
 assert "legacy_qq = resolve_score_qqid(event)" in source
-assert "if use_qq_mode(event) or not bool(" in source
 assert "plugin_send(" in source
 assert "mention_sender=use_qq_mode(event)" in source
 assert "await plugin_finish(" in source

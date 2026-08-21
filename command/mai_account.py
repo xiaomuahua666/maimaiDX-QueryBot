@@ -146,7 +146,7 @@ def _account_flow_shortcuts(event: MessageEvent) -> tuple[tuple[str, str], ...]:
     binding = account_db.get(key)
     has_account = bool(binding and binding.qrcode)
     oauth_mode = divingfish_oauth_enabled()
-    has_fish = bool(binding and binding.fish_token and not oauth_mode)
+    has_fish = bool(binding and binding.fish_token)
     has_lxns = bool(
         (binding and binding.lxns_token) or _has_lxns_oauth(event)
     )
@@ -908,7 +908,7 @@ async def _render_account_status(
     if await _has_divingfish_oauth(event):
         lines.append("🐟 水鱼查分/上传：OAuth 已授权（推荐）")
     elif binding.fish_token and divingfish_oauth_enabled():
-        lines.append("🐟 水鱼：旧 Token 已停用，请发送「绑定水鱼」重新授权")
+        lines.append("🐟 水鱼上传：Import-Token 已绑定；查分请发送「绑定水鱼」完成 OAuth")
     elif binding.fish_token:
         lines.append("🐟 水鱼上传：Import-Token 已绑定")
     else:
@@ -1704,18 +1704,30 @@ async def _resolve_upload_channels(
                 fish_oauth = True
                 effective_fish = True
             except DivingFishNotAuthorizedError:
-                warnings.append(
-                    "水鱼：旧 Token 已停用，请重新发送「绑定水鱼」完成 OAuth；"
-                    "本次仅同步 AWMC NET"
-                )
+                effective_fish = bool(binding.fish_token)
+                if effective_fish:
+                    warnings.append(
+                        "水鱼：未授权 OAuth，本次使用已绑定的 Import-Token 上传；"
+                        "读取成绩仍需发送「绑定水鱼」授权"
+                    )
+                else:
+                    warnings.append(
+                        "水鱼：尚未授权 OAuth 或绑定 Import-Token，"
+                        "本次仅同步 AWMC NET"
+                    )
             except (DivingFishOAuthError, RuntimeError, OSError) as exc:
                 log.warning(
                     f"[upload] 水鱼 OAuth 预检失败 user={_user_key(event)}: "
                     f"{type(exc).__name__}"
                 )
+                effective_fish = bool(binding.fish_token)
                 warnings.append(
-                    "水鱼 OAuth 暂时不可用，本次仅同步 AWMC NET；"
-                    "旧 Token 不会回退使用"
+                    "水鱼 OAuth 暂时不可用，"
+                    + (
+                        "本次改用已绑定的 Import-Token 上传"
+                        if effective_fish
+                        else "本次仅同步 AWMC NET"
+                    )
                 )
         else:
             effective_fish = bool(binding.fish_token)
@@ -2068,7 +2080,7 @@ async def _(event: MessageEvent):
         f"mai状态 / mymai：查看账号详细状态，每次成功查询 {status_cost} BREAK，失败不扣费\n"
         "舞萌状态 / mais：AWMC 全局失败率分类图（空分类省略）+ 实时状态\n"
         "绑定水鱼 / dfbind：一次 OAuth 同时用于水鱼查分和上传（推荐）\n"
-        "mai绑定水鱼 <Token> / maibindfish <Token>：仅 OAuth 关闭时使用旧 Import-Token\n"
+        "mai绑定水鱼 <Token> / maibindfish <Token>：绑定仅供上传的 Import-Token\n"
         "lxbind：落雪 OAuth（推荐）；maibindlx <导入Token> 为兼容方式\n"
         "发送二维码：始终上传 AWMCNET；已绑定水鱼/落雪时同时同步对应平台\n"
         "maiu / maiul / maiua：AWMCNET + 指定且已绑定的外部平台\n"
@@ -2432,14 +2444,6 @@ def _save_upload_token(event: MessageEvent, token: str, kind: str) -> str:
 @fish_bind.handle()
 async def _(matcher: Matcher, event: MessageEvent, args: Message = CommandArg()):
     await _require_agreement(fish_bind, event)
-    if divingfish_oauth_enabled():
-        await plugin_finish(
-            fish_bind,
-            "水鱼 OAuth 已开启，旧 Import-Token 不再用于查分或上传。\n"
-            "请发送「绑定水鱼」重新授权；一次授权即可同时查分和上传成绩。",
-            event=event,
-            reply_message=True,
-        )
     token = _arg_text(args)
     if token:
         matcher.set_arg("fish_token", Message(token))
@@ -2450,6 +2454,7 @@ async def _(matcher: Matcher, event: MessageEvent, args: Message = CommandArg())
         f"1. 打开水鱼查分器：{_DIVING_FISH_PROBER_URL}\n"
         "2. 登录后进入「编辑个人资料」；\n"
         "3. 找到 Import-Token，生成后复制完整 Token 发给我。\n\n"
+        "Import-Token 仅用于上传 B50；读取水鱼成绩需另行发送「绑定水鱼」完成 OAuth。\n\n"
         "我会等待你的输入；格式不正确时可以重试，本轮最多 3 次。\n"
         "发送「取消」可结束绑定。",
         reply_message=True,
@@ -3025,7 +3030,8 @@ def auto_upload_channels(
     divingfish_oauth_mode: bool = False,
 ) -> tuple[bool, bool]:
     """直接二维码默认按 maiua 处理，但只上传用户实际绑定的渠道。"""
-    fish = has_fish_oauth if divingfish_oauth_mode else bool(fish_token)
+    # OAuth 控制水鱼成绩读取；Import-Token 仍是有效的上传凭据。
+    fish = bool(fish_token or (divingfish_oauth_mode and has_fish_oauth))
     return bool(fish), bool(lxns_token or has_lxns_oauth)
 
 

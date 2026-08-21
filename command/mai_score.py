@@ -227,6 +227,22 @@ _REPORT_SHORTCUTS = (
     ('查看存档', '查看存档'),
     ('立即存储', '立即存储数据'),
 )
+_STORAGE_SETUP_SHORTCUTS = (
+    ('开启存储', '开启存储数据'),
+    ('立即存储', '立即存储数据'),
+)
+
+
+async def _finish_storage_required(matcher, event: MessageEvent) -> None:
+    await plugin_finish(
+        matcher,
+        '你尚未开启数据存储功能。\n'
+        '请先发送「开启存储数据」，再发送「立即存储数据」'
+        '积累报表数据。',
+        event=event,
+        reply_message=True,
+        qq_buttons=_STORAGE_SETUP_SHORTCUTS,
+    )
 
 
 def _score_shortcuts(matcher) -> tuple[tuple[str, str], ...]:
@@ -1481,10 +1497,7 @@ async def _awmcnet_trend(event: MessageEvent, message: Message = CommandArg()):
 async def _weekly_report(event: MessageEvent):
     qqid = resolve_score_qqid(event)
     if not data_storage.is_enabled(qqid):
-        await weekly_report.finish(
-            '你尚未开启数据存储功能，请先发送「开启存储数据」。',
-            reply_message=True,
-        )
+        await _finish_storage_required(weekly_report, event)
         return
     from ..libraries.maimaidx_break import break_db
     cost = int(await asyncio.to_thread(break_db.get_config, 'weekly_report_cost', '1'))
@@ -1500,10 +1513,7 @@ async def _weekly_report(event: MessageEvent):
 async def _monthly_report(event: MessageEvent):
     qqid = resolve_score_qqid(event)
     if not data_storage.is_enabled(qqid):
-        await monthly_report.finish(
-            '你尚未开启数据存储功能，请先发送「开启存储数据」。',
-            reply_message=True,
-        )
+        await _finish_storage_required(monthly_report, event)
         return
     from ..libraries.maimaidx_break import break_db
     cost = int(await asyncio.to_thread(break_db.get_config, 'monthly_report_cost', '2'))
@@ -1519,10 +1529,7 @@ async def _monthly_report(event: MessageEvent):
 async def _annual_report(event: MessageEvent):
     qqid = resolve_score_qqid(event)
     if not data_storage.is_enabled(qqid):
-        await annual_report.finish(
-            '你尚未开启数据存储功能，请先发送「开启存储数据」。',
-            reply_message=True,
-        )
+        await _finish_storage_required(annual_report, event)
         return
     from ..libraries.maimaidx_break import break_db
     cost = int(await asyncio.to_thread(break_db.get_config, 'annual_report_cost', '3'))
@@ -1538,10 +1545,7 @@ async def _annual_report(event: MessageEvent):
 async def _daily_report(event: MessageEvent):
     qqid = resolve_score_qqid(event)
     if not data_storage.is_enabled(qqid):
-        await daily_report.finish(
-            '你尚未开启数据存储功能，请先发送「开启存储数据」。',
-            reply_message=True,
-        )
+        await _finish_storage_required(daily_report, event)
         return
     from ..libraries.maimaidx_break import break_db
     cost = int(await asyncio.to_thread(break_db.get_config, 'daily_report_cost', '0'))

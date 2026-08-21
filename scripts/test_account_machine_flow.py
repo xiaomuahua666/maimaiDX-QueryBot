@@ -78,7 +78,7 @@ assert account["auto_upload_channels"](has_lxns_oauth=True) == (False, True)
 assert account["auto_upload_channels"](has_fish_oauth=True) == (False, False)
 assert account["auto_upload_channels"](
     fish_token="old", divingfish_oauth_mode=True
-) == (False, False)
+) == (True, False)
 assert account["auto_upload_channels"](
     has_fish_oauth=True, divingfish_oauth_mode=True
 ) == (True, False)
@@ -86,8 +86,8 @@ assert account["auto_upload_channels"](
     fish_token="fish", has_lxns_oauth=True
 ) == (True, True)
 
-# OAuth mode must resolve an old waterfish Import-Token to AWMCNET-only before
-# the accepted message is built, while a valid grant keeps waterfish enabled.
+# OAuth is required for reads, but a legacy waterfish Import-Token remains a
+# valid upload credential when no grant is available.
 channel_tree = ast.parse(
     (ROOT / "command" / "mai_account.py").read_text(encoding="utf-8")
 )
@@ -146,9 +146,11 @@ channels = asyncio.run(
         object(), binding, fish=True, lxns=False
     )
 )
-assert not channels.fish
+assert channels.fish
 assert not channels.lxns
-assert "旧 Token 已停用" in channels.warnings[0]
+assert not channels.fish_oauth
+assert "Import-Token 上传" in channels.warnings[0]
+assert "读取成绩仍需" in channels.warnings[0]
 
 
 async def valid_fish_token(_qqid):
@@ -285,7 +287,7 @@ assert 'if isinstance(matcher, upload_lx):' in upload_src
 assert 'if isinstance(matcher, upload_all):' in upload_src
 assert 'stored = matcher.state.get(_UPLOAD_MODE_STATE_KEY)' in upload_src
 assert "async def _resolve_upload_channels(" in upload_src
-assert "旧 Token 已停用，请重新发送「绑定水鱼」完成 OAuth" in upload_src
+assert "本次使用已绑定的 Import-Token 上传" in upload_src
 assert "OAuth Token 已失效且自动刷新失败" in upload_src
 assert "A broken OAuth grant must never silently fall back" in upload_src
 assert "lxns_scores = convert_sega_music_scores(raw_scores)" in upload_src

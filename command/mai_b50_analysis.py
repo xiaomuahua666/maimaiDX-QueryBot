@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from weakref import WeakValueDictionary
 
 from loguru import logger as log
@@ -22,6 +23,7 @@ from ..libraries.maimaidx_platform import (
     use_qq_mode,
 )
 from ..libraries.maimaidx_reaction import react_processing
+from ..libraries.maimaidx_processing_time import processing_time_estimator
 from ..libraries.maimaidx_break import (
     analysis_token_cost,
     break_db,
@@ -65,6 +67,8 @@ _SHORTCUTS = (
     ("查看风格", "锐评风格 查看"),
 )
 _ANALYSIS_SHORTCUTS = _SHORTCUTS
+_ANALYSIS_TIMING_KEY = "b50_analysis"
+_ANALYSIS_FALLBACK_SECONDS = 90
 
 
 def set_peer_stats(stats) -> None:
@@ -86,6 +90,18 @@ def _timeout(name: str, default: float) -> float:
         return max(0.5, float(getattr(maiconfig, name, default) or default))
     except (TypeError, ValueError):
         return default
+
+
+def _format_analysis_estimate(seconds: int, samples: int) -> str:
+    if samples:
+        return (
+            f"根据最近 {samples} 次成功锐评的真实平均耗时，"
+            f"预计约 {seconds} 秒完成。"
+        )
+    return (
+        f"暂无真实锐评耗时样本，首次预计约 {seconds} 秒完成；"
+        "完成后会自动校准。"
+    )
 
 
 def _style_text(args: Message) -> str:
@@ -169,6 +185,7 @@ async def _deliver_result_or_refund(
 
 
 async def _handle_impl(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message) -> None:
+    started_at = time.perf_counter()
     billing_qq = billing_user_id(event)
     legacy_qq = resolve_score_qqid(event)
     style_text = _style_text(args)
@@ -180,14 +197,23 @@ async def _handle_impl(matcher: Matcher, bot: Bot, event: MessageEvent, args: Me
     else:
         style = await asyncio.to_thread(get_style, platform_user_id(event))
 
-    if use_qq_mode(event) or not bool(getattr(maiconfig, "maimaidx_compact_messages", True)):
-        pricing_help = await asyncio.to_thread(format_analysis_pricing_help)
-        await plugin_send(
-            matcher,
-            f"正在处理 B50 锐评，请稍候喵…\n{pricing_help.strip().removeprefix('· ')}",
-            event=event,
-            mention_sender=use_qq_mode(event),
-        )
+    pricing_help, estimate = await asyncio.gather(
+        asyncio.to_thread(format_analysis_pricing_help),
+        asyncio.to_thread(
+            processing_time_estimator.estimate,
+            _ANALYSIS_TIMING_KEY,
+            fallback_seconds=_ANALYSIS_FALLBACK_SECONDS,
+        ),
+    )
+    estimated, samples = estimate
+    await plugin_send(
+        matcher,
+        f"正在处理 B50 锐评，请稍候喵…\n"
+        f"{_format_analysis_estimate(estimated, samples)}\n"
+        f"{pricing_help.strip().removeprefix('· ')}",
+        event=event,
+        mention_sender=use_qq_mode(event),
+    )
     if not use_qq_mode(event):
         try:
             await asyncio.wait_for(
@@ -337,6 +363,13 @@ async def _handle_impl(matcher: Matcher, bot: Bot, event: MessageEvent, args: Me
         compact=True,
     )
     footer_parts.append(cost_line)
+    elapsed = time.perf_counter() - started_at
+    await asyncio.to_thread(
+        processing_time_estimator.record,
+        _ANALYSIS_TIMING_KEY,
+        elapsed,
+    )
+    footer_parts.append(f"⏱️ 本次锐评用时 {elapsed:.1f} 秒")
     footer_parts.append(report.summary)
     footer_parts.append("更多详情请前往吃分推荐喵")
     await plugin_finish(

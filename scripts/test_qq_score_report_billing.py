@@ -96,6 +96,28 @@ async def main() -> None:
         assert kwargs["service_name"] == service_name
         assert kwargs["service_cost"] == service_cost
 
+    storage_prompts = []
+    original_plugin_finish = mai_score.plugin_finish
+
+    async def fake_plugin_finish(matcher, message, **kwargs):
+        storage_prompts.append((matcher, message, kwargs))
+
+    mai_score.plugin_finish = fake_plugin_finish
+    try:
+        await mai_score._finish_storage_required(mai_score.weekly_report, event)
+    finally:
+        mai_score.plugin_finish = original_plugin_finish
+
+    assert len(storage_prompts) == 1
+    matcher, message, kwargs = storage_prompts[0]
+    assert matcher is mai_score.weekly_report
+    assert "尚未开启数据存储" in message
+    assert kwargs["event"] is event
+    assert kwargs["qq_buttons"] == (
+        ("开启存储", "开启存储数据"),
+        ("立即存储", "立即存储数据"),
+    )
+
 
 asyncio.run(main())
 print("qq score report billing tests: ok")
