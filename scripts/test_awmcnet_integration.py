@@ -147,14 +147,14 @@ async def test_empty_sync_is_not_reported_as_success() -> None:
 
 
 async def test_sync_retries_uploading_429() -> None:
-    """A transient 'upload in progress' response must not fail the upload."""
+    """429 uses fixed 2/5/10s backoff and succeeds on the next attempt."""
     original_connection = awmcnet._connection
     try:
-        awmcnet._connection = lambda: ("https://net.wmc.pub", "test", 8.0)
+        awmcnet._connection = lambda: ("https://net.wmc.pub", "test", 120.0)
         busy = MagicMock()
         busy.status_code = 429
         busy.text = '{"detail":"成绩正在上传中"}'
-        busy.headers = {"Retry-After": "0"}
+        busy.headers = {}
         success = MagicMock()
         success.status_code = 200
         success.json.return_value = {"status": "ok", "stored_records": 1}
@@ -175,24 +175,167 @@ async def test_sync_retries_uploading_429() -> None:
         awmcnet._connection = original_connection
 
 
+async def test_sync_retry_delays_follow_2_5_10_seconds() -> None:
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    original_connection = awmcnet._connection
+    original_sleep = awmcnet.asyncio.sleep
+    try:
+        awmcnet._connection = lambda: ("https://net.wmc.pub", "test", 120.0)
+        transient = MagicMock()
+        transient.status_code = 429
+        transient.text = ""
+        transient.headers = {}
+        failed = MagicMock()
+        failed.status_code = 503
+        failed.text = ""
+        failed.headers = {}
+        client = AsyncMock()
+        client.post.side_effect = [transient, transient, failed, failed, failed]
+        context = MagicMock()
+        context.__aenter__ = AsyncMock(return_value=client)
+        context.__aexit__ = AsyncMock(return_value=None)
+        awmcnet.asyncio.sleep = fake_sleep
+        with patch.object(awmcnet.httpx, "AsyncClient", return_value=context):
+            result = await awmcnet._post_sync({"qq": 12345, "records": [RECORD]})
+        assert result.status is awmcnet.AwmcnetSyncStatus.SERVICE_ERROR
+        assert sleeps == [2.0, 5.0, 10.0]
+        assert client.post.await_count == 5
+    finally:
+        awmcnet._connection = original_connection
+        awmcnet.asyncio.sleep = original_sleep
+
+
 async def test_sync_read_timeout_is_ambiguous_not_auth_failure() -> None:
     """A timeout after sending the request must not claim the Bot-Token is wrong."""
     original_connection = awmcnet._connection
     try:
-        awmcnet._connection = lambda: ("https://net.wmc.pub", "test", 8.0)
+        awmcnet._connection = lambda: ("https://net.wmc.pub", "test", 120.0)
         client = AsyncMock()
         client.post.side_effect = httpx.ReadTimeout("timed out waiting for response")
         context = MagicMock()
         context.__aenter__ = AsyncMock(return_value=client)
         context.__aexit__ = AsyncMock(return_value=None)
-        with patch.object(awmcnet.httpx, "AsyncClient", return_value=context):
+        with (
+            patch.object(awmcnet.httpx, "AsyncClient", return_value=context),
+            patch.object(awmcnet.asyncio, "sleep", new=AsyncMock()),
+        ):
             result = await awmcnet._post_sync({"qq": 12345, "records": [RECORD]})
         assert result.status is awmcnet.AwmcnetSyncStatus.AMBIGUOUS
         assert result.ambiguous
         assert result.payload is None
+        assert client.post.await_count == 4
+    finally:
+        awmcnet._connection = original_connection
+
+
+async def test_sync_auth_failure_is_not_retried() -> None:
+    original_connection = awmcnet._connection
+    try:
+        awmcnet._connection = lambda: ("https://net.wmc.pub", "test", 120.0)
+        response = MagicMock()
+        response.status_code = 401
+        response.text = '{"detail":"bad token"}'
+        client = AsyncMock()
+        client.post.return_value = response
+        context = MagicMock()
+        context.__aenter__ = AsyncMock(return_value=client)
+        context.__aexit__ = AsyncMock(return_value=None)
+        with patch.object(awmcnet.httpx, "AsyncClient", return_value=context):
+            result = await awmcnet._post_sync({"qq": 12345, "records": [RECORD]})
+        assert result.status is awmcnet.AwmcnetSyncStatus.AUTH_FAILED
         assert client.post.await_count == 1
     finally:
         awmcnet._connection = original_connection
+
+
+async def test_sync_splits_large_snapshot_into_batches() -> None:
+    original_connection = awmcnet._connection
+    original_batch_size = getattr(
+        awmcnet.maiconfig, "awmcnet_sync_max_records_per_batch", None
+    )
+    try:
+        awmcnet._connection = lambda: ("https://net.wmc.pub", "test", 120.0)
+        awmcnet.maiconfig.awmcnet_sync_max_records_per_batch = 1000
+        posted: list[dict] = []
+
+        async def fake_post(*args, **kwargs):
+            posted.append(kwargs["json"])
+            response = MagicMock()
+            response.status_code = 200
+            response.json.return_value = {
+                "status": "ok",
+                "imported": len(kwargs["json"]["records"]),
+                "updated": 0,
+                "stored_records": len(kwargs["json"]["records"]),
+            }
+            return response
+
+        client = AsyncMock()
+        client.post.side_effect = fake_post
+        context = MagicMock()
+        context.__aenter__ = AsyncMock(return_value=client)
+        context.__aexit__ = AsyncMock(return_value=None)
+        with patch.object(awmcnet.httpx, "AsyncClient", return_value=context):
+            records = [
+                {
+                    **RECORD,
+                    "song_id": index,
+                    "achievements": 100.0,
+                    "dxScore": 2000,
+                }
+                for index in range(1, 2501)
+            ]
+            result = await awmcnet.sync_awmcnet_pc_records(
+                12345, records, nickname="Tester", rating=280
+            )
+        assert result.ok
+        assert len(posted) == 3
+        assert [len(batch["records"]) for batch in posted] == [1000, 1000, 500]
+        assert all(batch["qq"] == 12345 for batch in posted)
+        assert result.payload["imported"] == 2500
+    finally:
+        awmcnet._connection = original_connection
+        awmcnet.maiconfig.awmcnet_sync_max_records_per_batch = original_batch_size
+
+
+async def test_sync_chunked_auth_failure_stops_further_batches() -> None:
+    original_connection = awmcnet._connection
+    original_batch_size = getattr(
+        awmcnet.maiconfig, "awmcnet_sync_max_records_per_batch", None
+    )
+    try:
+        awmcnet._connection = lambda: ("https://net.wmc.pub", "test", 120.0)
+        awmcnet.maiconfig.awmcnet_sync_max_records_per_batch = 1000
+        posted: list[dict] = []
+
+        async def fake_post(*args, **kwargs):
+            posted.append(kwargs["json"])
+            response = MagicMock()
+            response.status_code = 401
+            response.text = '{"detail":"bad token"}'
+            return response
+
+        client = AsyncMock()
+        client.post.side_effect = fake_post
+        context = MagicMock()
+        context.__aenter__ = AsyncMock(return_value=client)
+        context.__aexit__ = AsyncMock(return_value=None)
+        with patch.object(awmcnet.httpx, "AsyncClient", return_value=context):
+            records = [
+                {**RECORD, "song_id": index} for index in range(1, 2501)
+            ]
+            result = await awmcnet.sync_awmcnet_pc_records(
+                12345, records, nickname="Tester", rating=280
+            )
+        assert result.status is awmcnet.AwmcnetSyncStatus.AUTH_FAILED
+        assert len(posted) == 1
+    finally:
+        awmcnet._connection = original_connection
+        awmcnet.maiconfig.awmcnet_sync_max_records_per_batch = original_batch_size
 
 
 async def test_force_refresh_keeps_newer_awmcnet_snapshot() -> None:

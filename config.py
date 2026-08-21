@@ -89,11 +89,13 @@ class Config(BaseModel):
     # AWMC NET 默认成绩库：站点地址内置，可通过环境变量覆盖；填写 Bot Token 后启用。
     awmcnet_sync_url: str = "https://net.wmc.pub"
     awmcnet_bot_token: Optional[str] = None
-    # AWMCNET may return 429 while the previous snapshot is still committing.
-    awmcnet_sync_timeout_seconds: float = 12.0
-    awmcnet_sync_retry_count: int = 5
-    awmcnet_sync_retry_delay_seconds: float = 1.5
-    awmcnet_sync_retry_max_delay_seconds: float = 8.0
+    # AWMCNET 上传超时与重试：429/5xx/连接超时按 2s、5s、10s 最多重试 3 次。
+    awmcnet_sync_timeout_seconds: float = 120.0
+    awmcnet_sync_retry_count: int = 3
+    awmcnet_sync_retry_delay_seconds: float = 2.0
+    awmcnet_sync_retry_max_delay_seconds: float = 10.0
+    # 单次 /api/bot/sync 的 records 上限；超过后按完整快照拆分并连续上传。
+    awmcnet_sync_max_records_per_batch: int = 1000
     # 进程内写入并发上限；补存/群查询同时上传时避免 429 重试风暴。
     awmcnet_sync_max_concurrency: int = 4
     # 短窗口内写失败达到阈值时暂停所有 AWMCNET 写同步。
