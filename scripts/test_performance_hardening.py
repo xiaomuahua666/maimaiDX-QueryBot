@@ -43,7 +43,10 @@ assert "innodb_lock_wait_timeout" in mysql_db
 
 break_source = (ROOT / "libraries" / "maimaidx_break.py").read_text(encoding="utf-8")
 assert "def _db_lock" in break_source
-assert "if self._conn is not None and self._conn._backend == 'mysql':" in break_source
+assert (
+    "if self._conn is not None and getattr(self._conn, '_backend', 'sqlite') == 'mysql':"
+    in break_source
+)
 assert "TRANSACTION ISOLATION LEVEL READ COMMITTED" in mysql_db
 
 # No asynchronous handler may call the remote BREAK/Card MySQL layer directly.
