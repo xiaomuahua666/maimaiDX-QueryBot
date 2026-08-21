@@ -831,7 +831,7 @@ async def _process_auto_qrcode_for_account(
             if first_notice:
                 lines.append(first_notice)
         else:
-            lines.append('AWMCNET 上传未完成，请检查服务配置后重试。')
+            lines.append('AWMCNET 上传未完成，Bot 将在后台自动重试/补齐。')
         if pending_ticket is not None:
             async def notify(message: str) -> None:
                 await bot.send(event, message=prefix + MessageSegment.text(message))

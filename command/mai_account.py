@@ -23,6 +23,7 @@ from nonebot.params import Arg, CommandArg
 from ..config import log, maiconfig
 from ..libraries.maimaidx_account_db import AccountBinding, account_db
 from ..libraries.maimaidx_admin_audit import admin_audit, redact
+from ..libraries.maimaidx_awmcnet_sync import AwmcnetSyncStatus
 from ..libraries.maimaidx_break import break_db
 from ..libraries.maimaidx_api_data import maiApi
 from ..libraries.maimaidx_divingfish_oauth import (
@@ -229,6 +230,34 @@ _AWMCNET_FIRST_SYNC_NOTICE = (
     "如果需要水鱼或落雪，还需要绑定 maibindfish / maibindlx"
 )
 _AWMCNET_SYNCED_LINE = "已同步到 AWMC NET."
+_AWMCNET_AMBIGUOUS_LINE = (
+    "⚠️ AWMC NET. 提交结果确认超时，Bot 将在后台补齐/自动重试。"
+)
+
+
+class _AwmcnetUploadError(RuntimeError):
+    """用于把确定失败的 AWMCNET 同步结果带到上传异常分支。"""
+
+    def __init__(self, message: str, *, status: AwmcnetSyncStatus):
+        self.status = status
+        super().__init__(message)
+
+
+def _awmcnet_failure_text(result: Any) -> str:
+    """把 AWMCNET 的确定失败状态转换为对用户有用的提示。"""
+    status = getattr(result, 'status', None)
+    detail = getattr(result, 'detail', '')
+    if status is AwmcnetSyncStatus.AUTH_FAILED:
+        return 'AWMCNET 同步失败，请检查 Bot-Token 与服务地址'
+    if status is AwmcnetSyncStatus.VALIDATION_FAILED:
+        return f'AWMCNET 同步失败：数据校验未通过，请联系管理员检查版本兼容{("（" + detail + "）") if detail else ""}'
+    if status is AwmcnetSyncStatus.UNCONFIGURED:
+        return 'AWMCNET 服务尚未配置，请联系管理员检查同步地址与 Bot-Token'
+    if status is AwmcnetSyncStatus.CIRCUIT_OPEN:
+        return 'AWMCNET 当前繁忙，上传已暂缓，恢复后会自动补齐'
+    if status is AwmcnetSyncStatus.SERVICE_ERROR or status is AwmcnetSyncStatus.REJECTED:
+        return 'AWMCNET 服务暂时不可用或成绩被拒绝，请稍后重试'
+    return 'AWMCNET 同步失败，请稍后重试'
 
 
 def take_awmcnet_first_sync_notice(user_key: str, upload_result: str) -> str:
@@ -2581,8 +2610,37 @@ async def _upload(
                     rating=binding.rating,
                     play_count=pc_db.get_user_total_plays(qqid),
                 )
-                if awmc_result is None:
-                    raise RuntimeError('AWMCNET 同步失败，请检查 Bot-Token 与服务地址')
+                if awmc_result.ambiguous:
+                    result = await _oauth_upload_lxns_with_refresh(
+                        event, oauth_token, pc_scores, source="PC缓存"
+                    )
+                    account_db.mark_uploaded(key)
+                    charge = await _settle_service_success(
+                        int(key), billing_service, cost,
+                        meta={"operation": operation, "fish": False, "lxns": True, "source": "pc", "partial": True},
+                    )
+                    _schedule_post_upload_maintenance(
+                        key,
+                        fish=False,
+                        lxns=True,
+                        archive_qqids=_archive_qqids_for_event(event, key),
+                    )
+                    ref = _log(
+                        key, operation, "success",
+                        f"awmcnet=ambiguous,lxns=success,"
+                        f"charged={charge.charged},free={charge.free},"
+                        f"source=pc,count={len(pc_scores)}",
+                    )
+                    return (
+                        f"{_AWMCNET_AMBIGUOUS_LINE}\n"
+                        f"落雪（OAuth/PC缓存）：{_result_text(result)}\n"
+                        f"{_charge_text(charge, int(key))}\nRef_ID: {ref}"
+                    )
+                if not awmc_result.ok:
+                    raise _AwmcnetUploadError(
+                        _awmcnet_failure_text(awmc_result),
+                        status=awmc_result.status,
+                    )
                 result = await _oauth_upload_lxns_with_refresh(
                     event, oauth_token, pc_scores, source="PC缓存"
                 )
@@ -2608,7 +2666,7 @@ async def _upload(
                     f"{_charge_text(charge, int(key))}\nRef_ID: {ref}"
                 )
             except Exception as exc:
-                if awmc_result is not None:
+                if awmc_result is not None and awmc_result.ok:
                     # AWMC NET 已先写入成功时，落雪超时只能算外部平台部分失败，
                     # 不能把整次同步错误地回复成"上传失败"。
                     account_db.mark_uploaded(key)
@@ -2635,6 +2693,25 @@ async def _upload(
                         "您可以稍后重新 lxbind 后再同步落雪。\n"
                         f"{_charge_text(charge, int(key))}\nRef_ID: {ref}"
                     )
+                if awmc_result is not None and awmc_result.ambiguous:
+                    detail = _lxns_upload_failure_text(
+                        exc, stage='向落雪写入成绩'
+                    )
+                    ref = _log(
+                        key, "upload", "error",
+                        f"awmcnet=ambiguous,lxns=error:{type(exc).__name__}",
+                    )
+                    return (
+                        f"{_AWMCNET_AMBIGUOUS_LINE}\n"
+                        f"⚠️ 落雪同步失败：{detail}\n"
+                        f"Ref_ID: {ref}"
+                    )
+                if isinstance(exc, _AwmcnetUploadError):
+                    ref = _log(
+                        key, "upload", "error",
+                        f"awmcnet={exc.status.value}",
+                    )
+                    return f"{_upload_failure_message(exc)}\nRef_ID: {ref}"
                 failure_message = f"上传失败：{_lxns_upload_failure_text(exc, stage='向落雪写入成绩')}"
                 ref = _log(key, "upload", "error", _exception_detail(exc))
                 return failure_message + f"\nRef_ID: {ref}"
@@ -2752,8 +2829,23 @@ async def _upload(
             )
             if fish:
                 fish_records = convert_sega_music_scores_to_divingfish(raw_scores)
-        if awmc_result is None:
-            raise RuntimeError('AWMCNET 同步失败，请检查 Bot-Token 与服务地址')
+        if awmc_result.ambiguous:
+            # 提交后未收到响应，服务端可能已经落库。这里只做保守提示，
+            # 不继续向水鱼/落雪重复写入，也不把错误归因成 Bot-Token 或地址。
+            ref = _log(
+                key, "upload", "error",
+                f"awmcnet=ambiguous,source={upload_source}",
+            )
+            return (
+                f"{_AWMCNET_AMBIGUOUS_LINE}\n"
+                "本次未继续同步水鱼/落雪，以免重复写入。\n"
+                f"Ref_ID: {ref}"
+            )
+        if not awmc_result.ok:
+            raise _AwmcnetUploadError(
+                _awmcnet_failure_text(awmc_result),
+                status=awmc_result.status,
+            )
         results.append(_AWMCNET_SYNCED_LINE)
         results.extend(external_warnings)
         if fish:
@@ -2813,7 +2905,7 @@ async def _upload(
         ref = _log(key, operation, "success", f"charged={charge.charged},free={charge.free}")
         return "上传完成\n" + "\n".join(results) + f"\n{_charge_text(charge, int(key))}\nRef_ID: {ref}"
     except Exception as exc:
-        if awmc_result is not None:
+        if awmc_result is not None and awmc_result.ok:
             # 水鱼/落雪失败不回滚已经成功的 AWMC NET 同步。
             account_db.mark_uploaded(key)
             charge = await _settle_service_success(

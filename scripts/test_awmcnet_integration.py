@@ -8,6 +8,7 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import nonebot
 
 nonebot.init(maimaidxpath="/tmp/maimaidx-awmcnet-test")
@@ -139,7 +140,8 @@ async def test_empty_sync_is_not_reported_as_success() -> None:
         context.__aexit__ = AsyncMock(return_value=None)
         with patch.object(awmcnet.httpx, 'AsyncClient', return_value=context):
             result = await awmcnet._post_sync({"qq": 12345, "records": [RECORD]})
-        assert result is None
+        assert result.status is awmcnet.AwmcnetSyncStatus.REJECTED
+        assert not result.ok
     finally:
         awmcnet._connection = original_connection
 
@@ -166,8 +168,29 @@ async def test_sync_retries_uploading_429() -> None:
             patch.object(awmcnet.asyncio, "sleep", new=AsyncMock()),
         ):
             result = await awmcnet._post_sync({"qq": 12345, "records": [RECORD]})
-        assert result == {"status": "ok", "stored_records": 1}
+        assert result.status is awmcnet.AwmcnetSyncStatus.SUCCESS
+        assert result.payload == {"status": "ok", "stored_records": 1}
         assert client.post.await_count == 2
+    finally:
+        awmcnet._connection = original_connection
+
+
+async def test_sync_read_timeout_is_ambiguous_not_auth_failure() -> None:
+    """A timeout after sending the request must not claim the Bot-Token is wrong."""
+    original_connection = awmcnet._connection
+    try:
+        awmcnet._connection = lambda: ("https://net.wmc.pub", "test", 8.0)
+        client = AsyncMock()
+        client.post.side_effect = httpx.ReadTimeout("timed out waiting for response")
+        context = MagicMock()
+        context.__aenter__ = AsyncMock(return_value=client)
+        context.__aexit__ = AsyncMock(return_value=None)
+        with patch.object(awmcnet.httpx, "AsyncClient", return_value=context):
+            result = await awmcnet._post_sync({"qq": 12345, "records": [RECORD]})
+        assert result.status is awmcnet.AwmcnetSyncStatus.AMBIGUOUS
+        assert result.ambiguous
+        assert result.payload is None
+        assert client.post.await_count == 1
     finally:
         awmcnet._connection = original_connection
 

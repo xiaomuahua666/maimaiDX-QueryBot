@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
+from enum import Enum
 import time
 from typing import Any, Sequence
 
@@ -31,6 +33,46 @@ _SYNC_CONDITION = asyncio.Condition()
 _SYNC_ACTIVE = 0
 _SYNC_FAILURE_TIMES: deque[float] = deque()
 _SYNC_CIRCUIT_OPEN_UNTIL = 0.0
+
+
+class AwmcnetSyncStatus(str, Enum):
+    SUCCESS = 'success'
+    UNCONFIGURED = 'unconfigured'
+    CIRCUIT_OPEN = 'circuit_open'
+    AUTH_FAILED = 'auth_failed'
+    VALIDATION_FAILED = 'validation_failed'
+    SERVICE_ERROR = 'service_error'
+    REJECTED = 'rejected'
+    AMBIGUOUS = 'ambiguous'
+
+
+@dataclass(frozen=True)
+class AwmcnetSyncResult:
+    """AWMCNET 同步结果，区分提交后的不确定超时与确定的配置/鉴权错误。"""
+
+    status: AwmcnetSyncStatus
+    payload: dict | None = None
+    detail: str = ''
+
+    @property
+    def ok(self) -> bool:
+        return self.status is AwmcnetSyncStatus.SUCCESS
+
+    @property
+    def ambiguous(self) -> bool:
+        return self.status is AwmcnetSyncStatus.AMBIGUOUS
+
+    @property
+    def unavailable(self) -> bool:
+        return self.status is AwmcnetSyncStatus.UNCONFIGURED or self.status is AwmcnetSyncStatus.CIRCUIT_OPEN
+
+
+def _ambiguous_sync_result(exc: Exception) -> AwmcnetSyncResult:
+    """提交请求后未能确认响应时，不能断言服务端没有落库。"""
+    return AwmcnetSyncResult(
+        AwmcnetSyncStatus.AMBIGUOUS,
+        detail=f'{type(exc).__name__}: {exc}',
+    )
 
 
 def _awmcnet_sync_max_concurrency() -> int:
@@ -223,17 +265,17 @@ def _dedupe_record_payloads(records: Sequence[Any]) -> list[dict]:
     return list(best.values())
 
 
-async def _post_sync(payload: dict) -> dict | None:
+async def _post_sync(payload: dict) -> AwmcnetSyncResult:
     global _SYNC_ACTIVE
 
     connection = _connection()
     if connection is None:
-        return None
+        return AwmcnetSyncResult(AwmcnetSyncStatus.UNCONFIGURED)
     if _sync_circuit_is_open():
         log.warning(
             "[AWMCNET] 写同步熔断中，本次上传暂缓；恢复后会随后续查询/补存自动重试"
         )
-        return None
+        return AwmcnetSyncResult(AwmcnetSyncStatus.CIRCUIT_OPEN)
     base_url, token, timeout = connection
     qqid = int(payload.get("qq") or 0)
     lock = _sync_lock_for(qqid)
@@ -242,7 +284,7 @@ async def _post_sync(payload: dict) -> dict | None:
             while _sync_circuit_is_open() or _SYNC_ACTIVE >= _awmcnet_sync_max_concurrency():
                 if _sync_circuit_is_open():
                     log.warning("[AWMCNET] 写同步熔断中，上传被放弃")
-                    return None
+                    return AwmcnetSyncResult(AwmcnetSyncStatus.CIRCUIT_OPEN)
                 await _SYNC_CONDITION.wait()
             _SYNC_ACTIVE += 1
         try:
@@ -279,7 +321,7 @@ async def _post_sync(payload: dict) -> dict | None:
                 if response is None:
                     if _sync_circuit_is_open():
                         log.warning("[AWMCNET] 写同步因熔断中止，本次上传未完成")
-                        return None
+                        return AwmcnetSyncResult(AwmcnetSyncStatus.CIRCUIT_OPEN)
                     status = "unknown"
                     body = ""
                 else:
@@ -304,7 +346,25 @@ async def _post_sync(payload: dict) -> dict | None:
 
                 if result is None:
                     _sync_note_failure()
-                    return None
+                    if status in (401, 403):
+                        return AwmcnetSyncResult(
+                            AwmcnetSyncStatus.AUTH_FAILED,
+                            detail=body,
+                        )
+                    if status == 422:
+                        return AwmcnetSyncResult(
+                            AwmcnetSyncStatus.VALIDATION_FAILED,
+                            detail=body,
+                        )
+                    if isinstance(status, int) and status >= 500:
+                        return AwmcnetSyncResult(
+                            AwmcnetSyncStatus.SERVICE_ERROR,
+                            detail=body,
+                        )
+                    return AwmcnetSyncResult(
+                        AwmcnetSyncStatus.SERVICE_ERROR,
+                        detail=f'status={status} body={body}',
+                    )
 
                 sent_count = len(payload.get("records") or [])
                 stored_count = result.get("stored_records")
@@ -315,18 +375,25 @@ async def _post_sync(payload: dict) -> dict | None:
                         f"skipped={result.get('skipped', 0)} errors={errors[:2]}"
                     )
                     _sync_note_failure()
-                    return None
+                    return AwmcnetSyncResult(
+                        AwmcnetSyncStatus.REJECTED,
+                        payload=result,
+                        detail=f'stored_records={stored_count}',
+                    )
                 _sync_note_success()
                 log.info(
                     f"[AWMCNET] QQ={payload['qq']} source={payload.get('source')} "
                     f"imported={result.get('imported', 0)} updated={result.get('updated', 0)} "
                     f"stored={stored_count if stored_count is not None else 'unknown'}"
                 )
-                return result
+                return AwmcnetSyncResult(
+                    AwmcnetSyncStatus.SUCCESS,
+                    payload=result,
+                )
             except Exception as exc:
                 _sync_note_failure()
                 log.warning(f"[AWMCNET] 成绩同步异常: {type(exc).__name__}: {exc}")
-                return None
+                return _ambiguous_sync_result(exc)
         finally:
             async with _SYNC_CONDITION:
                 _SYNC_ACTIVE -= 1
@@ -340,7 +407,7 @@ async def sync_awmcnet(
     *,
     source: str,
     play_count: int | None = None,
-) -> dict | None:
+) -> AwmcnetSyncResult:
     payload = {
         "qq": int(qqid),
         "nickname": str(getattr(userinfo, "nickname", "") or ""),
@@ -363,7 +430,7 @@ async def sync_awmcnet_pc_records(
     rating: int | None = None,
     source: str = "sega",
     play_count: int | None = None,
-) -> dict | None:
+) -> AwmcnetSyncResult:
     payload = {
         "qq": int(qqid),
         "nickname": nickname,
@@ -383,7 +450,7 @@ async def sync_awmcnet_arcade_scores(
     nickname: str = "",
     rating: int | None = None,
     play_count: int | None = None,
-) -> dict | None:
+) -> AwmcnetSyncResult:
     """上传由机台接口转换出的成绩；字段兼容落雪 Score 格式。"""
     return await sync_awmcnet_pc_records(
         qqid,
