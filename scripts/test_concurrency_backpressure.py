@@ -135,9 +135,9 @@ async def test_analysis_backpressure() -> None:
     )
     await asyncio.wait_for(started.wait(), timeout=0.2)
     await analysis._handle(FakeMatcher(), object(), FakeEvent(), args)
-    assert rejected == [
-        "当前锐评任务较多，为避免卡住已拒绝本次请求，请稍后再试。"
-    ]
+    assert len(rejected) == 1
+    assert "锐评队列繁忙" in rejected[0]
+    assert "本次请求未进入队列" in rejected[0]
 
     release.set()
     await asyncio.wait_for(first, timeout=0.2)
@@ -180,9 +180,9 @@ async def test_analysis_rejects_duplicate_user() -> None:
         analysis._handle(FakeMatcher(), object(), FakeEvent(), FakeArgs()),
         timeout=0.2,
     )
-    assert rejected == [
-        "你已有锐评正在生成，请等待结果，勿重复发送。"
-    ]
+    assert len(rejected) == 1
+    assert "锐评正在生成" in rejected[0]
+    assert "勿重复发送" in rejected[0]
 
     release.set()
     await asyncio.wait_for(first, timeout=0.2)
@@ -255,7 +255,10 @@ async def test_official_qq_skips_onebot_reaction() -> None:
     await analysis._handle_impl(FakeMatcher(), object(), FakeEvent(), FakeArgs())
     assert reaction_calls == 0, "官方 QQ 不应调用 OneBot 表情 API"
     assert finished == []
-    assert active_messages == [("group-openid", "stop-after-ack")]
+    assert len(active_messages) == 1
+    assert active_messages[0][0] == "group-openid"
+    assert "成绩读取失败" in active_messages[0][1]
+    assert "stop-after-ack" in active_messages[0][1]
 
     analysis.maiconfig = old_config
     for name, value in old_functions.items():
