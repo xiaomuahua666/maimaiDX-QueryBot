@@ -24,6 +24,8 @@ from nonebot.exception import FinishedException
 from nonebot.params import CommandArg
 from nonebot.rule import Rule
 
+from ..config import log
+
 from ..libraries.maimaidx_break import break_db
 from ..libraries.maimaidx_bot_admin import PLUGIN_ADMIN_ONLY, is_plugin_admin
 from ..libraries.maimaidx_forum_auth import (
@@ -323,13 +325,19 @@ async def _complete_oauth_paste(
         legacy_qq = profile.get('legacy_qq')
         reward_awarded = False
         if legacy_qq:
-            reward_result = await asyncio.to_thread(
-                break_db.claim_once_reward,
-                int(legacy_qq), 'forum_bind_welcome', 3,
-                reason='forum_bind_welcome',
-                meta={'platform_id': pid},
-            )
-            reward_awarded = reward_result.awarded
+            try:
+                reward_result = await asyncio.to_thread(
+                    break_db.claim_once_reward,
+                    int(legacy_qq), 'forum_bind_welcome', 3,
+                    reason='forum_bind_welcome',
+                    meta={'platform_id': pid},
+                )
+                reward_awarded = reward_result.awarded
+            except Exception as exc:
+                log.warning(
+                    f'[QBind] 首次绑定奖励发放失败 platform={pid} '
+                    f'qq={legacy_qq}: {type(exc).__name__}: {exc}'
+                )
     except ForumOAuthError as exc:
         warn = '' if user_recalled else f'{_RECALL_USER_WARN(event)}\n'
         await plugin_finish(matcher, warn + str(exc), event=event)

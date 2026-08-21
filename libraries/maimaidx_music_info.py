@@ -761,8 +761,14 @@ def _plate_get_icon(play: PlayInfoDefault, plan: str, theme: str) -> Image.Image
         rate = computeRa(play.ds, play.achievements, onlyrate=True)
         return Image.open(_rtp(maimaidir, theme, f'UI_TTR_Rank_{rate}.png')).convert('RGBA').resize((80, 36))
     if plan in ('极', '極', '神'):
-        return Image.open(pic(f'UI_CHR_PlayBonus_{fcl[play.fc]}.png')).convert('RGBA').resize((60, 60))
-    return Image.open(pic(f'UI_CHR_PlayBonus_{fsl[play.fs]}.png')).convert('RGBA').resize((60, 60))
+        icon_name = fcl.get(play.fc or '')
+        if not icon_name:
+            return None
+        return Image.open(pic(f'UI_CHR_PlayBonus_{icon_name}.png')).convert('RGBA').resize((60, 60))
+    icon_name = fsl.get(play.fs or '')
+    if not icon_name:
+        return None
+    return Image.open(pic(f'UI_CHR_PlayBonus_{icon_name}.png')).convert('RGBA').resize((60, 60))
 
 
 def _plate_badge_paths(version: str, plate_key: str, plan: str) -> List[Path]:
@@ -947,8 +953,9 @@ async def draw_plate_table(
                     play = results[last_idx]
                     im.alpha_composite(assets.plate_complete_bg, (x + 1, y + 1))
                     icon = _plate_get_icon(play, plan, _theme)
-                    dest = (x, y + 22) if plan == '将' else (x + 10, y + 12)
-                    im.alpha_composite(icon, dest)
+                    if icon is not None:
+                        dest = (x, y + 22) if plan == '将' else (x + 10, y + 12)
+                        im.alpha_composite(icon, dest)
 
                 for n in qualified_slots:
                     if is_wu and len(results) == 5:

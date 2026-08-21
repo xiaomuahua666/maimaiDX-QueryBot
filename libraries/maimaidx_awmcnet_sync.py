@@ -224,6 +224,8 @@ def _dedupe_record_payloads(records: Sequence[Any]) -> list[dict]:
 
 
 async def _post_sync(payload: dict) -> dict | None:
+    global _SYNC_ACTIVE
+
     connection = _connection()
     if connection is None:
         return None
