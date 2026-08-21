@@ -147,6 +147,15 @@ scheduler = (ROOT / "libraries" / "maimaidx_data_scheduler.py").read_text(
 assert "success, snapshot = await asyncio.to_thread(_build_and_save_snapshot)" in scheduler
 assert "enabled_users, share_from_cache = await asyncio.to_thread(" in scheduler
 assert scheduler.count("users_to_store = await asyncio.to_thread(_missing_users)") == 2
+assert "await asyncio.sleep(120)" in scheduler
+assert "asyncio.Semaphore(min(2, _scheduler_batch_concurrency()))" in scheduler
+
+guess_audio = (ROOT / "libraries" / "maimaidx_guess_audio.py").read_text(
+    encoding="utf-8"
+)
+assert "cache_stats, ready_ids = await asyncio.to_thread(" in guess_audio
+assert "if todo_count == 0:" in guess_audio
+assert "if not force and mid in ready_ids:" in guess_audio
 
 break_command = (ROOT / "command" / "mai_break.py").read_text(encoding="utf-8")
 assert "await asyncio.to_thread(break_db.expire_red_packets)" in break_command

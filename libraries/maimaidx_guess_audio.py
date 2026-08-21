@@ -261,9 +261,10 @@ def is_audio_ready(music_id: str) -> bool:
     return False
 
 
-def summarize_pool_cache(pool) -> Dict[str, int]:
-    """统计热门池缓存状态（烘焙开始前打日志用）。"""
+def _pool_cache_snapshot(pool) -> Tuple[Dict[str, int], set[str]]:
+    """Read the manifest once and return cache stats plus current ready IDs."""
     stats = {'ready': 0, 'stale': 0, 'partial': 0, 'empty': 0}
+    ready_ids: set[str] = set()
     manifest = _load_manifest()
     for music in pool:
         mid = str(music.id)
@@ -272,13 +273,19 @@ def summarize_pool_cache(pool) -> Dict[str, int]:
         complete = all(files)
         if entry and entry.get('ready') and entry.get('mix_rev') == STAGE_MIX_REV and complete:
             stats['ready'] += 1
+            ready_ids.add(mid)
         elif complete:
             stats['stale'] += 1
         elif any(files):
             stats['partial'] += 1
         else:
             stats['empty'] += 1
-    return stats
+    return stats, ready_ids
+
+
+def summarize_pool_cache(pool) -> Dict[str, int]:
+    """统计热门池缓存状态（烘焙开始前打日志用）。"""
+    return _pool_cache_snapshot(pool)[0]
 
 
 def list_stage_files(music_id: str) -> List[Path]:
@@ -817,10 +824,8 @@ async def build_hot_audio_cache(*, force: bool = False) -> str:
         return '热门池为空，无法烘焙。'
 
     demucs_on = _demucs_available()
-    cache_stats = summarize_pool_cache(pool)
-    todo_count = len(pool) if force else sum(
-        1 for music in pool if not is_audio_ready(str(music.id))
-    )
+    cache_stats, ready_ids = await asyncio.to_thread(_pool_cache_snapshot, pool)
+    todo_count = len(pool) if force else len(pool) - len(ready_ids)
     initial_estimate = todo_count * AUDIO_ESTIMATE_SECONDS
     task_id = start_task('audio', total=todo_count, force=force)
     log.info(
@@ -831,6 +836,14 @@ async def build_hot_audio_cache(*, force: bool = False) -> str:
         f'todo={todo_count} cpu_threads={AUDIO_CPU_THREADS_MIN}-{AUDIO_CPU_THREADS_MAX} '
         f'estimated_total={_format_duration(initial_estimate)}'
     )
+    if todo_count == 0:
+        log.info(
+            f'[GuessAudio] 热门池缓存全部就绪，跳过逐首复查 total={len(pool)}'
+        )
+        finish_task(task_id)
+        return _format_hot_batch_report(
+            len(pool), [], [str(music.id) for music in pool], [], cancelled=False,
+        )
     batch_t0 = time.perf_counter()
 
     async def _build_one(mid: str, title: str) -> Tuple[bool, str]:
@@ -850,7 +863,7 @@ async def build_hot_audio_cache(*, force: bool = False) -> str:
             break
         await asyncio.sleep(0)
         mid = str(music.id)
-        if not force and is_audio_ready(mid):
+        if not force and mid in ready_ids:
             skip_ids.append(mid)
             if idx % 50 == 0 or idx == len(pool):
                 log.info(

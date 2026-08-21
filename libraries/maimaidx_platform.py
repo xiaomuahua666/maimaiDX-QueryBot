@@ -139,6 +139,11 @@ def _send_retry_delay(attempt: int) -> float:
 
 
 def _is_transient_api_error(exc: BaseException) -> bool:
+    # ApiNotAvailable means the adapter does not implement this API. Retrying
+    # can never make it available and used to add 1+2+4 seconds to commands
+    # that only wanted to attach a processing reaction.
+    if type(exc).__name__ == 'ApiNotAvailable':
+        return False
     if _SEND_RETRY_TRANSIENT and isinstance(exc, _SEND_RETRY_TRANSIENT):
         return True
     return type(exc).__name__ in _SEND_RETRY_TRANSIENT_NAMES

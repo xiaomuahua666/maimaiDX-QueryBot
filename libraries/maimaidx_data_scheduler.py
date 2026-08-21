@@ -215,7 +215,9 @@ async def periodic_storage_check():
 # 启动时执行一次存储（用于补存昨天的数据）
 async def on_startup_storage():
     """启动时执行：检查昨天是否存储，如果没有则补存"""
-    await asyncio.sleep(30)  # 等待 30 秒，确保 bot 完全启动
+    # Let command traffic and lightweight cache warmup settle before remote
+    # score fetching starts. Startup backfill is maintenance, not interactive.
+    await asyncio.sleep(120)
     
     yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     def _missing_users() -> list[int]:
@@ -229,7 +231,7 @@ async def on_startup_storage():
     if users_to_store:
         log.info(f"[DataScheduler] 启动补存：{len(users_to_store)} 个用户昨天未存储")
         
-        semaphore = asyncio.Semaphore(_scheduler_batch_concurrency())
+        semaphore = asyncio.Semaphore(min(2, _scheduler_batch_concurrency()))
         
         async def store_one(qqid: int):
             async with semaphore:

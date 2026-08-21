@@ -38,8 +38,9 @@ _pkg.__package__ = "nonebot_plugin_maimaidx"
 sys.modules["nonebot_plugin_maimaidx"] = _pkg
 
 from nonebot.adapters import Bot as RealBot
-from nonebot.adapters.onebot.v11.exception import ActionFailed, NetworkError
+from nonebot.adapters.onebot.v11.exception import ActionFailed, ApiNotAvailable, NetworkError
 from nonebot_plugin_maimaidx.libraries import maimaidx_platform as platform
+from nonebot_plugin_maimaidx.libraries.maimaidx_reaction import react_processing
 
 
 class _FakeAdapter:
@@ -105,7 +106,28 @@ async def main():
     assert raised is True, "持续 NetworkError 最终应抛出"
     assert state["calls"] == 3, f"重试 2 次后应放弃，calls={state['calls']}"
 
-    print("send retry checks: OK (NetworkError 重试送达 / ActionFailed 不重试 / 超限放弃)")
+    # 5) 适配器明确不支持 API 时立即失败，不能做无意义的指数退避。
+    _reset(fail_first=99, exc=ApiNotAvailable)
+    bot = _TestBot(adapter=_FakeAdapter(), self_id="1")
+    raised = False
+    try:
+        await bot.call_api("set_msg_emoji_like", message_id="1")
+    except ApiNotAvailable:
+        raised = True
+    assert raised is True
+    assert state["calls"] == 1, f"ApiNotAvailable 不应重试，calls={state['calls']}"
+
+    # 6) 官方 QQ 本身不提供 OneBot 表情 API，处理 ACK 应在调用前跳过。
+    OfficialEvent = type(
+        "OfficialEvent",
+        (),
+        {"__module__": "nonebot.adapters.qq.event", "message_id": "1"},
+    )
+    _reset(fail_first=99, exc=ApiNotAvailable)
+    assert not await react_processing(bot, OfficialEvent())
+    assert state["calls"] == 0
+
+    print("send retry checks: OK (网络错误重试 / 不支持 API 立即失败 / QQ 反应跳过)")
 
 
 if __name__ == "__main__":
