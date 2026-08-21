@@ -50,6 +50,10 @@ _DEBT_NOTICE_COOLDOWN_SECONDS = 300
 _MESSAGE_STATS_FLUSH_SECONDS = 2.0
 _message_stats_pending: dict[tuple[str, str], tuple[int, float]] = {}
 _message_stats_flush_task: Optional[asyncio.Task] = None
+_BREAK_BALANCE_CACHE_SECONDS = 5.0
+_BREAK_BALANCE_TIMEOUT_SECONDS = 1.0
+_break_balance_cache: dict[int, tuple[float, int]] = {}
+_break_balance_reads = asyncio.Semaphore(8)
 
 
 def _break_balance(payer: int) -> int:
@@ -60,6 +64,28 @@ def _break_balance(payer: int) -> int:
     dispatch for every adapter while another writer owns the database lock.
     """
     return break_db.get_balance(payer)
+
+
+async def _cached_break_balance(payer: int) -> int:
+    """Keep the global debt guard from delaying every command on a slow DB."""
+    now = time.monotonic()
+    cached = _break_balance_cache.get(payer)
+    if cached and cached[0] > now:
+        return cached[1]
+    async with _break_balance_reads:
+        now = time.monotonic()
+        cached = _break_balance_cache.get(payer)
+        if cached and cached[0] > now:
+            return cached[1]
+        balance = await asyncio.wait_for(
+            asyncio.to_thread(_break_balance, payer),
+            timeout=_BREAK_BALANCE_TIMEOUT_SECONDS,
+        )
+        _break_balance_cache[payer] = (
+            now + _BREAK_BALANCE_CACHE_SECONDS,
+            balance,
+        )
+        return balance
 
 
 def _apply_busy_surcharge(
@@ -307,7 +333,7 @@ async def _audit_and_ban_preprocessor(
 
     try:
         payer = int(billing_user_id(event))
-        balance = await asyncio.to_thread(_break_balance, payer)
+        balance = await _cached_break_balance(payer)
         if balance < 0 and not _debt_exempt(matcher):
             now = time.time()
             debt_key = str(payer)

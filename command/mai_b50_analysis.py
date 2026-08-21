@@ -181,6 +181,61 @@ def _build_analysis_summary_markdown(report, footer_parts: list[str], elapsed: f
     return "\n".join(lines)
 
 
+def _build_analysis_notice_markdown(
+    title: str,
+    body: object,
+    *,
+    section: str | None = None,
+) -> str:
+    lines = [f"## {_escape_markdown(title)}", ""]
+    if section:
+        lines.extend([f"### {_escape_markdown(section)}", ""])
+    body_lines = [line.strip() for line in str(body or "").splitlines() if line.strip()]
+    lines.extend(f"> {_escape_markdown(line)}" for line in body_lines)
+    return "\n".join(lines)
+
+
+def _analysis_notice(
+    event: MessageEvent,
+    title: str,
+    body: object,
+    *,
+    section: str | None = None,
+):
+    return build_markdown_message(
+        _build_analysis_notice_markdown(title, body, section=section),
+        event=event,
+    )
+
+
+async def _refund_reserved_safely(
+    billing_qq: int,
+    reserved,
+    *,
+    reason: str,
+) -> bool:
+    """Refund without replacing the original user-facing failure."""
+    if reserved is None or int(getattr(reserved, "amount", reserved) or 0) <= 0:
+        return True
+    for attempt in range(2):
+        try:
+            await asyncio.to_thread(
+                refund_analysis_charge,
+                billing_qq,
+                reserved,
+                reason=reason,
+            )
+            return True
+        except Exception as exc:
+            code = exc.args[0] if exc.args else None
+            if attempt == 0 and code in {1205, 1213}:
+                await asyncio.sleep(0.2)
+                continue
+            log.exception(f"[roast_v2] refund failed reason={reason}: {exc}")
+            return False
+    return False
+
+
 async def _deliver_result_or_refund(
     matcher: Matcher,
     event: MessageEvent,
@@ -204,8 +259,7 @@ async def _deliver_result_or_refund(
             timeout=_timeout("b50_send_timeout_seconds", 30.0),
         )
     except BaseException as exc:
-        await asyncio.to_thread(
-            refund_analysis_charge,
+        refunded = await _refund_reserved_safely(
             billing_qq,
             reserved,
             reason=f"发送结果:{type(exc).__name__}",
@@ -216,7 +270,16 @@ async def _deliver_result_or_refund(
             matcher,
             bot,
             event,
-            f"锐评图片发送失败：{exc}{_analysis_failure_note(reserved)}",
+            _analysis_notice(
+                event,
+                "锐评图片发送失败",
+                (
+                    f"{exc}{_analysis_failure_note(reserved)}"
+                    if refunded
+                    else f"{exc}（退款写入失败，异常已记录）"
+                ),
+                section="处理结果",
+            ),
             mention_sender=use_qq_mode(event),
             finish=True,
         )
@@ -292,11 +355,22 @@ async def _handle_impl(matcher: Matcher, bot: Bot, event: MessageEvent, args: Me
         ),
     )
     estimated, samples = estimate
+    start_markdown = "\n".join(
+        [
+            "## B50 锐评已受理",
+            "",
+            "> 正在读取成绩并生成点评，请稍候喵。",
+            "",
+            "### 预计用时",
+            f"- {_escape_markdown(_format_analysis_estimate(estimated, samples))}",
+            "",
+            "### 费用说明",
+            f"- {_escape_markdown(pricing_help.strip().removeprefix('· '))}",
+        ]
+    )
     await plugin_send(
         matcher,
-        f"正在处理 B50 锐评，请稍候喵…\n"
-        f"{_format_analysis_estimate(estimated, samples)}\n"
-        f"{pricing_help.strip().removeprefix('· ')}",
+        build_markdown_message(start_markdown, event=event),
         event=event,
         mention_sender=use_qq_mode(event),
     )
@@ -320,7 +394,7 @@ async def _handle_impl(matcher: Matcher, bot: Bot, event: MessageEvent, args: Me
             matcher,
             bot,
             event,
-            str(exc),
+            _analysis_notice(event, "成绩读取失败", exc, section="原因"),
             mention_sender=use_qq_mode(event),
             qq_buttons=_SHORTCUTS,
             finish=True,
@@ -334,8 +408,7 @@ async def _handle_impl(matcher: Matcher, bot: Bot, event: MessageEvent, args: Me
             await asyncio.to_thread(ensure_image_render_affordable, billing_qq)
     except BreakInsufficientError:
         if reserved is not None:
-            await asyncio.to_thread(
-                refund_analysis_charge,
+            await _refund_reserved_safely(
                 billing_qq,
                 reserved,
                 reason="制图费用预检不足",
@@ -363,12 +436,13 @@ async def _handle_impl(matcher: Matcher, bot: Bot, event: MessageEvent, args: Me
         image = await run_image_cpu(render_report, pack, report)
     except BaseException as exc:
         if reserved is not None:
-            await asyncio.to_thread(
-                refund_analysis_charge,
+            refunded = await _refund_reserved_safely(
                 billing_qq,
                 reserved,
                 reason=f"分析流程:{type(exc).__name__}",
             )
+        else:
+            refunded = True
         if isinstance(exc, FinishedException) or not isinstance(exc, Exception):
             raise
         if isinstance(exc, (BreakInsufficientError, QBindRequiredError, ValueError)):
@@ -377,7 +451,16 @@ async def _handle_impl(matcher: Matcher, bot: Bot, event: MessageEvent, args: Me
             matcher,
             bot,
             event,
-            f"锐评生成失败：{exc}{_analysis_failure_note(reserved or 0)}",
+            _analysis_notice(
+                event,
+                "锐评生成失败",
+                (
+                    f"{exc}{_analysis_failure_note(reserved or 0)}"
+                    if refunded
+                    else f"{exc}（退款写入失败，异常已记录）"
+                ),
+                section="处理结果",
+            ),
             mention_sender=use_qq_mode(event),
             qq_buttons=_SHORTCUTS,
             finish=True,
@@ -404,8 +487,7 @@ async def _handle_impl(matcher: Matcher, bot: Bot, event: MessageEvent, args: Me
 
         render_line, charged, balance = await asyncio.to_thread(_settle_result)
     except BaseException as exc:
-        await asyncio.to_thread(
-            refund_analysis_charge,
+        refunded = await _refund_reserved_safely(
             billing_qq,
             reserved,
             reason=f"结算异常:{type(exc).__name__}",
@@ -417,7 +499,16 @@ async def _handle_impl(matcher: Matcher, bot: Bot, event: MessageEvent, args: Me
             matcher,
             bot,
             event,
-            "锐评图片已发送，但结算异常；本次预扣已退回。",
+            _analysis_notice(
+                event,
+                "锐评图片已发送",
+                (
+                    "结算发生异常，本次预扣已退回。"
+                    if refunded
+                    else "结算及退款写入失败，异常已记录，请联系 Bot 管理员处理。"
+                ),
+                section="结算状态",
+            ),
             mention_sender=use_qq_mode(event),
             qq_buttons=_SHORTCUTS,
             finish=True,
@@ -496,7 +587,11 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
         if user_lock.locked():
             await plugin_finish(
                 matcher,
-                "你已有锐评正在生成，请等待结果，勿重复发送。",
+                _analysis_notice(
+                    event,
+                    "锐评正在生成",
+                    "你已有一份锐评任务在处理中，请等待结果，勿重复发送。",
+                ),
                 event=event,
                 mention_sender=use_qq_mode(event),
                 qq_buttons=_SHORTCUTS,
@@ -508,7 +603,11 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
             except asyncio.TimeoutError:
                 await plugin_finish(
                     matcher,
-                "当前锐评任务较多，为避免卡住已拒绝本次请求，请稍后再试。",
+                    _analysis_notice(
+                        event,
+                        "锐评队列繁忙",
+                        "当前任务较多，为避免长时间卡住，本次请求未进入队列，请稍后再试。",
+                    ),
                     event=event,
                     mention_sender=use_qq_mode(event),
                     qq_buttons=_SHORTCUTS,
@@ -523,7 +622,7 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
             matcher,
             bot,
             event,
-            str(exc),
+            _analysis_notice(event, "锐评暂时无法开始", exc, section="原因"),
             mention_sender=use_qq_mode(event),
             qq_buttons=_SHORTCUTS,
             finish=True,
@@ -538,7 +637,12 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
             matcher,
             bot,
             event,
-            format_command_error(exc),
+            _analysis_notice(
+                event,
+                "锐评处理异常",
+                format_command_error(exc),
+                section="错误信息",
+            ),
             mention_sender=use_qq_mode(event),
             qq_buttons=_SHORTCUTS,
             finish=True,

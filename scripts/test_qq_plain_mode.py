@@ -18,6 +18,7 @@ import nonebot  # noqa: E402
 nonebot.init()
 
 from nonebot_plugin_maimaidx.libraries.maimaidx_platform import (  # noqa: E402
+    _format_plain_qq_markdown,
     _markdown_to_plain_text,
     build_command_keyboard,
     build_markdown_message,
@@ -38,6 +39,17 @@ class FakeQQEvent:
 assert _markdown_to_plain_text(
     '## 授权\n[打开授权页面](https://example.test/oauth)\n**提示**'
 ) == '授权\n打开授权页面: https://example.test/oauth\n提示'
+assert _format_plain_qq_markdown(
+    '查询完成\n成绩：100.5000%\n· 已写入缓存'
+) == '## 查询完成\n- **成绩：** 100.5000%\n- 已写入缓存'
+assert _format_plain_qq_markdown(
+    '✅ AWMC 签到成功！\n━━━━━━━━━━━━━━\n📅 连续签到：8 天\n💰 获得：5 BREAK'
+) == (
+    '## ✅ AWMC 签到成功！\n\n'
+    '- **📅 连续签到：** 8 天\n'
+    '- **💰 获得：** 5 BREAK'
+)
+assert _format_plain_qq_markdown('## 已格式化\n- 保持原样') == '## 已格式化\n- 保持原样'
 
 original = qq_bind_db.is_plain_text_mode
 qq_bind_db.is_plain_text_mode = lambda platform_id: platform_id == 'plain-mode-openid'

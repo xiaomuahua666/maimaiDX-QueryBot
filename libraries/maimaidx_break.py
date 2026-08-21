@@ -1355,39 +1355,44 @@ class BreakDatabase:
             return True
         from .maimaidx_card import card_manager
         with self._db_lock():
-            if is_free_window_active():
-                self._append_log(
-                    qqid, 0, f'free_window_exempt:{reason}',
-                    meta={**(meta or {}), 'free_window': True, 'listed_cost': amount},
+            try:
+                if is_free_window_active():
+                    self._append_log(
+                        qqid, 0, f'free_window_exempt:{reason}',
+                        meta={**(meta or {}), 'free_window': True, 'listed_cost': amount},
+                    )
+                    self._conn.commit()
+                    return True
+                if allow_freedom and card_manager.freedom_active(qqid):
+                    self._append_log(
+                        qqid, 0, f'freedom_exempt:{reason}',
+                        meta={**(meta or {}), 'freedom': True, 'listed_cost': amount},
+                    )
+                    self._conn.commit()
+                    return True
+                row = self._conn.execute(
+                    'SELECT balance FROM break_users WHERE qqid = ?', (qqid,)
+                ).fetchone()
+                balance = int(row['balance']) if row else 0
+                if balance < amount:
+                    self._conn.rollback()
+                    return False
+                now = time.time()
+                self._conn.execute(
+                    'UPDATE break_users SET balance = balance - ?, updated_at = ? WHERE qqid = ?',
+                    (amount, now, qqid),
                 )
-                self._conn.commit()
-                return True
-            if allow_freedom and card_manager.freedom_active(qqid):
-                self._append_log(
-                    qqid, 0, f'freedom_exempt:{reason}',
-                    meta={**(meta or {}), 'freedom': True, 'listed_cost': amount},
+                self._ensure_daily(qqid)
+                self._conn.execute(
+                    """UPDATE break_daily_usage SET break_spent = break_spent + ?
+                       WHERE qqid = ? AND date = ?""",
+                    (amount, qqid, self._today()),
                 )
+                self._append_log(qqid, -amount, reason, meta=meta)
                 self._conn.commit()
-                return True
-            row = self._conn.execute(
-                'SELECT balance FROM break_users WHERE qqid = ?', (qqid,)
-            ).fetchone()
-            balance = int(row['balance']) if row else 0
-            if balance < amount:
-                return False
-            self._ensure_daily(qqid)
-            now = time.time()
-            self._conn.execute(
-                'UPDATE break_users SET balance = balance - ?, updated_at = ? WHERE qqid = ?',
-                (amount, now, qqid),
-            )
-            self._conn.execute(
-                """UPDATE break_daily_usage SET break_spent = break_spent + ?
-                   WHERE qqid = ? AND date = ?""",
-                (amount, qqid, self._today()),
-            )
-            self._append_log(qqid, -amount, reason, meta=meta)
-            self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
         return True
 
     def try_reserve_analysis(self, qqid: int, amount: int, *, meta: Optional[dict] = None) -> bool:
@@ -1398,19 +1403,24 @@ class BreakDatabase:
         if not self.billing_enabled():
             return True
         with self._db_lock():
-            row = self._conn.execute(
-                'SELECT balance FROM break_users WHERE qqid = ?', (qqid,)
-            ).fetchone()
-            balance = int(row['balance']) if row else 0
-            if balance < amount:
-                return False
-            now = time.time()
-            self._conn.execute(
-                'UPDATE break_users SET balance = balance - ?, updated_at = ? WHERE qqid = ?',
-                (amount, now, qqid),
-            )
-            self._append_log(qqid, -amount, 'b50_analysis_precharge', meta=meta)
-            self._conn.commit()
+            try:
+                row = self._conn.execute(
+                    'SELECT balance FROM break_users WHERE qqid = ?', (qqid,)
+                ).fetchone()
+                balance = int(row['balance']) if row else 0
+                if balance < amount:
+                    self._conn.rollback()
+                    return False
+                now = time.time()
+                self._conn.execute(
+                    'UPDATE break_users SET balance = balance - ?, updated_at = ? WHERE qqid = ?',
+                    (amount, now, qqid),
+                )
+                self._append_log(qqid, -amount, 'b50_analysis_precharge', meta=meta)
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
         return True
 
     def refund_analysis_reservation(
@@ -1452,32 +1462,43 @@ class BreakDatabase:
         """将预扣结算为实际锐评费用，多退少补并只统计一次真实消费。"""
         cost = max(0, int(cost))
         reserved = max(0, int(reserved))
-        self._ensure_user(qqid)
-        self._ensure_daily(qqid)
         with self._db_lock():
-            adjustment = reserved - cost
-            now = time.time()
-            self._conn.execute(
-                'UPDATE break_users SET balance = balance + ?, '
-                'total_analysis_count = total_analysis_count + 1, '
-                'last_analysis_at = ?, updated_at = ? WHERE qqid = ?',
-                (adjustment, now, now, qqid),
-            )
-            self._conn.execute(
-                """UPDATE break_daily_usage SET
-                   analysis_count = analysis_count + 1,
-                   break_spent = break_spent + ?
-                   WHERE qqid = ? AND date = ?""",
-                (cost, qqid, self._today()),
-            )
-            detail = dict(meta or {})
-            detail.update({'reserved': reserved, 'cost': cost, 'adjustment': adjustment})
-            self._append_log(qqid, adjustment, 'b50_analysis_settlement', meta=detail)
-            self._conn.commit()
-            row = self._conn.execute(
-                'SELECT balance FROM break_users WHERE qqid = ?', (qqid,),
-            ).fetchone()
-            return int(row['balance']) if row else 0
+            try:
+                adjustment = reserved - cost
+                now = time.time()
+                # Keep charge transactions on one lock order:
+                # break_users -> break_daily_usage -> break_log.
+                self._conn.execute(
+                    """INSERT OR IGNORE INTO break_users
+                       (qqid, balance, created_at, updated_at)
+                       VALUES (?, 0, ?, ?)""",
+                    (qqid, now, now),
+                )
+                self._conn.execute(
+                    'UPDATE break_users SET balance = balance + ?, '
+                    'total_analysis_count = total_analysis_count + 1, '
+                    'last_analysis_at = ?, updated_at = ? WHERE qqid = ?',
+                    (adjustment, now, now, qqid),
+                )
+                self._ensure_daily(qqid)
+                self._conn.execute(
+                    """UPDATE break_daily_usage SET
+                       analysis_count = analysis_count + 1,
+                       break_spent = break_spent + ?
+                       WHERE qqid = ? AND date = ?""",
+                    (cost, qqid, self._today()),
+                )
+                detail = dict(meta or {})
+                detail.update({'reserved': reserved, 'cost': cost, 'adjustment': adjustment})
+                self._append_log(qqid, adjustment, 'b50_analysis_settlement', meta=detail)
+                self._conn.commit()
+                row = self._conn.execute(
+                    'SELECT balance FROM break_users WHERE qqid = ?', (qqid,),
+                ).fetchone()
+                return int(row['balance']) if row else 0
+            except BaseException:
+                self._conn.rollback()
+                raise
 
     def settle_analysis_daily_free(
         self,

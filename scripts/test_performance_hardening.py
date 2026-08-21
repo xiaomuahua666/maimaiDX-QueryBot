@@ -102,7 +102,7 @@ assert 'name="maimaidx-message-stats-flush"' in runtime
 assert "ref_id = await asyncio.to_thread(" in runtime
 assert "admin_audit.start_trace," in runtime
 assert "await asyncio.to_thread(admin_audit.finish_trace" in runtime
-assert "await asyncio.to_thread(_break_balance, payer)" in runtime
+assert "asyncio.to_thread(_break_balance, payer)" in runtime
 assert "_apply_busy_surcharge, payer, surcharge, meta" in runtime
 
 audit = (ROOT / "libraries" / "maimaidx_admin_audit.py").read_text(encoding="utf-8")
@@ -156,6 +156,19 @@ guess_audio = (ROOT / "libraries" / "maimaidx_guess_audio.py").read_text(
 assert "cache_stats, ready_ids = await asyncio.to_thread(" in guess_audio
 assert "if todo_count == 0:" in guess_audio
 assert "if not force and mid in ready_ids:" in guess_audio
+
+admin_runtime = (ROOT / "command" / "mai_admin_runtime.py").read_text(
+    encoding="utf-8"
+)
+assert "_BREAK_BALANCE_TIMEOUT_SECONDS = 1.0" in admin_runtime
+assert "balance = await _cached_break_balance(payer)" in admin_runtime
+assert "asyncio.Semaphore(8)" in admin_runtime
+
+break_source = (ROOT / "libraries" / "maimaidx_break.py").read_text(
+    encoding="utf-8"
+)
+assert "if balance < amount:\n                    self._conn.rollback()" in break_source
+assert "break_users -> break_daily_usage -> break_log" in break_source
 
 break_command = (ROOT / "command" / "mai_break.py").read_text(encoding="utf-8")
 assert "await asyncio.to_thread(break_db.expire_red_packets)" in break_command

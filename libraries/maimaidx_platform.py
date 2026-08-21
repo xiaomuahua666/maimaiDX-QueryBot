@@ -1676,13 +1676,58 @@ def _qq_mention_segment(target: UserId, *, username: Optional[str] = None) -> An
     return _QQ_MENTION_SEGMENT_CLASS('mention_user', data)
 
 
+def _format_plain_qq_markdown(content: str) -> str:
+    """Give legacy text-only replies light structure without touching rich payloads."""
+    text = str(content or '').replace('\r\n', '\n').replace('\r', '\n').strip()
+    if not text:
+        return text
+    # Explicit Markdown is owned by the caller and must remain byte-for-byte
+    # compatible with custom layouts, links, quotes, and fenced code.
+    if re.search(
+        r'(?m)^\s*(?:#{1,6}\s|[-*+]\s|\d+\.\s|>\s|```)|\*\*|\[[^]]+\]\([^)]+\)',
+        text,
+    ):
+        return text
+    lines = text.splitlines()
+    nonempty = [line for line in lines if line.strip()]
+    if len(nonempty) < 2:
+        return text
+
+    first_index = next(index for index, line in enumerate(lines) if line.strip())
+    first = lines[first_index].strip()
+    if (
+        len(first) <= 48
+        and not first.startswith(('<qqbot-', 'http://', 'https://'))
+    ):
+        lines[first_index] = f'## {first}'
+
+    for index in range(first_index + 1, len(lines)):
+        stripped = lines[index].strip()
+        if not stripped:
+            continue
+        if re.fullmatch(r'[━─—=\-]{3,}', stripped):
+            lines[index] = ''
+            continue
+        if stripped.startswith('·'):
+            lines[index] = f'- {stripped.lstrip("· ")}'
+            continue
+        if len(stripped) <= 28 and stripped.endswith(('：', ':')):
+            lines[index] = f'### {stripped[:-1].strip()}'
+            continue
+        match = re.match(r'^([^：:]{1,16})[：:]\s*(.+)$', stripped)
+        if match:
+            label, value = match.groups()
+            lines[index] = f'- **{label.strip()}：** {value.strip()}'
+    return '\n'.join(lines)
+
+
 def _qq_text_message_as_markdown(message: Any) -> Any | None:
     """Convert a QQ text-only payload to one native Markdown segment."""
     if isinstance(message, str):
         from nonebot.adapters.qq.message import Message as QQMessage
         from nonebot.adapters.qq.message import MessageSegment as QQSeg
 
-        return QQMessage([QQSeg.markdown(message)])
+        return QQMessage([QQSeg.markdown(_format_plain_qq_markdown(message))])
     module = type(message).__module__
     if not module.startswith('nonebot.adapters.qq'):
         return None
@@ -1720,7 +1765,7 @@ def _qq_text_message_as_markdown(message: Any) -> Any | None:
     content = ''.join(text_parts)
     if not content:
         return None
-    return QQMessage([QQSeg.markdown(content)])
+    return QQMessage([QQSeg.markdown(_format_plain_qq_markdown(content))])
 
 
 def _qq_plaintext_mention_message(
@@ -1761,7 +1806,9 @@ def _qq_plaintext_mention_message(
         else str(segment)
         for segment in segments
     )
-    output: list[Any] = [QQSeg.markdown(f'{markup}\n{body}')]
+    output: list[Any] = [
+        QQSeg.markdown(f'{markup}\n{_format_plain_qq_markdown(body)}')
+    ]
     return QQMessage(output)
 
 
@@ -1846,7 +1893,7 @@ def ensure_sender_mention(message: Any, event) -> Any:
             # typed mention segments remain reserved for structured media.
             content = qq_at_markup(uid)
             if body:
-                content += f'\n{body}'
+                content += f'\n{_format_plain_qq_markdown(body)}'
             return QQMessage([QQSeg.markdown(content)])
         return build_mention_message(uid, f'\n{body}' if body else '', event=event)
 
