@@ -71,7 +71,7 @@ fallback = fallback_pack.peer
 assert fallback["available"]
 assert fallback["arpi"] == 0.145
 assert fallback["distribution_kind"] == "chart_peer_gap"
-assert fallback["distribution_label"] == "匹配谱面差值分布"
+assert fallback["distribution_label"] == "已匹配成绩差距分布"
 assert fallback["distribution_count"] == 50
 assert fallback["position_basis"] == "matched_chart_gap"
 assert fallback["position"] == "平均高于同段"
@@ -93,13 +93,13 @@ player_pack = build_evidence_pack(snapshot, _peer_stats(charts, distribution={
 }))
 player = player_pack.peer
 assert player["distribution_kind"] == "player_arpi"
-assert player["distribution_label"] == "同段玩家 ARPI 分布"
+assert player["distribution_label"] == "相近 Rating 玩家差距分布"
 assert player["distribution_count"] == 80
 assert player["position_basis"] == "player_arpi_quartile"
 assert player["position"] == "中位区间"
 assert (player["p25"], player["median"], player["p75"]) == (0.1, 0.2, 0.3)
 player_evidence = next(item for item in player_pack.evidence if item.evidence_id == "peer_profile")
-assert "玩家 ARPI 分位：中位区间" in player_evidence.value
+assert "相近 Rating 位置：中位区间" in player_evidence.value
 
 # Partial distributions are not silently presented as player percentiles.
 partial_pack = build_evidence_pack(snapshot, _peer_stats(charts, distribution={"median": 0.2}))

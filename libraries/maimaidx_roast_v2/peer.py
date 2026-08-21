@@ -221,7 +221,7 @@ def attach_peer_profile(rows: list[dict[str, Any]], rating: int, peer_stats: dic
     if matched and player_distribution is not None:
         p25, median, p75 = player_distribution
         distribution_kind = "player_arpi"
-        distribution_label = "同段玩家 ARPI 分布"
+        distribution_label = "相近 Rating 玩家差距分布"
         distribution_count = _i(distribution.get("count"))
         position_basis = "player_arpi_quartile"
         if arpi >= p75:
@@ -230,7 +230,7 @@ def attach_peer_profile(rows: list[dict[str, Any]], rating: int, peer_stats: dic
             position = "下四分位"
         else:
             position = "中位区间"
-        detail = f"ARPI {arpi:+.4f}，落在同段玩家 ARPI 分布的{position}"
+        detail = f"与相近 Rating 玩家相比相差 {arpi:+.4f} pp，目前位于{position}"
         if distribution_count < 20 or confidence in {"low", "unavailable"}:
             detail += "；玩家分布或谱面覆盖有限，仅作弱参考"
         elif confidence == "medium":
@@ -246,7 +246,7 @@ def attach_peer_profile(rows: list[dict[str, Any]], rating: int, peer_stats: dic
         median = _percentile(matched_gaps, 0.5)
         p75 = _percentile(matched_gaps, 0.75)
         distribution_kind = "chart_peer_gap"
-        distribution_label = "匹配谱面差值分布"
+        distribution_label = "已匹配成绩差距分布"
         distribution_count = matched
         position_basis = "matched_chart_gap"
         position, detail = _gap_position(arpi, confidence, matched)
