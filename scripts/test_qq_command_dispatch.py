@@ -135,6 +135,11 @@ async def main() -> None:
 
     roast_bot = FakeQQBot()
     await handle_event(roast_bot, make_event("锐评一下", 1))
+    assert getattr(
+        nonebot_plugin_maimaidx.command.mai_card.auto_card_redeem,
+        "_maimaidx_passive_recorder",
+        False,
+    ) is True
     # All score-dependent commands now share the qbind gate. An unbound QQ
     # user must receive the binding guide instead of entering the paid roast.
     assert len(roast_bot.sent) == 1

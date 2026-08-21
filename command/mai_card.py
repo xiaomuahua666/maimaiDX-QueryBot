@@ -493,6 +493,7 @@ auto_card_redeem = on_message(priority=99, block=False)
 setattr(auto_card_redeem, '_maimaidx_debt_exempt', True)
 setattr(auto_card_redeem, '_maimaidx_busy_surcharge_exempt', True)
 setattr(auto_card_redeem, '_maimaidx_announcement_exempt', True)
+setattr(auto_card_redeem, '_maimaidx_passive_recorder', True)
 
 
 @auto_card_redeem.handle()

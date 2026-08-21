@@ -16,7 +16,7 @@ import random
 import re
 import time
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -597,6 +597,15 @@ def calculate_makeup_streak(
 class BreakDatabase:
     _instance = None
     _lock = RLock()
+
+    @contextmanager
+    def _db_lock(self):
+        """Serialize SQLite writes, but keep MySQL worker sessions independent."""
+        if self._conn is not None and self._conn._backend == 'mysql':
+            yield
+            return
+        with BreakDatabase._lock:
+            yield
 
     def __new__(cls):
         if cls._instance is None:
@@ -1221,7 +1230,7 @@ class BreakDatabase:
         return raw not in {'0', 'false', 'no', 'off', '关闭', '停用'}
 
     def _ensure_user(self, qqid: int) -> None:
-        with self._lock:
+        with self._db_lock():
             exists = self._conn.execute(
                 'SELECT 1 FROM break_users WHERE qqid = ?', (qqid,)
             ).fetchone()
@@ -1343,7 +1352,7 @@ class BreakDatabase:
         if not self.billing_enabled():
             return True
         from .maimaidx_card import card_manager
-        with self._lock:
+        with self._db_lock():
             if is_free_window_active():
                 self._append_log(
                     qqid, 0, f'free_window_exempt:{reason}',
@@ -1386,7 +1395,7 @@ class BreakDatabase:
             return True
         if not self.billing_enabled():
             return True
-        with self._lock:
+        with self._db_lock():
             row = self._conn.execute(
                 'SELECT balance FROM break_users WHERE qqid = ?', (qqid,)
             ).fetchone()
@@ -1414,7 +1423,7 @@ class BreakDatabase:
         if reserved <= 0:
             return self.get_balance(qqid)
         self._ensure_user(qqid)
-        with self._lock:
+        with self._db_lock():
             try:
                 now = time.time()
                 self._conn.execute(
@@ -1443,7 +1452,7 @@ class BreakDatabase:
         reserved = max(0, int(reserved))
         self._ensure_user(qqid)
         self._ensure_daily(qqid)
-        with self._lock:
+        with self._db_lock():
             adjustment = reserved - cost
             now = time.time()
             self._conn.execute(
@@ -1476,7 +1485,7 @@ class BreakDatabase:
     ) -> bool:
         """Consume the daily free roast only after a result was delivered."""
         today, now = self._today(), time.time()
-        with self._lock:
+        with self._db_lock():
             try:
                 row = self._conn.execute(
                     """SELECT free_used FROM break_service_daily
@@ -1587,7 +1596,7 @@ class BreakDatabase:
                 listed_cost=cost, billing_disabled=True,
             )
         today, now = self._today(), time.time()
-        with self._lock:
+        with self._db_lock():
             free_window = is_free_window_active()
             free = False
             freedom = False
@@ -1658,7 +1667,7 @@ class BreakDatabase:
         if amount <= 0 or sender == recipient:
             raise ValueError('转账数量必须大于 0，且不能转给自己')
         fee = max(0, _parse_config_int(self.get_config('transfer_fee', '0'), 0))
-        with self._lock:
+        with self._db_lock():
             try:
                 return self._transfer_locked(sender, recipient, amount, fee)
             except Exception:
@@ -1709,7 +1718,7 @@ class BreakDatabase:
         """关闭已过期红包并将未领取余额原路退回。"""
         current = float(now if now is not None else time.time())
         refunds: List[RedPacketRefundResult] = []
-        with self._lock:
+        with self._db_lock():
             rows = self._conn.execute(
                 """SELECT * FROM break_red_packet
                    WHERE status='active' AND expires_at<=?""",
@@ -1786,7 +1795,7 @@ class BreakDatabase:
         )
         expires_at = now + expire_minutes * 60
         packet_id = uuid.uuid4().hex[:8].upper()
-        with self._lock:
+        with self._db_lock():
             active = self._conn.execute(
                 """SELECT id FROM break_red_packet
                    WHERE group_id=? AND status='active' LIMIT 1""",
@@ -1850,7 +1859,7 @@ class BreakDatabase:
     def claim_red_packet(self, qqid: int, group_id: int) -> RedPacketClaimResult:
         self.expire_red_packets()
         now = time.time()
-        with self._lock:
+        with self._db_lock():
             packet = self._conn.execute(
                 """SELECT * FROM break_red_packet
                    WHERE group_id=? AND status='active'
@@ -1931,7 +1940,7 @@ class BreakDatabase:
 
     def get_red_packet_status(self, group_id: int) -> Optional[RedPacketStatus]:
         self.expire_red_packets()
-        with self._lock:
+        with self._db_lock():
             packet = self._conn.execute(
                 """SELECT * FROM break_red_packet WHERE group_id=?
                    ORDER BY created_at DESC LIMIT 1""",
@@ -1972,7 +1981,7 @@ class BreakDatabase:
 
         self.expire_red_packets()
         current = time.time()
-        with self._lock:
+        with self._db_lock():
             packet = self._conn.execute(
                 """SELECT * FROM break_red_packet
                    WHERE group_id=? AND status='active'
@@ -2031,7 +2040,7 @@ class BreakDatabase:
         count = max(1, min(int(count), 10))
         unit_cost = max(1, _parse_config_int(self.get_config('lottery_cost', '2'), 2))
         cost = unit_cost * count
-        with self._lock:
+        with self._db_lock():
             balance = self.get_balance(qqid)
             if balance < cost:
                 raise BreakInsufficientError(cost, balance, qqid=qqid)
@@ -2092,7 +2101,7 @@ class BreakDatabase:
         if mode not in GAMBLE_WEIGHTS_MAP:
             raise ValueError(f'未知模式：{mode}，可选：{", ".join(GAMBLE_MODES)}')
 
-        with self._lock:
+        with self._db_lock():
             balance = self.get_balance(qqid)
             if balance <= 0:
                 raise BreakInsufficientError(1, balance, qqid=qqid)
@@ -2161,7 +2170,7 @@ class BreakDatabase:
         if date is None:
             date = self._today()
 
-        with self._lock:
+        with self._db_lock():
             # 查询今日总贡献
             row = self._conn.execute(
                 'SELECT COALESCE(SUM(amount), 0) as total FROM break_gamble_pool WHERE date=?',
@@ -2189,7 +2198,7 @@ class BreakDatabase:
 
     def get_gamble_pool_leaderboard(self, limit: int = 10) -> list[GamblePoolContributor]:
         """获取历史贡献总榜。"""
-        with self._lock:
+        with self._db_lock():
             rows = self._conn.execute(
                 """SELECT qqid, SUM(amount) as amount FROM break_gamble_pool
                    GROUP BY qqid ORDER BY amount DESC LIMIT ?""",
@@ -2205,7 +2214,7 @@ class BreakDatabase:
         today = self._today()
         now = time.time()
 
-        with self._lock:
+        with self._db_lock():
             # 检查今日是否有贡献
             row = self._conn.execute(
                 'SELECT COALESCE(SUM(amount), 0) as contributed FROM break_gamble_pool WHERE qqid=? AND date=?',
@@ -2313,7 +2322,7 @@ class BreakDatabase:
         self._ensure_daily(qqid)
         today = self._today()
         now = time.time()
-        with self._lock:
+        with self._db_lock():
             self._conn.execute(
                 """INSERT OR IGNORE INTO break_guess_daily
                    (qqid, date, guess_points, break_awarded, last_at)
@@ -2417,7 +2426,7 @@ class BreakDatabase:
         """
         self._ensure_user(qqid)
         self._ensure_daily(qqid)
-        with self._lock:
+        with self._db_lock():
             try:
                 award = self._award_game_break_locked(qqid, game, amount, reason, meta=meta)
                 # 显式提交，避免未提交事务长期持有行锁（MySQL）或库锁（SQLite），
@@ -2638,7 +2647,7 @@ class BreakDatabase:
     ) -> int:
         """记录一次 FREEDOM 免单并返回包含本次在内的累计节省。"""
         cost = max(0, int(listed_cost))
-        with self._lock:
+        with self._db_lock():
             self._append_log(
                 qqid,
                 0,
@@ -2662,7 +2671,7 @@ class BreakDatabase:
     ) -> None:
         """记录一次限时免费时段免单（delta=0，不扣余额）。"""
         cost = max(0, int(listed_cost))
-        with self._lock:
+        with self._db_lock():
             self._append_log(
                 qqid,
                 0,
@@ -2736,7 +2745,7 @@ class BreakDatabase:
     def analysis_token_report(self, days: int = 1) -> dict:
         """Aggregate recorded LLM token usage without exposing user IDs."""
         since = time.time() - max(1, int(days)) * 86400
-        with self._lock:
+        with self._db_lock():
             rows = self._conn.execute(
                 """SELECT meta FROM break_log
                    WHERE reason='b50_analysis_settlement' AND created_at >= ?
@@ -2834,7 +2843,7 @@ class BreakDatabase:
         value = max(0, int(amount))
         self._ensure_user(qqid)
         today = self._today()
-        with self._lock:
+        with self._db_lock():
             existing = self._conn.execute(
                 """SELECT amount FROM break_daily_reward
                    WHERE qqid = ? AND date = ? AND reward_key = ?""",
@@ -2896,7 +2905,7 @@ class BreakDatabase:
             raise ValueError('reward_key 不能为空')
         value = max(0, int(amount))
         self._ensure_user(qqid)
-        with self._lock:
+        with self._db_lock():
             try:
                 now = time.time()
                 ledger_reason = f'once_reward:{key}'
@@ -3310,7 +3319,7 @@ class BreakDatabase:
         target = date.fromordinal(today.toordinal() - 1)
         used_month = today.strftime('%Y-%m')
         costs = self._makeup_checkin_costs()
-        with self._lock:
+        with self._db_lock():
             if self._checkin_exists_on(qqid, target):
                 raise ValueError('昨天已经签到过，无需补签。')
             used = int(

@@ -18,7 +18,9 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from .maimaidx_break import break_db
+from contextlib import contextmanager
+
+from .maimaidx_break import BreakDatabase, break_db
 
 CARD_TYPE_BREAK = 'break'
 CARD_TYPE_DOUBLE = 'double_break'
@@ -167,8 +169,17 @@ class CardKeyManager:
         self._conn = break_db._conn
         self._ensure_schema()
 
+    @contextmanager
+    def _db_lock(self):
+        """Serialize SQLite writes, but keep MySQL worker sessions independent."""
+        if self._conn is not None and self._conn._backend == 'mysql':
+            yield
+            return
+        with BreakDatabase._lock:
+            yield
+
     def _ensure_schema(self) -> None:
-        with break_db._lock:
+        with self._db_lock():
             if self._conn._backend == 'sqlite':
                 self._conn.executescript(';\n'.join(_TABLE_STATEMENTS) + ';')
             else:
@@ -206,7 +217,7 @@ class CardKeyManager:
     def generate_codes(self, count: int) -> List[str]:
         codes: List[str] = []
         existing = True
-        with break_db._lock:
+        with self._db_lock():
             for _ in range(count):
                 for _retry in range(20):
                     code = _generate_code()
@@ -243,7 +254,7 @@ class CardKeyManager:
         codes = self.generate_codes(quantity)
         batch_id = 'BATCH-' + uuid.uuid4().hex[:12].upper()
         now = time.time()
-        with break_db._lock:
+        with self._db_lock():
             for code in codes:
                 self._conn.execute(
                     """INSERT INTO break_card_keys
@@ -267,7 +278,7 @@ class CardKeyManager:
 
     def get_card(self, code: str) -> Optional[Dict[str, Any]]:
         normalized = normalize_code(code)
-        with break_db._lock:
+        with self._db_lock():
             row = self._conn.execute(
                 'SELECT * FROM break_card_keys WHERE code = ?', (normalized,)
             ).fetchone()
@@ -315,7 +326,7 @@ class CardKeyManager:
 
     def double_break_info(self, qqid: int, *, now: Optional[float] = None) -> tuple[bool, float, float]:
         ts = now if now is not None else time.time()
-        with break_db._lock:
+        with self._db_lock():
             eff = self._get_effects(qqid, now=ts)
         expires_at = eff['double_break_until']
         active = expires_at > ts
@@ -326,7 +337,7 @@ class CardKeyManager:
 
     def freedom_info(self, qqid: int, *, now: Optional[float] = None) -> tuple[bool, float, float]:
         ts = now if now is not None else time.time()
-        with break_db._lock:
+        with self._db_lock():
             eff = self._get_effects(qqid, now=ts)
         expires_at = eff['freedom_until']
         active = expires_at > ts
@@ -344,7 +355,7 @@ class CardKeyManager:
         if not normalized:
             raise CardError('卡密不能为空')
         now = time.time()
-        with break_db._lock:
+        with self._db_lock():
             try:
                 row = self._conn.execute(
                     'SELECT * FROM break_card_keys WHERE code = ?', (normalized,)
@@ -407,7 +418,7 @@ class CardKeyManager:
 
     def disable_card(self, code: str, *, actor: str = '') -> Dict[str, Any]:
         normalized = normalize_code(code)
-        with break_db._lock:
+        with self._db_lock():
             row = self._conn.execute(
                 'SELECT * FROM break_card_keys WHERE code = ?', (normalized,)
             ).fetchone()
@@ -447,7 +458,7 @@ class CardKeyManager:
             params.append(batch_id)
         where = (' WHERE ' + ' AND '.join(clauses)) if clauses else ''
         params.append(min(max(int(limit), 1), 500))
-        with break_db._lock:
+        with self._db_lock():
             rows = self._conn.execute(
                 f'SELECT * FROM break_card_keys{where} ORDER BY created_at DESC LIMIT ?',
                 tuple(params),
@@ -455,7 +466,7 @@ class CardKeyManager:
         return [dict(r) for r in rows]
 
     def list_recent_redemptions(self, limit: int = 20) -> List[Dict[str, Any]]:
-        with break_db._lock:
+        with self._db_lock():
             rows = self._conn.execute(
                 """SELECT * FROM break_card_keys
                    WHERE status='redeemed'
@@ -466,7 +477,7 @@ class CardKeyManager:
 
     def stats(self) -> Dict[str, Any]:
         result: Dict[str, Any] = {'total': 0, 'by_type': {}, 'active_effects': 0}
-        with break_db._lock:
+        with self._db_lock():
             rows = self._conn.execute(
                 'SELECT card_type, status, COUNT(*) AS c FROM break_card_keys GROUP BY card_type, status'
             ).fetchall()
