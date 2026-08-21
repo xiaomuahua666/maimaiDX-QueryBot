@@ -26,6 +26,7 @@ from nonebot_plugin_maimaidx.libraries.maimaidx_roast_v2.policy import (  # noqa
     normalize_style,
     scan_text,
 )
+from nonebot_plugin_maimaidx.libraries.maimaidx_roast_v2.model import _clean_report  # noqa: E402
 from nonebot_plugin_maimaidx.libraries.maimaidx_roast_v2.render import (  # noqa: E402
     _profile_reference,
     render_report,
@@ -114,11 +115,44 @@ assert {item.evidence_id for item in pack.evidence} >= {
 report = build_report_fallback(pack, style)
 assert "主人" in report.summary
 assert report.claims and report.claims[0]["evidence_ids"]
+assert report.highlights and report.highlights[0]["evidence_ids"]
+assert len(report.score_spotlights) <= 4
 assert report.recommendations[0]["estimated_gain"] == 13
 assert report.recommendations[0]["chart_type"] == "DX"
 image = render_report(pack, report)
 assert image.getvalue().startswith(b"\x89PNG\r\n\x1a\n")
 assert len(image.getvalue()) > 10_000
+
+spotlight_id = report.score_spotlights[0]["evidence_id"]
+cleaned = _clean_report(
+    {
+        "headline": "结论测试",
+        "summary": "先处理槽位地板，再看 coverage。",
+        "analysis": "槽位地板决定当前路线，同段聚合只作参考。",
+        "strengths": ["有真实成绩支持"],
+        "weaknesses": ["仍有提升空间"],
+        "peer_takeaways": ["样本不足时不作结论"],
+        "actions": ["先完成稳妥候选"],
+        "highlights": [{
+            "title": "先做什么",
+            "text": "整理槽位地板",
+            "tone": "action",
+            "evidence_ids": ["floors"],
+        }],
+        "score_spotlights": [
+            {"evidence_id": spotlight_id, "verdict": "这首是当前重点。"},
+            {"evidence_id": "song:fake:DX:3", "verdict": "不得展示。"},
+        ],
+        "recommendations": [],
+        "claims": [{"text": "B35 与 B15 有差异", "evidence_ids": ["b35_b15_gap"]}],
+    },
+    pack,
+    style,
+)
+assert "槽位地板" not in cleaned.summary
+assert "coverage" not in cleaned.summary
+assert cleaned.highlights[0]["text"] == "整理B50 里最低的几首"
+assert cleaned.score_spotlights == [{"evidence_id": spotlight_id, "verdict": "这首是当前重点。"}]
 
 no_high_snapshot = {
     "nickname": "NoHigh",

@@ -291,7 +291,7 @@ def _build_candidates(
             achievement=achievement,
             estimated_gain=independent_gain,
             target="SSS" if target_achievement == 100.0 else "SSS+",
-            reason=f"当前 {achievement:.4f}%，距目标 {gap:.4f} pp；按 {pool.upper()} 槽位逐步替换计算",
+            reason=f"当前 {achievement:.4f}%，距目标 {gap:.4f} pp；按 {pool.upper()} 的 B50 最低成绩逐步计算",
             cover_path=str(song.get("cover_path") or ""),
             artist=str(song.get("artist") or ""),
             genre=str(song.get("genre") or ""),
@@ -370,7 +370,7 @@ def _peer_evidence_value(peer: dict[str, Any], total: int) -> str:
         f"同段玩家 {peer.get('player_count')}；{peer.get('confidence_text')}"
     )
     if peer.get("distribution_kind") == "player_arpi":
-        return f"ARPI {peer.get('arpi'):+.4f} pp；玩家 ARPI 分位：{peer.get('position')}；{common}"
+        return f"同段差距 {peer.get('arpi'):+.4f} pp；相近 Rating 位置：{peer.get('position')}；{common}"
     return (
         f"匹配谱面平均差 {peer.get('arpi'):+.4f} pp；{peer.get('position')}；"
         f"谱面差值 P25/中位/P75 {peer.get('p25'):+.4f}/"
@@ -456,9 +456,9 @@ def build_evidence_pack(snapshot: dict, peer_stats: dict | None = None) -> Evide
         Evidence("b35_b15_gap", "B35 与 B15 平均差", f"{b35_b15_gap:+.4f} pp", "b50"),
         Evidence("achievement_stddev", "B50 达成率波动", f"σ {achievement_stddev:.4f} pp", "b50"),
         Evidence("high_avg", "14+ 平均达成率", f"{high_avg:.4f}%" if high_avg is not None else "暂无 14+ 样本", "high_ds", confidence="high" if high else "unavailable"),
-        Evidence("floors", "B35 / B15 槽位地板", f"{old_floor} / {new_floor}", "b50"),
+        Evidence("floors", "B35 / B15 最低 RA", f"{old_floor} / {new_floor}", "b50"),
         Evidence("recommendation_ds_cap", "保守推荐定数上限", f"{ds_cap:.2f}", "capability_profile"),
-        Evidence("route_gain", "前三步边际累计收益", f"+{top3_gain} Rating", "route_simulation"),
+        Evidence("route_gain", "前三步预计累计收益", f"+{top3_gain} Rating", "route_simulation"),
         Evidence("top3_gain", "推荐路线前三步收益", f"+{top3_gain} Rating", "route_simulation"),
         Evidence("sss_count", "B50 SSS / SSS+ 数量", f"{sss_count} / {sssp_count}", "b50"),
     ]
@@ -526,19 +526,19 @@ def build_report_fallback(pack: EvidencePack, style: StyleSpec) -> RoastReport:
     if gap >= 0.25:
         structure = "旧曲基本盘明显强于新曲适应"
     elif gap <= -0.25:
-        structure = "新曲适应不错，但旧曲地板仍有整理空间"
+        structure = "新曲适应不错，但 B35 里最低的几首仍有整理空间"
     else:
         structure = "B35 与 B15 结构接近，整体比较均衡"
     peer_text = ""
     if pack.peer.get("available"):
         if pack.peer.get("distribution_kind") == "player_arpi":
-            peer_text = f"；同段玩家 ARPI 分位为{pack.peer.get('position')}，ARPI {pack.peer.get('arpi'):+.4f} pp"
+            peer_text = f"；和相近 Rating 玩家相比，目前位于{pack.peer.get('position')}"
         else:
-            peer_text = f"；匹配谱面平均差 {pack.peer.get('arpi'):+.4f} pp，判断为{pack.peer.get('position')}"
-    headline = f"{address}{structure}，先走保守边际收益路线{suffix}"
+            peer_text = f"；已匹配成绩平均相差 {pack.peer.get('arpi'):+.4f} pp，判断为{pack.peer.get('position')}"
+    headline = f"{address}{structure}，先走稳妥推分路线{suffix}"
     summary = (
         f"{address}{structure}{peer_text}。推荐上限约 "
-        f"{metrics.get('recommendation_ds_cap', 0):.2f}，前三步逐槽替换累计预计 "
+        f"{metrics.get('recommendation_ds_cap', 0):.2f}，前三步按 B50 最低成绩依次替换，累计预计 "
         f"+{metrics.get('top3_estimated_gain', 0)} Rating。{suffix}"
     ).strip()
     evidence_cards = pack.song_groups.get("evidence_cards", [])
@@ -558,9 +558,9 @@ def build_report_fallback(pack: EvidencePack, style: StyleSpec) -> RoastReport:
             )
     analysis = (
         f"B35 平均 {metrics.get('b35_avg', 0):.4f}%，B15 平均 {metrics.get('b15_avg', 0):.4f}%，"
-        f"差值 {gap:+.4f} pp；B50 达成率标准差 {metrics.get('achievement_stddev', 0):.4f} pp。"
+        f"差值 {gap:+.4f} pp；B50 成绩波动 {metrics.get('achievement_stddev', 0):.4f} pp。"
         f"{trend_text}本次引用的成绩证据包括：{named}。推荐器只保留接近目标线、且不超过已稳定定数上沿一小档的曲目；"
-        "每一步收益都会在上一步替换槽位后重算，不把多首歌重复按同一个地板相加。"
+        "每完成一首后都会按新的 B50 最低成绩重算后续收益，不会重复计算同一份涨分空间。"
     )
     strengths = [
         f"《{row.get('title')}》比同段 B50 入选均值高 {_f(row.get('peer_gap')):+.4f} pp"
@@ -569,17 +569,41 @@ def build_report_fallback(pack: EvidencePack, style: StyleSpec) -> RoastReport:
     weaknesses = [
         f"《{row.get('title')}》比同段 B50 入选均值低 {_f(row.get('peer_gap')):+.4f} pp"
         for row in pack.song_groups.get("peer_weak", [])[:3]
-    ] or ["优先整理 B35/B15 地板，而不是盲目跨级冲高难"]
+    ] or ["优先整理 B35/B15 里最低的几首，而不是盲目跨级冲高难"]
     peer_takeaways = [str(pack.peer.get("position_detail") or "同段样本不足，暂不下结论")]
     actions = [
         "先完成标记为“稳妥”的寸止曲，再考虑进阶曲",
-        "每完成一首后重新生成锐评，让后续边际收益按新地板重算",
-        "同段差距只作脱敏聚合参考，训练目标仍以个人稳定达成为准",
+        "每完成一首后重新生成锐评，让后续收益按新的 B50 最低成绩重算",
+        "相近 Rating 玩家的成绩只作参考，训练目标仍以自己的稳定达成为准",
     ]
+    highlights = [
+        {
+            "title": "成绩结构",
+            "text": structure,
+            "tone": "neutral",
+            "evidence_ids": ["b35_avg", "b15_avg", "b35_b15_gap"],
+        },
+        {
+            "title": "优先动作",
+            "text": "先处理稳妥候选和 B50 里最低的几首，完成后再重新计算路线。",
+            "tone": "action",
+            "evidence_ids": ["top3_gain"],
+        },
+    ]
+    score_spotlights = []
+    for row in evidence_cards[:4]:
+        song_id, chart_type, level_index = _row_key(row)
+        if song_id:
+            score_spotlights.append({
+                "evidence_id": f"song:{song_id}:{chart_type}:{level_index}",
+                "verdict": "这首能直接说明当前 B50 的强项或补强方向。",
+            })
     return RoastReport(
         headline=headline, summary=summary, analysis=analysis,
         strengths=strengths, weaknesses=weaknesses, peer_takeaways=peer_takeaways,
         actions=actions, recommendations=[candidate.__dict__ for candidate in pack.candidates[:5]],
         claims=[{"text": structure, "evidence_ids": ["b35_avg", "b15_avg", "b35_b15_gap"]}],
         style=style,
+        highlights=highlights,
+        score_spotlights=score_spotlights,
     )

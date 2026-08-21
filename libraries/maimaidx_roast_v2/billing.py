@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..maimaidx_break import break_db, is_superuser_exempt
+from ..maimaidx_break import analysis_daily_free_enabled, break_db, is_superuser_exempt
 
 
 @dataclass(frozen=True)
@@ -15,7 +15,10 @@ class Quote:
 def prepare_quote(qqid: int, cost: int) -> Quote:
     cost = max(0, int(cost))
     disabled = not break_db.billing_enabled() or is_superuser_exempt(qqid)
-    daily_free = bool(break_db.service_is_free(qqid, "analysis"))
+    daily_free = bool(
+        analysis_daily_free_enabled()
+        and break_db.service_is_free(qqid, "analysis")
+    )
     if not disabled:
         break_db.ensure_service_affordable(qqid, "analysis", cost)
     return Quote(cost, daily_free, disabled)

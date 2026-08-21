@@ -344,13 +344,13 @@ def _row_key(row: dict[str, Any]) -> tuple[str, str, int]:
     )
 
 
-def _select_evidence(pack: EvidencePack, limit: int = 12) -> list[tuple[dict[str, Any], str, tuple[int, int, int]]]:
+def _select_evidence_base(pack: EvidencePack, limit: int = 12) -> list[tuple[dict[str, Any], str, tuple[int, int, int]]]:
     groups = pack.song_groups or {}
     ordered = (
         ("同段优势", GREEN, groups.get("peer_strong") or []),
         ("同段短板", RED, groups.get("peer_weak") or []),
         ("上限证据", PURPLE, groups.get("top_ra") or []),
-        ("槽位地板", ORANGE, groups.get("floors") or []),
+        ("B50 低分", ORANGE, groups.get("floors") or []),
         ("选曲特征", BLUE, groups.get("unusual") or []),
         ("成绩证据", BLUE, groups.get("evidence_cards") or []),
     )
@@ -376,6 +376,44 @@ def _select_evidence(pack: EvidencePack, limit: int = 12) -> list[tuple[dict[str
             continue
         seen.add(key)
         selected.append((row, label, color))
+        if len(selected) >= limit:
+            break
+    return selected
+
+
+def _evidence_id(row: dict[str, Any]) -> str:
+    song_id, chart_type, level_index = _row_key(row)
+    return f"song:{song_id}:{chart_type}:{level_index}"
+
+
+def _select_evidence(
+    pack: EvidencePack,
+    report: RoastReport,
+    limit: int = 12,
+) -> list[tuple[dict[str, Any], str, tuple[int, int, int], str]]:
+    """Let the model choose emphasis while all displayed facts stay program-owned."""
+    base = _select_evidence_base(pack, limit=12)
+    by_id = {_evidence_id(row): (row, label, color) for row, label, color in base}
+    selected: list[tuple[dict[str, Any], str, tuple[int, int, int], str]] = []
+    seen: set[str] = set()
+    for item in report.score_spotlights or []:
+        if not isinstance(item, dict):
+            continue
+        evidence_id = str(item.get("evidence_id") or "")
+        factual = by_id.get(evidence_id)
+        if factual is None or evidence_id in seen:
+            continue
+        row, _label, _color = factual
+        selected.append((row, "重点曲目", BLUE, str(item.get("verdict") or "")[:90]))
+        seen.add(evidence_id)
+        if len(selected) >= limit:
+            return selected
+    for row, label, color in base:
+        evidence_id = _evidence_id(row)
+        if evidence_id in seen:
+            continue
+        selected.append((row, label, color, ""))
+        seen.add(evidence_id)
         if len(selected) >= limit:
             break
     return selected
@@ -460,9 +498,11 @@ def _measure_layout(pack: EvidencePack, report: RoastReport) -> dict[str, Any]:
     trend_points = _trend_points(pack)
     trend_h = 104 + 330 if len(trend_points) >= 2 and (pack.trend or {}).get("available") else 0
     ds_h = 104 + 62 + max(1, len(ds_rows)) * 68 + 18
-    evidence = _select_evidence(pack, limit=8)
+    highlights = list(report.highlights or [])[:3]
+    highlight_h = 104 + 184 if highlights else 0
+    evidence = _select_evidence(pack, report, limit=8)
     evidence_rows = max(1, math.ceil(len(evidence) / 2))
-    evidence_h = 104 + evidence_rows * 160 + max(0, evidence_rows - 1) * 12
+    evidence_h = 104 + evidence_rows * 194 + max(0, evidence_rows - 1) * 14
     analysis_lines = _wrap_lines(report.analysis or report.summary, _font(SIYUAN, 28), CONTENT_W - 72, max_lines=40)
     headline_lines = _wrap_lines(report.headline, _font(SIYUAN, 31), CONTENT_W - 72, max_lines=3)
     narrative_h = 48 + len(headline_lines) * 42 + 18 + len(analysis_lines) * 41 + 34
@@ -477,7 +517,8 @@ def _measure_layout(pack: EvidencePack, report: RoastReport) -> dict[str, Any]:
     footer_h = 92
     trend_space = trend_h + 24 if trend_h else 0
     height = (
-        58 + 166 + 22 + summary_h + 24 + diagnostics_h + 24 + trend_space + ds_h + 24
+        58 + 166 + 22 + summary_h + 24 + highlight_h + (24 if highlight_h else 0)
+        + diagnostics_h + 24 + trend_space + ds_h + 24
         + evidence_h + 24 + analysis_h + 24 + routes_h + 24 + method_h + footer_h + 42
     )
     return {
@@ -485,6 +526,8 @@ def _measure_layout(pack: EvidencePack, report: RoastReport) -> dict[str, Any]:
         "summary_title_lines": summary_title_lines,
         "summary_lines": summary_lines,
         "summary_h": summary_h,
+        "highlights": highlights,
+        "highlight_h": highlight_h,
         "diagnostics_h": diagnostics_h,
         "trend_h": trend_h,
         "trend_points": trend_points,
@@ -543,6 +586,39 @@ def _draw_summary(im: Image.Image, draw: ImageDraw.ImageDraw, pack: EvidencePack
         value_font = _font(SIYUAN, 20)
         draw.text((x + 122, chip_y - 1), _fit_line(value, value_font, 252), font=value_font, fill=color)
     return y + height
+
+
+def _highlight_colors(tone: str) -> tuple[tuple[int, int, int], tuple[int, int, int, int]]:
+    return {
+        "positive": (GREEN, (*GREEN_SOFT, 242)),
+        "warning": (RED, (*RED_SOFT, 242)),
+        "action": (ORANGE, (*ORANGE_SOFT, 242)),
+        "neutral": (BLUE, (*BLUE_SOFT, 242)),
+    }.get(str(tone), (BLUE, (*BLUE_SOFT, 242)))
+
+
+def _draw_highlights(
+    im: Image.Image,
+    draw: ImageDraw.ImageDraw,
+    layout: dict[str, Any],
+    y: int,
+) -> int:
+    start = y
+    highlights = layout.get("highlights") or []
+    if not highlights:
+        return y
+    y = _section(draw, y, "三句话看懂", "先看结论，再看真实成绩证据和训练路线")
+    card_w = (CONTENT_W - (len(highlights) - 1) * GAP) // len(highlights)
+    for index, item in enumerate(highlights):
+        x = CONTENT_X + index * (card_w + GAP)
+        color, background = _highlight_colors(str(item.get("tone") or "neutral"))
+        _panel(im, (x, y, x + card_w, y + 184), radius=18, fill=background, outline=(*color, 90), width=2)
+        draw.rounded_rectangle((x + 22, y + 22, x + 31, y + 162), radius=5, fill=color)
+        title = str(item.get("title") or "重点")
+        draw.text((x + 50, y + 22), _fit_line(title, _font(SIYUAN, 24), card_w - 76), font=_font(SIYUAN, 24), fill=color)
+        lines = _wrap_lines(str(item.get("text") or ""), _font(SIYUAN, 22), card_w - 76, max_lines=4)
+        _draw_lines(draw, lines, x + 50, y + 66, _font(SIYUAN, 22), INK, 31)
+    return start + int(layout["highlight_h"])
 
 
 def _draw_achievement_scale(draw: ImageDraw.ImageDraw, x: int, y: int, width: int, label: str, value: float | None, color: tuple[int, int, int], peer_value: float | None = None) -> None:
@@ -608,7 +684,7 @@ def _profile_reference(pack: EvidencePack) -> dict[str, Any]:
             "count_label": "14+ 容量",
             "count": high_count,
             "share": high_count / chart_count if chart_count else 0.0,
-            "sssp_label": "14+ SSS+ 覆盖",
+            "sssp_label": "14+ 达成 SSS+",
             "sssp_count": sssp_count,
             "sssp_rate": sssp_count / high_count,
             "fallback": False,
@@ -716,10 +792,10 @@ def _draw_structure_panel(im: Image.Image, draw: ImageDraw.ImageDraw, pack: Evid
     draw.text((stack_x, stack_y + 35), f"B35 {b35_ra}", font=_font(TBFONT, 19), fill=BLUE)
     draw.text((stack_x + 210, stack_y + 35), f"B15 {b15_ra}", font=_font(TBFONT, 19), fill=ORANGE)
     chips = (
-        ("B35 地板", str(_i(metrics.get("b35_floor"))), ORANGE),
-        ("B15 地板", str(_i(metrics.get("b15_floor"))), ORANGE),
+        ("B35 最低 RA", str(_i(metrics.get("b35_floor"))), ORANGE),
+        ("B15 最低 RA", str(_i(metrics.get("b15_floor"))), ORANGE),
         ("最高 RA", str(_i(metrics.get("ceiling"))), PURPLE),
-        ("波动", f"σ {_f(metrics.get('achievement_stddev')):.4f} pp", BLUE),
+        ("成绩波动", f"{_f(metrics.get('achievement_stddev')):.4f} pp", BLUE),
         ("≥SSS", str(_i(metrics.get("sss_count"))), GREEN),
         ("其中 SSS+", str(_i(metrics.get("sssp_count"))), GREEN),
     )
@@ -745,7 +821,7 @@ def _draw_peer_panel(im: Image.Image, draw: ImageDraw.ImageDraw, pack: EvidenceP
     draw.text((x1 + 28, y1 + 22), "同段定位", font=_font(SIYUAN, 29), fill=INK)
     if not peer.get("available"):
         draw.rounded_rectangle((x1 + 28, y1 + 82, x2 - 28, y1 + 158), radius=16, fill=(240, 244, 249))
-        draw.text((x1 + 48, y1 + 101), "同段聚合样本不足", font=_font(SIYUAN, 25), fill=MUTED)
+        draw.text((x1 + 48, y1 + 101), "相近 Rating 玩家数据不足", font=_font(SIYUAN, 25), fill=MUTED)
         lines = _wrap_lines(str(peer.get("confidence_text") or "本页仅展示个人成绩结构，不生成同段结论。"), _font(SIYUAN, 20), x2 - x1 - 72, max_lines=4)
         _draw_lines(draw, lines, x1 + 36, y1 + 185, _font(SIYUAN, 20), MUTED, 31)
     else:
@@ -754,7 +830,7 @@ def _draw_peer_panel(im: Image.Image, draw: ImageDraw.ImageDraw, pack: EvidenceP
         arpi = _f(peer.get("arpi"))
         position = str(peer.get("position") or "未知")
         position_color = _peer_position_color(peer)
-        metric_label = "ARPI" if peer.get("distribution_kind") == "player_arpi" else "匹配谱面平均差"
+        metric_label = "同段差距" if peer.get("distribution_kind") == "player_arpi" else "匹配谱面平均差"
         draw.text((x1 + 28, y1 + 100), metric_label, font=_font(SIYUAN, 16), fill=MUTED)
         metric_text = f"{arpi:+.4f} pp"
         draw.text((x1 + 28, y1 + 120), metric_text, font=_value_font(metric_text, 31), fill=position_color)
@@ -789,16 +865,16 @@ def _draw_peer_panel(im: Image.Image, draw: ImageDraw.ImageDraw, pack: EvidenceP
             draw.line((px, rail_y - 6, px, rail_y + 21), fill=color, width=line_width)
         player_x = rail_x + int(rail_w * (arpi - low) / max(0.001, high - low))
         draw.ellipse((player_x - 8, rail_y - 1, player_x + 8, rail_y + 15), fill=position_color, outline=WHITE, width=2)
-        p25_text = f"P25 {_f(p25):+.4f}" if p25 is not None else "P25 --"
+        p25_text = f"较低参考 {_f(p25):+.4f}" if p25 is not None else "较低参考 --"
         median_text = f"中位 {_f(median):+.4f}" if median is not None else "中位 --"
-        p75_text = f"P75 {_f(p75):+.4f}" if p75 is not None else "P75 --"
+        p75_text = f"较高参考 {_f(p75):+.4f}" if p75 is not None else "较高参考 --"
         scale_font = _font(SIYUAN, 15)
         draw.text((rail_x, rail_y + 27), p25_text, font=scale_font, fill=MUTED)
         draw.text((rail_x + rail_w // 2, rail_y + 27), median_text, font=scale_font, fill=BLUE, anchor="ma")
         draw.text((rail_x + rail_w, rail_y + 27), p75_text, font=scale_font, fill=MUTED, anchor="ra")
         coverage = max(0.0, min(1.0, _f(peer.get("coverage"))))
         progress_y = y1 + 258
-        draw.text((x1 + 28, progress_y), "谱面覆盖", font=_font(SIYUAN, 19), fill=MUTED)
+        draw.text((x1 + 28, progress_y), "已匹配成绩", font=_font(SIYUAN, 19), fill=MUTED)
         progress_x = x1 + 142
         progress_w = x2 - x1 - 170
         draw.rounded_rectangle((progress_x, progress_y + 5, progress_x + progress_w, progress_y + 23), radius=9, fill=(224, 232, 241))
@@ -814,8 +890,8 @@ def _draw_peer_panel(im: Image.Image, draw: ImageDraw.ImageDraw, pack: EvidenceP
         age_days = peer.get("age_days")
         rows = (
             ("同段玩家", str(_i(peer.get("player_count")))),
-            ("平均入选率", f"{_f(peer.get('appear_rate')):.2f}%" if peer.get("appear_rate") is not None else "--"),
-            ("置信等级", confidence_labels.get(str(peer.get("confidence") or "low"), "低")),
+            ("进入 B50 比例", f"{_f(peer.get('appear_rate')):.2f}%" if peer.get("appear_rate") is not None else "--"),
+            ("数据可靠程度", confidence_labels.get(str(peer.get("confidence") or "low"), "低")),
             ("数据时效", f"{_f(age_days):.0f} 天" if age_days is not None else "未知"),
         )
         row_y = y1 + 324
@@ -829,7 +905,7 @@ def _draw_profile_kpis(im: Image.Image, draw: ImageDraw.ImageDraw, pack: Evidenc
     x1, y1, x2, y2 = box
     _panel(im, box, radius=18, fill=(247, 250, 254, 238), outline=(207, 222, 239, 255))
     draw.text((x1 + 20, y1 + 16), "实战指标", font=_font(SIYUAN, 22), fill=BLUE)
-    draw.text((x1 + 142, y1 + 20), "覆盖率、地板差和尾部质量均按当前 B50 快照计算", font=_font(SIYUAN, 16), fill=MUTED)
+    draw.text((x1 + 142, y1 + 20), "达成情况、最低 RA 和低分区质量均按当前 B50 计算", font=_font(SIYUAN, 16), fill=MUTED)
 
     metrics = pack.metrics or {}
     chart_count = max(0, _i(metrics.get("chart_count")))
@@ -849,11 +925,11 @@ def _draw_profile_kpis(im: Image.Image, draw: ImageDraw.ImageDraw, pack: Evidenc
     reference_sssp_count = max(0, _i(reference.get("sssp_count")))
     reference_sssp_rate = max(0.0, min(1.0, _f(reference.get("sssp_rate"))))
     items = (
-        ("B50 SSS 覆盖", f"{sss_count}/{chart_count} · {sss_rate * 100:.0f}%" if chart_count else "暂无", GREEN if sss_rate >= 0.8 else ORANGE),
-        ("B50 SSS+ 覆盖", f"{sssp_count}/{chart_count} · {sssp_rate * 100:.0f}%" if chart_count else "暂无", GREEN if sssp_rate >= 0.5 else BLUE),
+        ("B50 达成 SSS", f"{sss_count}/{chart_count} · {sss_rate * 100:.0f}%" if chart_count else "暂无", GREEN if sss_rate >= 0.8 else ORANGE),
+        ("B50 达成 SSS+", f"{sssp_count}/{chart_count} · {sssp_rate * 100:.0f}%" if chart_count else "暂无", GREEN if sssp_rate >= 0.5 else BLUE),
         (str(reference["count_label"]), f"{reference_count} 首 · {reference_share * 100:.0f}%" if chart_count else "暂无", GREEN if reference_share >= 0.2 else ORANGE),
         (str(reference["sssp_label"]), f"{reference_sssp_count}/{reference_count} · {reference_sssp_rate * 100:.0f}%" if reference_count else "暂无", GREEN if reference_sssp_rate >= 0.5 else RED),
-        ("B15 - B35 地板", f"{_i(floor_gap):+d} RA" if floor_gap is not None else "暂无双池", GREEN if _i(floor_gap) >= 0 else RED),
+        ("B15 - B35 最低 RA", f"{_i(floor_gap):+d} RA" if floor_gap is not None else "暂无双池", GREEN if _i(floor_gap) >= 0 else RED),
         ("尾部 10 首均分", f"{_f(bottom10_avg):.4f}%" if bottom10_avg is not None else "暂无", GREEN if _f(bottom10_avg) >= 100.0 else ORANGE),
         ("B50 达成率中位", f"{_f(metrics.get('achievement_median')):.4f}%" if chart_count else "暂无", BLUE),
         ("近期 Rating 趋势", f"{trend_delta:+d} Rating" if trend_available else "暂无历史", GREEN if trend_delta >= 0 else RED if trend_available else MUTED),
@@ -889,7 +965,7 @@ def _draw_profile_kpis(im: Image.Image, draw: ImageDraw.ImageDraw, pack: Evidenc
 
 def _draw_diagnostics(im: Image.Image, draw: ImageDraw.ImageDraw, pack: EvidencePack, y: int) -> int:
     start = y
-    y = _section(draw, y, "成绩画像", "个人成绩负责定量，同段聚合只在覆盖与样本足够时参与判断")
+    y = _section(draw, y, "成绩画像", "先看你的 B50；相近 Rating 玩家数据足够时才加入对比")
     left_w = 908
     _draw_structure_panel(im, draw, pack, (CONTENT_X, y, CONTENT_X + left_w, y + PROFILE_MAIN_H))
     _draw_peer_panel(im, draw, pack, (CONTENT_X + left_w + GAP, y, CONTENT_R, y + PROFILE_MAIN_H))
@@ -1122,7 +1198,15 @@ def _draw_cover_placeholder(draw: ImageDraw.ImageDraw, box: tuple[int, int, int,
     draw.text(((x1 + x2) // 2, (y1 + y2) // 2), "♪", font=_font(TBFONT, 34), fill=MUTED, anchor="mm")
 
 
-def _draw_evidence_card(im: Image.Image, draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int], row: dict[str, Any], label: str, label_color: tuple[int, int, int]) -> None:
+def _draw_evidence_card(
+    im: Image.Image,
+    draw: ImageDraw.ImageDraw,
+    box: tuple[int, int, int, int],
+    row: dict[str, Any],
+    label: str,
+    label_color: tuple[int, int, int],
+    verdict: str = "",
+) -> None:
     x1, y1, x2, y2 = box
     _panel(im, box, radius=18, fill=(250, 252, 255, 242))
     _paste_game_texture(im, box, _i(row.get("level_index")), opacity=24)
@@ -1146,7 +1230,8 @@ def _draw_evidence_card(im: Image.Image, draw: ImageDraw.ImageDraw, box: tuple[i
     pool = "B15" if str(row.get("pool") or "").lower() == "new" else "B35"
     draw.text((text_r, y1 + 18), pool, font=_font(TBFONT, 15), fill=MUTED, anchor="ra")
     title_font = _font(SIYUAN, 21)
-    draw.text((text_x, y1 + 47), _fit_line(str(row.get("title") or "未知曲目"), title_font, text_r - text_x - 12), font=title_font, fill=INK)
+    title = f"《{str(row.get('title') or '未知曲目')}》"
+    draw.text((text_x, y1 + 47), _fit_line(title, title_font, text_r - text_x - 12), font=title_font, fill=INK)
     chart_type = str(row.get("type") or row.get("chart_type") or "SD").upper()
     meta = f"{chart_type} · {row.get('level') or '—'} · DS {_f(row.get('ds')):.1f} · RA {_i(row.get('ra'))}"
     meta_font = _value_font(meta, 16)
@@ -1162,23 +1247,34 @@ def _draw_evidence_card(im: Image.Image, draw: ImageDraw.ImageDraw, box: tuple[i
         detail = str(row.get("genre") or row.get("artist") or "来自用户成绩快照")
         detail_font = _font(SIYUAN, 15)
         draw.text((text_x, y1 + 132), _fit_line(detail, detail_font, text_r - text_x - 12), font=detail_font, fill=MUTED)
+    if verdict:
+        verdict_text = f"点评：{verdict}"
+        draw.text(
+            (text_x, y1 + 160),
+            _fit_line(verdict_text, _font(SIYUAN, 16), text_r - text_x - 12),
+            font=_font(SIYUAN, 16),
+            fill=label_color,
+        )
 
 
 def _draw_evidence(im: Image.Image, draw: ImageDraw.ImageDraw, layout: dict[str, Any], y: int) -> int:
     start = y
     evidence = layout["evidence"]
-    y = _section(draw, y, "成绩证据", f"{len(evidence)} 张真实成绩卡 · 按同段强弱、上限和槽位地板去重选取")
+    y = _section(draw, y, "重点曲目与成绩", f"{len(evidence)} 张真实成绩卡 · 曲名、曲绘、达成率与 RA 均来自成绩数据")
     if not evidence:
         _panel(im, (CONTENT_X, y, CONTENT_R, y + 96), radius=16, fill=CARD)
         draw.text((CONTENT_X + 28, y + 32), "暂无可展示的成绩证据", font=_font(SIYUAN, 24), fill=MUTED)
         return start + layout["evidence_h"]
     card_w = (CONTENT_W - GAP) // 2
-    card_h = 160
-    for index, (row, label, color) in enumerate(evidence):
+    card_h = 194
+    for index, (row, label, color, verdict) in enumerate(evidence):
         row_index, col = divmod(index, 2)
         x = CONTENT_X + col * (card_w + GAP)
-        card_y = y + row_index * (card_h + 12)
-        _draw_evidence_card(im, draw, (x, card_y, x + card_w, card_y + card_h), row, label, color)
+        card_y = y + row_index * (card_h + 14)
+        _draw_evidence_card(
+            im, draw, (x, card_y, x + card_w, card_y + card_h),
+            row, label, color, verdict,
+        )
     return start + layout["evidence_h"]
 
 
@@ -1199,7 +1295,7 @@ def _draw_bullet_group(draw: ImageDraw.ImageDraw, x: int, y: int, width: int, ti
 
 def _draw_analysis(im: Image.Image, draw: ImageDraw.ImageDraw, report: RoastReport, layout: dict[str, Any], y: int) -> int:
     start = y
-    y = _section(draw, y, "专业分析", "结论先落在数据上，再用自定义风格表达；数值与曲目不会交给模型重算")
+    y = _section(draw, y, "专业点评", "每个结论都对应真实成绩，并给出玩家可以直接执行的练习方向")
     narrative_h = layout["narrative_h"]
     _panel(im, (CONTENT_X, y, CONTENT_R, y + narrative_h), radius=20, fill=(255, 251, 244, 240), outline=(242, 215, 175, 255))
     draw.text((CONTENT_X + 32, y + 24), "分析正文", font=_font(SIYUAN, 23), fill=ORANGE)
@@ -1250,7 +1346,12 @@ def _draw_route_card(im: Image.Image, draw: ImageDraw.ImageDraw, box: tuple[int,
     target_achievement = _f(row.get("target_achievement"), 100.0)
     target = str(row.get("target") or "SSS")
     draw.text((text_x, y1 + 94), f"目标 {target} {target_achievement:.1f}% · 目标 RA {_i(row.get('target_ra'))}", font=_font(SIYUAN, 20), fill=BLUE)
-    reason_lines = _wrap_lines(str(row.get("reason") or "按当前槽位逐步替换计算"), _font(SIYUAN, 18), gain_x - text_x - 30, max_lines=2)
+    reason_lines = _wrap_lines(
+        str(row.get("reason") or "按当前 B50 最低成绩逐步计算"),
+        _font(SIYUAN, 18),
+        gain_x - text_x - 30,
+        max_lines=2,
+    )
     _draw_lines(draw, reason_lines, text_x, y1 + 126, _font(SIYUAN, 18), MUTED, 27)
     gain = max(0, _i(row.get("estimated_gain")))
     target_ra = _i(row.get("target_ra"))
@@ -1260,13 +1361,13 @@ def _draw_route_card(im: Image.Image, draw: ImageDraw.ImageDraw, box: tuple[int,
     draw.text((center_x, y1 + 54), f"+{gain} RA", font=_font(TBFONT, 35), fill=GREEN, anchor="mm")
     draw.text((center_x, y1 + 91), f"{target_ra} - {baseline}", font=_font(TBFONT, 19), fill=INK, anchor="mm")
     cumulative = _i(row.get("cumulative_gain"))
-    draw.text((center_x, y1 + 125), f"前 {index + 1} 步累计 +{cumulative}" if cumulative else "边际收益", font=_font(SIYUAN, 17), fill=MUTED, anchor="mm")
+    draw.text((center_x, y1 + 125), f"前 {index + 1} 步累计 +{cumulative}" if cumulative else "本步收益", font=_font(SIYUAN, 17), fill=MUTED, anchor="mm")
 
 
 def _draw_routes(im: Image.Image, draw: ImageDraw.ImageDraw, layout: dict[str, Any], y: int) -> int:
     start = y
     recommendations = layout["recommendations"]
-    y = _section(draw, y, "保守推分路线", "收益按顺序逐槽替换计算；完成一首后重新生成，后续地板会随之变化")
+    y = _section(draw, y, "稳妥推分路线", "按顺序完成；每打成一首就重新生成，后续收益会跟着新的 B50 成绩变化")
     if not recommendations:
         _panel(im, (CONTENT_X, y, CONTENT_R, y + 92), radius=16, fill=CARD)
         draw.text((CONTENT_X + 28, y + 30), "当前没有足够接近目标线的可靠候选，不建议硬冲高难。", font=_font(SIYUAN, 24), fill=MUTED)
@@ -1290,7 +1391,7 @@ def _draw_method(im: Image.Image, draw: ImageDraw.ImageDraw, pack: EvidencePack,
             f"{peer.get('distribution_label') or '同段参考'} · {peer.get('confidence_text')}"
         )
     else:
-        peer_line = "同段聚合不可用：本页不生成同段定论，仅展示个人成绩结构。"
+        peer_line = "相近 Rating 玩家数据不足：本页不作横向定论，只展示你的成绩结构。"
     trend = pack.trend or {}
     forecast = trend.get("forecast") or {}
     trend_line = ""
@@ -1301,7 +1402,7 @@ def _draw_method(im: Image.Image, draw: ImageDraw.ImageDraw, pack: EvidencePack,
         )
     method = (
         f"{peer_line}{trend_line}\n推荐定数上限 {_f(pack.metrics.get('recommendation_ds_cap')):.2f}；"
-        "路线收益为当前快照下的逐槽模拟值，不是涨分承诺。"
+        "路线收益按当前 B50 最低成绩依次计算，不是涨分承诺。"
     )
     lines = _wrap_lines(method, _font(SIYUAN, 20), CONTENT_W - 56, max_lines=4)
     _draw_lines(draw, lines, CONTENT_X + 28, y + 60, _font(SIYUAN, 20), MUTED, 30)
@@ -1311,7 +1412,7 @@ def _draw_method(im: Image.Image, draw: ImageDraw.ImageDraw, pack: EvidencePack,
 def _draw_footer(draw: ImageDraw.ImageDraw, y: int) -> int:
     draw.line((CONTENT_X, y, CONTENT_R, y), fill=LINE, width=2)
     left = footer_generated(maiconfig.botName)
-    right = "数据由成绩快照计算 · 同段仅使用脱敏聚合 · ROAST V2"
+    right = "数据由成绩快照计算 · 相近 Rating 参考已脱敏 · ROAST V2"
     left_font = _font(SIYUAN, 19)
     right_font = _font(SIYUAN, 18)
     draw.text((CONTENT_X, y + 24), _fit_line(left, left_font, 820), font=left_font, fill=MUTED)
@@ -1330,6 +1431,9 @@ def render_report(pack: EvidencePack, report: RoastReport) -> io.BytesIO:
     y += 22
     y = _draw_summary(im, draw, pack, report, layout, y)
     y += 24
+    if layout.get("highlight_h"):
+        y = _draw_highlights(im, draw, layout, y)
+        y += 24
     # The long-form review is the primary reading experience. Put it before
     # the supporting evidence tables so users see the useful commentary first.
     y = _draw_analysis(im, draw, report, layout, y)

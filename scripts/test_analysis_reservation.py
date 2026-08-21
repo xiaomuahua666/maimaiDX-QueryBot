@@ -64,6 +64,7 @@ namespace = {
     "time": time,
     "contextmanager": contextmanager,
     "DAILY_FREE_SERVICES": frozenset({'upload', 'analysis'}),
+    "analysis_daily_free_enabled": lambda: True,
 }
 exec(compile(ast.Module(body=[test_class], type_ignores=[]), str(source_path), "exec"), namespace)
 

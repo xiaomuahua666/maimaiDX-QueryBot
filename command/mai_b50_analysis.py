@@ -17,6 +17,7 @@ from ..libraries.maimaidx_image_executor import run_image_cpu
 from ..libraries.maimaidx_platform import (
     adapt_reply_payload,
     billing_user_id,
+    build_markdown_message,
     ensure_sender_mention,
     get_event_group_id,
     plugin_finish,
@@ -148,6 +149,36 @@ def _format_freedom_line(
     qqid: int, cost: int, remaining: float,
 ) -> str:
     return format_freedom_exemption(qqid, "锐评", cost, remaining)
+
+
+def _escape_markdown(value: object) -> str:
+    text = str(value or "").replace("\r", " ").replace("\n", " ")
+    for char in ("\\", "`", "*", "_", "[", "]", "(", ")", "#", ">"):
+        text = text.replace(char, f"\\{char}")
+    return text
+
+
+def _build_analysis_summary_markdown(report, footer_parts: list[str], elapsed: float) -> str:
+    lines = [
+        "## 锐评完成",
+        "",
+        "### 一句话总结",
+        f"> {_escape_markdown(report.summary)}",
+        "",
+        "### 本次结算",
+    ]
+    for part in footer_parts:
+        for line in str(part or "").splitlines():
+            if line.strip():
+                lines.append(f"- {_escape_markdown(line.strip())}")
+    lines.append(f"- ⏱️ 本次锐评用时 **{elapsed:.1f} 秒**")
+    actions = [str(item).strip() for item in (report.actions or []) if str(item).strip()]
+    if actions:
+        lines.extend(["", "### 接下来怎么练"])
+        for index, action in enumerate(actions[:2], 1):
+            lines.append(f"{index}. {_escape_markdown(action)}")
+    lines.extend(["", "更多详情请前往 **吃分推荐** 喵"])
+    return "\n".join(lines)
 
 
 async def _deliver_result_or_refund(
@@ -430,14 +461,15 @@ async def _handle_impl(matcher: Matcher, bot: Bot, event: MessageEvent, args: Me
         _ANALYSIS_TIMING_KEY,
         elapsed,
     )
-    footer_parts.append(f"⏱️ 本次锐评用时 {elapsed:.1f} 秒")
-    footer_parts.append(report.summary)
-    footer_parts.append("更多详情请前往吃分推荐喵")
+    summary_message = build_markdown_message(
+        _build_analysis_summary_markdown(report, footer_parts, elapsed),
+        event=event,
+    )
     await _send_analysis_followup(
         matcher,
         bot,
         event,
-        "\n".join(footer_parts),
+        summary_message,
         mention_sender=use_qq_mode(event),
         qq_buttons=_SHORTCUTS,
         finish=True,

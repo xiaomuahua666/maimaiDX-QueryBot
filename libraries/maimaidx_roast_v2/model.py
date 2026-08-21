@@ -214,19 +214,41 @@ def _has_unsupported_high_claim(text: str) -> bool:
     return False
 
 
+_PLAYER_FRIENDLY_TERMS = (
+    ("同段聚合参考", "相近 Rating 玩家参考"),
+    ("同段聚合", "相近 Rating 玩家数据"),
+    ("槽位地板", "B50 里最低的几首"),
+    ("coverage", "数据覆盖"),
+    ("Coverage", "数据覆盖"),
+    ("置信区间", "参考范围"),
+    ("置信度", "数据可靠程度"),
+    ("方差", "成绩波动"),
+    ("P25/P75", "较低/较高参考线"),
+    ("ARPI", "同段差距"),
+)
+
+
+def _player_friendly_text(value: Any, limit: int) -> str:
+    text = str(value or "").strip()
+    for source, target in _PLAYER_FRIENDLY_TERMS:
+        text = text.replace(source, target)
+    return text[:limit]
+
+
 def _clean_report(raw: Any, pack: EvidencePack, style: StyleSpec) -> RoastReport:
     if not isinstance(raw, dict):
         raise ValueError("模型返回格式无效")
     allowed = {
         "headline", "summary", "analysis", "strengths", "weaknesses",
-        "peer_takeaways", "actions", "recommendations", "claims",
+        "peer_takeaways", "actions", "highlights", "score_spotlights",
+        "recommendations", "claims",
     }
     data = {key: raw.get(key) for key in allowed}
     all_text = json.dumps(data, ensure_ascii=False)
     if not pack.metrics.get("high_count") and _has_unsupported_high_claim(all_text):
         raise ValueError("模型引用了不存在的 14+ 样本")
     for key, limit in (("headline", 120), ("summary", 1000), ("analysis", 2600)):
-        value = str(data.get(key) or "").strip()
+        value = _player_friendly_text(data.get(key), limit)
         if not value or not validate_report_text(value)["safe"]:
             raise ValueError("模型返回包含不安全内容")
         data[key] = value[:limit]
@@ -235,7 +257,7 @@ def _clean_report(raw: Any, pack: EvidencePack, style: StyleSpec) -> RoastReport
         values = data.get(key) if isinstance(data.get(key), list) else []
         cleaned_values = []
         for item in values[:5]:
-            value = str(item).strip()[:120]
+            value = _player_friendly_text(item, 120)
             if not value:
                 continue
             if not validate_report_text(value)["safe"]:
@@ -263,7 +285,7 @@ def _clean_report(raw: Any, pack: EvidencePack, style: StyleSpec) -> RoastReport
             candidate = matches[0] if len(matches) == 1 else None
         if candidate is None:
             continue
-        reason = str(item.get("reason") or candidate.reason or "").strip()
+        reason = _player_friendly_text(item.get("reason") or candidate.reason, 120)
         if reason and not validate_report_text(reason)["safe"]:
             continue
         recommendations.append(_candidate_row(candidate, reason))
@@ -280,7 +302,7 @@ def _clean_report(raw: Any, pack: EvidencePack, style: StyleSpec) -> RoastReport
     for item in data.get("claims") if isinstance(data.get("claims"), list) else []:
         if not isinstance(item, dict):
             continue
-        claim = str(item.get("text") or "").strip()
+        claim = _player_friendly_text(item.get("text"), 160)
         refs = [str(x) for x in item.get("evidence_ids", []) if str(x) in evidence_ids]
         if claim and refs and validate_report_text(claim)["safe"]:
             claims.append({"text": claim[:160], "evidence_ids": refs[:4]})
@@ -288,7 +310,7 @@ def _clean_report(raw: Any, pack: EvidencePack, style: StyleSpec) -> RoastReport
         fallback = fallback or build_report_fallback(pack, style)
         for item in fallback.claims:
             refs = [str(x) for x in item.get("evidence_ids", []) if str(x) in evidence_ids]
-            claim = str(item.get("text") or "").strip()
+            claim = _player_friendly_text(item.get("text"), 160)
             if claim and refs:
                 claims.append({"text": claim[:160], "evidence_ids": refs[:4]})
         if not claims and pack.evidence:
@@ -297,6 +319,51 @@ def _clean_report(raw: Any, pack: EvidencePack, style: StyleSpec) -> RoastReport
                 "text": f"{evidence.label}：{evidence.value}"[:160],
                 "evidence_ids": [evidence.evidence_id],
             })
+
+    fallback = fallback or build_report_fallback(pack, style)
+    highlights = []
+    allowed_tones = {"positive", "warning", "action", "neutral"}
+    for item in data.get("highlights") if isinstance(data.get("highlights"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        title = _player_friendly_text(item.get("title"), 18)
+        text = _player_friendly_text(item.get("text"), 120)
+        tone = str(item.get("tone") or "neutral").strip().lower()
+        refs = [str(value) for value in item.get("evidence_ids", []) if str(value) in evidence_ids]
+        if (
+            title and text and refs and tone in allowed_tones
+            and validate_report_text(title)["safe"]
+            and validate_report_text(text)["safe"]
+        ):
+            highlights.append({
+                "title": title,
+                "text": text,
+                "tone": tone,
+                "evidence_ids": refs[:4],
+            })
+        if len(highlights) >= 3:
+            break
+    if not highlights:
+        highlights = list(fallback.highlights[:3])
+
+    score_spotlights = []
+    known_song_ids = {value for value in evidence_ids if value.startswith("song:")}
+    seen_song_ids: set[str] = set()
+    for item in data.get("score_spotlights") if isinstance(data.get("score_spotlights"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        evidence_id = str(item.get("evidence_id") or "").strip()
+        verdict = _player_friendly_text(item.get("verdict"), 90)
+        if (
+            evidence_id in known_song_ids and evidence_id not in seen_song_ids
+            and verdict and validate_report_text(verdict)["safe"]
+        ):
+            score_spotlights.append({"evidence_id": evidence_id, "verdict": verdict})
+            seen_song_ids.add(evidence_id)
+        if len(score_spotlights) >= 4:
+            break
+    if not score_spotlights:
+        score_spotlights = list(fallback.score_spotlights[:4])
     return RoastReport(
         headline=data["headline"],
         summary=data["summary"],
@@ -308,6 +375,8 @@ def _clean_report(raw: Any, pack: EvidencePack, style: StyleSpec) -> RoastReport
         recommendations=recommendations,
         claims=claims,
         style=style,
+        highlights=highlights,
+        score_spotlights=score_spotlights,
     )
 
 

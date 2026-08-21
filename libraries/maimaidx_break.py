@@ -48,6 +48,8 @@ DEFAULT_CONFIG: Dict[str, str] = {
     'analysis_min_cost': '2',
     'analysis_max_cost': '20',
     'analysis_fallback_cost': '4',
+    # 每日首次锐评免费开关：默认关闭，可通过 break_config 热更新。
+    'analysis_daily_free_enabled': '0',
     # 锐评按原 Token 价格计费；调用模型前先预扣固定额度。
     'analysis_price_multiplier': '1',
     'analysis_precharge_cost': '10',
@@ -1557,6 +1559,8 @@ class BreakDatabase:
 
     def service_is_free(self, qqid: int, service: str) -> bool:
         if service not in DAILY_FREE_SERVICES:
+            return False
+        if service == 'analysis' and not analysis_daily_free_enabled():
             return False
         row = self._conn.execute(
             """SELECT free_used FROM break_service_daily
@@ -3729,6 +3733,22 @@ def analysis_precharge_cost() -> int:
     return max(0, _config_int('analysis_precharge_cost', 10))
 
 
+def analysis_daily_free_enabled() -> bool:
+    """锐评每日首免数据库热开关；读取失败时按默认关闭处理。"""
+    try:
+        raw = break_db.get_config(
+            'analysis_daily_free_enabled',
+            DEFAULT_CONFIG['analysis_daily_free_enabled'],
+        )
+    except Exception as exc:
+        log.warning(
+            '[BREAK] 读取锐评每日首免开关失败，按关闭处理：'
+            f'{type(exc).__name__}: {exc}'
+        )
+        return False
+    return str(raw or '').strip().lower() in {'1', 'true', 'yes', 'on', '开启', '启用'}
+
+
 _ANALYSIS_REASONING_EFFORTS = frozenset({'none', 'low', 'medium', 'high'})
 
 
@@ -3876,9 +3896,13 @@ def format_analysis_pricing_help() -> str:
         max(minimum, _config_int('analysis_fallback_cost', 4)),
     )
     precharge = analysis_precharge_cost()
+    free_text = (
+        '每日首次成功锐评免费（含图片生成）；之后'
+        if analysis_daily_free_enabled()
+        else '每日首免当前关闭；'
+    )
     return (
-        '· 分析b50 / 锐评一下 — 每日首次成功锐评免费（含图片生成）；'
-        f'之后按实际 Token 计费：每 {input_rate:,} 输入 Token '
+        f'· 分析b50 / 锐评一下 — {free_text}按实际 Token 计费：每 {input_rate:,} 输入 Token '
         f'+ 每 {output_rate:,} 输出 Token 各计 1 BREAK，合计向上取整；'
         f'基础价 ×{multiplier}，最低 {minimum * multiplier}、最高 {maximum * multiplier} BREAK；'
         f'usage 缺失时 {fallback_base * multiplier} BREAK。后续调用前预扣 {precharge} BREAK'
@@ -3888,7 +3912,7 @@ def format_analysis_pricing_help() -> str:
 
 
 def reserve_analysis_charge(qqid: int) -> AnalysisChargeReservation:
-    """Reserve paid usage; the first successful roast each day skips precharge."""
+    """Reserve paid usage; daily-free is controlled by break_config."""
     if is_superuser_exempt(qqid):
         return AnalysisChargeReservation(0)
     if not break_db.billing_enabled():
@@ -3900,7 +3924,7 @@ def reserve_analysis_charge(qqid: int) -> AnalysisChargeReservation:
     freedom, remaining, _expires_at = card_manager.freedom_info(qqid)
     if freedom:
         return AnalysisChargeReservation(0, freedom=True, freedom_remaining=remaining)
-    if break_db.service_is_free(qqid, 'analysis'):
+    if analysis_daily_free_enabled() and break_db.service_is_free(qqid, 'analysis'):
         return AnalysisChargeReservation(0, daily_free=True)
     reserved = analysis_precharge_cost()
     if not break_db.try_reserve_analysis(

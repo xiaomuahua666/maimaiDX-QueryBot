@@ -81,3 +81,5 @@ class RoastReport:
     recommendations: list[dict[str, Any]]
     claims: list[dict[str, Any]]
     style: StyleSpec
+    highlights: list[dict[str, Any]] = field(default_factory=list)
+    score_spotlights: list[dict[str, Any]] = field(default_factory=list)
