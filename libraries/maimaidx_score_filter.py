@@ -69,11 +69,19 @@ def is_anomalous_perfect_score(
     *,
     music_resolver: MusicResolver | None = None,
 ) -> bool:
-    """Return whether a record is the known full-DX/AP+/101.0000 anomaly.
+    """Return whether a record is the level-15 full-DX/AP+/101 anomaly.
 
     Unknown or zero DX-score maxima are treated as inconclusive and retained.
     Achievement comparison follows the four-decimal value shown to users.
     """
+    level = str(_field(record, "level") or "").strip().replace("＋", "+")
+    try:
+        ds = float(_field(record, "ds") or 0)
+    except (TypeError, ValueError):
+        ds = 0.0
+    if ds < 15.0 and level not in {"15", "15+"}:
+        return False
+
     try:
         achievements = float(_field(record, "achievements"))
         dx_score = int(_field(record, "dxScore", "dx_score", "deluxscore"))
@@ -93,9 +101,39 @@ def filter_anomalous_scores(
     *,
     music_resolver: MusicResolver | None = None,
 ) -> list[T]:
-    """Remove known anomalous perfect-score records without mutating input."""
-    return [
-        record
+    """Compatibility helper that preserves scores instead of deleting them.
+
+    The anomaly is a user-level group eligibility signal. Personal B50 and
+    full-record views must retain the original chart.
+    """
+    return list(records)
+
+
+def has_anomalous_group_score(
+    records: Iterable[Any],
+    *,
+    music_resolver: MusicResolver | None = None,
+) -> bool:
+    """Return whether any score disqualifies its owner from group features."""
+    return any(
+        is_anomalous_perfect_score(record, music_resolver=music_resolver)
         for record in records
-        if not is_anomalous_perfect_score(record, music_resolver=music_resolver)
-    ]
+    )
+
+
+def is_user_group_eligible(
+    userinfo: Any = None,
+    records: Iterable[Any] = (),
+    *,
+    music_resolver: MusicResolver | None = None,
+) -> bool:
+    """Check group ranking/game eligibility without modifying score data."""
+    candidates = list(records or ())
+    charts = _field(userinfo, "charts") if userinfo is not None else None
+    if charts is not None:
+        candidates.extend(_field(charts, "sd") or ())
+        candidates.extend(_field(charts, "dx") or ())
+    return not has_anomalous_group_score(
+        candidates,
+        music_resolver=music_resolver,
+    )

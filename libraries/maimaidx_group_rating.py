@@ -29,8 +29,12 @@ from ..config import maiconfig
 from ..config import log
 from .maimaidx_data_storage import data_storage
 from .maimaidx_api_data import maiApi
-from .maimaidx_datasource import get_user_b50, get_user_records, get_user_source
-from .maimaidx_player_cache import get_cached_rating_for_friend_battle
+from .maimaidx_datasource import get_user_b50, get_user_records
+from .maimaidx_player_cache import (
+    get_cached_rating_for_friend_battle,
+    is_cached_user_group_eligible,
+)
+from .maimaidx_score_filter import is_user_group_eligible
 from .maimaidx_best_50 import filter_utage_records
 from .maimaidx_error import UserDisabledQueryError, UserNotFoundError, UserNotExistsError, MusicNotPlayError
 from .maimaidx_score_formatter import (
@@ -309,21 +313,12 @@ async def get_group_member_ratings(
                 return None
             async with sem:
                 try:
-                    # 群排名是批量读取，不应为每个陌生群成员触发水鱼/落雪
-                    # 自动迁移。AWMCNET 用户只读取轻量摘要；个人主动查分仍
-                    # 继续使用 datasource 的完整自动迁移流程。
-                    if get_user_source(int(uid)) == 'awmcnet':
-                        from .maimaidx_awmcnet_sync import fetch_awmcnet_summary
-
-                        summary = await fetch_awmcnet_summary(int(uid))
-                        if summary:
-                            ra = int(summary.get('rating') or 0)
-                            if ra > 0:
-                                return (int(uid), _display_name(m), ra)
                     userinfo = await get_user_b50(
                         qqid=int(uid),
                         access_mode='shared',
                     )
+                    if not is_user_group_eligible(userinfo):
+                        return None
                     ra = int(userinfo.rating or 0)
                     if ra <= 0:
                         return None
@@ -472,6 +467,8 @@ async def group_gain_ranking(
         for uid in data_storage.get_enabled_users():
             if uid not in member_ids:
                 continue
+            if not is_cached_user_group_eligible(uid):
+                continue
             delta_t = data_storage.rating_delta_in_period(uid, days)
             if delta_t is None:
                 continue
@@ -537,10 +534,12 @@ async def group_sun_lock_ranking(
                 return None
             async with sem:
                 try:
-                    _ui, recs = await get_user_records(
+                    userinfo, recs = await get_user_records(
                         qqid=int(uid),
                         access_mode='shared',
                     )
+                    if not is_user_group_eligible(userinfo, recs):
+                        return None
                     recs = list(recs or [])
                     from .maimaidx_best_50 import filter_utage_records
                     recs = filter_utage_records(recs)
@@ -642,10 +641,12 @@ async def get_group_member_song_scores(
             return None
         async with sem:
             try:
-                _userinfo, records = await get_user_records(
+                userinfo, records = await get_user_records(
                     qqid=int(uid),
                     access_mode='shared',
                 )
+                if not is_user_group_eligible(userinfo, records):
+                    return None
                 song_records = [
                     r for r in records
                     if str(r.song_id) == str(music_id)
@@ -902,6 +903,8 @@ async def render_group_gain_board(bot, group_id: int, days: int = 7,
         for uid in data_storage.get_enabled_users():
             if uid not in member_by_id:
                 continue
+            if not is_cached_user_group_eligible(uid):
+                continue
             delta_t = data_storage.rating_delta_in_period(uid, days)
             if delta_t is None:
                 continue
@@ -945,10 +948,12 @@ async def render_group_sun_lock_board(bot, group_id: int, mode: str = 'sun',
                 return None
             async with sem:
                 try:
-                    _ui, recs = await get_user_records(
+                    userinfo, recs = await get_user_records(
                         qqid=int(uid),
                         access_mode='shared',
                     )
+                    if not is_user_group_eligible(userinfo, recs):
+                        return None
                     recs = list(recs or [])
                     from .maimaidx_best_50 import filter_utage_records
                     recs = filter_utage_records(recs)

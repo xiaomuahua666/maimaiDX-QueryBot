@@ -190,7 +190,21 @@ def get_cached_rating_for_friend_battle(qqid: int) -> Optional[int]:
     bundle = get_cached_player_for_friend_battle(qqid)
     if bundle is None:
         return None
+    from .maimaidx_score_filter import is_user_group_eligible
+
+    if not is_user_group_eligible(bundle.userinfo, bundle.records):
+        return None
     return int(bundle.userinfo.rating or 0)
+
+
+def is_cached_user_group_eligible(qqid: int) -> bool:
+    """Return False only when local B50/records prove the user ineligible."""
+    bundle = get_cached_player_for_friend_battle(qqid)
+    if bundle is None:
+        return True
+    from .maimaidx_score_filter import is_user_group_eligible
+
+    return is_user_group_eligible(bundle.userinfo, bundle.records)
 
 
 def get_cached_player_for_friend_battle(qqid: int) -> Optional[CachedPlayerBundle]:

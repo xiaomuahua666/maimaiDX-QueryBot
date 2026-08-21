@@ -23,6 +23,7 @@ from .maimaidx_datasource import get_user_b50, get_user_records, get_user_source
 from .maimaidx_player_cache import (
     get_cached_b50_for_friend_battle,
     get_cached_player_for_friend_battle,
+    is_cached_user_group_eligible,
 )
 from .maimaidx_data_storage import ScoreRecord, data_storage
 from .maimaidx_error import (
@@ -37,6 +38,7 @@ from .maimaidx_group_rating import (
 )
 from .maimaidx_timing import measure
 from .maimaidx_model import ChartInfo, PlayInfoDev, UserInfoDev
+from .maimaidx_score_filter import is_user_group_eligible
 from .maimaidx_score_formatter import get_difficulty_name
 from .maimaidx_friend_battle_class import (
     TIER_INDEX,
@@ -388,6 +390,8 @@ def _play_from_record_list(
 
 def _try_local_records_play(qqid: int, music_id: int, level_index: int) -> Optional[PlayInfoDev]:
     """SQLite 玩家缓存 / 数据存储快照（长 TTL，不占网络）。"""
+    if not is_cached_user_group_eligible(qqid):
+        return None
     bundle = get_cached_player_for_friend_battle(qqid)
     if bundle and bundle.records:
         hit = _play_from_record_list(bundle.records, music_id, level_index)
@@ -442,19 +446,27 @@ async def _ensure_dev_cached(qqid: int, dev_cache: dict[int, Optional[UserInfoDe
         return
     bundle = get_cached_player_for_friend_battle(qqid)
     if bundle and bundle.records:
-        dev_cache[qqid] = _bundle_to_userinfo_dev(bundle)
+        dev_cache[qqid] = (
+            _bundle_to_userinfo_dev(bundle)
+            if is_user_group_eligible(bundle.userinfo, bundle.records)
+            else None
+        )
         return
     async with sem:
         if qqid in dev_cache:
             return
         bundle = get_cached_player_for_friend_battle(qqid)
         if bundle and bundle.records:
-            dev_cache[qqid] = _bundle_to_userinfo_dev(bundle)
+            dev_cache[qqid] = (
+                _bundle_to_userinfo_dev(bundle)
+                if is_user_group_eligible(bundle.userinfo, bundle.records)
+                else None
+            )
             return
         try:
             source = get_user_source(qqid)
             _ui, records = await get_user_records(qqid=qqid, force_source=source)
-            if records:
+            if records and is_user_group_eligible(_ui, records):
                 dev_cache[qqid] = UserInfoDev(
                     nickname=_ui.nickname,
                     rating=_ui.rating,
@@ -787,6 +799,8 @@ async def group_friend_battle_ranking(
     rows: List[Tuple[int, str, int, int, int]] = []
     for uid, data in battle_users.items():
         if uid not in member_by_id:
+            continue
+        if not is_cached_user_group_eligible(uid):
             continue
         tier_name_s = data.get("tier", "B5")
         tier_idx = TIER_INDEX.get(tier_name_s, 0)

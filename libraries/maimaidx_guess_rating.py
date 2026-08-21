@@ -11,6 +11,7 @@ from typing import Dict, List, Optional, Tuple
 from loguru import logger as log
 
 from .maimaidx_datasource import get_user_b50_or_fallback
+from .maimaidx_score_filter import is_user_group_eligible
 from .maimaidx_group_rating import _get_group_member_list
 from .maimaidx_model import ChartInfo, UserInfo
 
@@ -404,7 +405,12 @@ async def pick_random_candidate(
         chart_count = 0
         if b50 and b50.charts:
             chart_count = len(b50.charts.sd or []) + len(b50.charts.dx or [])
-        if b50 and b50.rating is not None and chart_count >= max(1, min_charts):
+        if (
+            b50
+            and is_user_group_eligible(b50)
+            and b50.rating is not None
+            and chart_count >= max(1, min_charts)
+        ):
             return uid, name, b50
 
     return None

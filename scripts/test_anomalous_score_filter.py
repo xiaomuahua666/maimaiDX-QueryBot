@@ -1,10 +1,12 @@
-"""Regression tests for impossible perfect-score filtering."""
+"""Regression tests for level-15 anomaly group eligibility."""
 
 from types import SimpleNamespace
 
 from libraries.maimaidx_score_filter import (
     filter_anomalous_scores,
+    has_anomalous_group_score,
     is_anomalous_perfect_score,
+    is_user_group_eligible,
 )
 
 
@@ -12,6 +14,8 @@ def record(**updates):
     values = {
         "song_id": 123,
         "level_index": 3,
+        "level": "15",
+        "ds": 15.0,
         "achievements": 101.0,
         "fc": "app",
         "dxScore": 3000,
@@ -23,9 +27,15 @@ def record(**updates):
 
 bad = record()
 assert is_anomalous_perfect_score(bad)
-assert filter_anomalous_scores([record(achievements=100.9999), bad]) == [
-    record(achievements=100.9999)
-]
+scores = [record(achievements=100.9999), bad]
+assert filter_anomalous_scores(scores) == scores
+assert has_anomalous_group_score(scores)
+assert not is_user_group_eligible(records=scores)
+
+# The same full perfect below level 15 is legitimate for group features.
+lower_level = record(level="14+", ds=14.9)
+assert not is_anomalous_perfect_score(lower_level)
+assert is_user_group_eligible(records=[lower_level])
 
 # All three conditions are required; incomplete records must be retained.
 assert not is_anomalous_perfect_score(record(achievements=100.9999))
@@ -37,6 +47,7 @@ assert not is_anomalous_perfect_score(record(dxScoreMax=0))
 raw = {
     "id": 123,
     "levelIndex": 3,
+    "level": "15",
     "achievements": "101.0000",
     "comboStatus": "AP+",
     "dx_score": "3000",
@@ -65,4 +76,10 @@ def broken_resolver(_):
 
 assert not is_anomalous_perfect_score(without_max, music_resolver=broken_resolver)
 
-print("anomalous score filter tests: ok")
+# B50 chart containers are checked without mutating their contents.
+charts = SimpleNamespace(sd=[record(achievements=100.0)], dx=[bad])
+userinfo = SimpleNamespace(charts=charts)
+assert not is_user_group_eligible(userinfo)
+assert charts.dx == [bad]
+
+print("anomalous score eligibility tests: ok")

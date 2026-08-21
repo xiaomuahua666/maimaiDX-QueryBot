@@ -47,10 +47,6 @@ from .maimaidx_player_cache import (
     resolve_player_records,
     save_cached_player,
 )
-from .maimaidx_score_filter import (
-    filter_anomalous_scores,
-    is_anomalous_perfect_score,
-)
 
 _LEVEL_LABELS = ['Basic', 'Advanced', 'Expert', 'Master', 'Re:Master']
 _SOURCE_FALLBACK_ERRORS = (
@@ -75,39 +71,21 @@ def get_user_source(qqid: int) -> str:
 
 
 def _filter_b50_userinfo(userinfo: Optional[UserInfo]) -> Optional[UserInfo]:
-    """Remove known malformed scores and rebuild B35/B15 slots."""
-    if not userinfo or not userinfo.charts:
-        return userinfo
-
-    charts = userinfo.charts
-    sd = filter_anomalous_scores(charts.sd or [])
-    dx = filter_anomalous_scores(charts.dx or [])
-    from .maimaidx_best_50 import regroup_b50_userinfo
-
-    return regroup_b50_userinfo(UserInfo(
-        nickname=userinfo.nickname,
-        plate=userinfo.plate,
-        additional_rating=userinfo.additional_rating,
-        rating=userinfo.rating,
-        username=userinfo.username,
-        charts=Data(sd=sd, dx=dx),
-    ))
+    """Compatibility boundary: personal B50 keeps every upstream score."""
+    return userinfo
 
 
 def _filter_records_result(
     result: Tuple[UserInfo, List[PlayInfoDev]],
 ) -> Tuple[UserInfo, List[PlayInfoDev]]:
-    """Apply the shared score filter to records and any embedded B50."""
-    userinfo, records = result
-    filtered_records = filter_anomalous_scores(records or [])
-    return _filter_b50_userinfo(userinfo) or userinfo, filtered_records
+    """Compatibility boundary: full records are returned unchanged."""
+    return result
 
 
 def _records_to_userinfo(player: dict, records: List[PlayInfoDev]) -> UserInfo:
     """把 AWMCNET 的统一成绩响应还原为 QueryBot 的 B50 结构。"""
     from .maimaidx_best_50 import regroup_b50_userinfo
 
-    records = filter_anomalous_scores(records)
     return regroup_b50_userinfo(UserInfo(
         nickname=str(player.get('nickname') or 'AWMCNET 用户'),
         rating=int(player.get('rating') or 0),
@@ -121,7 +99,7 @@ def _divingfish_dev_to_userinfo(dev) -> UserInfo:
     """Rebuild B35/B15 directly from an authorized full-record response."""
     from .maimaidx_best_50 import regroup_b50_userinfo
 
-    records = filter_anomalous_scores(list(dev.records or []))
+    records = list(dev.records or [])
     return regroup_b50_userinfo(UserInfo(
         nickname=dev.nickname or '水鱼用户',
         plate=dev.plate,
@@ -137,10 +115,6 @@ def _awmcnet_records(player: dict) -> List[PlayInfoDev]:
     for raw in player.get('records') or []:
         try:
             if not isinstance(raw, dict):
-                continue
-            # Keep the raw API maximum available: PlayInfoDev intentionally
-            # ignores unknown fields, so validate before model conversion.
-            if is_anomalous_perfect_score(raw):
                 continue
             # Older AWMCNET snapshots may contain only portable score fields.
             # Restore chart metadata from the local library before validating
@@ -172,7 +146,7 @@ def _awmcnet_records(player: dict) -> List[PlayInfoDev]:
             records.append(PlayInfoDev(**item))
         except Exception as exc:
             log.warning(f'[datasource] AWMCNET record ignored: {exc}')
-    return filter_anomalous_scores(records)
+    return records
 
 
 def _merge_upstream_records(results: list) -> Tuple[Optional[UserInfo], List[PlayInfoDev]]:
@@ -182,9 +156,9 @@ def _merge_upstream_records(results: list) -> Tuple[Optional[UserInfo], List[Pla
     for result in results:
         if isinstance(result, Exception):
             continue
-        userinfo, records = _filter_records_result(result)
+        userinfo, records = result
         users.append(userinfo)
-        for record in filter_anomalous_scores(records):
+        for record in records:
             key = (int(record.song_id), int(record.level_index))
             current = best.get(key)
             candidate_rank = (float(record.achievements), int(record.dxScore or 0))
@@ -731,7 +705,7 @@ async def _get_user_records_from_source(
             # model and the full record list. Do not depend on the public QQ
             # query endpoint, which may be disabled by the user.
             dev = await maiApi.query_user_get_dev(qqid=qqid)
-            records = filter_anomalous_scores(list(dev.records or []))
+            records = list(dev.records or [])
             userinfo = _divingfish_dev_to_userinfo(dev)
             save_cached_player(qqid, username, source, userinfo, records)
             return userinfo, records

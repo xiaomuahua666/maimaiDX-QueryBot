@@ -7,6 +7,7 @@ import asyncio
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -78,6 +79,24 @@ async def _b50(*, qqid: int):
     )
 
 
+async def _illegal_b50(*, qqid: int):
+    chart = SimpleNamespace(
+        song_id=1,
+        level_index=3,
+        level="15",
+        ds=15.0,
+        achievements=101.0,
+        fc="app",
+        dxScore=3000,
+        dxScoreMax=3000,
+    )
+    return SimpleNamespace(
+        nickname=f"QQ{qqid}",
+        rating=16000,
+        charts=SimpleNamespace(sd=[chart], dx=[]),
+    )
+
+
 async def main() -> None:
     original_list_group = QqMemberRegistry.list_group
     original_legacy = QqBindDatabase.get_legacy_qq
@@ -110,6 +129,13 @@ async def main() -> None:
         assert candidate[:2] == (LEGACY_QQ, "OneBotMember")
         assert onebot.calls == [("get_group_member_list", {"group_id": 10001})]
 
+        # Guess Rating and B50 内鬼共用这个候选器；异常用户不得被抽中。
+        rating.get_user_b50_or_fallback = _illegal_b50
+        candidate = await rating.pick_random_candidate(
+            OneBot(), 10001, min_charts=1, weighted=False,
+        )
+        assert candidate is None
+
         # 数据存储只能作为拉取兜底，不得缩小或加权候选群友。
         source = (ROOT / "libraries" / "maimaidx_guess_rating.py").read_text(
             encoding="utf-8"
@@ -118,6 +144,7 @@ async def main() -> None:
         pick_source = pick_source[:pick_source.index("\ndef select_random_charts")]
         assert "enabled_users" not in pick_source
         assert "candidates_with_data" not in pick_source
+        assert "is_user_group_eligible(b50)" in pick_source
     finally:
         QqMemberRegistry.list_group = original_list_group
         QqBindDatabase.get_legacy_qq = original_legacy
