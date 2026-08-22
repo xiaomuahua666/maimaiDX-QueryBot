@@ -1721,12 +1721,18 @@ def _format_plain_qq_markdown(content: str) -> str:
     return '\n'.join(lines)
 
 
+def _contains_web_link(content: str) -> bool:
+    return re.search(r'https?://[^\s<>]+', str(content or ''), flags=re.IGNORECASE) is not None
+
+
 def _qq_text_message_as_markdown(message: Any) -> Any | None:
     """Convert a QQ text-only payload to one native Markdown segment."""
     if isinstance(message, str):
         from nonebot.adapters.qq.message import Message as QQMessage
         from nonebot.adapters.qq.message import MessageSegment as QQSeg
 
+        if _contains_web_link(message):
+            return QQMessage([QQSeg.text(_markdown_to_plain_text(message))])
         return QQMessage([QQSeg.markdown(_format_plain_qq_markdown(message))])
     module = type(message).__module__
     if not module.startswith('nonebot.adapters.qq'):
@@ -1764,6 +1770,11 @@ def _qq_text_message_as_markdown(message: Any) -> Any | None:
 
     content = ''.join(text_parts)
     if not content:
+        return None
+    # Native QQ text keeps http(s) links directly clickable. Custom Markdown
+    # renders the same URL as inert text, so leave the original typed segments
+    # intact whenever a link is present (including links inside list items).
+    if _contains_web_link(content):
         return None
     return QQMessage([QQSeg.markdown(_format_plain_qq_markdown(content))])
 
@@ -1806,6 +1817,13 @@ def _qq_plaintext_mention_message(
         else str(segment)
         for segment in segments
     )
+    if _contains_web_link(body):
+        return QQMessage(
+            [
+                _qq_mention_segment(target),
+                QQSeg.text(f'\n{_markdown_to_plain_text(body)}'),
+            ]
+        )
     output: list[Any] = [
         QQSeg.markdown(f'{markup}\n{_format_plain_qq_markdown(body)}')
     ]
@@ -1884,6 +1902,13 @@ def ensure_sender_mention(message: Any, event) -> Any:
         if use_qq_mode(event):
             from nonebot.adapters.qq.message import Message as QQMessage
             from nonebot.adapters.qq.message import MessageSegment as QQSeg
+            if _contains_web_link(body):
+                return QQMessage(
+                    [
+                        _qq_mention_segment(uid, username=nickname or None),
+                        QQSeg.text(f'\n{_markdown_to_plain_text(body)}'),
+                    ]
+                )
             if qq_plain_text_mode(event):
                 parts = [_qq_mention_segment(uid, username=nickname or None)]
                 if body:
@@ -3001,7 +3026,7 @@ def build_markdown_message(content: str, *, event=None) -> Any:
     from nonebot.adapters.qq.message import Message as QQMessage
     from nonebot.adapters.qq.message import MessageSegment as QQSeg
 
-    if qq_plain_text_mode(event):
+    if qq_plain_text_mode(event) or _contains_web_link(text):
         return QQMessage([QQSeg.text(_markdown_to_plain_text(text))])
     return QQMessage([QQSeg.markdown(text)])
 

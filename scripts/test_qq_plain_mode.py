@@ -20,6 +20,7 @@ nonebot.init()
 from nonebot_plugin_maimaidx.libraries.maimaidx_platform import (  # noqa: E402
     _format_plain_qq_markdown,
     _markdown_to_plain_text,
+    _qq_text_message_as_markdown,
     build_command_keyboard,
     build_markdown_message,
     ensure_sender_mention,
@@ -34,6 +35,12 @@ class FakeQQEvent:
     @staticmethod
     def get_user_id() -> str:
         return 'plain-mode-openid'
+
+
+class RichLinkQQEvent(FakeQQEvent):
+    @staticmethod
+    def get_user_id() -> str:
+        return 'rich-link-openid'
 
 
 assert _markdown_to_plain_text(
@@ -70,6 +77,27 @@ try:
     assert any(item in mentioned_types for item in ('mention_user', 'at'))
 finally:
     qq_bind_db.is_plain_text_mode = original
+
+link_url = 'https://wiki.awmc.team/guide/bot/intro'
+direct_link = _qq_text_message_as_markdown(f'帮助文档\n· 使用说明：{link_url}')
+assert [segment.type for segment in direct_link] == ['text']
+assert link_url in str(direct_link[0])
+
+rich_link_event = RichLinkQQEvent()
+linked_markdown = build_markdown_message(
+    f'## 帮助文档\n- [打开使用说明]({link_url})',
+    event=rich_link_event,
+)
+assert [segment.type for segment in linked_markdown] == ['text']
+assert f'打开使用说明: {link_url}' in str(linked_markdown[0])
+
+mentioned_link = ensure_sender_mention(
+    f'帮助文档\n· 使用说明：{link_url}', rich_link_event,
+)
+mentioned_link_types = [segment.type for segment in mentioned_link]
+assert 'markdown' not in mentioned_link_types
+assert 'text' in mentioned_link_types
+assert link_url in str(mentioned_link)
 
 qq_bind_source = (ROOT / 'libraries' / 'maimaidx_qq_bind.py').read_text(encoding='utf-8')
 qq_command_source = (ROOT / 'command' / 'mai_qq_bind.py').read_text(encoding='utf-8')
