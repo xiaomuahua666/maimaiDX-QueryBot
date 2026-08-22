@@ -327,7 +327,7 @@ def _clean_report(raw: Any, pack: EvidencePack, style: StyleSpec) -> RoastReport
         if not isinstance(item, dict):
             continue
         title = _player_friendly_text(item.get("title"), 18)
-        text = _player_friendly_text(item.get("text"), 120)
+        text = _player_friendly_text(item.get("text"), 320)
         tone = str(item.get("tone") or "neutral").strip().lower()
         refs = [str(value) for value in item.get("evidence_ids", []) if str(value) in evidence_ids]
         if (

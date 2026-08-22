@@ -28,6 +28,8 @@ from nonebot_plugin_maimaidx.libraries.maimaidx_roast_v2.policy import (  # noqa
 )
 from nonebot_plugin_maimaidx.libraries.maimaidx_roast_v2.model import _clean_report  # noqa: E402
 from nonebot_plugin_maimaidx.libraries.maimaidx_roast_v2.render import (  # noqa: E402
+    _achievement_target,
+    _measure_layout,
     _profile_reference,
     render_report,
 )
@@ -119,11 +121,22 @@ assert report.highlights and report.highlights[0]["evidence_ids"]
 assert len(report.score_spotlights) <= 4
 assert report.recommendations[0]["estimated_gain"] == 13
 assert report.recommendations[0]["chart_type"] == "DX"
+layout = _measure_layout(pack, report)
+assert layout["analysis_sections"]
+assert layout["analysis_focus"][1]
+assert layout["analysis_spotlights"]
+assert {
+    item[0]["song_id"] for item in layout["analysis_spotlights"]
+}.isdisjoint({item[0]["song_id"] for item in layout["evidence"]})
+target = _achievement_target(99.2)
+assert target is not None and target[:2] == ("SSS", 100.0) and round(target[2], 4) == 0.8
+assert _achievement_target(101.0) is None
 image = render_report(pack, report)
 assert image.getvalue().startswith(b"\x89PNG\r\n\x1a\n")
 assert len(image.getvalue()) > 10_000
 
 spotlight_id = report.score_spotlights[0]["evidence_id"]
+model_highlight_text = "整理槽位地板。" + "完成一首后重新生成报告，让后续路线跟着最新成绩变化。" * 6
 cleaned = _clean_report(
     {
         "headline": "结论测试",
@@ -135,7 +148,7 @@ cleaned = _clean_report(
         "actions": ["先完成稳妥候选"],
         "highlights": [{
             "title": "先做什么",
-            "text": "整理槽位地板",
+            "text": model_highlight_text,
             "tone": "action",
             "evidence_ids": ["floors"],
         }],
@@ -151,8 +164,21 @@ cleaned = _clean_report(
 )
 assert "槽位地板" not in cleaned.summary
 assert "coverage" not in cleaned.summary
-assert cleaned.highlights[0]["text"] == "整理B50 里最低的几首"
+assert cleaned.highlights[0]["text"].startswith("整理B50 里最低的几首。")
+assert cleaned.highlights[0]["text"].endswith("让后续路线跟着最新成绩变化。")
+assert len(cleaned.highlights[0]["text"]) > 120
 assert cleaned.score_spotlights == [{"evidence_id": spotlight_id, "verdict": "这首是当前重点。"}]
+
+long_highlight = "先稳定处理B50里最低的几首，再按顺序练习稳妥候选；每完成一首就重新生成报告，让后续目标跟着最新成绩变化，不要一次把所有高难曲都塞进训练计划。"
+cleaned.highlights = [
+    {"title": f"需要完整显示的重点结论 {index + 1}", "text": long_highlight, "tone": "warning"}
+    for index in range(3)
+]
+long_highlight_layout = _measure_layout(pack, cleaned)
+assert long_highlight_layout["highlight_card_h"] > 184
+for card in long_highlight_layout["highlight_cards"]:
+    assert "…" not in "".join(card["title_lines"] + card["text_lines"])
+    assert "".join(card["text_lines"]) == long_highlight
 
 no_high_snapshot = {
     "nickname": "NoHigh",

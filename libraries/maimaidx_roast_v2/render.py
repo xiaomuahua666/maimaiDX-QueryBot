@@ -449,6 +449,64 @@ def _measure_bullet_group(items: list[str], width: int) -> int:
     return height + 8
 
 
+def _measure_action_steps(items: list[str], width: int) -> int:
+    font = _font(SIYUAN, 21)
+    height = 44
+    for item in items[:3]:
+        lines = _wrap_lines(str(item), font, width - 76, max_lines=3)
+        height += max(62, len(lines) * 30 + 18)
+    return height + 8
+
+
+def _analysis_sections(report: RoastReport) -> list[tuple[str, list[str], tuple[int, int, int]]]:
+    paragraphs = [
+        value.strip()
+        for value in str(report.analysis or report.summary).replace("\r", "").split("\n")
+        if value.strip()
+    ]
+    if not paragraphs:
+        paragraphs = [str(report.summary or "暂无详细分析")]
+    if len(paragraphs) == 1:
+        sentences = [part.strip() + "。" for part in paragraphs[0].split("。") if part.strip()]
+        if len(sentences) >= 4:
+            chunk_size = math.ceil(len(sentences) / 4)
+            paragraphs = [
+                "".join(sentences[index:index + chunk_size])
+                for index in range(0, len(sentences), chunk_size)
+            ][:4]
+    labels = (
+        ("成绩结构", BLUE),
+        ("同段位置", PURPLE),
+        ("曲目画像", ORANGE),
+        ("训练策略", GREEN),
+    )
+    sections: list[tuple[str, list[str], tuple[int, int, int]]] = []
+    for index, paragraph in enumerate(paragraphs[:4]):
+        label, color = labels[min(index, len(labels) - 1)]
+        lines = _wrap_lines(paragraph, _font(SIYUAN, 25), CONTENT_W - 238, max_lines=12)
+        sections.append((label, lines, color))
+    return sections
+
+
+def _critical_focus(report: RoastReport) -> tuple[str, str]:
+    for item in report.highlights or []:
+        if str(item.get("tone") or "") == "warning":
+            return str(item.get("title") or "本次最该先修"), str(item.get("text") or "")
+    if report.weaknesses:
+        return "本次最该先修", str(report.weaknesses[0])
+    if report.actions:
+        return "下一步重点", str(report.actions[0])
+    return "本次重点", str(report.summary or "先看成绩结构，再按训练路线逐项处理。")
+
+
+def _achievement_target(value: Any) -> tuple[str, float, float] | None:
+    achievement = _f(value)
+    for label, target in (("S", 97.0), ("SSS", 100.0), ("SSS+", 100.5), ("理论值", 101.0)):
+        if achievement < target - 0.00005:
+            return label, target, target - achievement
+    return None
+
+
 def _peer_position_color(peer: dict[str, Any]) -> tuple[int, int, int]:
     if not peer.get("available"):
         return MUTED
@@ -499,15 +557,46 @@ def _measure_layout(pack: EvidencePack, report: RoastReport) -> dict[str, Any]:
     trend_h = 104 + 330 if len(trend_points) >= 2 and (pack.trend or {}).get("available") else 0
     ds_h = 104 + 62 + max(1, len(ds_rows)) * 68 + 18
     highlights = list(report.highlights or [])[:3]
-    highlight_h = 104 + 184 if highlights else 0
-    evidence = _select_evidence(pack, report, limit=8)
+    highlight_cards: list[dict[str, Any]] = []
+    highlight_card_h = 0
+    if highlights:
+        highlight_card_w = (CONTENT_W - (len(highlights) - 1) * GAP) // len(highlights)
+        for item in highlights:
+            title_lines = _wrap_lines(
+                str(item.get("title") or "重点"),
+                _font(SIYUAN, 24),
+                highlight_card_w - 76,
+            )
+            text_lines = _wrap_lines(
+                str(item.get("text") or ""),
+                _font(SIYUAN, 22),
+                highlight_card_w - 76,
+            )
+            card_h = 22 + len(title_lines) * 32 + 10 + len(text_lines) * 31 + 24
+            highlight_card_h = max(highlight_card_h, 184, card_h)
+            highlight_cards.append({
+                "item": item,
+                "title_lines": title_lines,
+                "text_lines": text_lines,
+            })
+    highlight_h = 104 + highlight_card_h if highlights else 0
+    all_evidence = _select_evidence(pack, report, limit=10)
+    analysis_spotlights = [item for item in all_evidence if item[3]][:2]
+    inline_ids = {_evidence_id(item[0]) for item in analysis_spotlights}
+    evidence = [item for item in all_evidence if _evidence_id(item[0]) not in inline_ids][:6]
+    if not evidence:
+        evidence = all_evidence[:6]
     evidence_rows = max(1, math.ceil(len(evidence) / 2))
     evidence_h = 104 + evidence_rows * 194 + max(0, evidence_rows - 1) * 14
-    analysis_lines = _wrap_lines(report.analysis or report.summary, _font(SIYUAN, 28), CONTENT_W - 72, max_lines=40)
-    headline_lines = _wrap_lines(report.headline, _font(SIYUAN, 31), CONTENT_W - 72, max_lines=3)
-    narrative_h = 48 + len(headline_lines) * 42 + 18 + len(analysis_lines) * 41 + 34
+    analysis_sections = _analysis_sections(report)
+    analysis_body_h = 66 + sum(max(82, len(lines) * 36 + 30) for _, lines, _ in analysis_sections) + 20
+    focus_title, focus_text = _critical_focus(report)
+    focus_lines = _wrap_lines(focus_text, _font(SIYUAN, 24), CONTENT_W - 250, max_lines=3)
+    focus_h = max(130, 48 + len(focus_lines) * 34)
+    spotlight_h = 274 if analysis_spotlights else 0
+    narrative_h = focus_h + 16 + analysis_body_h + (18 + spotlight_h if spotlight_h else 0)
     left_h = _measure_bullet_group(report.strengths, 660) + _measure_bullet_group(report.peer_takeaways, 660)
-    right_h = _measure_bullet_group(report.weaknesses, 660) + _measure_bullet_group(report.actions, 660)
+    right_h = _measure_bullet_group(report.weaknesses, 660) + _measure_action_steps(report.actions, 660)
     insight_h = max(260, max(left_h, right_h) + 34)
     analysis_h = 104 + narrative_h + 18 + insight_h
     recommendations = _recommendation_rows(pack, report, limit=5)
@@ -527,6 +616,8 @@ def _measure_layout(pack: EvidencePack, report: RoastReport) -> dict[str, Any]:
         "summary_lines": summary_lines,
         "summary_h": summary_h,
         "highlights": highlights,
+        "highlight_cards": highlight_cards,
+        "highlight_card_h": highlight_card_h,
         "highlight_h": highlight_h,
         "diagnostics_h": diagnostics_h,
         "trend_h": trend_h,
@@ -535,8 +626,12 @@ def _measure_layout(pack: EvidencePack, report: RoastReport) -> dict[str, Any]:
         "ds_h": ds_h,
         "evidence": evidence,
         "evidence_h": evidence_h,
-        "analysis_lines": analysis_lines,
-        "analysis_headline_lines": headline_lines,
+        "analysis_sections": analysis_sections,
+        "analysis_body_h": analysis_body_h,
+        "analysis_focus": (focus_title, focus_lines),
+        "analysis_focus_h": focus_h,
+        "analysis_spotlights": analysis_spotlights,
+        "analysis_spotlight_h": spotlight_h,
         "narrative_h": narrative_h,
         "insight_h": insight_h,
         "analysis_h": analysis_h,
@@ -604,20 +699,20 @@ def _draw_highlights(
     y: int,
 ) -> int:
     start = y
-    highlights = layout.get("highlights") or []
-    if not highlights:
+    highlight_cards = layout.get("highlight_cards") or []
+    if not highlight_cards:
         return y
     y = _section(draw, y, "三句话看懂", "先看结论，再看真实成绩证据和训练路线")
-    card_w = (CONTENT_W - (len(highlights) - 1) * GAP) // len(highlights)
-    for index, item in enumerate(highlights):
+    card_h = int(layout["highlight_card_h"])
+    card_w = (CONTENT_W - (len(highlight_cards) - 1) * GAP) // len(highlight_cards)
+    for index, card in enumerate(highlight_cards):
+        item = card["item"]
         x = CONTENT_X + index * (card_w + GAP)
         color, background = _highlight_colors(str(item.get("tone") or "neutral"))
-        _panel(im, (x, y, x + card_w, y + 184), radius=18, fill=background, outline=(*color, 90), width=2)
-        draw.rounded_rectangle((x + 22, y + 22, x + 31, y + 162), radius=5, fill=color)
-        title = str(item.get("title") or "重点")
-        draw.text((x + 50, y + 22), _fit_line(title, _font(SIYUAN, 24), card_w - 76), font=_font(SIYUAN, 24), fill=color)
-        lines = _wrap_lines(str(item.get("text") or ""), _font(SIYUAN, 22), card_w - 76, max_lines=4)
-        _draw_lines(draw, lines, x + 50, y + 66, _font(SIYUAN, 22), INK, 31)
+        _panel(im, (x, y, x + card_w, y + card_h), radius=18, fill=background, outline=(*color, 90), width=2)
+        draw.rounded_rectangle((x + 22, y + 22, x + 31, y + card_h - 22), radius=5, fill=color)
+        title_end = _draw_lines(draw, card["title_lines"], x + 50, y + 22, _font(SIYUAN, 24), color, 32)
+        _draw_lines(draw, card["text_lines"], x + 50, title_end + 10, _font(SIYUAN, 22), INK, 31)
     return start + int(layout["highlight_h"])
 
 
@@ -1293,15 +1388,123 @@ def _draw_bullet_group(draw: ImageDraw.ImageDraw, x: int, y: int, width: int, ti
     return current + 8
 
 
+def _draw_action_steps(
+    draw: ImageDraw.ImageDraw,
+    x: int,
+    y: int,
+    width: int,
+    items: list[str],
+) -> int:
+    draw.text((x, y), "训练顺序", font=_font(SIYUAN, 25), fill=ORANGE)
+    current = y + 42
+    font = _font(SIYUAN, 21)
+    if not items:
+        draw.text((x, current), "暂无足够证据", font=font, fill=MUTED)
+        return current + 48
+    for index, item in enumerate(items[:3]):
+        lines = _wrap_lines(str(item), font, width - 76, max_lines=3)
+        step_h = max(62, len(lines) * 30 + 18)
+        draw.rounded_rectangle((x, current + 2, x + 42, current + 44), radius=12, fill=ORANGE_SOFT)
+        draw.text((x + 21, current + 23), str(index + 1), font=_font(TBFONT, 19), fill=ORANGE, anchor="mm")
+        _draw_lines(draw, lines, x + 58, current, font, INK, 30)
+        if index < min(3, len(items)) - 1:
+            draw.line((x + 21, current + 45, x + 21, current + step_h - 4), fill=(242, 202, 158), width=3)
+        current += step_h
+    return current + 8
+
+
+def _draw_analysis_song_card(
+    im: Image.Image,
+    draw: ImageDraw.ImageDraw,
+    box: tuple[int, int, int, int],
+    item: tuple[dict[str, Any], str, tuple[int, int, int], str],
+    index: int,
+) -> None:
+    row, _label, _color, verdict = item
+    x1, y1, x2, y2 = box
+    peer_gap = row.get("peer_gap")
+    accent = RED if peer_gap is not None and _f(peer_gap) < 0 else GREEN if peer_gap is not None else ORANGE
+    soft = RED_SOFT if accent == RED else GREEN_SOFT if accent == GREEN else ORANGE_SOFT
+    _panel(im, box, radius=18, fill=(251, 253, 255, 244), outline=(*accent, 92), width=2)
+    _paste_game_texture(im, box, _i(row.get("level_index")), opacity=18)
+    draw.rounded_rectangle((x1, y1, x1 + 10, y2), radius=5, fill=accent)
+    draw.rounded_rectangle((x1 + 20, y1 + 16, x1 + 142, y1 + 46), radius=10, fill=soft)
+    draw.text((x1 + 81, y1 + 31), f"重点曲目 {index + 1}", font=_font(SIYUAN, 15), fill=accent, anchor="mm")
+
+    cover_box = (x1 + 20, y1 + 62, x1 + 156, y1 + 198)
+    cover = _load_cover(str(row.get("cover_path") or ""), (136, 136))
+    if cover is not None:
+        im.alpha_composite(cover, (cover_box[0], cover_box[1]))
+    else:
+        _draw_cover_placeholder(draw, cover_box)
+
+    text_x = x1 + 180
+    text_r = x2 - 22
+    title = f"《{str(row.get('title') or '未知曲目')}》"
+    draw.text((text_x, y1 + 18), _fit_line(title, _font(SIYUAN, 24), text_r - text_x), font=_font(SIYUAN, 24), fill=INK)
+    achievement = _f(row.get("achievement"))
+    draw.text((text_x, y1 + 58), f"{achievement:.4f}%", font=_font(TBFONT, 28), fill=accent)
+    target = _achievement_target(achievement)
+    if target is not None:
+        target_label, target_value, gap = target
+        target_text = f"距 {target_label} 还差 {gap:.4f} pp"
+        draw.text((text_r, y1 + 64), target_text, font=_font(SIYUAN, 17), fill=RED if gap >= 0.5 else ORANGE, anchor="ra")
+        rail_x, rail_y, rail_w = text_x, y1 + 98, text_r - text_x
+        draw.rounded_rectangle((rail_x, rail_y, rail_x + rail_w, rail_y + 10), radius=5, fill=(224, 232, 241))
+        low = max(0.0, target_value - 4.0)
+        ratio = max(0.0, min(1.0, (achievement - low) / max(0.001, target_value - low)))
+        draw.rounded_rectangle((rail_x, rail_y, rail_x + max(6, int(rail_w * ratio)), rail_y + 10), radius=5, fill=accent)
+    chart_type = str(row.get("type") or row.get("chart_type") or "SD").upper()
+    meta = f"{chart_type} · {row.get('level') or '—'} · DS {_f(row.get('ds')):.1f} · RA {_i(row.get('ra'))}"
+    draw.text((text_x, y1 + 119), _fit_line(meta, _value_font(meta, 17), text_r - text_x), font=_value_font(meta, 17), fill=_difficulty_color(row.get("level_index")))
+    if peer_gap is not None:
+        peer_text = f"和相近 Rating 玩家相比 {_f(peer_gap):+.4f} pp"
+        draw.text((text_x, y1 + 146), peer_text, font=_font(SIYUAN, 16), fill=accent)
+    verdict_lines = _wrap_lines(f"点评：{verdict}", _font(SIYUAN, 17), text_r - text_x, max_lines=2)
+    _draw_lines(draw, verdict_lines, text_x, y1 + 173, _font(SIYUAN, 17), INK, 24)
+
+
 def _draw_analysis(im: Image.Image, draw: ImageDraw.ImageDraw, report: RoastReport, layout: dict[str, Any], y: int) -> int:
     start = y
-    y = _section(draw, y, "专业点评", "每个结论都对应真实成绩，并给出玩家可以直接执行的练习方向")
-    narrative_h = layout["narrative_h"]
-    _panel(im, (CONTENT_X, y, CONTENT_R, y + narrative_h), radius=20, fill=(255, 251, 244, 240), outline=(242, 215, 175, 255))
-    draw.text((CONTENT_X + 32, y + 24), "分析正文", font=_font(SIYUAN, 23), fill=ORANGE)
-    cursor = _draw_lines(draw, layout["analysis_headline_lines"], CONTENT_X + 32, y + 61, _font(SIYUAN, 31), INK, 42)
-    _draw_lines(draw, layout["analysis_lines"], CONTENT_X + 32, cursor + 12, _font(SIYUAN, 28), (68, 61, 52), 41)
-    insights_y = y + narrative_h + 18
+    y = _section(draw, y, "专业点评", "重点、证据和训练顺序放在一起，读完就知道先练什么")
+    focus_h = int(layout["analysis_focus_h"])
+    focus_title, focus_lines = layout["analysis_focus"]
+    _panel(im, (CONTENT_X, y, CONTENT_R, y + focus_h), radius=18, fill=(*RED_SOFT, 244), outline=(235, 171, 176, 255), width=2)
+    draw.rounded_rectangle((CONTENT_X, y, CONTENT_X + 12, y + focus_h), radius=6, fill=RED)
+    draw.ellipse((CONTENT_X + 32, y + 29, CONTENT_X + 88, y + 85), fill=RED)
+    draw.text((CONTENT_X + 60, y + 57), "!", font=_font(TBFONT, 31), fill=WHITE, anchor="mm")
+    draw.text((CONTENT_X + 112, y + 24), _fit_line(focus_title, _font(SIYUAN, 25), CONTENT_W - 170), font=_font(SIYUAN, 25), fill=RED)
+    _draw_lines(draw, focus_lines, CONTENT_X + 112, y + 62, _font(SIYUAN, 24), INK, 34)
+
+    body_y = y + focus_h + 16
+    body_h = int(layout["analysis_body_h"])
+    _panel(im, (CONTENT_X, body_y, CONTENT_R, body_y + body_h), radius=20, fill=(251, 253, 255, 242), outline=(207, 220, 235, 255))
+    draw.text((CONTENT_X + 28, body_y + 20), "分析拆解", font=_font(SIYUAN, 23), fill=BLUE)
+    cursor = body_y + 58
+    divider_r = CONTENT_R - 28
+    for index, (label, lines, color) in enumerate(layout["analysis_sections"]):
+        row_h = max(82, len(lines) * 36 + 30)
+        draw.rounded_rectangle((CONTENT_X + 28, cursor + 7, CONTENT_X + 150, cursor + 43), radius=10, fill=(*color, 24))
+        draw.text((CONTENT_X + 89, cursor + 25), label, font=_font(SIYUAN, 18), fill=color, anchor="mm")
+        _draw_lines(draw, lines, CONTENT_X + 174, cursor + 3, _font(SIYUAN, 25), INK, 36)
+        cursor += row_h
+        if index < len(layout["analysis_sections"]) - 1:
+            draw.line((CONTENT_X + 174, cursor - 10, divider_r, cursor - 10), fill=LINE, width=1)
+
+    spotlight_y = body_y + body_h
+    spotlights = layout.get("analysis_spotlights") or []
+    if spotlights:
+        spotlight_y += 18
+        draw.text((CONTENT_X + 4, spotlight_y), "关键乐曲证据", font=_font(SIYUAN, 25), fill=INK)
+        draw.text((CONTENT_R - 4, spotlight_y + 4), "曲绘与数值来自真实 B50", font=_font(SIYUAN, 17), fill=MUTED, anchor="ra")
+        card_y = spotlight_y + 44
+        card_w = (CONTENT_W - GAP) // 2
+        for index, item in enumerate(spotlights):
+            card_x = CONTENT_X + index * (card_w + GAP)
+            _draw_analysis_song_card(im, draw, (card_x, card_y, card_x + card_w, card_y + 230), item, index)
+        spotlight_y += int(layout["analysis_spotlight_h"])
+
+    insights_y = spotlight_y + 18
     insight_h = layout["insight_h"]
     _panel(im, (CONTENT_X, insights_y, CONTENT_R, insights_y + insight_h), radius=20, fill=(249, 251, 254, 239))
     col_w = (CONTENT_W - 80 - GAP) // 2
@@ -1310,7 +1513,7 @@ def _draw_analysis(im: Image.Image, draw: ImageDraw.ImageDraw, report: RoastRepo
     left_cursor = _draw_bullet_group(draw, left_x, insights_y + 24, col_w, "亮点", report.strengths, GREEN)
     _draw_bullet_group(draw, left_x, left_cursor + 8, col_w, "同段观察", report.peer_takeaways, BLUE)
     right_cursor = _draw_bullet_group(draw, right_x, insights_y + 24, col_w, "风险与短板", report.weaknesses, RED)
-    _draw_bullet_group(draw, right_x, right_cursor + 8, col_w, "行动建议", report.actions, ORANGE)
+    _draw_action_steps(draw, right_x, right_cursor + 8, col_w, report.actions)
     return start + layout["analysis_h"]
 
 

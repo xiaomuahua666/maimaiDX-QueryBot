@@ -19,6 +19,7 @@ nonebot.init()
 
 from nonebot_plugin_maimaidx.libraries.maimaidx_platform import (  # noqa: E402
     _format_plain_qq_markdown,
+    _markdownize_web_links,
     _markdown_to_plain_text,
     _qq_text_message_as_markdown,
     build_command_keyboard,
@@ -80,24 +81,50 @@ finally:
 
 link_url = 'https://wiki.awmc.team/guide/bot/intro'
 direct_link = _qq_text_message_as_markdown(f'帮助文档\n· 使用说明：{link_url}')
-assert [segment.type for segment in direct_link] == ['text']
-assert link_url in str(direct_link[0])
+assert [segment.type for segment in direct_link] == ['markdown']
+direct_content = direct_link[0].data['markdown'].content
+assert f'[{link_url}]({link_url})' in direct_content
+assert '<qqbot-at-user' not in direct_content
 
 rich_link_event = RichLinkQQEvent()
 linked_markdown = build_markdown_message(
     f'## 帮助文档\n- [打开使用说明]({link_url})',
     event=rich_link_event,
 )
-assert [segment.type for segment in linked_markdown] == ['text']
-assert f'打开使用说明: {link_url}' in str(linked_markdown[0])
+assert [segment.type for segment in linked_markdown] == ['markdown']
+assert f'[打开使用说明]({link_url})' in linked_markdown[0].data['markdown'].content
 
 mentioned_link = ensure_sender_mention(
     f'帮助文档\n· 使用说明：{link_url}', rich_link_event,
 )
 mentioned_link_types = [segment.type for segment in mentioned_link]
-assert 'markdown' not in mentioned_link_types
-assert 'text' in mentioned_link_types
-assert link_url in str(mentioned_link)
+assert mentioned_link_types == ['markdown']
+mentioned_content = mentioned_link[0].data['markdown'].content
+assert mentioned_content.startswith(
+    '<qqbot-at-user id="rich-link-openid" />\n'
+)
+assert f'[{link_url}]({link_url})' in mentioned_content
+
+assert _markdownize_web_links(
+    f'🎮 游戏地址 {link_url}'
+) == f'🎮 游戏地址 [{link_url}]({link_url})'
+assert _markdownize_web_links(f'[说明]({link_url})') == f'[说明]({link_url})'
+announcement_body = (
+    '【必读公告 · 当前】\n'
+    '🎁 宣传你画我猜 瓜分现金奖励\n'
+    f'🎮 游戏地址 {link_url}\n'
+    '确认词：来玩你画我猜'
+)
+announcement_reply = ensure_sender_mention(
+    announcement_body, rich_link_event,
+)
+assert [segment.type for segment in announcement_reply] == ['markdown']
+announcement_content = announcement_reply[0].data['markdown'].content
+assert announcement_content.startswith(
+    '<qqbot-at-user id="rich-link-openid" />\n'
+)
+assert f'[{link_url}]({link_url})' in announcement_content
+assert '**确认词：** 来玩你画我猜' in announcement_content
 
 qq_bind_source = (ROOT / 'libraries' / 'maimaidx_qq_bind.py').read_text(encoding='utf-8')
 qq_command_source = (ROOT / 'command' / 'mai_qq_bind.py').read_text(encoding='utf-8')

@@ -1687,11 +1687,11 @@ def _format_plain_qq_markdown(content: str) -> str:
         r'(?m)^\s*(?:#{1,6}\s|[-*+]\s|\d+\.\s|>\s|```)|\*\*|\[[^]]+\]\([^)]+\)',
         text,
     ):
-        return text
+        return _markdownize_web_links(text)
     lines = text.splitlines()
     nonempty = [line for line in lines if line.strip()]
     if len(nonempty) < 2:
-        return text
+        return _markdownize_web_links(text)
 
     first_index = next(index for index, line in enumerate(lines) if line.strip())
     first = lines[first_index].strip()
@@ -1714,15 +1714,33 @@ def _format_plain_qq_markdown(content: str) -> str:
         if len(stripped) <= 28 and stripped.endswith(('：', ':')):
             lines[index] = f'### {stripped[:-1].strip()}'
             continue
-        match = re.match(r'^([^：:]{1,16})[：:]\s*(.+)$', stripped)
-        if match:
+        match = re.match(r'^([^：:\s][^：:]{0,15})[：:]\s*(.+)$', stripped)
+        if match and not _contains_web_link(stripped[:match.end(2) + 1]):
             label, value = match.groups()
             lines[index] = f'- **{label.strip()}：** {value.strip()}'
-    return '\n'.join(lines)
+    return _markdownize_web_links('\n'.join(lines))
 
 
 def _contains_web_link(content: str) -> bool:
     return re.search(r'https?://[^\s<>]+', str(content or ''), flags=re.IGNORECASE) is not None
+
+
+def _markdownize_web_links(content: str) -> str:
+    """Turn raw http(s) links into clickable QQ Markdown links."""
+    text = str(content or '')
+    if not _contains_web_link(text):
+        return text
+
+    def _replace(match: re.Match) -> str:
+        url = match.group(0)
+        return f'[{url}]({url})'
+
+    return re.sub(
+        r'(?<!\]\()https?://[^\s<>\)）】》]+',
+        _replace,
+        text,
+        flags=re.IGNORECASE,
+    )
 
 
 def _qq_text_message_as_markdown(message: Any) -> Any | None:
@@ -1731,8 +1749,6 @@ def _qq_text_message_as_markdown(message: Any) -> Any | None:
         from nonebot.adapters.qq.message import Message as QQMessage
         from nonebot.adapters.qq.message import MessageSegment as QQSeg
 
-        if _contains_web_link(message):
-            return QQMessage([QQSeg.text(_markdown_to_plain_text(message))])
         return QQMessage([QQSeg.markdown(_format_plain_qq_markdown(message))])
     module = type(message).__module__
     if not module.startswith('nonebot.adapters.qq'):
@@ -1820,8 +1836,9 @@ def _qq_plaintext_mention_message(
     if _contains_web_link(body):
         return QQMessage(
             [
-                _qq_mention_segment(target),
-                QQSeg.text(f'\n{_markdown_to_plain_text(body)}'),
+                QQSeg.markdown(
+                    f'{markup}\n{_format_plain_qq_markdown(body)}'
+                ),
             ]
         )
     output: list[Any] = [
@@ -1905,8 +1922,10 @@ def ensure_sender_mention(message: Any, event) -> Any:
             if _contains_web_link(body):
                 return QQMessage(
                     [
-                        _qq_mention_segment(uid, username=nickname or None),
-                        QQSeg.text(f'\n{_markdown_to_plain_text(body)}'),
+                        QQSeg.markdown(
+                            f'{qq_at_markup(uid)}\n'
+                            f'{_format_plain_qq_markdown(body)}'
+                        ),
                     ]
                 )
             if qq_plain_text_mode(event):
@@ -3026,7 +3045,7 @@ def build_markdown_message(content: str, *, event=None) -> Any:
     from nonebot.adapters.qq.message import Message as QQMessage
     from nonebot.adapters.qq.message import MessageSegment as QQSeg
 
-    if qq_plain_text_mode(event) or _contains_web_link(text):
+    if qq_plain_text_mode(event):
         return QQMessage([QQSeg.text(_markdown_to_plain_text(text))])
     return QQMessage([QQSeg.markdown(text)])
 
