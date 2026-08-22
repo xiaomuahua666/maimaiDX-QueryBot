@@ -3479,7 +3479,7 @@ async def _execute_ticket_now(
                 ) from exc
 
         try:
-            return await _confirm_ticket_delivery(
+            confirmed_stock = await _confirm_ticket_delivery(
                 binding.qrcode,
                 multiple,
                 binding.mai_uid,
@@ -3495,6 +3495,7 @@ async def _execute_ticket_now(
         # look faster or slower than real completed deliveries.
         elapsed = max(0.001, time.perf_counter() - timing_started_at)
         processing_time_estimator.record(_TICKET_TIMING_KEY, elapsed)
+        return confirmed_stock
 
     verified_stock, attempts = await _run_ticket_with_retries(
         execute_attempt,

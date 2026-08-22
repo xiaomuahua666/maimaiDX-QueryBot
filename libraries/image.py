@@ -1,4 +1,5 @@
 import base64
+from functools import lru_cache
 from io import BytesIO
 from typing import Tuple, Union
 
@@ -6,6 +7,13 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 from ..config import SHANGGUMONO, Path, coverdir
+
+
+@lru_cache(maxsize=128)
+def _load_font(path: str, size: int) -> ImageFont.FreeTypeFont:
+    """缓存字体对象：TTF 每次 truetype 都重新读盘解析（多 MB CJK 字体），
+    一张 b50 图有数百次文字绘制。单进程 Bot 中 FreeTypeFont 可安全复用。"""
+    return ImageFont.truetype(path, size)
 
 
 # The production font pack is intentionally CJK-focused and the Linux hosts do
@@ -57,7 +65,7 @@ class DrawText:
         self._font = str(font)
 
     def get_box(self, text: str, size: int) -> Tuple[float, float, float, float]:
-        return ImageFont.truetype(self._font, size).getbbox(image_safe_text(text))
+        return _load_font(self._font, size).getbbox(image_safe_text(text))
 
     def draw(
         self,
@@ -71,7 +79,7 @@ class DrawText:
         stroke_fill: Tuple[int, int, int, int] = (0, 0, 0, 0),
         multiline: bool = False
     ) -> None:
-        font = ImageFont.truetype(self._font, size)
+        font = _load_font(self._font, size)
         text = image_safe_text(text)
         if multiline:
             self._img.multiline_text(
@@ -105,7 +113,7 @@ def fit_font_size(
     """在 max_width 内从 start 向下试探字号，避免页脚等长文案溢出。"""
     size = start
     while size >= min_size:
-        font = ImageFont.truetype(font_path, size)
+        font = _load_font(str(font_path), size)
         try:
             text_w = font.getlength(text)
         except AttributeError:
@@ -325,7 +333,7 @@ def text_to_image(text: str) -> Image.Image:
         bundled = Path(__file__).resolve().parents[1] / 'GenSenMaruGothicTW-Regular.ttf'
         font_path = bundled if bundled.is_file() else font_path
     try:
-        font = ImageFont.truetype(str(font_path), 24)
+        font = _load_font(str(font_path), 24)
     except OSError:
         font = ImageFont.load_default()
     padding = 10

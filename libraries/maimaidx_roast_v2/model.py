@@ -656,6 +656,9 @@ async def generate_report(
                 log.warning("[roast_v2] 当前网关拒绝 reasoning_effort，已回退默认请求")
                 request.pop("reasoning_effort", None)
                 continue
+            # 所有兼容回退都不匹配的 400 是真实的请求错误：静默重试同一请求
+            # 只会重复失败并把真实原因吞成「模型请求未返回响应」。直接抛出。
+            raise
         except APIStatusError as exc:
             # A few OneAPI gateways surface unsupported extension fields as a
             # generic 500 instead of a useful 400. Retry once with a smaller

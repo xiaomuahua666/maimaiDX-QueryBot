@@ -491,21 +491,37 @@ class AdminAuditDatabase:
     def _get_active_ban_sync(self, user_id: str) -> Optional[dict]:
         now = time.time()
         with self._lock:
-            self._conn.execute(
-                "UPDATE user_bans SET active=0 WHERE active=1 AND expires_at IS NOT NULL AND expires_at <= ?",
-                (now,),
-            )
+            # 读路径不做全表过期清扫：那会让每条群消息都付一次写事务
+            # （UPDATE+COMMIT）。查询时直接按过期时间过滤；真正命中了
+            # 本用户的过期行才顺手清理，全表清扫留给 cleanup()。
             row = self._conn.execute(
-                "SELECT * FROM user_bans WHERE user_id=? AND active=1", (str(user_id),)
+                "SELECT * FROM user_bans WHERE user_id=? AND active=1 "
+                "AND (expires_at IS NULL OR expires_at > ?)",
+                (str(user_id), now),
             ).fetchone()
-            self._conn.commit()
+            if row is None:
+                cur = self._conn.execute(
+                    "UPDATE user_bans SET active=0 WHERE user_id=? AND active=1 "
+                    "AND expires_at IS NOT NULL AND expires_at <= ?",
+                    (str(user_id), now),
+                )
+                if cur.rowcount:
+                    self._conn.commit()
         return dict(row) if row else None
 
     def list_bans(self, *, active_only: bool = True) -> list[dict]:
-        where = " WHERE active=1" if active_only else ""
+        # 读路径不再全表清扫过期行（见 _get_active_ban_sync），列表查询
+        # 需自行按过期时间过滤，避免把已过期但未标记的行当作生效封禁展示。
+        where = (
+            " WHERE active=1 AND (expires_at IS NULL OR expires_at > ?)"
+            if active_only
+            else ""
+        )
+        params: tuple = (time.time(),) if active_only else ()
         with self._lock:
             rows = self._conn.execute(
-                "SELECT * FROM user_bans" + where + " ORDER BY created_at DESC"
+                "SELECT * FROM user_bans" + where + " ORDER BY created_at DESC",
+                params,
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -631,6 +647,12 @@ class AdminAuditDatabase:
         trace_before = time.time() - days * 86400
         message_before = (date.today() - timedelta(days=days)).isoformat()
         with self._lock:
+            # 过期封禁的全表标记从读路径挪到这里（见 _get_active_ban_sync）。
+            self._conn.execute(
+                "UPDATE user_bans SET active=0 WHERE active=1 "
+                "AND expires_at IS NOT NULL AND expires_at <= ?",
+                (time.time(),),
+            )
             step_cur = self._conn.execute(
                 """DELETE FROM audit_steps WHERE ref_id IN
                    (SELECT ref_id FROM audit_traces WHERE started_at < ?)""",
@@ -659,7 +681,9 @@ class AdminAuditDatabase:
                 "SELECT COUNT(*) c FROM audit_traces WHERE started_at >= ? AND status='error'", (since,)
             ).fetchone()["c"]
             bans = self._conn.execute(
-                "SELECT COUNT(*) c FROM user_bans WHERE active=1"
+                "SELECT COUNT(*) c FROM user_bans WHERE active=1 "
+                "AND (expires_at IS NULL OR expires_at > ?)",
+                (time.time(),),
             ).fetchone()["c"]
             groups = self._conn.execute(
                 "SELECT COUNT(DISTINCT group_id) c FROM group_message_daily"

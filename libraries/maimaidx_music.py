@@ -89,12 +89,21 @@ def in_or_equal(
 
 
 class MusicList(List[Music]):
-    
-    def by_id(self, music_id: Union[str, int]) -> Optional[Music]:
+
+    def _id_index(self) -> Dict[str, Music]:
+        # 惰性 id→Music 索引：by_id 在全成绩循环里逐条调用（O(records×songs)
+        # 的线性扫热点）。列表经 append 构建、刷新时整体替换，按长度失效即可。
+        cached = getattr(self, '_id_cache', None)
+        if cached is not None and cached[0] == len(self):
+            return cached[1]
+        index: Dict[str, Music] = {}
         for music in self:
-            if music.id == str(music_id):
-                return music
-        return None
+            index.setdefault(music.id, music)  # 与线性扫一致：重复 id 取首个
+        self._id_cache = (len(self), index)
+        return index
+
+    def by_id(self, music_id: Union[str, int]) -> Optional[Music]:
+        return self._id_index().get(str(music_id))
 
     def by_title(self, music_title: str) -> Optional[Music]:
         for music in self:

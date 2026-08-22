@@ -1219,12 +1219,17 @@ class BreakDatabase:
         return row['value'] if row else default
 
     def set_config(self, key: str, value: str) -> None:
-        self._conn.execute(
-            'INSERT INTO break_config (key, value) VALUES (?, ?) '
-            'ON CONFLICT(key) DO UPDATE SET value = excluded.value',
-            (key, value),
-        )
-        self._conn.commit()
+        with self._db_lock():
+            try:
+                self._conn.execute(
+                    'INSERT INTO break_config (key, value) VALUES (?, ?) '
+                    'ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+                    (key, value),
+                )
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
 
     def billing_enabled(self) -> bool:
         """BREAK 功能计费总开关；关闭后所有功能扣费与余额拦截一律放行。"""
@@ -1299,14 +1304,19 @@ class BreakDatabase:
         return not row or int(row['free_used']) == 0
 
     def mark_daily_free_used(self, qqid: int) -> None:
-        self._ensure_user(qqid)
-        self._ensure_daily(qqid)
-        self._conn.execute(
-            """UPDATE break_daily_usage SET free_used = 1
-               WHERE qqid = ? AND date = ?""",
-            (qqid, self._today()),
-        )
-        self._conn.commit()
+        with self._db_lock():
+            try:
+                self._ensure_user(qqid)
+                self._ensure_daily(qqid)
+                self._conn.execute(
+                    """UPDATE break_daily_usage SET free_used = 1
+                       WHERE qqid = ? AND date = ?""",
+                    (qqid, self._today()),
+                )
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
 
     def record_usage(
         self,
@@ -1316,42 +1326,47 @@ class BreakDatabase:
         break_delta: int = 0,
     ) -> None:
         """kind: query | analysis"""
-        self._ensure_user(qqid)
-        self._ensure_daily(qqid)
-        now = time.time()
-        if kind == 'query':
-            self._conn.execute(
-                """UPDATE break_users SET
-                   total_query_count = COALESCE(total_query_count, 0) + 1,
-                   last_query_at = ?,
-                   updated_at = ?
-                   WHERE qqid = ?""",
-                (now, now, qqid),
-            )
-            self._conn.execute(
-                """UPDATE break_daily_usage SET
-                   query_count = query_count + 1,
-                   break_spent = break_spent + ?
-                   WHERE qqid = ? AND date = ?""",
-                (max(0, -break_delta), qqid, self._today()),
-            )
-        elif kind == 'analysis':
-            self._conn.execute(
-                """UPDATE break_users SET
-                   total_analysis_count = COALESCE(total_analysis_count, 0) + 1,
-                   last_analysis_at = ?,
-                   updated_at = ?
-                   WHERE qqid = ?""",
-                (now, now, qqid),
-            )
-            self._conn.execute(
-                """UPDATE break_daily_usage SET
-                   analysis_count = analysis_count + 1,
-                   break_spent = break_spent + ?
-                   WHERE qqid = ? AND date = ?""",
-                (max(0, -break_delta), qqid, self._today()),
-            )
-        self._conn.commit()
+        with self._db_lock():
+            try:
+                self._ensure_user(qqid)
+                self._ensure_daily(qqid)
+                now = time.time()
+                if kind == 'query':
+                    self._conn.execute(
+                        """UPDATE break_users SET
+                           total_query_count = COALESCE(total_query_count, 0) + 1,
+                           last_query_at = ?,
+                           updated_at = ?
+                           WHERE qqid = ?""",
+                        (now, now, qqid),
+                    )
+                    self._conn.execute(
+                        """UPDATE break_daily_usage SET
+                           query_count = query_count + 1,
+                           break_spent = break_spent + ?
+                           WHERE qqid = ? AND date = ?""",
+                        (max(0, -break_delta), qqid, self._today()),
+                    )
+                elif kind == 'analysis':
+                    self._conn.execute(
+                        """UPDATE break_users SET
+                           total_analysis_count = COALESCE(total_analysis_count, 0) + 1,
+                           last_analysis_at = ?,
+                           updated_at = ?
+                           WHERE qqid = ?""",
+                        (now, now, qqid),
+                    )
+                    self._conn.execute(
+                        """UPDATE break_daily_usage SET
+                           analysis_count = analysis_count + 1,
+                           break_spent = break_spent + ?
+                           WHERE qqid = ? AND date = ?""",
+                        (max(0, -break_delta), qqid, self._today()),
+                    )
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
 
     def try_consume(
         self,
@@ -1504,11 +1519,15 @@ class BreakDatabase:
                 detail = dict(meta or {})
                 detail.update({'reserved': reserved, 'cost': cost, 'adjustment': adjustment})
                 self._append_log(qqid, adjustment, 'b50_analysis_settlement', meta=detail)
-                self._conn.commit()
+                # 余额必须在 commit 前读取：commit 之后的查询一旦失败（如
+                # MySQL 断连），钱已入账却抛异常，调用方会误判结算失败而把
+                # 预扣全额退款，造成净多退。
                 row = self._conn.execute(
                     'SELECT balance FROM break_users WHERE qqid = ?', (qqid,),
                 ).fetchone()
-                return int(row['balance']) if row else 0
+                balance = int(row['balance']) if row else 0
+                self._conn.commit()
+                return balance
             except BaseException:
                 self._conn.rollback()
                 raise
@@ -1574,21 +1593,26 @@ class BreakDatabase:
         *,
         meta: Optional[dict] = None,
     ) -> int:
-        self._ensure_user(qqid)
-        self._ensure_daily(qqid)
-        now = time.time()
-        self._conn.execute(
-            'UPDATE break_users SET balance = balance + ?, updated_at = ? WHERE qqid = ?',
-            (delta, now, qqid),
-        )
-        if delta > 0:
-            self._conn.execute(
-                """UPDATE break_daily_usage SET break_gained = break_gained + ?
-                   WHERE qqid = ? AND date = ?""",
-                (delta, qqid, self._today()),
-            )
-        self._append_log(qqid, delta, reason, meta=meta)
-        self._conn.commit()
+        with self._db_lock():
+            try:
+                self._ensure_user(qqid)
+                self._ensure_daily(qqid)
+                now = time.time()
+                self._conn.execute(
+                    'UPDATE break_users SET balance = balance + ?, updated_at = ? WHERE qqid = ?',
+                    (delta, now, qqid),
+                )
+                if delta > 0:
+                    self._conn.execute(
+                        """UPDATE break_daily_usage SET break_gained = break_gained + ?
+                           WHERE qqid = ? AND date = ?""",
+                        (delta, qqid, self._today()),
+                    )
+                self._append_log(qqid, delta, reason, meta=meta)
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
         return self.get_balance(qqid)
 
     def service_is_free(self, qqid: int, service: str) -> bool:
@@ -2587,18 +2611,23 @@ class BreakDatabase:
         )
 
     def admin_set_balance(self, qqid: int, balance: int) -> int:
-        self._ensure_user(qqid)
-        row = self._conn.execute(
-            'SELECT balance FROM break_users WHERE qqid = ?', (qqid,)
-        ).fetchone()
-        old = int(row['balance']) if row else 0
-        delta = balance - old
-        self._conn.execute(
-            'UPDATE break_users SET balance = ?, updated_at = ? WHERE qqid = ?',
-            (balance, time.time(), qqid),
-        )
-        self._append_log(qqid, delta, 'admin_set', meta={'old': old, 'new': balance})
-        self._conn.commit()
+        with self._db_lock():
+            try:
+                self._ensure_user(qqid)
+                row = self._conn.execute(
+                    'SELECT balance FROM break_users WHERE qqid = ?', (qqid,)
+                ).fetchone()
+                old = int(row['balance']) if row else 0
+                delta = balance - old
+                self._conn.execute(
+                    'UPDATE break_users SET balance = ?, updated_at = ? WHERE qqid = ?',
+                    (balance, time.time(), qqid),
+                )
+                self._append_log(qqid, delta, 'admin_set', meta={'old': old, 'new': balance})
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
         return balance
 
     def get_user_row(self, qqid: int) -> dict:
@@ -3048,6 +3077,28 @@ class BreakDatabase:
         storage_bonus_eligible: Optional[bool] = None,
     ) -> CheckinResult:
         """storage_enabled：当前是否开启；storage_bonus_eligible：是否可拿 +50%（需跨天保持）。"""
+        # 与 transfer/_transfer_locked 同模式：持写锁 + 异常回滚，避免与其他
+        # 线程（admin_web/to_thread 结算）在共享连接上互相污染未提交事务。
+        with self._db_lock():
+            try:
+                return self._checkin_locked(
+                    qqid,
+                    group_id,
+                    storage_enabled=storage_enabled,
+                    storage_bonus_eligible=storage_bonus_eligible,
+                )
+            except BaseException:
+                self._conn.rollback()
+                raise
+
+    def _checkin_locked(
+        self,
+        qqid: int,
+        group_id: Optional[int] = None,
+        *,
+        storage_enabled: bool = False,
+        storage_bonus_eligible: Optional[bool] = None,
+    ) -> CheckinResult:
         self._ensure_user(qqid)
         today = self._today()
         user = self.get_user_row(qqid)

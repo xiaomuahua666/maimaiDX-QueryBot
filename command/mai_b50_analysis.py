@@ -201,7 +201,13 @@ async def _run_roast_generation(
             )
         return await task
     except (asyncio.CancelledError, Exception) as exc:
-        if isinstance(exc, asyncio.CancelledError) or not first_chunk_event.is_set():
+        # 首块超时必须无条件取消任务：首个 chunk 可能恰在 wait 超时与本检查
+        # 之间到达并置位 first_chunk_event，若据此跳过 cancel，超时已上报而
+        # 任务仍在后台流式消费（token 白烧 + Task exception never retrieved）。
+        if (
+            isinstance(exc, (asyncio.CancelledError, AnalysisStageTimeoutError))
+            or not first_chunk_event.is_set()
+        ):
             task.cancel()
             try:
                 await task
@@ -605,7 +611,18 @@ async def _handle_impl(matcher: Matcher, bot: Bot, event: MessageEvent, args: Me
                 reserved=reserved,
                 token_usage=token_usage,
             )
-            return render_line, charged, break_db.get_balance(billing_qq)
+            # 余额读取不能留在退款保护区内：结算此时已提交，纯读失败若触发
+            # 全额退款，用户会同时拿到结果和退款（净多退）。读失败时退化为
+            # 展示 0 并记日志，不影响账目。
+            try:
+                balance = break_db.get_balance(billing_qq)
+            except Exception as balance_exc:
+                log.warning(
+                    f"[roast_v2] 结算成功但读取余额失败，页脚余额可能不准："
+                    f"{type(balance_exc).__name__}: {balance_exc}"
+                )
+                balance = 0
+            return render_line, charged, balance
 
         render_line, charged, balance = await asyncio.to_thread(_settle_result)
     except BaseException as exc:

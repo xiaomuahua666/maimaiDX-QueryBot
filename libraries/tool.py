@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any, Union
@@ -43,8 +44,12 @@ def is_cache_fresh(file: Path, ttl_seconds: int) -> bool:
 
 
 async def writefile(file: Path, data: Any) -> bool:
-    async with aiofiles.open(file, 'w', encoding='utf-8') as f:
+    # 原子写：先写临时文件再 rename。调用方（猜歌积分、开信统计等）会把
+    # 整份存档反复全量重写，直接覆盖写一旦进程中途崩溃就是整档损坏。
+    tmp = file.with_name(file.name + '.tmp')
+    async with aiofiles.open(tmp, 'w', encoding='utf-8') as f:
         await f.write(json.dumps(data, ensure_ascii=False, indent=4))
+    os.replace(tmp, file)
     return True
 
 
