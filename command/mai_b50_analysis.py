@@ -94,6 +94,7 @@ def _user_lock(user_id: str) -> asyncio.Lock:
 
 
 _ACTIVE_PROGRESS: dict[str, int] = {}
+_ACTIVE_REASONING: dict[str, bool] = {}
 
 
 def _active_progress_key(event: MessageEvent) -> str:
@@ -105,15 +106,31 @@ def _active_progress_key(event: MessageEvent) -> str:
 
 def _analysis_progress_text(progress_key: str | None = None) -> str:
     chars = int(_ACTIVE_PROGRESS.get(progress_key or "") or 0)
+    if _ACTIVE_REASONING.get(progress_key or ""):
+        return "模型正在思考中，已收到推理内容，请稍等喵。"
     if chars > 0:
         return f"已生成约 {chars} 字，仍在继续，请稍等喵。"
     return "正在等待模型输出，请稍等喵。"
 
 
-def _mark_roast_progress(progress_key: str, first_chunk_event, _content: str) -> None:
-    chars = len(str(_content or ""))
+def _mark_roast_progress(
+    progress_key: str,
+    first_chunk_event,
+    progress,
+) -> None:
+    if isinstance(progress, dict):
+        chars = int(progress.get("chars") or 0)
+        reasoning = bool(progress.get("reasoning"))
+    else:
+        chars = len(str(progress or ""))
+        reasoning = False
+    if reasoning:
+        _ACTIVE_REASONING[progress_key] = True
+        first_chunk_event.set()
+        return
     if chars:
         _ACTIVE_PROGRESS[progress_key] = chars
+        _ACTIVE_REASONING.pop(progress_key, None)
         first_chunk_event.set()
 
 
@@ -193,6 +210,7 @@ async def _run_roast_generation(
         raise
     finally:
         _ACTIVE_PROGRESS.pop(progress_key, None)
+        _ACTIVE_REASONING.pop(progress_key, None)
 
 
 def _timeout(name: str, default: float) -> float:

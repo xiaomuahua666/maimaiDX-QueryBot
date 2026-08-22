@@ -168,6 +168,38 @@ async def _roast_stream_chunked():
     return chunks()
 
 
+async def _roast_stream_reasoning():
+    async def chunks():
+        yield {
+            "choices": [{"delta": {"reasoning_content": "先思考成绩结构"}, "finish_reason": ""}],
+        }
+        yield {
+            "choices": [{"delta": {"reasoning_content": "再整理推分建议"}, "finish_reason": ""}],
+        }
+        yield {
+            "choices": [{
+                "delta": {
+                    "content": (
+                        '{"headline":"推理后正文",'
+                        '"summary":"推理完成正常输出。",'
+                        '"analysis":"推理完成正常输出。",'
+                        '"strengths":[],"weaknesses":[],'
+                        '"peer_takeaways":[],"actions":[],'
+                        '"recommendations":[]}'
+                    ),
+                },
+                "finish_reason": "stop",
+            }],
+            "usage": {
+                "prompt_tokens": 300,
+                "completion_tokens": 80,
+                "total_tokens": 380,
+                "prompt_tokens_details": {"cached_tokens": 0},
+            },
+        }
+    return chunks()
+
+
 class RoastFakeClient:
     def __init__(self, **kwargs):
         roast_client_options.append(kwargs)
@@ -280,7 +312,7 @@ async def roast_chunked_main() -> None:
         report, usage = await roast_model.generate_report(
             pack,
             StyleSpec(),
-            on_progress=lambda text: chunked_progress.append(text),
+            on_progress=lambda progress: chunked_progress.append(progress),
         )
     finally:
         roast_model.AsyncOpenAI = original_client
@@ -291,13 +323,76 @@ async def roast_chunked_main() -> None:
     assert len(chunked_requests) == 1
     assert chunked_requests[0].get("stream") is True
     assert len(chunked_progress) == 5
-    assert "正文第一部分" in chunked_progress[-1]
-    assert "正文第一部分" in chunked_progress[1]
+    assert chunked_progress[-1]["chars"] > 0
+    assert chunked_progress[1]["chars"] > 0
     assert usage["output_tokens"] == 50
     assert report.summary == "正文第一部分"
 
 
 asyncio.run(roast_chunked_main())
+
+
+reasoning_requests: list[dict] = []
+reasoning_progress: list[dict] = []
+
+
+class RoastReasoningCompletions:
+    async def create(self, **kwargs):
+        reasoning_requests.append(kwargs)
+        return await _roast_stream_reasoning()
+
+
+class RoastReasoningClient:
+    def __init__(self, **kwargs):
+        self.chat = SimpleNamespace(completions=RoastReasoningCompletions())
+
+
+async def roast_reasoning_main() -> None:
+    original_client = roast_model.AsyncOpenAI
+    original_config = roast_model.maiconfig
+    original_reasoning = roast_model.analysis_reasoning_effort
+    original_runtime = roast_model.resolve_llm_runtime_config
+    roast_model.AsyncOpenAI = RoastReasoningClient
+    roast_model.analysis_reasoning_effort = lambda: "high"
+    roast_model.resolve_llm_runtime_config = lambda _config=None: SimpleNamespace(
+        base_url="https://example.invalid/v1", model="reasoning-test-model"
+    )
+    roast_model.maiconfig = SimpleNamespace(
+        b50_llm_key="test",
+        b50_llm_url="https://example.invalid/v1",
+        b50_llm_model="reasoning-test-model",
+        b50_llm_request_timeout_seconds=3,
+        b50_llm_max_retries=0,
+        b50_llm_max_tokens=1024,
+        b50_llm_prompt_cache_key="maimaidx-b50-roast-v2",
+    )
+    pack = EvidencePack(
+        nickname="Milk",
+        rating=15000,
+        evidence=[Evidence("rating", "当前 Rating", "15000", "snapshot")],
+        metrics={"high_count": 0},
+    )
+    try:
+        report, usage = await roast_model.generate_report(
+            pack,
+            StyleSpec(),
+            on_progress=lambda progress: reasoning_progress.append(progress),
+        )
+    finally:
+        roast_model.AsyncOpenAI = original_client
+        roast_model.maiconfig = original_config
+        roast_model.analysis_reasoning_effort = original_reasoning
+        roast_model.resolve_llm_runtime_config = original_runtime
+
+    assert len(reasoning_requests) == 1
+    assert reasoning_progress[0] == {"chars": 0, "reasoning": True}
+    assert reasoning_progress[1] == {"chars": 0, "reasoning": True}
+    assert reasoning_progress[-1]["chars"] > 0
+    assert usage["output_tokens"] == 80
+    assert report.summary == "推理完成正常输出。"
+
+
+asyncio.run(roast_reasoning_main())
 
 
 timeout_requests = 0
@@ -553,10 +648,18 @@ async def progress_main() -> None:
     mai_b50_analysis._mark_roast_progress(
         progress_key,
         first_chunk_event,
-        "已生成一部分正文",
+        {"chars": 8, "reasoning": False},
     )
     assert first_chunk_event.is_set()
     assert "已生成约 8 字" in mai_b50_analysis._analysis_progress_text(progress_key)
+    reasoning_event = asyncio.Event()
+    mai_b50_analysis._mark_roast_progress(
+        progress_key,
+        reasoning_event,
+        {"chars": 0, "reasoning": True},
+    )
+    assert reasoning_event.is_set()
+    assert "正在思考" in mai_b50_analysis._analysis_progress_text(progress_key)
 
 
 asyncio.run(progress_main())

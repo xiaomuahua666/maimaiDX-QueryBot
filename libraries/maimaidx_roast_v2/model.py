@@ -161,6 +161,30 @@ def _stream_content_parts(chunk: Any) -> list[str]:
     return []
 
 
+def _stream_reasoning_parts(chunk: Any) -> list[str]:
+    """提取推理模型先行的 reasoning_content 增量，用于判断流是否已开始。"""
+    choices = _field(chunk, "choices")
+    if not choices:
+        return []
+    delta = _field(choices[0], "delta")
+    if delta is None:
+        delta = _field(choices[0], "message")
+    if delta is None:
+        return []
+    reasoning = _field(delta, "reasoning_content", "reasoning")
+    if reasoning is None:
+        return []
+    if isinstance(reasoning, str):
+        return [reasoning] if reasoning else []
+    if isinstance(reasoning, list):
+        return [
+            str(item)
+            for item in reasoning
+            if str(item or "").strip()
+        ]
+    return []
+
+
 def _stream_usage(chunk: Any) -> dict[str, Any]:
     """聚合流式 usage 块；部分网关只在最后一块返回 usage。"""
     usage = _token_usage(chunk)
@@ -201,12 +225,14 @@ async def _consume_stream(
 ) -> tuple[str, dict[str, Any], str]:
     """消费流式响应，返回 (正文, usage, finish_reason)。"""
     parts: list[str] = []
+    reasoning_parts: list[str] = []
     usage: dict[str, Any] = {}
     finish_reason = ""
     async for chunk in stream:
         chunk_parts = _stream_content_parts(chunk)
         if chunk_parts:
             parts.extend(chunk_parts)
+        reasoning_parts.extend(_stream_reasoning_parts(chunk))
         chunk_usage = _stream_usage(chunk)
         if chunk_usage:
             usage = _merge_usage(usage, chunk_usage)
@@ -214,7 +240,12 @@ async def _consume_stream(
         if reason:
             finish_reason = reason
         if on_progress is not None:
-            on_progress("".join(parts))
+            # 推理阶段先把 reasoning 增量也算进度，避免正文还没开始时被
+            # 上层误判成“30 秒无输出”；正文出现后只统计正文长度。
+            if parts:
+                on_progress({"chars": len("".join(parts)), "reasoning": False})
+            elif reasoning_parts:
+                on_progress({"chars": 0, "reasoning": True})
     return "".join(parts), usage, finish_reason
 
 
