@@ -51,6 +51,34 @@ def scan_text(text: str) -> dict:
     }
 
 
+def _pattern_matches(text: str, pattern: str) -> list[str]:
+    return [match.group(0) for match in re.finditer(pattern, text, flags=re.I)]
+
+
+def scan_text_detailed(text: str) -> dict:
+    raw = str(text or "").strip()
+    injection_hits = {}
+    unsafe_hits = {}
+    for pattern in _INJECTION_PATTERNS:
+        hits = _pattern_matches(raw, pattern)
+        if hits:
+            injection_hits[pattern] = hits
+    for pattern in _UNSAFE_PATTERNS:
+        hits = _pattern_matches(raw, pattern)
+        if hits:
+            unsafe_hits[pattern] = hits
+    injections = list(injection_hits)
+    unsafe = list(unsafe_hits)
+    return {
+        "allowed": not injections and not unsafe,
+        "injection": bool(injections),
+        "unsafe": bool(unsafe),
+        "category": "prompt_injection" if injections else ("unsafe" if unsafe else None),
+        "injection_hits": injection_hits,
+        "unsafe_hits": unsafe_hits,
+    }
+
+
 def normalize_style(text: str, *, max_length: int = 240) -> StyleSpec:
     raw = " ".join(str(text or "").split())[:max_length]
     if not raw:
@@ -84,3 +112,14 @@ def validate_report_text(text: str) -> dict:
     raw = str(text or "")
     verdict = scan_text(raw)
     return {"safe": verdict["allowed"], "category": verdict["category"]}
+
+
+def validate_report_text_detailed(text: str) -> dict:
+    raw = str(text or "")
+    verdict = scan_text_detailed(raw)
+    return {
+        "safe": verdict["allowed"],
+        "category": verdict["category"],
+        "injection_hits": verdict["injection_hits"],
+        "unsafe_hits": verdict["unsafe_hits"],
+    }

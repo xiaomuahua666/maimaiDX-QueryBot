@@ -19,7 +19,7 @@ from ..maimaidx_break import analysis_reasoning_effort
 from ..maimaidx_llm_runtime import resolve_llm_runtime_config
 from .analysis import build_report_fallback
 from .domain import EvidencePack, RoastReport, StyleSpec
-from .policy import validate_report_text
+from .policy import validate_report_text, validate_report_text_detailed
 from .prompt import SYSTEM_PROMPT, build_user_prompt, evidence_ids_for_pack
 
 
@@ -365,6 +365,18 @@ def _player_friendly_text(value: Any, limit: int) -> str:
     return text[:limit]
 
 
+def _raise_unsafe_report(value: str, field: str) -> None:
+    verdict = validate_report_text_detailed(value)
+    log.error(
+        "[roast_v2] 模型输出未通过内容校验 "
+        f"field={field} category={verdict['category']} "
+        f"injection_hits={verdict['injection_hits']} "
+        f"unsafe_hits={verdict['unsafe_hits']} "
+        f"text={value!r}"
+    )
+    raise ValueError("模型返回包含不安全内容，请稍后重试")
+
+
 def _clean_report(raw: Any, pack: EvidencePack, style: StyleSpec) -> RoastReport:
     if not isinstance(raw, dict):
         raise ValueError("模型返回格式无效")
@@ -380,7 +392,7 @@ def _clean_report(raw: Any, pack: EvidencePack, style: StyleSpec) -> RoastReport
     for key, limit in (("headline", 120), ("summary", 1000), ("analysis", 2600)):
         value = _player_friendly_text(data.get(key), limit)
         if not value or not validate_report_text(value)["safe"]:
-            raise ValueError("模型返回包含不安全内容")
+            _raise_unsafe_report(value, key)
         data[key] = value[:limit]
     lists = {}
     for key in ("strengths", "weaknesses", "peer_takeaways", "actions"):
@@ -391,7 +403,7 @@ def _clean_report(raw: Any, pack: EvidencePack, style: StyleSpec) -> RoastReport
             if not value:
                 continue
             if not validate_report_text(value)["safe"]:
-                raise ValueError("模型返回包含不安全内容")
+                _raise_unsafe_report(value, key)
             cleaned_values.append(value)
         lists[key] = cleaned_values
     fallback = None
