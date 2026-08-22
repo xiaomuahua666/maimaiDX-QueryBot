@@ -405,8 +405,8 @@ class SwApiClient:
 
     @staticmethod
     def _parse_envelope(data: dict) -> Any:
-        # Chime 3002 means the SGID is no longer usable.  Some gateways put
-        # this failure inside an otherwise successful outer envelope, so
+        # Chime 3001/3002 mean the SGID is no longer usable.  Some gateways
+        # put this failure inside an otherwise successful outer envelope, so
         # inspect the nested payload before returning businessData.
         def has_expired_sgid(value: Any) -> bool:
             if isinstance(value, dict):
@@ -420,8 +420,16 @@ class SwApiClient:
                     or ""
                 ).lower()
                 if (
-                    ("chime" in error_type and "3002" in error_code)
-                    or ("chime" in message and ("3002" in message or "获取用户失败" in message))
+                    ("chime" in error_type and error_code in {"3001", "3002"})
+                    or (
+                        "chime" in message
+                        and (
+                            "3001" in message
+                            or "3002" in message
+                            or "二维码已过期" in message
+                            or "获取用户失败" in message
+                        )
+                    )
                 ):
                     return True
                 return any(has_expired_sgid(item) for item in value.values())
@@ -430,12 +438,15 @@ class SwApiClient:
             if isinstance(value, str):
                 lowered = value.lower()
                 return "chime" in lowered and (
-                    "3002" in lowered or "获取用户失败" in value
+                    "3001" in lowered
+                    or "3002" in lowered
+                    or "二维码已过期" in value
+                    or "获取用户失败" in value
                 )
             return False
 
         if has_expired_sgid(data):
-            raise SwApiError("ChimeError 3002：Chime 获取用户失败，SGID 已过期")
+            raise SwApiError("ChimeError 3001：二维码已过期")
         # Some successful gateway responses include an empty ``error`` field.
         # Only a non-empty value represents an error; raising on ``error: ""``
         # made a completed item write look like ``SwApiError()`` to callers.

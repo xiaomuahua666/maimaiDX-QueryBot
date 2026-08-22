@@ -85,6 +85,22 @@ except error as exc:
 else:
     raise AssertionError("普通业务 returnCode=0 必须判定为失败")
 
+try:
+    client._parse_envelope(
+        {
+            "returnCode": 1,
+            "businessData": {
+                "errorType": "ChimeError",
+                "errorCode": 3001,
+                "errorMessage": "二维码已过期",
+            },
+        }
+    )
+except error as exc:
+    assert "二维码已过期" in str(exc)
+else:
+    raise AssertionError("嵌套 ChimeError 3001 必须判定为二维码过期")
+
 quota_payload = {
     "error": "quota_exceeded",
     "msg": "Reached Personal 1-Hour Quota Limit for Read requests.",

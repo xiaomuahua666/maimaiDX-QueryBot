@@ -754,7 +754,7 @@ def _pending_qrcode_prompt(reason: str, operation_label: str = "原操作") -> s
 
 
 def _is_sgid_expired_error(exc: BaseException) -> bool:
-    """识别上游 Chime 3002 等失效 SGID 响应，避免继续使用旧凭据。"""
+    """识别上游 Chime 3001/3002 等失效 SGID 响应，避免继续使用旧凭据。"""
     current: Optional[BaseException] = exc
     seen: set[int] = set()
     while current is not None and id(current) not in seen:
@@ -762,7 +762,10 @@ def _is_sgid_expired_error(exc: BaseException) -> bool:
         detail = str(current or "")
         lowered = detail.lower()
         if "chime" in lowered and (
-            "3002" in lowered or "获取用户失败" in detail
+            "3001" in lowered
+            or "3002" in lowered
+            or "二维码已过期" in detail
+            or "获取用户失败" in detail
         ):
             return True
         cause = current.__cause__ or current.__context__
@@ -1858,9 +1861,11 @@ def _ensure_business_success(result: dict) -> None:
     if not isinstance(result, dict):
         return
 
-    if _is_sgid_expired_error(
-        RuntimeError(json.dumps(result, ensure_ascii=False, default=str))
-    ):
+    serialized = json.dumps(result, ensure_ascii=False, default=str)
+    if _is_sgid_expired_error(RuntimeError(serialized)):
+        lowered = serialized.lower()
+        if "3001" in lowered or "二维码已过期" in serialized:
+            raise RuntimeError("ChimeError 3001：二维码已过期")
         raise RuntimeError("ChimeError 3002：Chime 获取用户失败，SGID 已过期")
 
     def all_null(value: Any) -> bool:

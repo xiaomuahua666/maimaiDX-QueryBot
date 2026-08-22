@@ -89,4 +89,10 @@ assert "continue_pending_account_retry" in pending_account_branch
 assert "_sync_sdgb_qrcode" not in pending_account_branch
 assert "_upload" not in pending_account_branch
 
+# Chime 3001 (二维码已过期) must be treated as an expired SGID so pending
+# ticket/account retries prompt for a fresh QR instead of failing forever.
+assert '"3001"' in account_source
+assert "3001" in account_source
+assert '"二维码已过期"' in account_source
+
 print("ticket qrcode retry tests: ok")
