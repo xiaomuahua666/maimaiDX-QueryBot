@@ -139,6 +139,21 @@ def _fit_line(text: str, font: Any, max_width: int) -> str:
     return tail + "…"
 
 
+def _truncate_verdict_inline(value: str, max_width: int, font: Any) -> str:
+    """Single-line verdict that keeps the readable prefix and never overflows the card."""
+    text = " ".join(str(value or "").replace("\r", " ").replace("\n", " ").split())
+    if not text:
+        return ""
+    if _text_width(font, text) <= max_width:
+        return text
+    ellipsis = "…"
+    # Drop trailing punctuation/spaces first, then trim chars until the ellipsis fits.
+    tail = text.rstrip("。；，、 ")
+    while tail and _text_width(font, tail + ellipsis) > max_width:
+        tail = tail[:-1]
+    return tail.rstrip(" ,.;:、") + ellipsis
+
+
 def _draw_lines(
     draw: ImageDraw.ImageDraw,
     lines: Iterable[str],
@@ -404,7 +419,7 @@ def _select_evidence(
         if factual is None or evidence_id in seen:
             continue
         row, _label, _color = factual
-        selected.append((row, "重点曲目", BLUE, str(item.get("verdict") or "")[:90]))
+        selected.append((row, "重点曲目", BLUE, str(item.get("verdict") or "")))
         seen.add(evidence_id)
         if len(selected) >= limit:
             return selected
@@ -1343,13 +1358,15 @@ def _draw_evidence_card(
         detail_font = _font(SIYUAN, 15)
         draw.text((text_x, y1 + 132), _fit_line(detail, detail_font, text_r - text_x - 12), font=detail_font, fill=MUTED)
     if verdict:
-        verdict_text = f"点评：{verdict}"
-        draw.text(
-            (text_x, y1 + 160),
-            _fit_line(verdict_text, _font(SIYUAN, 16), text_r - text_x - 12),
-            font=_font(SIYUAN, 16),
-            fill=label_color,
-        )
+        short = _truncate_verdict_inline(verdict, text_r - text_x - 12, _font(SIYUAN, 16))
+        verdict_text = f"点评：{short}" if short else ""
+        if verdict_text:
+            draw.text(
+                (text_x, y1 + 160),
+                verdict_text,
+                font=_font(SIYUAN, 16),
+                fill=label_color,
+            )
 
 
 def _draw_evidence(im: Image.Image, draw: ImageDraw.ImageDraw, layout: dict[str, Any], y: int) -> int:

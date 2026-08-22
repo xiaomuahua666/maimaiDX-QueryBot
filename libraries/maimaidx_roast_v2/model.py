@@ -20,7 +20,12 @@ from ..maimaidx_llm_runtime import resolve_llm_runtime_config
 from .analysis import build_report_fallback
 from .domain import EvidencePack, RoastReport, StyleSpec
 from .policy import validate_report_text, validate_report_text_detailed
-from .prompt import SYSTEM_PROMPT, build_user_prompt, evidence_ids_for_pack
+from .prompt import (
+    JSON_RECOVERY_HINT,
+    SYSTEM_PROMPT,
+    build_user_prompt,
+    evidence_ids_for_pack,
+)
 
 
 def _field(value: Any, *names: str) -> Any:
@@ -290,6 +295,26 @@ def _parse_json_object(content: str) -> dict[str, Any]:
         if isinstance(value, dict):
             return value
     raise ValueError("模型没有返回合法 JSON")
+
+
+def _short_verdict(value: str, limit: int = 24) -> str:
+    """Trim the highlight-card verdict to a short single line so it never gets truncated to "…"."""
+    raw = " ".join(str(value or "").replace("\r", " ").replace("\n", " ").split())
+    if not raw:
+        return ""
+    if len(raw) <= limit:
+        return raw
+    return raw[: max(1, limit - 1)].rstrip(" ,.;:、") + "…"
+
+
+def _truncate_verdict_text(value: str, limit: int) -> str:
+    """Single-line verdict with a visible "…" marker so users still know it was clipped."""
+    raw = " ".join(str(value or "").replace("\r", " ").replace("\n", " ").split())
+    if not raw:
+        return ""
+    if len(raw) <= limit:
+        return raw
+    return raw[: max(1, limit - 1)].rstrip(" ,.;:、") + "…"
 
 
 def _candidate_key(value: Any) -> tuple[str, str, int]:
@@ -691,6 +716,53 @@ async def generate_report(
         raise error
     try:
         payload = _parse_json_object(content)
+    except ValueError as exc:
+        # Some models occasionally wrap the JSON in prose. Retry once with a
+        # strict JSON-only hint before charging the user for a malformed reply.
+        if int(getattr(maiconfig, "b50_llm_json_recovery_attempts", 1) or 0) > 0:
+            try:
+                recovery_request = dict(request)
+                recovery_request.pop("stream", None)
+                recovery_request.pop("stream_options", None)
+                recovery_request["messages"] = [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": build_user_prompt(pack, style)},
+                    {"role": "assistant", "content": content},
+                    {"role": "user", "content": JSON_RECOVERY_HINT},
+                ]
+                log.warning(
+                    "[roast_v2] 模型未返回合法 JSON，尝试用严格 prompt 重试 1 次"
+                )
+                recovery_response = await client.chat.completions.create(**recovery_request)
+                recovery_response = _normalize_response(recovery_response)
+                recovery_content = _response_content(recovery_response)
+                recovery_usage = _token_usage(recovery_response)
+                if recovery_content:
+                    content = recovery_content
+                    if recovery_usage.get("available"):
+                        cached_input_tokens = int(recovery_usage.get("cached_input_tokens") or 0)
+                        input_tokens = int(recovery_usage.get("input_tokens") or 0)
+                        cache_rate = cached_input_tokens / input_tokens if input_tokens > 0 else 0.0
+                        log.info(
+                            "[roast_v2] 模型 Prompt Cache (recovery) "
+                            f"cached={cached_input_tokens} input={input_tokens} rate={cache_rate:.1%}"
+                        )
+                        usage = recovery_usage
+            except (APITimeoutError, APIConnectionError, APIStatusError, BadRequestError) as recovery_exc:
+                log.warning(
+                    f"[roast_v2] JSON 恢复重试失败 type={type(recovery_exc).__name__}: {recovery_exc}"
+                )
+        try:
+            payload = _parse_json_object(content)
+        except ValueError as final_exc:
+            log.warning(
+                "[roast_v2] 模型最终仍未返回合法 JSON "
+                f"output_tokens={usage.get('output_tokens', 0)} "
+                f"head={content[:200]!r}"
+            )
+            error = ValueError(str(final_exc))
+            error.token_usage = usage
+            raise error from final_exc
     except ValueError as exc:
         error = ValueError(str(exc))
         error.token_usage = usage

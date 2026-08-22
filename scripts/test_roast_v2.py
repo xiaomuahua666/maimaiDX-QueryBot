@@ -28,10 +28,18 @@ from nonebot_plugin_maimaidx.libraries.maimaidx_roast_v2.policy import (  # noqa
     scan_text_detailed,
 )
 from nonebot_plugin_maimaidx.libraries.maimaidx_roast_v2.model import _clean_report  # noqa: E402
+from nonebot_plugin_maimaidx.libraries.maimaidx_roast_v2.model import (  # noqa: E402
+    _parse_json_object,
+    _short_verdict,
+    _truncate_verdict_text,
+)
 from nonebot_plugin_maimaidx.libraries.maimaidx_roast_v2.render import (  # noqa: E402
     _achievement_target,
+    _font,
     _measure_layout,
     _profile_reference,
+    SIYUAN,
+    _truncate_verdict_inline,
     render_report,
 )
 from nonebot_plugin_maimaidx.libraries.maimaidx_roast_v2.snapshot import (  # noqa: E402
@@ -242,3 +250,28 @@ assert all(item.title != "白潘" for item in rating_13k_pack.candidates)
 assert any(item.title == "Practical" for item in rating_13k_pack.candidates)
 
 print("roast v2 tests: ok")
+assert _parse_json_object('```json\n{"headline":"x","summary":"y"}\n```') == {"headline": "x", "summary": "y"}
+try:
+    _parse_json_object("模型这次没听话，前面写了一段中文解释。")
+except ValueError as exc:
+    assert "JSON" in str(exc)
+else:
+    raise AssertionError("expected ValueError for invalid JSON")
+assert _short_verdict("短期 RA 表现稳定") == "短期 RA 表现稳定"
+assert _short_verdict("十二个字一二三四五六七八九十" * 4).endswith("…")
+assert _truncate_verdict_text("短文本", 8) == "短文本"
+assert _truncate_verdict_text("a" * 20, 8).endswith("…")
+font_si = _font(SIYUAN, 16)
+assert _truncate_verdict_inline("", 200, font_si) == ""
+assert _truncate_verdict_inline("短期 RA 表现稳定", 200, font_si) == "短期 RA 表现稳定"
+short = _truncate_verdict_inline("a" * 400, 60, font_si)
+assert short.endswith("…")
+from nonebot_plugin_maimaidx.libraries.maimaidx_roast_v2.render import (  # noqa: E402
+    _achievement_target,
+    _font,
+    _measure_layout,
+    _profile_reference,
+    _truncate_verdict_inline,
+    SIYUAN,
+    render_report,
+)

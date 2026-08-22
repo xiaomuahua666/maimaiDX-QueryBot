@@ -231,6 +231,8 @@ class Config(BaseModel):
     # 应用层会按参数兼容性重试，SDK 默认不再叠加重试，避免耗尽总时限。
     b50_llm_max_retries: int = 0
     b50_llm_max_tokens: int = 6144
+    # 模型未返回合法 JSON 时，按 strict JSON 提示词再请求 1 次；=0 关闭。
+    b50_llm_json_recovery_attempts: int = 1
     b50_llm_reasoning_effort: str = 'low'
     # 相同稳定前缀固定路由到同一 Prompt Cache 分区；不兼容的网关会自动回退。
     b50_llm_prompt_cache_key: str = 'maimaidx-b50-roast-v2'

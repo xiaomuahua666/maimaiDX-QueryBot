@@ -45,13 +45,22 @@ SYSTEM_PROMPT = """你是舞萌 DX 的 B50 成绩分析作者。你的工作是�
   "peer_takeaways": ["谨慎的同段结论；无数据时写样本不足"],
   "actions": ["可执行行动"],
   "highlights": [{"title":"重点标题", "text":"直白结论", "tone":"positive", "evidence_ids":["真实 evidence_id"]}],
-  "score_spotlights": [{"evidence_id":"song:真实ID:DX:3", "verdict":"为什么这首值得重点看"}],
+ "score_spotlights": [{"evidence_id":"song:真实ID:DX:3", "verdict":"为什么这首值得重点看"}],
   "recommendations": [{"song_id":"候选中的 song_id", "chart_type":"候选中的 chart_type", "level_index":3, "reason":"只写候选事实支持的短理由"}],
   "claims": [{"text":"可验证结论", "evidence_ids":["rating 或 song:... 等 FACTS_JSON 中已有 ID"]}]
 }
 
 字段要求：headline 不超过 80 字；summary 不超过 260 字；analysis 建议 500–900 字；strengths、weaknesses、peer_takeaways、actions 各 1–5 条；highlights 最多 3 条；score_spotlights 最多 4 条；recommendations 最多 5 条；claims 1–8 条且每条至少一个真实 evidence_id。若没有足够依据，宁可少写，不要凑数。
 """
+
+
+# 仅在主次请求都返回了不可解析的 JSON 时作为补救 prompt 兜底；保持输出仍为合法 JSON。
+JSON_RECOVERY_HINT = (
+    "你上一次回复没有返回合法的 JSON 对象。"
+    "请只输出一个合法 JSON 对象，使用双引号、避免多余转义、避免注释或尾随逗号，"
+    "不要再写 Markdown、解释、代码块或前后说明。"
+    "字段名与字段要求保持不变；如果你打算留空某些数组，就输出空数组而不是省略字段。"
+)
 
 
 def _text(value: Any, limit: int = 160) -> str:
