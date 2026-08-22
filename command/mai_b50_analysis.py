@@ -419,7 +419,7 @@ async def _handle_impl(matcher: Matcher, bot: Bot, event: MessageEvent, args: Me
         report, token_usage = await _run_timed_stage(
             generate_report(pack, style),
             stage="模型生成",
-            timeout=_timeout("b50_llm_timeout_seconds", 360.0),
+            timeout=_timeout("b50_llm_timeout_seconds", 300.0),
         )
 
         if not isinstance(token_usage, dict):

@@ -389,7 +389,7 @@ async def generate_report(pack: EvidencePack, style: StyleSpec) -> tuple[RoastRe
         base_url=runtime.base_url,
         timeout=max(
             1.0,
-            float(getattr(maiconfig, "b50_llm_request_timeout_seconds", 75.0)),
+            float(getattr(maiconfig, "b50_llm_request_timeout_seconds", 180.0)),
         ),
         max_retries=max(0, int(getattr(maiconfig, "b50_llm_max_retries", 0))),
     )

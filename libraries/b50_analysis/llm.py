@@ -848,7 +848,7 @@ async def generate_analysis(
     client = AsyncOpenAI(
         api_key=config.b50_llm_key,
         base_url=runtime.base_url,
-        timeout=max(1.0, float(getattr(config, "b50_llm_timeout_seconds", 180.0))),
+        timeout=max(1.0, float(getattr(config, "b50_llm_timeout_seconds", 300.0))),
         max_retries=max(0, int(getattr(config, "b50_llm_max_retries", 0))),
     )
     request: dict[str, Any] = dict(

@@ -19,6 +19,7 @@ assert source.index("plugin_send(") < source.index("react_processing(")
 assert "b50_reaction_timeout_seconds" in source
 assert "b50_fetch_timeout_seconds" in source
 assert "b50_llm_timeout_seconds" in source
+assert '_timeout("b50_llm_timeout_seconds", 300.0)' in source
 assert "stage=\"模型生成\"" in source
 assert "build_report_fallback" not in source
 assert "model failed, using deterministic fallback" not in source
