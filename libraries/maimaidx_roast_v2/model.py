@@ -402,6 +402,11 @@ def _raise_unsafe_report(value: str, field: str) -> None:
     raise ValueError("模型返回包含不安全内容，请稍后重试")
 
 
+def _fallback_text(pack: EvidencePack, style: StyleSpec) -> RoastReport:
+    """Program-owned fallback used when the model leaves required fields empty."""
+    return build_report_fallback(pack, style)
+
+
 def _clean_report(raw: Any, pack: EvidencePack, style: StyleSpec) -> RoastReport:
     if not isinstance(raw, dict):
         raise ValueError("模型返回格式无效")
@@ -414,9 +419,23 @@ def _clean_report(raw: Any, pack: EvidencePack, style: StyleSpec) -> RoastReport
     all_text = json.dumps(data, ensure_ascii=False)
     if not pack.metrics.get("high_count") and _has_unsupported_high_claim(all_text):
         raise ValueError("模型引用了不存在的 14+ 样本")
-    for key, limit in (("headline", 120), ("summary", 1000), ("analysis", 2600)):
+    fallback = _fallback_text(pack, style)
+    fallback_headline = fallback.headline
+    fallback_summary = fallback.summary
+    fallback_analysis = fallback.analysis
+    for key, limit, fallback_value in (
+        ("headline", 120, fallback_headline),
+        ("summary", 1000, fallback_summary),
+        ("analysis", 2600, fallback_analysis),
+    ):
         value = _player_friendly_text(data.get(key), limit)
-        if not value or not validate_report_text(value)["safe"]:
+        if not value:
+            log.warning(
+                "[roast_v2] 模型字段为空，使用程序兜底 "
+                f"field={key}"
+            )
+            value = fallback_value
+        if not validate_report_text(value)["safe"]:
             _raise_unsafe_report(value, key)
         data[key] = value[:limit]
     lists = {}
@@ -731,7 +750,9 @@ async def generate_report(
                     {"role": "user", "content": JSON_RECOVERY_HINT},
                 ]
                 log.warning(
-                    "[roast_v2] 模型未返回合法 JSON，尝试用严格 prompt 重试 1 次"
+                    "[roast_v2] 模型未返回合法 JSON，尝试用严格 prompt 重试 1 次 "
+                    f"finish_reason={finish_reason or 'unknown'} "
+                    f"output_tokens={usage.get('output_tokens', 0)}"
                 )
                 recovery_response = await client.chat.completions.create(**recovery_request)
                 recovery_response = _normalize_response(recovery_response)

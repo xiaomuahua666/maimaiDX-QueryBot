@@ -56,10 +56,13 @@ SYSTEM_PROMPT = """你是舞萌 DX 的 B50 成绩分析作者。你的工作是�
 
 # 仅在主次请求都返回了不可解析的 JSON 时作为补救 prompt 兜底；保持输出仍为合法 JSON。
 JSON_RECOVERY_HINT = (
-    "你上一次回复没有返回合法的 JSON 对象。"
+    "你上一次回复没有返回可解析的完整 JSON 对象。"
     "请只输出一个合法 JSON 对象，使用双引号、避免多余转义、避免注释或尾随逗号，"
     "不要再写 Markdown、解释、代码块或前后说明。"
-    "字段名与字段要求保持不变；如果你打算留空某些数组，就输出空数组而不是省略字段。"
+    "如果上次因为输出太长被截断，请明显缩短 summary、analysis、strengths、weaknesses、"
+    "peer_takeaways、actions、highlights、score_spotlights、recommendations 与 claims 的内容，"
+    "headline、summary、analysis 三个必填字段绝不能为空；"
+    "如果你打算留空某些数组，就输出空数组而不是省略字段。"
 )
 
 

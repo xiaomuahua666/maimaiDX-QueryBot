@@ -186,6 +186,26 @@ assert cleaned.highlights[0]["text"].endswith("让后续路线跟着最新成绩
 assert len(cleaned.highlights[0]["text"]) > 120
 assert cleaned.score_spotlights == [{"evidence_id": spotlight_id, "verdict": "这首是当前重点。"}]
 
+empty_headline = _clean_report(
+    {
+        "headline": "",
+        "summary": "先处理槽位地板，再看 coverage。",
+        "analysis": "槽位地板决定当前路线，同段聚合只作参考。",
+        "strengths": ["有真实成绩支持"],
+        "weaknesses": ["仍有提升空间"],
+        "peer_takeaways": ["样本不足时不作结论"],
+        "actions": ["先完成稳妥候选"],
+        "highlights": [],
+        "score_spotlights": [],
+        "recommendations": [],
+        "claims": [],
+    },
+    pack,
+    style,
+)
+assert empty_headline.headline
+assert "B50 里最低的几首" in empty_headline.summary
+
 long_highlight = "先稳定处理B50里最低的几首，再按顺序练习稳妥候选；每完成一首就重新生成报告，让后续目标跟着最新成绩变化，不要一次把所有高难曲都塞进训练计划。"
 cleaned.highlights = [
     {"title": f"需要完整显示的重点结论 {index + 1}", "text": long_highlight, "tone": "warning"}
