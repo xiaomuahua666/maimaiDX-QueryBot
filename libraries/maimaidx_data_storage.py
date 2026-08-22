@@ -8,7 +8,7 @@
 """
 
 import json
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass
@@ -16,6 +16,22 @@ from dataclasses import dataclass
 from loguru import logger as log
 
 from .maimaidx_io_executor import run_io
+
+# 面向国服玩家的「跨天」判断统一以 UTC+8 为准，与 BREAK 的 _today() 一致；
+# 服务器部署在海外时 date.today()/datetime.now() 会在北京时间 0:00 后仍返回
+# 昨天，导致存储签到加成在清晨被误拒。
+_CN_TZ = timezone(timedelta(hours=8))
+
+
+def _now_cn() -> datetime:
+    return datetime.now(_CN_TZ)
+
+
+def _as_cn(dt: datetime) -> datetime:
+    """naive 时间戳按北京时间解释（历史数据兼容），aware 则转换到北京时间。"""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=_CN_TZ)
+    return dt.astimezone(_CN_TZ)
 
 # 数据存储路径
 DATA_DIR = Path(__file__).parent.parent / "data" / "user_scores"
@@ -132,7 +148,7 @@ class DataStorageManager:
             qqid = int(qqid)
             config = self._load_config()
             enabled = [int(x) for x in config.get("enabled_users", [])]
-            now_iso = datetime.now().isoformat(timespec="seconds")
+            now_iso = _now_cn().replace(tzinfo=None).isoformat(timespec="seconds")
             if qqid not in enabled:
                 enabled.append(qqid)
                 config["enabled_users"] = enabled
@@ -164,7 +180,7 @@ class DataStorageManager:
             if qqid in enabled:
                 enabled.remove(qqid)
                 config["enabled_users"] = enabled
-                now_iso = datetime.now().isoformat(timespec="seconds")
+                now_iso = _now_cn().replace(tzinfo=None).isoformat(timespec="seconds")
                 prev = self.get_user_meta(qqid)
                 disable_count = int(prev.get("disable_count") or 0) + 1
                 self._set_user_meta(
@@ -209,7 +225,7 @@ class DataStorageManager:
             enabled_dt = datetime.fromisoformat(enabled_at)
         except Exception:
             return True
-        return enabled_dt.date() < date.today()
+        return _as_cn(enabled_dt).date() < _now_cn().date()
 
     def storage_bonus_eligible_for_retroactive(
         self, qqid: int, *, cooldown_days: int = 7
@@ -225,7 +241,7 @@ class DataStorageManager:
         qqid = int(qqid)
         meta = self.get_user_meta(qqid)
         cooldown_days = max(1, int(cooldown_days))
-        now = datetime.now()
+        now = _now_cn()
 
         enable_count = int(meta.get("enable_count") or 0)
         # 非首次开启：一律不补发，杜绝开关刷
@@ -235,7 +251,7 @@ class DataStorageManager:
         last_disabled = str(meta.get("last_disabled_at") or "").strip()
         if last_disabled:
             try:
-                ddt = datetime.fromisoformat(last_disabled)
+                ddt = _as_cn(datetime.fromisoformat(last_disabled))
                 if (now - ddt).total_seconds() < cooldown_days * 86400:
                     return False, "cooldown_after_disable"
             except Exception:

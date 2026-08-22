@@ -7,8 +7,16 @@
 """
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
+
+# 快照 date 字段与补存判断统一按 UTC+8（北京时间），与 BREAK 的每日边界一致；
+# 服务器不在中国时区时 datetime.now() 会在北京时间凌晨仍返回昨天。
+_CN_TZ = timezone(timedelta(hours=8))
+
+
+def _now_cn() -> datetime:
+    return datetime.now(_CN_TZ)
 
 from loguru import logger as log
 from nonebot import require, get_bot
@@ -79,7 +87,7 @@ async def fetch_and_store_user_scores(
                 if not score_records:
                     return False, None
                 snapshot = DailySnapshot(
-                    date=target_date or datetime.now().strftime("%Y-%m-%d"),
+                    date=target_date or _now_cn().strftime("%Y-%m-%d"),
                     qqid=qqid,
                     nickname=userinfo.nickname or userinfo.username or str(qqid),
                     rating=userinfo.rating or 0,
@@ -183,7 +191,7 @@ async def scheduled_daily_storage():
 @scheduler.scheduled_job("cron", hour="*/6", minute=0, id="periodic_storage_check")
 async def periodic_storage_check():
     """定期检查：每6小时检查一次是否需要补存"""
-    now = datetime.now()
+    now = _now_cn()
     today = now.strftime("%Y-%m-%d")
     
     def _missing_users() -> list[int]:
@@ -219,7 +227,7 @@ async def on_startup_storage():
     # score fetching starts. Startup backfill is maintenance, not interactive.
     await asyncio.sleep(120)
     
-    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    yesterday = (_now_cn() - timedelta(days=1)).strftime("%Y-%m-%d")
     def _missing_users() -> list[int]:
         return [
             qqid for qqid in data_storage.get_enabled_users()

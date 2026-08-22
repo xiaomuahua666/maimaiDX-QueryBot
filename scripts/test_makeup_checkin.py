@@ -132,7 +132,9 @@ db._conn.execute(
     "INSERT INTO break_config (key, value) VALUES (?, ?)",
     ("makeup_checkin_costs", "30,60,90"),
 )
-today_real = date.today()
+# makeup_yesterday 的「今天」以 UTC+8 为准；CI（UTC）在北京时间 0:00~8:00
+# 运行时 date.today() 会比 _today_cn() 少一天，断言必须同基准。
+today_real = datetime.now(timezone(timedelta(hours=8))).date()
 target_real = date.fromordinal(today_real.toordinal() - 1)
 prior_real = date.fromordinal(target_real.toordinal() - 1)
 db._ensure_user(10001)

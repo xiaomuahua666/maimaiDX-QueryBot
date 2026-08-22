@@ -1249,7 +1249,20 @@ class BreakDatabase:
 
     def _today(self) -> str:
         # 每日重置边界统一为 UTC+8（北京时间）零点，不依赖服务器本地时区。
+        # 保持自包含实现：部分回归测试按方法名单独 AST 抽取本方法。
         return (datetime.now(timezone(timedelta(hours=8))).date()).isoformat()
+
+    @staticmethod
+    def _today_cn() -> date:
+        """当前 UTC+8（北京时间）日期；每日边界判断禁用 date.today()（服务器可能在海外）。"""
+        return datetime.now(timezone(timedelta(hours=8))).date()
+
+    @staticmethod
+    def _day_start_ts_cn(day: date) -> float:
+        """某个北京时间日期的零点时间戳，用于按天筛选 created_at。"""
+        return datetime(
+            day.year, day.month, day.day, tzinfo=timezone(timedelta(hours=8))
+        ).timestamp()
 
     def _ensure_daily(self, qqid: int) -> None:
         self._conn.execute(
@@ -2271,7 +2284,8 @@ class BreakDatabase:
                 raise ValueError('今日奖池为空')
 
             # 净贡献 = 输掉的 - 赢来的（从 break_log 查今日 gamble_all 赢的金额）
-            today_start = datetime.combine(date.today(), datetime.min.time()).timestamp()
+            # 「今日」以 UTC+8 为准，与 _today()/break_gamble_pool.date 一致。
+            today_start = self._day_start_ts_cn(self._today_cn())
             today_end = today_start + 86400
             won_row = self._conn.execute(
                 """SELECT COALESCE(SUM(delta), 0) as won FROM break_log
@@ -2727,7 +2741,7 @@ class BreakDatabase:
         return int(row['c']) if row else 0
 
     def economy_report(self, days: int = 30) -> List[dict]:
-        since = (date.today() - timedelta(days=max(1, days) - 1)).isoformat()
+        since = (self._today_cn() - timedelta(days=max(1, days) - 1)).isoformat()
         rows = self._conn.execute(
             """SELECT date, SUM(break_gained) AS gained, SUM(break_spent) AS spent,
                       SUM(query_count) AS queries, SUM(analysis_count) AS analyses,
@@ -3083,7 +3097,7 @@ class BreakDatabase:
             multiplier_sum += bonus
             bonus_labels.append(f'指定群 {group_id} +{int(bonus * 100)}%')
 
-        if date.today().weekday() == 3:
+        if self._today_cn().weekday() == 3:
             bonus = float(self.get_config('bonus_thursday', '1.0'))
             multiplier_sum += bonus
             bonus_labels.append(f'周四 +{int(bonus * 100)}%')
@@ -3097,7 +3111,12 @@ class BreakDatabase:
         last = user.get('last_checkin_date')
         streak = int(user.get('streak', 0))
         if last:
-            yesterday = (date.today().fromordinal(date.today().toordinal() - 1)).isoformat()
+            # last_checkin_date 存的是 UTC+8 日期（today 变量），yesterday 必须
+            # 同基准计算；用 date.today()（服务器本地时区）会在时区不同的机器上
+            # 于北京时间 0:00~本地零点之间把连签误判为断签。
+            yesterday = date.fromordinal(
+                self._today_cn().toordinal() - 1
+            ).isoformat()
             streak = streak + 1 if last == yesterday else 1
         else:
             streak = 1
@@ -3210,7 +3229,7 @@ class BreakDatabase:
     def has_recent_storage_checkin_bonus(self, qqid: int, *, days: Optional[int] = None) -> bool:
         """冷却期内是否已领过签到·数据存储加成（含签到当场计入）。"""
         window = self._storage_bonus_cooldown_days() if days is None else max(1, int(days))
-        cutoff = date.today().toordinal() - (window - 1)
+        cutoff = self._today_cn().toordinal() - (window - 1)
         cutoff_text = date.fromordinal(cutoff).isoformat()
         row = self._conn.execute(
             """SELECT 1 FROM break_daily_reward
@@ -3290,13 +3309,16 @@ class BreakDatabase:
         )
 
     def _checkin_exists_on(self, qqid: int, target: date) -> bool:
+        # 按 UTC+8 的当日时间戳区间筛选，不用 SQL 的 localtime（SQLite 下取
+        # 服务器时区，海外部署会与 last_checkin_date 的 UTC+8 语义错位）。
         target_text = target.isoformat()
+        day_start = self._day_start_ts_cn(target)
         ordinary = self._conn.execute(
             """SELECT 1 FROM break_log
                WHERE qqid = ? AND reason = 'checkin'
-                 AND date(created_at, 'unixepoch', 'localtime') = ?
+                 AND created_at >= ? AND created_at < ?
                LIMIT 1""",
-            (qqid, target_text),
+            (qqid, day_start, day_start + 86400),
         ).fetchone()
         if ordinary:
             return True
@@ -3308,22 +3330,26 @@ class BreakDatabase:
 
     def _latest_checkin_before(self, qqid: int, target: date) -> tuple[Optional[date], int]:
         target_text = target.isoformat()
+        target_start = self._day_start_ts_cn(target)
         ordinary = self._conn.execute(
-            """SELECT date(created_at, 'unixepoch', 'localtime') AS checkin_date, meta
+            """SELECT created_at, meta
                FROM break_log
                WHERE qqid = ? AND reason = 'checkin'
-                 AND date(created_at, 'unixepoch', 'localtime') < ?
+                 AND created_at < ?
                ORDER BY created_at DESC LIMIT 1""",
-            (qqid, target_text),
+            (qqid, target_start),
         ).fetchone()
         candidates: list[tuple[date, int]] = []
-        if ordinary and ordinary['checkin_date']:
+        if ordinary and ordinary['created_at'] is not None:
             try:
                 meta = json.loads(ordinary['meta'] or '{}')
             except (TypeError, ValueError, json.JSONDecodeError):
                 meta = {}
+            checkin_day = datetime.fromtimestamp(
+                float(ordinary['created_at']), timezone(timedelta(hours=8))
+            ).date()
             candidates.append(
-                (date.fromisoformat(str(ordinary['checkin_date'])), int(meta.get('streak') or 0))
+                (checkin_day, int(meta.get('streak') or 0))
             )
         makeup = self._conn.execute(
             """SELECT target_date, streak FROM break_makeup_checkin
@@ -3340,7 +3366,7 @@ class BreakDatabase:
     def makeup_yesterday(self, qqid: int) -> MakeupCheckinResult:
         """消耗 BREAK 补昨天，仅修复连续签到，不补发昨天奖励。"""
         self._ensure_user(qqid)
-        today = date.today()
+        today = self._today_cn()
         target = date.fromordinal(today.toordinal() - 1)
         used_month = today.strftime('%Y-%m')
         costs = self._makeup_checkin_costs()

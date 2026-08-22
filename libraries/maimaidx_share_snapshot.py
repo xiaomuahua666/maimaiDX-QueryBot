@@ -7,13 +7,16 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, List, Optional, Sequence
 
 from loguru import logger as log
 
 from .maimaidx_data_storage import DailySnapshot, ScoreRecord, data_storage
 from .maimaidx_io_executor import run_io
+
+# 快照按北京时间归日，与 data_storage/data_scheduler 的每日边界保持一致。
+_CN_TZ = timezone(timedelta(hours=8))
 
 # 与公开导出默认门槛对齐
 MIN_SHARE_RECORDS = 30
@@ -67,7 +70,7 @@ def build_daily_snapshot(
     )
     rating = int(getattr(userinfo, "rating", 0) or 0)
     return DailySnapshot(
-        date=target_date or datetime.now().strftime("%Y-%m-%d"),
+        date=target_date or datetime.now(_CN_TZ).strftime("%Y-%m-%d"),
         qqid=int(qqid),
         nickname=nickname,
         rating=rating,
