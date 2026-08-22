@@ -136,6 +136,105 @@ def _finish_reason(response: Any) -> str:
     return str(_field(choices[0], "finish_reason") or "").strip().lower()
 
 
+def _stream_content_parts(chunk: Any) -> list[str]:
+    """从流式 chunk 中提取正文增量，兼容对象与 dict 两种形态。"""
+    choices = _field(chunk, "choices")
+    if not choices:
+        return []
+    delta = _field(choices[0], "delta")
+    if delta is None:
+        delta = _field(choices[0], "message")
+    if delta is None:
+        return []
+    content = _field(delta, "content")
+    if content is None:
+        return []
+    if isinstance(content, str):
+        return [content] if content else []
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            value = _field(item, "text", "output_text", "content")
+            if value is not None:
+                parts.append(str(value))
+        return parts
+    return []
+
+
+def _stream_usage(chunk: Any) -> dict[str, Any]:
+    """聚合流式 usage 块；部分网关只在最后一块返回 usage。"""
+    usage = _token_usage(chunk)
+    if usage.get("available"):
+        return usage
+    return {}
+
+
+def _stream_finish_reason(chunk: Any) -> str:
+    choices = _field(chunk, "choices")
+    if not choices:
+        return ""
+    return str(_field(choices[0], "finish_reason") or "").strip().lower()
+
+
+def _merge_usage(total: dict[str, Any], chunk_usage: dict[str, Any]) -> dict[str, Any]:
+    if not chunk_usage:
+        return total
+    for key in ("input_tokens", "output_tokens", "total_tokens", "cached_input_tokens"):
+        # 流式 usage 块通常是累计总数而不是增量，取最大值避免重复累计。
+        total[key] = max(
+            int(total.get(key) or 0),
+            int(chunk_usage.get(key) or 0),
+        )
+    total["available"] = bool(
+        total.get("available")
+        or total.get("input_tokens")
+        or total.get("output_tokens")
+        or total.get("total_tokens")
+    )
+    return total
+
+
+async def _consume_stream(
+    stream: Any,
+    *,
+    on_progress: Any = None,
+) -> tuple[str, dict[str, Any], str]:
+    """消费流式响应，返回 (正文, usage, finish_reason)。"""
+    parts: list[str] = []
+    usage: dict[str, Any] = {}
+    finish_reason = ""
+    async for chunk in stream:
+        chunk_parts = _stream_content_parts(chunk)
+        if chunk_parts:
+            parts.extend(chunk_parts)
+        chunk_usage = _stream_usage(chunk)
+        if chunk_usage:
+            usage = _merge_usage(usage, chunk_usage)
+        reason = _stream_finish_reason(chunk)
+        if reason:
+            finish_reason = reason
+        if on_progress is not None:
+            on_progress("".join(parts))
+    return "".join(parts), usage, finish_reason
+
+
+def _stream_request_compatible(request: dict[str, Any], exc: BaseException) -> bool:
+    """判断兼容性降级是否允许把 stream 改回非流式。"""
+    if not request.get("stream"):
+        return False
+    detail = str(exc).lower()
+    return any(
+        marker in detail
+        for marker in (
+            "stream",
+            "stream_options",
+            "include_usage",
+            "unknown field",
+            "unknown parameter",
+        )
+    )
+
+
 def _parse_json_object(content: str) -> dict[str, Any]:
     """解析合法 JSON 对象，并兼容代码围栏或少量前后说明。"""
     text = str(content or "").strip().lstrip("\ufeff")
@@ -380,7 +479,13 @@ def _clean_report(raw: Any, pack: EvidencePack, style: StyleSpec) -> RoastReport
     )
 
 
-async def generate_report(pack: EvidencePack, style: StyleSpec) -> tuple[RoastReport, dict[str, Any]]:
+async def generate_report(
+    pack: EvidencePack,
+    style: StyleSpec,
+    *,
+    on_progress: Any = None,
+    on_stream_unavailable: Any = None,
+) -> tuple[RoastReport, dict[str, Any]]:
     if not getattr(maiconfig, "b50_llm_key", ""):
         raise RuntimeError("锐评模型未配置，无法生成模型报告")
     runtime = await asyncio.to_thread(resolve_llm_runtime_config, maiconfig)
@@ -401,6 +506,8 @@ async def generate_report(pack: EvidencePack, style: StyleSpec) -> tuple[RoastRe
         max_tokens=max(512, int(getattr(maiconfig, "b50_llm_max_tokens", 6144))),
         reasoning_effort=reasoning_effort,
         response_format={"type": "json_object"},
+        stream=True,
+        stream_options={"include_usage": True},
     )
     prompt_cache_key = str(
         getattr(maiconfig, "b50_llm_prompt_cache_key", "maimaidx-b50-roast-v2") or ""
@@ -410,10 +517,10 @@ async def generate_report(pack: EvidencePack, style: StyleSpec) -> tuple[RoastRe
         # identical system-prefix blocks in the same prompt-cache partition.
         request["extra_body"] = {"prompt_cache_key": prompt_cache_key}
 
-    response = None
+    raw_stream = None
     for _ in range(8):
         try:
-            response = await client.chat.completions.create(**request)
+            raw_stream = await client.chat.completions.create(**request)
             break
         except BadRequestError as exc:
             detail = str(exc).lower()
@@ -425,6 +532,19 @@ async def generate_report(pack: EvidencePack, style: StyleSpec) -> tuple[RoastRe
                 marker in detail for marker in ("response_format", "json_object")
             ):
                 request.pop("response_format", None)
+                continue
+            if request.get("stream_options") and any(
+                marker in detail for marker in ("stream_options", "include_usage")
+            ):
+                log.warning("[roast_v2] 当前网关不支持流式 usage，已回退普通流式请求")
+                request.pop("stream_options", None)
+                continue
+            if _stream_request_compatible(request, exc):
+                log.warning("[roast_v2] 当前网关不支持流式参数，已回退非流式请求")
+                request.pop("stream", None)
+                request.pop("stream_options", None)
+                if on_stream_unavailable is not None:
+                    on_stream_unavailable()
                 continue
             if "reasoning_effort" in request and any(
                 marker in detail for marker in ("reasoning_effort", "reasoning effort")
@@ -468,6 +588,19 @@ async def generate_report(pack: EvidencePack, style: StyleSpec) -> tuple[RoastRe
                 log.warning("[roast_v2] 上游 5xx，移除 response_format 后重试")
                 request.pop("response_format", None)
                 continue
+            if status >= 500 and request.get("stream_options") and any(
+                marker in detail for marker in ("stream_options", "include_usage")
+            ):
+                log.warning("[roast_v2] 上游 5xx，移除流式 usage 后重试")
+                request.pop("stream_options", None)
+                continue
+            if status >= 500 and request.get("stream"):
+                log.warning("[roast_v2] 上游 5xx，移除流式参数后重试")
+                request.pop("stream", None)
+                request.pop("stream_options", None)
+                if on_stream_unavailable is not None:
+                    on_stream_unavailable()
+                continue
             if status >= 500 and any(marker in detail for marker in ("do_request_failed", "upstream error")):
                 log.warning("[roast_v2] 上游 5xx 重试后仍失败")
             raise
@@ -477,13 +610,21 @@ async def generate_report(pack: EvidencePack, style: StyleSpec) -> tuple[RoastRe
             # several minutes and eventually expire the official-QQ msgid.
             log.warning(f"[roast_v2] {type(exc).__name__}，结束本次请求")
             raise
-    if response is None:
+    if raw_stream is None:
         raise RuntimeError("模型请求未返回响应")
-    raw_response = response
-    response = _normalize_response(response)
-    if isinstance(raw_response, str) and not isinstance(response, str):
-        log.info("[roast_v2] 已兼容解包 OneAPI 字符串响应")
-    usage = _token_usage(response)
+    if hasattr(raw_stream, "__aiter__"):
+        content, usage, finish_reason = await _consume_stream(
+            raw_stream,
+            on_progress=on_progress,
+        )
+    else:
+        # 兼容网关强制关闭流式或 fake 返回完整响应时，按旧路径解析。
+        if request.get("stream") and on_stream_unavailable is not None:
+            on_stream_unavailable()
+        response = _normalize_response(raw_stream)
+        content = _response_content(response)
+        finish_reason = _finish_reason(response)
+        usage = _token_usage(response)
     if not usage.get("available"):
         error = ValueError("模型未返回 Token 用量，本次报告不发送且不扣费")
         error.token_usage = usage
@@ -495,9 +636,7 @@ async def generate_report(pack: EvidencePack, style: StyleSpec) -> tuple[RoastRe
         "[roast_v2] 模型 Prompt Cache "
         f"cached={cached_input_tokens} input={input_tokens} rate={cache_rate:.1%}"
     )
-    content = _response_content(response)
     if not content:
-        finish_reason = _finish_reason(response)
         log.warning(
             "[roast_v2] 模型正文为空 "
             f"model={runtime.model} "

@@ -75,6 +75,7 @@ _SHORTCUTS = (
 _ANALYSIS_SHORTCUTS = _SHORTCUTS
 _ANALYSIS_TIMING_KEY = "b50_analysis"
 _ANALYSIS_FALLBACK_SECONDS = 90
+_ROAST_FIRST_CHUNK_TIMEOUT_DEFAULT = 30.0
 
 
 def set_peer_stats(stats) -> None:
@@ -89,6 +90,108 @@ def _user_lock(user_id: str) -> asyncio.Lock:
         lock = asyncio.Lock()
         _USER_LOCKS[str(user_id)] = lock
     return lock
+
+
+_ACTIVE_PROGRESS: dict[str, int] = {}
+
+
+def _active_progress_key(event: MessageEvent) -> str:
+    try:
+        return str(platform_user_id(event))
+    except AttributeError:
+        return f"event:{id(event)}"
+
+
+def _analysis_progress_text(progress_key: str | None = None) -> str:
+    chars = int(_ACTIVE_PROGRESS.get(progress_key or "") or 0)
+    if chars > 0:
+        return f"已生成约 {chars} 字，仍在继续，请稍等喵。"
+    return "正在等待模型输出，请稍等喵。"
+
+
+def _mark_roast_progress(progress_key: str, first_chunk_event, _content: str) -> None:
+    chars = len(str(_content or ""))
+    if chars:
+        _ACTIVE_PROGRESS[progress_key] = chars
+        first_chunk_event.set()
+
+
+async def _wait_for_roast_first_chunk(
+    task,
+    first_chunk_event,
+    stream_unavailable,
+) -> None:
+    """模型 30 秒未开始输出则超时；已开始后不再受总时长限制。"""
+    first_waiter = asyncio.ensure_future(first_chunk_event.wait())
+    non_stream_waiter = asyncio.ensure_future(stream_unavailable.wait())
+    try:
+        done, _pending = await asyncio.wait(
+            {task, first_waiter, non_stream_waiter},
+            timeout=_timeout(
+                "b50_llm_first_chunk_timeout_seconds",
+                _ROAST_FIRST_CHUNK_TIMEOUT_DEFAULT,
+            ),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+    finally:
+        first_waiter.cancel()
+        non_stream_waiter.cancel()
+    if task in done:
+        return
+    if first_waiter in done:
+        return
+    if non_stream_waiter in done:
+        return
+    raise AnalysisStageTimeoutError("模型 30 秒内未开始输出，已超时")
+
+
+async def _run_roast_generation(
+    progress_key: str,
+    *,
+    pack,
+    style,
+) -> Any:
+    """流式首块 30 秒超时；流式被网关拒绝并降级为普通请求时按请求超时执行。"""
+    first_chunk_event = asyncio.Event()
+    stream_unavailable = asyncio.Event()
+    task = asyncio.ensure_future(
+        generate_report(
+            pack,
+            style,
+            on_progress=lambda content: _mark_roast_progress(
+                progress_key,
+                first_chunk_event,
+                content,
+            ),
+            on_stream_unavailable=stream_unavailable.set,
+        )
+    )
+
+    try:
+        if stream_unavailable.is_set():
+            return await _run_timed_stage(
+                task,
+                stage="模型生成",
+                timeout=_timeout("b50_llm_timeout_seconds", 300.0),
+            )
+        await _wait_for_roast_first_chunk(task, first_chunk_event, stream_unavailable)
+        if stream_unavailable.is_set():
+            return await _run_timed_stage(
+                task,
+                stage="模型生成",
+                timeout=_timeout("b50_llm_timeout_seconds", 300.0),
+            )
+        return await task
+    except (asyncio.CancelledError, Exception) as exc:
+        if isinstance(exc, asyncio.CancelledError) or not first_chunk_event.is_set():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+        raise
+    finally:
+        _ACTIVE_PROGRESS.pop(progress_key, None)
 
 
 def _timeout(name: str, default: float) -> float:
@@ -416,10 +519,10 @@ async def _handle_impl(matcher: Matcher, bot: Bot, event: MessageEvent, args: Me
         raise
     try:
         token_usage = _empty_token_usage()
-        report, token_usage = await _run_timed_stage(
-            generate_report(pack, style),
-            stage="模型生成",
-            timeout=_timeout("b50_llm_timeout_seconds", 300.0),
+        report, token_usage = await _run_roast_generation(
+            _active_progress_key(event),
+            pack=pack,
+            style=style,
         )
 
         if not isinstance(token_usage, dict):
@@ -590,7 +693,10 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
                 _analysis_notice(
                     event,
                     "锐评正在生成",
-                    "你已有一份锐评任务在处理中，请等待结果，勿重复发送。",
+                    (
+                        "你已有一份锐评任务在处理中，请等待结果，勿重复发送。\n"
+                        + _analysis_progress_text(_active_progress_key(event))
+                    ),
                 ),
                 event=event,
                 mention_sender=use_qq_mode(event),

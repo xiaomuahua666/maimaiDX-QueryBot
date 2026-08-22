@@ -223,6 +223,8 @@ class Config(BaseModel):
     b50_analysis_max_concurrency: int = 6
     b50_analysis_queue_timeout_seconds: float = 2.0
     b50_fetch_timeout_seconds: float = 45.0
+    # 流式锐评：30 秒内未收到首块内容则超时；开始输出后不再受总时长限制。
+    b50_llm_first_chunk_timeout_seconds: float = 30.0
     # 整个模型阶段允许完成多轮兼容降级；单次 HTTP 请求使用更短的独立超时。
     b50_llm_timeout_seconds: float = 300.0
     b50_llm_request_timeout_seconds: float = 180.0

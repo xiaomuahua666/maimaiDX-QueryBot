@@ -26,6 +26,7 @@ from nonebot_plugin_maimaidx.libraries.maimaidx_roast_v2.domain import (  # noqa
     EvidencePack,
     StyleSpec,
 )
+from nonebot_plugin_maimaidx.command import mai_b50_analysis  # noqa: E402
 
 
 requests: list[dict] = []
@@ -112,36 +113,59 @@ assert roast_model._token_usage({
 class RoastFakeCompletions:
     async def create(self, **kwargs):
         roast_requests.append(kwargs)
-        # OneAPI may return the whole Chat Completion envelope as a JSON
-        # string. The production parser must preserve both choices and usage.
-        return json.dumps(
-            {
-                "usage": {
-                    "prompt_tokens": 2000,
-                    "completion_tokens": 300,
-                    "total_tokens": 2300,
-                    "prompt_tokens_details": {"cached_tokens": 1500},
-                },
-                "choices": [
-                    {
-                        "message": {
-                            "content": (
-                            "```json\n"
-                            '{"headline":"稳定前缀测试",'
-                            '"summary":"当前成绩结构稳定。",'
-                            '"analysis":"当前成绩结构稳定，暂无14+平均数据，建议继续整理地板。",'
-                            '"strengths":["当前数据有稳定表现"],'
-                            '"weaknesses":["仍有地板整理空间"],'
-                            '"actions":["完成一首后重新生成报告"],'
-                            '"recommendations":[]}'
-                            "\n```"
-                            )
-                        }
-                    }
-                ],
+        # 流式：先给 usage-only 块，再给正文块，最后带 finish_reason。
+        return _roast_stream()
+
+
+async def _roast_stream():
+    yield {
+        "usage": {
+            "prompt_tokens": 2000,
+            "completion_tokens": 300,
+            "total_tokens": 2300,
+            "prompt_tokens_details": {"cached_tokens": 1500},
+        },
+    }
+    yield {
+        "choices": [{
+            "delta": {
+                "content": (
+                    '{"headline":"稳定前缀测试",'
+                    '"summary":"当前成绩结构稳定。",'
+                    '"analysis":"当前成绩结构稳定，暂无14+平均数据，建议继续整理地板。",'
+                    '"strengths":["当前数据有稳定表现"],'
+                    '"weaknesses":["仍有地板整理空间"],'
+                    '"actions":["完成一首后重新生成报告"],'
+                    '"recommendations":[]}'
+                ),
             },
-            ensure_ascii=False,
-        )
+            "finish_reason": "stop",
+        }],
+    }
+
+
+async def _roast_stream_chunked():
+    async def chunks():
+        for part in (
+            '{"headline":"流式进度",',
+            '"summary":"正文第一部分",',
+            '"analysis":"正文第二部分",',
+            '"strengths":[],"weaknesses":[],"peer_takeaways":[],'
+            '"actions":[],"recommendations":[]}',
+        ):
+            yield {
+                "choices": [{"delta": {"content": part}, "finish_reason": ""}],
+            }
+        yield {
+            "choices": [{"delta": {}, "finish_reason": "stop"}],
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 50,
+                "total_tokens": 150,
+                "prompt_tokens_details": {"cached_tokens": 0},
+            },
+        }
+    return chunks()
 
 
 class RoastFakeClient:
@@ -196,6 +220,8 @@ async def roast_main() -> None:
         first["messages"][1]["content"].split("\nSTYLE_JSON:\n", 1)[0]
         == second["messages"][1]["content"].split("\nSTYLE_JSON:\n", 1)[0]
     )
+    assert first.get("stream") is True
+    assert first.get("stream_options") == {"include_usage": True}
     assert usage["cached_input_tokens"] == 1500
     assert usage["input_tokens"] == 2000
     assert usage["output_tokens"] == 300
@@ -208,6 +234,70 @@ async def roast_main() -> None:
 
 
 asyncio.run(roast_main())
+
+
+chunked_requests: list[dict] = []
+chunked_progress: list[str] = []
+
+
+class RoastChunkedCompletions:
+    async def create(self, **kwargs):
+        chunked_requests.append(kwargs)
+        return await _roast_stream_chunked()
+
+
+class RoastChunkedClient:
+    def __init__(self, **kwargs):
+        self.chat = SimpleNamespace(completions=RoastChunkedCompletions())
+
+
+async def roast_chunked_main() -> None:
+    original_client = roast_model.AsyncOpenAI
+    original_config = roast_model.maiconfig
+    original_reasoning = roast_model.analysis_reasoning_effort
+    original_runtime = roast_model.resolve_llm_runtime_config
+    roast_model.AsyncOpenAI = RoastChunkedClient
+    roast_model.analysis_reasoning_effort = lambda: "low"
+    roast_model.resolve_llm_runtime_config = lambda _config=None: SimpleNamespace(
+        base_url="https://example.invalid/v1", model="chunked-test-model"
+    )
+    roast_model.maiconfig = SimpleNamespace(
+        b50_llm_key="test",
+        b50_llm_url="https://example.invalid/v1",
+        b50_llm_model="chunked-test-model",
+        b50_llm_request_timeout_seconds=3,
+        b50_llm_max_retries=0,
+        b50_llm_max_tokens=1024,
+        b50_llm_prompt_cache_key="maimaidx-b50-roast-v2",
+    )
+    pack = EvidencePack(
+        nickname="Milk",
+        rating=15000,
+        evidence=[Evidence("rating", "当前 Rating", "15000", "snapshot")],
+        metrics={"high_count": 0},
+    )
+    try:
+        report, usage = await roast_model.generate_report(
+            pack,
+            StyleSpec(),
+            on_progress=lambda text: chunked_progress.append(text),
+        )
+    finally:
+        roast_model.AsyncOpenAI = original_client
+        roast_model.maiconfig = original_config
+        roast_model.analysis_reasoning_effort = original_reasoning
+        roast_model.resolve_llm_runtime_config = original_runtime
+
+    assert len(chunked_requests) == 1
+    assert chunked_requests[0].get("stream") is True
+    assert len(chunked_progress) == 5
+    assert "正文第一部分" in chunked_progress[-1]
+    assert "正文第一部分" in chunked_progress[1]
+    assert usage["output_tokens"] == 50
+    assert report.summary == "正文第一部分"
+
+
+asyncio.run(roast_chunked_main())
 
 
 timeout_requests = 0
@@ -268,4 +358,206 @@ async def roast_timeout_main() -> None:
 
 
 asyncio.run(roast_timeout_main())
+
+
+roast_fallback_requests: list[dict] = []
+roast_fallback_unavailable: list[bool] = []
+
+
+class RoastFallbackCompletions:
+    async def create(self, **kwargs):
+        roast_fallback_requests.append(kwargs)
+        if kwargs.get("stream"):
+            raise roast_model.BadRequestError(
+                "gateway does not support stream",
+                response=httpx.Response(400, request=httpx.Request(
+                    "POST", "https://example.invalid/v1/chat/completions"
+                )),
+                body=None,
+            )
+        return SimpleNamespace(
+            usage=SimpleNamespace(
+                prompt_tokens=200,
+                completion_tokens=20,
+                total_tokens=220,
+                prompt_tokens_details=SimpleNamespace(cached_tokens=100),
+            ),
+            choices=[
+                SimpleNamespace(
+                    finish_reason="stop",
+                    message=SimpleNamespace(
+                        content=(
+                            '{"headline":"降级测试",'
+                            '"summary":"流式不可用时正常完成。",'
+                            '"analysis":"流式不可用时正常完成。",'
+                            '"strengths":[],"weaknesses":[],'
+                            '"peer_takeaways":[],"actions":[],'
+                            '"recommendations":[]}'
+                        ),
+                        reasoning_content="",
+                    ),
+                )
+            ],
+        )
+
+
+class RoastFallbackClient:
+    def __init__(self, **kwargs):
+        roast_client_options.append(kwargs)
+        self.chat = SimpleNamespace(completions=RoastFallbackCompletions())
+
+
+async def roast_fallback_main() -> None:
+    original_client = roast_model.AsyncOpenAI
+    original_config = roast_model.maiconfig
+    original_reasoning = roast_model.analysis_reasoning_effort
+    original_runtime = roast_model.resolve_llm_runtime_config
+    roast_model.AsyncOpenAI = RoastFallbackClient
+    roast_model.analysis_reasoning_effort = lambda: "low"
+    roast_model.resolve_llm_runtime_config = lambda _config=None: SimpleNamespace(
+        base_url="https://example.invalid/v1", model="fallback-test-model"
+    )
+    roast_model.maiconfig = SimpleNamespace(
+        b50_llm_key="test",
+        b50_llm_url="https://example.invalid/v1",
+        b50_llm_model="fallback-test-model",
+        b50_llm_request_timeout_seconds=3,
+        b50_llm_max_retries=0,
+        b50_llm_max_tokens=1024,
+        b50_llm_prompt_cache_key="maimaidx-b50-roast-v2",
+    )
+    pack = EvidencePack(
+        nickname="Milk",
+        rating=15000,
+        evidence=[Evidence("rating", "当前 Rating", "15000", "snapshot")],
+        metrics={"high_count": 0},
+    )
+    try:
+        report, _usage = await roast_model.generate_report(
+            pack,
+            StyleSpec(),
+            on_stream_unavailable=lambda: roast_fallback_unavailable.append(True),
+        )
+    finally:
+        roast_model.AsyncOpenAI = original_client
+        roast_model.maiconfig = original_config
+        roast_model.analysis_reasoning_effort = original_reasoning
+        roast_model.resolve_llm_runtime_config = original_runtime
+
+    assert len(roast_fallback_requests) == 2
+    assert roast_fallback_requests[0].get("stream") is True
+    assert roast_fallback_requests[1].get("stream") is None
+    assert roast_fallback_unavailable == [True]
+    assert report.summary == "流式不可用时正常完成。"
+
+
+asyncio.run(roast_fallback_main())
+
+
+slow_fallback_requests: list[dict] = []
+
+
+class RoastSlowFallbackCompletions:
+    async def create(self, **kwargs):
+        slow_fallback_requests.append(kwargs)
+        if kwargs.get("stream"):
+            raise roast_model.BadRequestError(
+                "stream is not supported",
+                response=httpx.Response(400, request=httpx.Request(
+                    "POST", "https://example.invalid/v1/chat/completions"
+                )),
+                body=None,
+            )
+        await asyncio.sleep(0.35)
+        return SimpleNamespace(
+            usage=SimpleNamespace(
+                prompt_tokens=200,
+                completion_tokens=20,
+                total_tokens=220,
+                prompt_tokens_details=SimpleNamespace(cached_tokens=100),
+            ),
+            choices=[
+                SimpleNamespace(
+                    finish_reason="stop",
+                    message=SimpleNamespace(
+                        content=(
+                            '{"headline":"慢降级",'
+                            '"summary":"降级后超过30秒仍应完成。",'
+                            '"analysis":"降级后超过30秒仍应完成。",'
+                            '"strengths":[],"weaknesses":[],'
+                            '"peer_takeaways":[],"actions":[],'
+                            '"recommendations":[]}'
+                        ),
+                        reasoning_content="",
+                    ),
+                )
+            ],
+        )
+
+
+class RoastSlowFallbackClient:
+    def __init__(self, **kwargs):
+        self.chat = SimpleNamespace(completions=RoastSlowFallbackCompletions())
+
+
+async def roast_slow_fallback_main() -> None:
+    original_client = roast_model.AsyncOpenAI
+    original_config = roast_model.maiconfig
+    original_reasoning = roast_model.analysis_reasoning_effort
+    original_runtime = roast_model.resolve_llm_runtime_config
+    roast_model.AsyncOpenAI = RoastSlowFallbackClient
+    roast_model.analysis_reasoning_effort = lambda: "low"
+    roast_model.resolve_llm_runtime_config = lambda _config=None: SimpleNamespace(
+        base_url="https://example.invalid/v1", model="slow-fallback-test-model"
+    )
+    roast_model.maiconfig = SimpleNamespace(
+        b50_llm_key="test",
+        b50_llm_url="https://example.invalid/v1",
+        b50_llm_model="slow-fallback-test-model",
+        b50_llm_request_timeout_seconds=3,
+        b50_llm_max_retries=0,
+        b50_llm_max_tokens=1024,
+        b50_llm_prompt_cache_key="maimaidx-b50-roast-v2",
+    )
+    pack = EvidencePack(
+        nickname="Milk",
+        rating=15000,
+        evidence=[Evidence("rating", "当前 Rating", "15000", "snapshot")],
+        metrics={"high_count": 0},
+    )
+    try:
+        report, _usage = await roast_model.generate_report(
+            pack,
+            StyleSpec(),
+            on_stream_unavailable=lambda: None,
+        )
+    finally:
+        roast_model.AsyncOpenAI = original_client
+        roast_model.maiconfig = original_config
+        roast_model.analysis_reasoning_effort = original_reasoning
+        roast_model.resolve_llm_runtime_config = original_runtime
+
+    assert len(slow_fallback_requests) == 2
+    assert slow_fallback_requests[0].get("stream") is True
+    assert slow_fallback_requests[1].get("stream") is None
+    assert report.summary == "降级后超过30秒仍应完成。"
+
+
+asyncio.run(roast_slow_fallback_main())
+
+
+async def progress_main() -> None:
+    progress_key = "progress-user"
+    first_chunk_event = asyncio.Event()
+    assert "正在等待模型输出" in mai_b50_analysis._analysis_progress_text(progress_key)
+    mai_b50_analysis._mark_roast_progress(
+        progress_key,
+        first_chunk_event,
+        "已生成一部分正文",
+    )
+    assert first_chunk_event.is_set()
+    assert "已生成约 8 字" in mai_b50_analysis._analysis_progress_text(progress_key)
+
+
+asyncio.run(progress_main())
 print("b50 prompt cache tests: ok")
