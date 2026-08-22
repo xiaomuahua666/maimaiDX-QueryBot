@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from typing import Any
 from weakref import WeakValueDictionary
 
 from loguru import logger as log
