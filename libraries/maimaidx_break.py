@@ -2646,15 +2646,27 @@ class BreakDatabase:
             'ORDER BY created_at DESC LIMIT ?',
             (qqid, limit),
         ).fetchall()
-        return [
-            BreakLogEntry(
-                delta=int(r['delta']),
-                reason=str(r['reason']),
-                created_at=float(r['created_at']),
-                meta=r['meta'],
+        entries: List[BreakLogEntry] = []
+        for r in rows:
+            raw_delta = r['delta']
+            raw_created = r['created_at']
+            try:
+                delta = int(raw_delta) if raw_delta is not None else 0
+            except (TypeError, ValueError):
+                delta = 0
+            try:
+                created_at = float(raw_created) if raw_created is not None else 0.0
+            except (TypeError, ValueError):
+                created_at = 0.0
+            entries.append(
+                BreakLogEntry(
+                    delta=delta,
+                    reason=str(r['reason'] or ''),
+                    created_at=created_at,
+                    meta=r['meta'],
+                )
             )
-            for r in rows
-        ]
+        return entries
 
     def get_freedom_savings_total(self, qqid: int) -> int:
         """累计 FREEDOM 历史免单金额；旧版未记录 listed_cost 的流水不计。"""

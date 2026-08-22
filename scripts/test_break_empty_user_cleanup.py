@@ -23,6 +23,7 @@ method_names = {
     "get_user_row",
     "get_daily_row",
     "is_checked_in_today",
+    "get_recent_logs",
 }
 methods = [
     node
@@ -30,6 +31,14 @@ methods = [
     if isinstance(node, ast.FunctionDef) and node.name in method_names
 ]
 assert {node.name for node in methods} == method_names
+
+
+class _BreakLogEntry:
+    def __init__(self, delta, reason, created_at, meta):
+        self.delta = delta
+        self.reason = reason
+        self.created_at = created_at
+        self.meta = meta
 
 
 class _Log:
@@ -54,6 +63,8 @@ namespace = {
     "timedelta": timedelta,
     "timezone": timezone,
     "log": _Log(),
+    "List": list,
+    "BreakLogEntry": _BreakLogEntry,
 }
 exec(
     compile(ast.Module(body=[test_class], type_ignores=[]), str(source_path), "exec"),
@@ -151,5 +162,28 @@ db._conn.execute("DROP TABLE break_gamble_pool_payout")
 db._conn.commit()
 db._prune_empty_users()
 assert db.get_user_row(5) == {}
+
+# 脏日志（NULL/非法 delta、created_at）不应让账号概览渲染直接抛异常。
+db2 = namespace["CleanupDb"]()
+db2._conn = sqlite3.connect(":memory:")
+db2._conn.row_factory = sqlite3.Row
+db2._conn.executescript(
+    """
+    CREATE TABLE break_log (
+        qqid INTEGER, delta INTEGER, reason TEXT, meta TEXT, created_at REAL
+    );
+    """
+)
+db2._conn.execute(
+    "INSERT INTO break_log VALUES (1, NULL, 'admin_grant:freedom', NULL, 123.0)"
+)
+db2._conn.execute("INSERT INTO break_log VALUES (1, 'bad', '', NULL, NULL)")
+db2._conn.commit()
+entries = db2.get_recent_logs(1, 20)
+assert entries[0].delta == 0
+assert entries[0].reason == "admin_grant:freedom"
+assert entries[1].delta == 0
+assert entries[1].created_at == 0.0
+assert entries[1].reason == ""
 
 print("BREAK empty-user cleanup tests: ok")
